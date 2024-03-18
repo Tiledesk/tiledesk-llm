@@ -1,0 +1,35 @@
+[tool.poetry]
+name = "tilellm"
+version = "0.1.0"
+description = "tiledesk for RAG"
+authors = ["Gianluca Lorenzo <gianluca.lorenzo@gmail.com>"]
+repository = "https://github.com/Tiledesk/tiledesk-llm"
+license = "MIT"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+
+[tool.poetry.dependencies]
+python = "^3.10"
+fastapi = "^0.110"
+jsonschema= "^4.20.0"
+redis= "^5.0.0"
+aioredis= "^2.0.0"
+#transformers= "^4.35.0"
+langchain = "^0.1.9"
+jq = "^1.6.0"
+openai = "^1.12.0"
+langchain_openai = "^0.0.7"
+pinecone-client = "^3.1.0"
+python-dotenv = "^1.0.1"
+langchain_community = "^0.0.24"
+uvicorn = "^0.28"
+# Add other dependencies here as needed
+
+[tool.poetry.dev-dependencies]
+uvicorn = "^0.28"  # For development server
+
+[tool.poetry.scripts]
+tilellm = "tilellm.__main__:__main__"
