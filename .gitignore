@@ -85,7 +85,6 @@ ipython_config.py
 .python-version
 
 # Escludo i modelli creati
-models
 results
 latest_model
 app.py
