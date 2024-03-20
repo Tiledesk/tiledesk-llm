@@ -34,4 +34,4 @@ uvicorn = "^0.28"
 uvicorn = "^0.28"  # For development server
 
 [tool.poetry.scripts]
-tilellm = "tilellm.__main__:__main__"
+tilellm = "tilellm.__main__:main"
