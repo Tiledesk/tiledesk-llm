@@ -6,6 +6,9 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_community.callbacks.openai_info import OpenAICallbackHandler
 from tilellm.models.item_model import RetrievalResult,ChatHistory, ChatEntry
 
+import logging
+
+logger = logging.getLogger(__name__)
 
 def ask_with_memory(question_answer):
     ## FIXME mettere tutto sotto try e verificare che non ci siano errori, altrimenti mandare l'errore 
@@ -27,7 +30,7 @@ def ask_with_memory(question_answer):
             for key, entry in question_answer.chat_history_dict.items():
                 question_answer_list.append((entry.question, entry.answer))
 
-        print(question_answer_list)
+        logger.info(question_answer_list)
         openai_callback_handler = OpenAICallbackHandler()
         
         llm = ChatOpenAI(model_name=question_answer.model, 
