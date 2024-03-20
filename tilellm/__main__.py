@@ -159,7 +159,7 @@ def main():
     from dotenv import load_dotenv
     load_dotenv('.environ')
     
-    uvicorn.run("tilellm.__main__:app", host=args.host, port=args.port, log_config=args.log_path, reload=True)
+    uvicorn.run("tilellm.__main__:app", host=args.host, port=args.port, log_config=args.log_path, reload=True)#log_config=args.log_path,
 
 if __name__ == "__main__":
    main()

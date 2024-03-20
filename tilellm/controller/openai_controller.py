@@ -1,5 +1,5 @@
 from langchain.chains import ConversationalRetrievalChain, LLMChain # Per la conversazione va usata questa classe
-from langchain_core.prompts import PromptTemplate
+from langchain_core.prompts import PromptTemplate, SystemMessagePromptTemplate
 from langchain_openai import ChatOpenAI
 from tilellm.store.pinecone_repository import add_pc_item as pinecone_add_item
 from tilellm.store.pinecone_repository import create_pc_index, get_embeddings_dimension
@@ -38,6 +38,7 @@ def ask_with_memory(question_answer):
                         temperature=question_answer.temperature, 
                         openai_api_key=question_answer.gptkey, 
                         max_tokens=question_answer.max_tokens,
+                        
                         callbacks=[openai_callback_handler])
         
         emb_dimension = get_embeddings_dimension(question_answer.embedding)
@@ -59,23 +60,41 @@ def ask_with_memory(question_answer):
         sources = list(set(sources))
 
         if question_answer.system_context is not None and question_answer.system_context:
-            template = (    "Given the following conversation and a follow up question, rephrase the follow up question to be a standalone question "
-                            f"{question_answer.system_context}."
-                            "Chat History: {chat_history}"
-                            "Follow up question: {question}"
-                        )
-            prompt = PromptTemplate.from_template(template)
-            #question_generator_chain = LLMChain(llm=llm, prompt=prompt)
+            from langchain.chains import LLMChain
+            
+            
+            #prompt_template = "Tell me a {adjective} joke"
+            #prompt = PromptTemplate(
+            #    input_variables=["adjective"], template=prompt_template
+            #)
+            #llm = LLMChain(llm=OpenAI(), prompt=prompt)
+            sys_template = """{system_context}.
+                              
+                              {context}
+                           """
+                 
+                        
+            sys_prompt = PromptTemplate.from_template(sys_template)
+            
+            
+            #llm_chain = LLMChain(llm=llm, prompt=prompt)
             crc = ConversationalRetrievalChain.from_llm(
                 llm=llm,
                 retriever=retriever,
-                condense_question_prompt=prompt
+                return_source_documents=True,
+                combine_docs_chain_kwargs={"prompt": sys_prompt}
                 )
+            #from pprint import pprint
+            #pprint(crc.combine_docs_chain.llm_chain.prompt.messages)
+            #crc.combine_docs_chain.llm_chain.prompt.messages[0] = SystemMessagePromptTemplate.from_template(sys_prompt)
+            
+            result = crc.invoke({'question': question_answer.question,'system_context':question_answer.system_context, 'chat_history': question_answer_list})
+           
         else:
             crc = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever)
         
-        result = crc.invoke({'question': question_answer.question, 'chat_history': question_answer_list})
-        print(result)
+            result = crc.invoke({'question': question_answer.question, 'chat_history': question_answer_list})
+        logger.info(result)
         question_answer_list.append((result['question'], result['answer']))
         
         chat_entries = [ChatEntry(question=q, answer=a) for q, a in question_answer_list]
@@ -99,10 +118,12 @@ def ask_with_memory(question_answer):
 
         
     except Exception as e:
-        print(e)
+        import traceback 
+        traceback.print_exc() 
         question_answer_list = []
-        for key, entry in question_answer.chat_history_dict.items():
-            question_answer_list.append((entry.question, entry.answer))
+        if question_answer.chat_history_dict is not None:
+            for key, entry in question_answer.chat_history_dict.items():
+                question_answer_list.append((entry.question, entry.answer))
         chat_entries = [ChatEntry(question=q, answer=a) for q, a in question_answer_list]
         chat_history_dict = {str(i): entry for i, entry in enumerate(chat_entries)}
 
