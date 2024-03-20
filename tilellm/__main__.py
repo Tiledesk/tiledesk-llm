@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from fastapi import (FastAPI, 
-  Depends)
+  Depends, HTTPException)
+from fastapi.responses import JSONResponse
 
 import argparse
 
@@ -12,7 +13,7 @@ import aiohttp
 
 from tilellm.models.item_model import ItemSingle, QuestionAnswer
 from tilellm.store.redis_repository import redis_xgroup_create
-from tilellm.controller.openai_controller import ask_with_memory, add_pc_item
+from tilellm.controller.openai_controller import ask_with_memory, add_pc_item, delete_namespace
 
 import logging
 
@@ -65,6 +66,7 @@ async def reader(channel: aioredis.client.Redis):
                     item = ast.literal_eval(dict_str)
                     itemSingle = ItemSingle(**item)
                     webhook = item.get('webhook',"")
+
                     pc_result = add_pc_item(itemSingle)
 
                     
@@ -119,6 +121,7 @@ async def create_screape_item(item: ItemSingle, redis_client: aioredis.client.Re
     logger.debug(item) 
     res = await redis_client.xadd(const.STREAM_NAME, {"single":item.model_dump_json()} , id="*")
     logger.debug(res)
+
     return {"message": f"Item {item.id} created successfully, more {res}"}
 
 @app.post("/api/qa")
@@ -126,7 +129,8 @@ async def post_ask_with_memory(question_answer:QuestionAnswer ):
     logger.debug(question_answer) 
     result = ask_with_memory(question_answer)
     logger.debug(result)
-    return result
+    return JSONResponse(content=result)
+    #return result
 
 @app.post("/api/list/namespace")
 async def list_namespace_items(namespace:str ):
@@ -135,7 +139,18 @@ async def list_namespace_items(namespace:str ):
 
 @app.delete("/api/namespace/{namespace}")
 async def list_namespace_items(namespace:str ):
-    return {"message":"not implemented yet"}
+    try:
+        result = delete_namespace(namespace)
+        return JSONResponse(content={"message":f"Namespace {namespace} deleted"})
+    except Exception as ex:
+        import json
+        #from pinecone.core.client.exceptions import NotFoundException
+        #a = NotFoundException()
+        #a.body
+        print(ex.body)
+        raise HTTPException(status_code=ex.status, detail=json.loads(ex.body) )
+
+    
 
 
 def main(): 

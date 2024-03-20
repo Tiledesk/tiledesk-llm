@@ -35,8 +35,27 @@ def add_pc_item(item):
         total_tokens, cost = calc_embedding_cost(chuncks,embedding)
         a = vector_store.from_documents(chuncks, embedding=oai_embeddings,index_name=const.PINECONE_INDEX,namespace = namespace)
         
-        return {"chunks": f"{len(chuncks)}", "total_tokens": f"{total_tokens}", "cost": f"{cost:.6f}"}
+        return {"id":f"{id}","chunks": f"{len(chuncks)}", "total_tokens": f"{total_tokens}", "cost": f"{cost:.6f}"}
+
+def delete_pc_namespace(namespace):
+    import pinecone
+    from langchain_community.vectorstores import Pinecone
+
+    try:
+        pc = pinecone.Pinecone(
+            api_key=os.environ.get("PINECONE_API_KEY")
+        ) 
+        #index_host = "https://tilellm-s9kvboq.svc.apw5-4e34-81fa.pinecone.io"#os.environ.get("PINECONE_INDEX_HOST")
+        host = pc.describe_index(const.PINECONE_INDEX).host
+        index = pc.Index(name=const.PINECONE_INDEX, host=host)
+        #vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
+        delete_response = index.delete(delete_all = True, namespace=namespace)
         
+    except Exception as ex:
+        
+        logger.error(ex) 
+        
+        raise ex
         
 
 def create_pc_index(embeddings, emb_dimension):

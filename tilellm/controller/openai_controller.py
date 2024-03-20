@@ -11,9 +11,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 def ask_with_memory(question_answer):
-    ## FIXME mettere tutto sotto try e verificare che non ci siano errori, altrimenti mandare l'errore 
+    
     try:
-        print(question_answer)
+        logger.info(question_answer)
 
         #question = str
         #namespace: str
@@ -51,9 +51,9 @@ def ask_with_memory(question_answer):
         #            "a standalone question. Chat History: {chat_history}"
         #            "Follow up question: {question}"
         #        )
-        #        prompt = PromptTemplate.from_template(template)
-        #        llm = OpenAI()
-        #        question_generator_chain = LLMChain(llm=llm, prompt=prompt)
+        #prompt = PromptTemplate.from_template(template)
+        #llm = OpenAI()
+        #question_generator_chain = LLMChain(llm=llm, prompt=prompt)
         docs = retriever.get_relevant_documents(question_answer.question)
         #new_list = list(set(students))
         ids =[]
@@ -74,9 +74,6 @@ def ask_with_memory(question_answer):
         chat_history_dict = {str(i): entry for i, entry in enumerate(chat_entries)}
 
         
-        #chat_history.from_dict(data=question_answer_list)
-        #question_answer_list.append((question_answer.question, result['answer']))
-        #result = {answer: result['answer'],chat_history:question_answer_list}
         success= bool(openai_callback_handler.successful_requests)
         prompt_token_size=openai_callback_handler.total_tokens
 
@@ -114,3 +111,10 @@ def ask_with_memory(question_answer):
 
 def add_pc_item(item):
     return pinecone_add_item(item)
+
+def delete_namespace(namespace:str):
+    from tilellm.store.pinecone_repository import delete_pc_namespace
+    try:
+        return delete_pc_namespace(namespace)
+    except:
+        raise
