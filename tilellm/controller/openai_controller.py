@@ -1,4 +1,5 @@
-from langchain.chains import ConversationalRetrievalChain # Per la conversazione va usata questa classe
+from langchain.chains import ConversationalRetrievalChain, LLMChain # Per la conversazione va usata questa classe
+from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
 from tilellm.store.pinecone_repository import add_pc_item as pinecone_add_item
 from tilellm.store.pinecone_repository import create_pc_index, get_embeddings_dimension
@@ -46,16 +47,9 @@ def ask_with_memory(question_answer):
 
         retriever = vector_store.as_retriever(search_type='similarity', search_kwargs={'k': question_answer.top_k, 'namespace':question_answer.namespace})
         
-        #template = (
-        #            "Combine the chat history and follow up question into "
-        #            "a standalone question. Chat History: {chat_history}"
-        #            "Follow up question: {question}"
-        #        )
-        #prompt = PromptTemplate.from_template(template)
-        #llm = OpenAI()
-        #question_generator_chain = LLMChain(llm=llm, prompt=prompt)
+
         docs = retriever.get_relevant_documents(question_answer.question)
-        #new_list = list(set(students))
+
         ids =[]
         sources = []
         for doc in docs:
@@ -64,7 +58,21 @@ def ask_with_memory(question_answer):
         ids = list(set(ids))
         sources = list(set(sources))
 
-        crc = ConversationalRetrievalChain.from_llm(llm, retriever )
+        if question_answer.system_context is not None and question_answer.system_context:
+            template = (
+                            f"{question_answer.system_context}."
+                            "Chat History: {chat_history}"
+                            "Follow up question: {question}"
+                        )
+            prompt = PromptTemplate.from_template(template)
+            #question_generator_chain = LLMChain(llm=llm, prompt=prompt)
+            crc = ConversationalRetrievalChain.from_llm(
+                llm=llm,
+                retriever=retriever,
+                condense_question_prompt=prompt
+                )
+        else:
+            crc = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever)
         
         result = crc.invoke({'question': question_answer.question, 'chat_history': question_answer_list})
         print(result)

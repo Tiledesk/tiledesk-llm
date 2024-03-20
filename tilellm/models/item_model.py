@@ -53,7 +53,7 @@ class QuestionAnswer(BaseModel):
     top_k: int = Field(default=5)
     max_tokens: int = Field(default=128)
     embedding: str =Field(default="text-embedding-ada-002")
-    system_context: Optional[str]
+    system_context: Optional[str] = None
     chat_history_dict : Optional[Dict[str, ChatEntry]] = None
 
     @validator("temperature")

@@ -28,6 +28,7 @@ parser = argparse.ArgumentParser(description="FastAPI with Redis integration")
 parser.add_argument("--host", default="localhost", help="Hostname for FastAPI")
 parser.add_argument("--port", type=int, default=8000, help="Port for FastAPI")
 parser.add_argument("--redis_url", default="redis://localhost:6379/0", help="Redis url. Default redis://localhost:6379/0")
+parser.add_argument("--log_path", default="log_conf.yaml", help="Log configuration file path. Default log_conf.yaml")
 args = parser.parse_args()
 
 
@@ -158,7 +159,7 @@ def main():
     from dotenv import load_dotenv
     load_dotenv('.environ')
     
-    uvicorn.run("tilellm.__main__:app", host=args.host, port=args.port, reload=True)#, log_config="./log_conf.yaml") 
+    uvicorn.run("tilellm.__main__:app", host=args.host, port=args.port, log_config=args.log_path, reload=True)
 
 if __name__ == "__main__":
    main()
