@@ -59,7 +59,7 @@ def ask_with_memory(question_answer):
         sources = list(set(sources))
 
         if question_answer.system_context is not None and question_answer.system_context:
-            template = (
+            template = (    "Given the following conversation and a follow up question, rephrase the follow up question to be a standalone question "
                             f"{question_answer.system_context}."
                             "Chat History: {chat_history}"
                             "Follow up question: {question}"
