@@ -25,6 +25,8 @@ langchain_openai = "^0.0.7"
 pinecone-client = "^3.1.0"
 python-dotenv = "^1.0.1"
 langchain_community = "^0.0.24"
+tiktoken = "^0.6.0"
+
 uvicorn = "^0.28"
 # Add other dependencies here as needed
 
