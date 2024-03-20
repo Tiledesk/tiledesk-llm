@@ -23,8 +23,9 @@ def ask_with_memory(question_answer):
         #chat_history_dict : Dict[str, ChatEntry]
         
         question_answer_list = []
-        for key, entry in question_answer.chat_history_dict.items():
-            question_answer_list.append((entry.question, entry.answer))
+        if question_answer.chat_history_dict is not None:
+            for key, entry in question_answer.chat_history_dict.items():
+                question_answer_list.append((entry.question, entry.answer))
 
         print(question_answer_list)
         openai_callback_handler = OpenAICallbackHandler()

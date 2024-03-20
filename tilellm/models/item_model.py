@@ -54,7 +54,7 @@ class QuestionAnswer(BaseModel):
     max_tokens: int = Field(default=128)
     embedding: str =Field(default="text-embedding-ada-002")
     system_context: Optional[str]
-    chat_history_dict : Optional[Dict[str, ChatEntry]]
+    chat_history_dict : Optional[Dict[str, ChatEntry]] = None
 
     @validator("temperature")
     def temperature_range(cls, v):

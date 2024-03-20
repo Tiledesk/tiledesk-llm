@@ -133,6 +133,10 @@ async def list_namespace_items(namespace:str ):
     return {"message":"not implemented yet"}
 
 
+@app.delete("/api/namespace/{namespace}")
+async def list_namespace_items(namespace:str ):
+    return {"message":"not implemented yet"}
+
 
 def main(): 
     import uvicorn
