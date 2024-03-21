@@ -23,12 +23,7 @@ import logging
 
 
 
-
-
-
-
-
-parser = argparse.ArgumentParser(description="FastAPI with Redis integration")
+parser = argparse.ArgumentParser(description="Tiledesk: llms integration")
 parser.add_argument("--host", default="localhost", help="Hostname for FastAPI")
 parser.add_argument("--port", type=int, default=8000, help="Port for FastAPI")
 parser.add_argument("--redis_url", default="redis://localhost:6379/0", help="Redis url. Default redis://localhost:6379/0")
@@ -73,9 +68,12 @@ async def reader(channel: aioredis.client.Redis):
                     webhook = item.get('webhook',"")
 
                     pc_result = add_pc_item(itemSingle)
+                    import datetime
+                    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")
 
-                    
-                    # A POST request to tthe API
+                    pc_result["date"]=current_time
+
+                    # A POST request to the API
                     logger.info(f"webhook {webhook}")  
                     if webhook:     
                         async with aiohttp.ClientSession() as session:
@@ -87,8 +85,7 @@ async def reader(channel: aioredis.client.Redis):
                         const.STREAM_CONSUMER_GROUP, 
                         message_id)    
                                  
-                    
-                    #post_response = await asyncio.post(url_post, json=result.result(), content_type="application/json")
+
             
         except Exception as e:
             import traceback 
@@ -96,7 +93,7 @@ async def reader(channel: aioredis.client.Redis):
                 async with aiohttp.ClientSession() as session:
                     response = await session.post(webhook,  json = repr(e),  headers={"Content-Type": "application/json"})
                     
-            print(f"ERRORE {e}, webhook: {webhook}")
+                print(f"ERRORE {e}, webhook: {webhook}")
             traceback.print_exc() 
             logger.error(e)
            

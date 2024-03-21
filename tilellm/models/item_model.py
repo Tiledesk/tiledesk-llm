@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field,  validator
+from pydantic import BaseModel, Field,  validator, field_validator, ValidationError
 from typing import Dict, Optional, List
 
 
@@ -8,7 +8,7 @@ class ItemSingle(BaseModel):
     type: str |None = None
     content: str |None =None
     gptkey: str |None =None
-    embedding: str | None =None
+    embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
     namespace: str |None =None
     webhook: str |None =None
 
@@ -16,7 +16,7 @@ class MetadataItem(BaseModel):
     id: str
     source: str | None = None
     type: str |None = None
-    embedding: str | None =None
+    embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
 
 class ChatEntry(BaseModel):
     question: str
@@ -52,18 +52,18 @@ class QuestionAnswer(BaseModel):
     temperature: float = Field(default=0.0)
     top_k: int = Field(default=5)
     max_tokens: int = Field(default=128)
-    embedding: str =Field(default="text-embedding-ada-002")
+    embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
     system_context: Optional[str] = None
     chat_history_dict : Optional[Dict[str, ChatEntry]] = None
 
-    @validator("temperature")
+    @field_validator("temperature")
     def temperature_range(cls, v):
         """Ensures temperature is within valid range (usually 0.0 to 1.0)."""
         if not 0.0 <= v <= 1.0:
             raise ValueError("Temperature must be between 0.0 and 1.0.")
         return v
 
-    @validator("top_k")
+    @field_validator("top_k")
     def top_k_range(cls, v):
         """Ensures top_k is a positive integer."""
         if v <= 0:
