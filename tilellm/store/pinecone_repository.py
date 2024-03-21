@@ -1,6 +1,6 @@
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_community.document_loaders import TextLoader, JSONLoader
-from tilellm.models.item_model import MetadataItem
+from tilellm.models.item_model import MetadataItem, PineconeQueryResult, PineconeItems
 from tilellm.shared import const
 from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
@@ -39,7 +39,6 @@ def add_pc_item(item):
 
 def delete_pc_namespace(namespace):
     import pinecone
-    from langchain_community.vectorstores import Pinecone
 
     try:
         pc = pinecone.Pinecone(
@@ -56,7 +55,83 @@ def delete_pc_namespace(namespace):
         logger.error(ex) 
         
         raise ex
-        
+
+def delete_pc_ids_namespace(id:str, namespace:str):
+    import pinecone
+    from langchain_community.vectorstores import Pinecone
+
+    try:
+        pc = pinecone.Pinecone(
+            api_key=os.environ.get("PINECONE_API_KEY")
+        )
+        # index_host = "https://tilellm-s9kvboq.svc.apw5-4e34-81fa.pinecone.io"#os.environ.get("PINECONE_INDEX_HOST")
+        host = pc.describe_index(const.PINECONE_INDEX).host
+        index = pc.Index(name=const.PINECONE_INDEX, host=host)
+        # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
+        total_vectors = index.describe_index_stats()["total_vector_count"]
+        print(total_vectors)
+        pc_res = index.query(
+            vector=[0] * 1536,  # [0,0,0,0......0]
+            top_k=total_vectors,
+            filter={"id": {"$eq": id}},
+            namespace=namespace,
+            include_values=False,
+            include_metadata=False
+        )
+        matches = pc_res.get('matches')
+        ids = [obj.get('id') for obj in matches]
+
+        delete_response = index.delete(
+            ids=ids,
+            namespace=namespace)
+    except Exception as ex:
+
+        logger.error(ex)
+
+        raise ex
+
+def get_pc_ids_namespace(id:str, namespace:str):
+    import pinecone
+    from langchain_community.vectorstores import Pinecone
+
+    try:
+        pc = pinecone.Pinecone(
+            api_key=os.environ.get("PINECONE_API_KEY")
+        )
+        # index_host = "https://tilellm-s9kvboq.svc.apw5-4e34-81fa.pinecone.io"#os.environ.get("PINECONE_INDEX_HOST")
+        host = pc.describe_index(const.PINECONE_INDEX).host
+        index = pc.Index(name=const.PINECONE_INDEX, host=host)
+        # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
+        total_vectors = index.describe_index_stats()["total_vector_count"]
+        logger.debug(f"pinecone total vector in {namespace}: {total_vectors}")
+        pc_res = index.query(
+            vector=[0] * 1536,  # [0,0,0,0......0]
+            top_k=total_vectors,
+            filter={"id": {"$eq": id}},
+            namespace=namespace,
+            include_values=False,
+            include_metadata=True
+        )
+        matches = pc_res.get('matches')
+        #ids = [obj.get('id') for obj in matches]
+        result = []
+        for obj in matches:
+            result.append(PineconeQueryResult(id = obj.get('id'),
+                                              metadata_id = obj.get('metadata').get('id'),
+                                              metadata_source = obj.get('metadata').get('source'),
+                                              metadata_type =  obj.get('metadata').get('type'),
+                                              text = obj.get('metadata').get('text')
+                                              )
+                          )
+        res =  PineconeItems(matches=result)
+        logger.debug(res)
+        return res
+
+    except Exception as ex:
+
+        logger.error(ex)
+
+        raise ex
 
 def create_pc_index(embeddings, emb_dimension):
      

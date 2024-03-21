@@ -5,7 +5,7 @@ from tilellm.store.pinecone_repository import add_pc_item as pinecone_add_item
 from tilellm.store.pinecone_repository import create_pc_index, get_embeddings_dimension
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.callbacks.openai_info import OpenAICallbackHandler
-from tilellm.models.item_model import RetrievalResult,ChatHistory, ChatEntry
+from tilellm.models.item_model import RetrievalResult, ChatEntry
 
 import logging
 
@@ -49,15 +49,7 @@ def ask_with_memory(question_answer):
         retriever = vector_store.as_retriever(search_type='similarity', search_kwargs={'k': question_answer.top_k, 'namespace':question_answer.namespace})
         
 
-        docs = retriever.get_relevant_documents(question_answer.question)
 
-        ids =[]
-        sources = []
-        for doc in docs:
-            ids.append(doc.metadata['id'])
-            sources.append(doc.metadata['source'])
-        ids = list(set(ids))
-        sources = list(set(sources))
 
         if question_answer.system_context is not None and question_answer.system_context:
             from langchain.chains import LLMChain
@@ -72,11 +64,9 @@ def ask_with_memory(question_answer):
                               
                               {context}
                            """
-                 
-                        
+
             sys_prompt = PromptTemplate.from_template(sys_template)
-            
-            
+
             #llm_chain = LLMChain(llm=llm, prompt=prompt)
             crc = ConversationalRetrievalChain.from_llm(
                 llm=llm,
@@ -91,10 +81,25 @@ def ask_with_memory(question_answer):
             result = crc.invoke({'question': question_answer.question,'system_context':question_answer.system_context, 'chat_history': question_answer_list})
            
         else:
-            crc = ConversationalRetrievalChain.from_llm(llm=llm, retriever=retriever)
+            crc = ConversationalRetrievalChain.from_llm(llm=llm,
+                                                        retriever=retriever,
+                                                        return_source_documents=True)
         
             result = crc.invoke({'question': question_answer.question, 'chat_history': question_answer_list})
+
+        docs = result["source_documents"]
+
+        ids = []
+        sources = []
+        for doc in docs:
+            ids.append(doc.metadata['id'])
+            sources.append(doc.metadata['source'])
+
+        ids = list(set(ids))
+        sources = list(set(sources))
+
         logger.info(result)
+
         question_answer_list.append((result['question'], result['answer']))
         
         chat_entries = [ChatEntry(question=q, answer=a) for q, a in question_answer_list]
@@ -145,5 +150,19 @@ def delete_namespace(namespace:str):
     from tilellm.store.pinecone_repository import delete_pc_namespace
     try:
         return delete_pc_namespace(namespace)
+    except:
+        raise
+
+def delete_id_from_namespace(id:str, namespace:str):
+    from tilellm.store.pinecone_repository import delete_pc_ids_namespace
+    try:
+        return delete_pc_ids_namespace(id=id, namespace=namespace)
+    except:
+        raise
+
+def get_ids_namespace(id:str, namespace:str):
+    from tilellm.store.pinecone_repository import get_pc_ids_namespace
+    try:
+        return get_pc_ids_namespace(id=id, namespace=namespace)
     except:
         raise

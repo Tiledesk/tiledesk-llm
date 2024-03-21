@@ -13,7 +13,11 @@ import aiohttp
 
 from tilellm.models.item_model import ItemSingle, QuestionAnswer
 from tilellm.store.redis_repository import redis_xgroup_create
-from tilellm.controller.openai_controller import ask_with_memory, add_pc_item, delete_namespace
+from tilellm.controller.openai_controller import (ask_with_memory,
+                                                  add_pc_item,
+                                                  delete_namespace,
+                                                  delete_id_from_namespace,
+                                                  get_ids_namespace)
 
 import logging
 
@@ -117,7 +121,7 @@ app = FastAPI(lifespan=redis_consumer)
 
 
 @app.post("/api/scrape/single")
-async def create_screape_item(item: ItemSingle, redis_client: aioredis.client.Redis = Depends(get_redis_client)):
+async def create_scrape_item_main(item: ItemSingle, redis_client: aioredis.client.Redis = Depends(get_redis_client)):
     from tilellm.shared import const
     logger.debug(item) 
     res = await redis_client.xadd(const.STREAM_NAME, {"single":item.model_dump_json()} , id="*")
@@ -126,7 +130,7 @@ async def create_screape_item(item: ItemSingle, redis_client: aioredis.client.Re
     return {"message": f"Item {item.id} created successfully, more {res}"}
 
 @app.post("/api/qa")
-async def post_ask_with_memory(question_answer:QuestionAnswer ):
+async def post_ask_with_memory_main(question_answer:QuestionAnswer ):
     logger.debug(question_answer) 
     result = ask_with_memory(question_answer)
     logger.debug(result)
@@ -134,12 +138,12 @@ async def post_ask_with_memory(question_answer:QuestionAnswer ):
     #return result
 
 @app.post("/api/list/namespace")
-async def list_namespace_items(namespace:str ):
+async def list_namespace_items_main(namespace:str ):
     return {"message":"not implemented yet"}
 
 
 @app.delete("/api/namespace/{namespace}")
-async def list_namespace_items(namespace:str ):
+async def delete_namespace_main(namespace:str ):
     try:
         result = delete_namespace(namespace)
         return JSONResponse(content={"message":f"Namespace {namespace} deleted"})
@@ -151,7 +155,35 @@ async def list_namespace_items(namespace:str ):
         print(ex.body)
         raise HTTPException(status_code=ex.status, detail=json.loads(ex.body) )
 
-    
+@app.delete("/api/id/{id}/namespace/{namespace}")
+async def delete_item_id_namespace_main(id:str, namespace:str ):
+    try:
+        print(f"Ciao dalla cancellazione id {id} dal namespace {namespace}")
+        result = delete_id_from_namespace(id,namespace)
+
+        return JSONResponse(content={"message":f"ids {id} in Namespace {namespace} deleted"})
+    except Exception as ex:
+        import json
+        #from pinecone.core.client.exceptions import NotFoundException
+        #a = NotFoundException()
+        #a.body
+        print(ex.body)
+        raise HTTPException(status_code=ex.status, detail=json.loads(ex.body) )
+
+@app.get("/api/id/{id}/namespace/{namespace}")
+async def get_items_id_namespace_main(id:str, namespace:str ):
+    try:
+        print(f"Ciao dal retrieve id {id} dal namespace {namespace}")
+        result = get_ids_namespace(id,namespace)
+
+        return JSONResponse(content=result.model_dump())
+    except Exception as ex:
+        import json
+        #from pinecone.core.client.exceptions import NotFoundException
+        #a = NotFoundException()
+        #a.body
+        print(ex.body)
+        raise HTTPException(status_code=ex.status, detail=json.loads(ex.body) )
 
 
 def main(): 

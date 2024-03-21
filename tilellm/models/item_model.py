@@ -81,4 +81,14 @@ class RetrievalResult(BaseModel):
     chat_history_dict:Optional[Dict[str, ChatEntry]]
 
 
+class PineconeQueryResult(BaseModel):
+    id : str
+    metadata_id : str
+    metadata_source : str
+    metadata_type : str
+    text : str
+
+class PineconeItems(BaseModel):
+    matches: List[PineconeQueryResult]
+
 
