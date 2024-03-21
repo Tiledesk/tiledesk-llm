@@ -68,8 +68,17 @@ def delete_pc_ids_namespace(id:str, namespace:str):
         host = pc.describe_index(const.PINECONE_INDEX).host
         index = pc.Index(name=const.PINECONE_INDEX, host=host)
         # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
-        total_vectors = index.describe_index_stats()["total_vector_count"]
-        print(total_vectors)
+        describe = index.describe_index_stats()
+        logger.debug(describe)
+        namespaces = describe.get("namespaces", {})
+        total_vectors = 0
+
+        if namespaces:
+            if namespace in namespaces.keys():
+                total_vectors = namespaces.get(namespace).get('vector_count')
+
+
+        logger.debug(total_vectors)
         pc_res = index.query(
             vector=[0] * 1536,  # [0,0,0,0......0]
             top_k=total_vectors,
@@ -102,7 +111,16 @@ def get_pc_ids_namespace(id:str, namespace:str):
         host = pc.describe_index(const.PINECONE_INDEX).host
         index = pc.Index(name=const.PINECONE_INDEX, host=host)
         # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
-        total_vectors = index.describe_index_stats()["total_vector_count"]
+        describe = index.describe_index_stats()
+        logger.debug(describe)
+        namespaces = describe.get("namespaces", {})
+        total_vectors = 0
+
+        if namespaces:
+            if namespace in namespaces.keys():
+                total_vectors = namespaces.get(namespace).get('vector_count')
+
+
         logger.debug(f"pinecone total vector in {namespace}: {total_vectors}")
         pc_res = index.query(
             vector=[0] * 1536,  # [0,0,0,0......0]

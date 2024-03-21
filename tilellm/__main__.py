@@ -158,7 +158,7 @@ async def delete_namespace_main(namespace:str ):
 @app.delete("/api/id/{id}/namespace/{namespace}")
 async def delete_item_id_namespace_main(id:str, namespace:str ):
     try:
-        print(f"Ciao dalla cancellazione id {id} dal namespace {namespace}")
+        logger.info(f"cancellazione id {id} dal namespace {namespace}")
         result = delete_id_from_namespace(id,namespace)
 
         return JSONResponse(content={"message":f"ids {id} in Namespace {namespace} deleted"})
@@ -167,13 +167,13 @@ async def delete_item_id_namespace_main(id:str, namespace:str ):
         #from pinecone.core.client.exceptions import NotFoundException
         #a = NotFoundException()
         #a.body
-        print(ex.body)
+        logger.error(ex.body)
         raise HTTPException(status_code=ex.status, detail=json.loads(ex.body) )
 
 @app.get("/api/id/{id}/namespace/{namespace}")
 async def get_items_id_namespace_main(id:str, namespace:str ):
     try:
-        print(f"Ciao dal retrieve id {id} dal namespace {namespace}")
+        logger.info(f"retrieve id {id} dal namespace {namespace}")
         result = get_ids_namespace(id,namespace)
 
         return JSONResponse(content=result.model_dump())
@@ -182,7 +182,7 @@ async def get_items_id_namespace_main(id:str, namespace:str ):
         #from pinecone.core.client.exceptions import NotFoundException
         #a = NotFoundException()
         #a.body
-        print(ex.body)
+        logger.error(ex.body)
         raise HTTPException(status_code=ex.status, detail=json.loads(ex.body) )
 
 
