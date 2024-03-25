@@ -27,10 +27,11 @@ langchain_community = "^0.0.24"
 tiktoken = "^0.6.0"
 beautifulsoup4 ="^4.12.3"
 uvicorn = "^0.28"
+unstructured= "^0.12.6"
 # Add other dependencies here as needed
-[tool.poetry.dependencies.unstructured]
-version = "^0.12.6"
-extras = [ "pdf"]
+#[tool.poetry.dependencies.unstructured]
+#version = "^0.12.6"
+#extras = [ "pdf"]
 
 [tool.poetry.dev-dependencies]
 uvicorn = "^0.28"  # For development server
