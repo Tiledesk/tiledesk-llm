@@ -22,9 +22,10 @@ def add_pc_item(item):
         gptkey = item.gptkey
         embedding = item.embedding
         namespace = item.namespace
-
-        delete_pc_ids_namespace(id=id,namespace=namespace)
-
+        try:
+            delete_pc_ids_namespace(id=id,namespace=namespace)
+        except:
+            pass
         emb_dimension = get_embeddings_dimension(embedding)
 
         oai_embeddings = OpenAIEmbeddings(api_key=gptkey, model=embedding) #default text-embedding-ada-002 1536, text-embedding-3-large 3072, text-embedding-3-small 1536 
