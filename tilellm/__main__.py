@@ -1,3 +1,4 @@
+import os
 from contextlib import asynccontextmanager
 from fastapi import (FastAPI, 
   Depends, HTTPException)
@@ -17,25 +18,43 @@ from tilellm.controller.openai_controller import (ask_with_memory,
                                                   add_pc_item,
                                                   delete_namespace,
                                                   delete_id_from_namespace,
-                                                  get_ids_namespace)
+                                                  get_ids_namespace,
+                                                  get_sources_namespace)
 
 import logging
 
 
 
-parser = argparse.ArgumentParser(description="Tiledesk: llms integration")
-parser.add_argument("--host", default="localhost", help="Hostname for FastAPI")
-parser.add_argument("--port", type=int, default=8000, help="Port for FastAPI")
-parser.add_argument("--redis_url", default="redis://localhost:6379/0", help="Redis url. Default redis://localhost:6379/0")
-parser.add_argument("--log_path", default="log_conf.yaml", help="Log configuration file path. Default log_conf.yaml")
-args = parser.parse_args()
+#parser = argparse.ArgumentParser(description="Tiledesk: llms integration")
+#parser.add_argument("--host", default="0.0.0.0", help="Hostname for FastAPI")
+#parser.add_argument("--port", type=int, default=8000, help="Port for FastAPI")
+#parser.add_argument("--redis_url", default="redis://localhost:6379/0", help="Redis url. Default redis://localhost:6379/0")
+#parser.add_argument("--environment", default="dev", help="Environment dev|prod")
+#parser.add_argument("--log_path", default="log_conf.yaml", help="Log configuration file path. Default log_conf.yaml")
 
+#args = parser.parse_args()
+
+
+
+ENVIRONMENTS = {
+    'dev': '.environ',
+    'prod': '.environ.prod',
+}
 
 logger = logging.getLogger(__name__)
+from dotenv import load_dotenv
 
+environment = os.environ.get("ENVIRON", "dev")
+#environment = "prod"
+load_dotenv(ENVIRONMENTS.get(environment) or '.environ')
+
+#print(os.environ.get("PINECONE_API_KEY"))
+#os.environ.__setitem__("ENVIRON", environment)
+
+redis_url = os.environ.get("REDIS_URL")
 async def get_redis_client():
     try:
-        redis_client= await from_url(args.redis_url)
+        redis_client= await from_url(redis_url)
         yield redis_client
     finally:
         await redis_client.close()
@@ -71,13 +90,13 @@ async def reader(channel: aioredis.client.Redis):
                     import datetime
                     current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")
 
-                    pc_result["date"]=current_time
+                    pc_result["date"]= current_time
 
                     # A POST request to the API
                     logger.info(f"webhook {webhook}")  
                     if webhook:     
                         async with aiohttp.ClientSession() as session:
-                            response = await session.post(webhook,  json = pc_result,  headers={"Content-Type": "application/json"})
+                            response = await session.post(webhook,  json= pc_result,  headers={"Content-Type": "application/json"})
                            
                             
                     await channel.xack(
@@ -91,7 +110,7 @@ async def reader(channel: aioredis.client.Redis):
             import traceback 
             if webhook:     
                 async with aiohttp.ClientSession() as session:
-                    response = await session.post(webhook,  json = repr(e),  headers={"Content-Type": "application/json"})
+                    response = await session.post(webhook,  json= repr(e),  headers={"Content-Type": "application/json"})
                     
                 print(f"ERRORE {e}, webhook: {webhook}")
             traceback.print_exc() 
@@ -100,11 +119,8 @@ async def reader(channel: aioredis.client.Redis):
 
 @asynccontextmanager
 async def redis_consumer(app: FastAPI):
-    
-    redis_client= from_url(args.redis_url)
-    
+    redis_client = from_url(redis_url)
     await redis_xgroup_create(redis_client)
- 
     asyncio.create_task(reader(redis_client)) 
  
     yield 
@@ -112,16 +128,17 @@ async def redis_consumer(app: FastAPI):
     await redis_client.close()   
 
 
+from tilellm.shared.const import populate_constant
+populate_constant()
 
 app = FastAPI(lifespan=redis_consumer)
-
 
 
 @app.post("/api/scrape/single")
 async def create_scrape_item_main(item: ItemSingle, redis_client: aioredis.client.Redis = Depends(get_redis_client)):
     from tilellm.shared import const
     logger.debug(item) 
-    res = await redis_client.xadd(const.STREAM_NAME, {"single":item.model_dump_json()} , id="*")
+    res = await redis_client.xadd(const.STREAM_NAME, {"single": item.model_dump_json()} , id="*")
     logger.debug(res)
 
     return {"message": f"Item {item.id} created successfully, more {res}"}
@@ -135,12 +152,12 @@ async def post_ask_with_memory_main(question_answer:QuestionAnswer ):
     #return result
 
 @app.post("/api/list/namespace")
-async def list_namespace_items_main(namespace:str ):
+async def list_namespace_items_main(namespace: str ):
     return {"message":"not implemented yet"}
 
 
 @app.delete("/api/namespace/{namespace}")
-async def delete_namespace_main(namespace:str ):
+async def delete_namespace_main(namespace: str ):
     try:
         result = delete_namespace(namespace)
         return JSONResponse(content={"message":f"Namespace {namespace} deleted"})
@@ -153,12 +170,12 @@ async def delete_namespace_main(namespace:str ):
         raise HTTPException(status_code=ex.status, detail=json.loads(ex.body) )
 
 @app.delete("/api/id/{id}/namespace/{namespace}")
-async def delete_item_id_namespace_main(id:str, namespace:str ):
+async def delete_item_id_namespace_main(id: str, namespace: str ):
     try:
         logger.info(f"cancellazione id {id} dal namespace {namespace}")
         result = delete_id_from_namespace(id,namespace)
 
-        return JSONResponse(content={"message":f"ids {id} in Namespace {namespace} deleted"})
+        return JSONResponse(content={"message": f"ids {id} in Namespace {namespace} deleted"})
     except Exception as ex:
         import json
         #from pinecone.core.client.exceptions import NotFoundException
@@ -176,19 +193,31 @@ async def get_items_id_namespace_main(id:str, namespace:str ):
         return JSONResponse(content=result.model_dump())
     except Exception as ex:
         import json
-        #from pinecone.core.client.exceptions import NotFoundException
-        #a = NotFoundException()
-        #a.body
         logger.error(ex.body)
         raise HTTPException(status_code=ex.status, detail=json.loads(ex.body) )
 
+@app.get("/api/items")#?source={source}&namespace={namespace}
+async def get_items_source_namespace_main(source:str, namespace:str ):
+    try:
+        logger.info(f"retrieve id {source} dal namespace {namespace}")
+        print(f"source {source}, namespace: {namespace}")
+        from urllib.parse import unquote
+        source = unquote(source)
+        print(f"source {source}, namespace: {namespace}")
+        result = get_sources_namespace(source,namespace)
 
-def main(): 
+        return JSONResponse(content=result.model_dump())
+    except Exception as ex:
+        import json
+        logger.error(ex.body)
+        raise HTTPException(status_code=ex.status, detail=json.loads(ex.body) )
+
+def main():
+    print(f"Ambiente: {environment}")
     import uvicorn
-    from dotenv import load_dotenv
-    load_dotenv('.environ')
-    
-    uvicorn.run("tilellm.__main__:app", host=args.host, port=args.port, log_config=args.log_path, reload=True)#log_config=args.log_path,
+    uvicorn.run("tilellm.__main__:app", host="0.0.0.0", port=8000, reload=True, log_level="info")#, log_config=args.log_path
+
 
 if __name__ == "__main__":
-   main()
+
+    main()

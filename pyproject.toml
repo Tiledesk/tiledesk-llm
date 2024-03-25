@@ -17,7 +17,6 @@ fastapi = "^0.110"
 jsonschema= "^4.20.0"
 redis= "^5.0.0"
 aioredis= "^2.0.0"
-#transformers= "^4.35.0"
 langchain = "^0.1.9"
 jq = "^1.6.0"
 openai = "^1.12.0"
@@ -26,9 +25,12 @@ pinecone-client = "^3.1.0"
 python-dotenv = "^1.0.1"
 langchain_community = "^0.0.24"
 tiktoken = "^0.6.0"
-
+beautifulsoup4 ="^4.12.3"
 uvicorn = "^0.28"
 # Add other dependencies here as needed
+[tool.poetry.dependencies.unstructured]
+version = "^0.12.6"
+extras = [ "pdf"]
 
 [tool.poetry.dev-dependencies]
 uvicorn = "^0.28"  # For development server

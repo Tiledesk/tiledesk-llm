@@ -46,8 +46,13 @@ def ask_with_memory(question_answer):
         
         vector_store= create_pc_index(oai_embeddings, emb_dimension)
 
+
+
         retriever = vector_store.as_retriever(search_type='similarity', search_kwargs={'k': question_answer.top_k, 'namespace':question_answer.namespace})
-        
+
+        mydocs = retriever.get_relevant_documents( question_answer.question)
+        from pprint import pprint
+        pprint(mydocs)
 
 
 
@@ -164,5 +169,12 @@ def get_ids_namespace(id:str, namespace:str):
     from tilellm.store.pinecone_repository import get_pc_ids_namespace
     try:
         return get_pc_ids_namespace(id=id, namespace=namespace)
+    except:
+        raise
+
+def get_sources_namespace(source:str, namespace:str):
+    from tilellm.store.pinecone_repository import get_pc_sources_namespace
+    try:
+        return get_pc_sources_namespace(source=source, namespace=namespace)
     except:
         raise
