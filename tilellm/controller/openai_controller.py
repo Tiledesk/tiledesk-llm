@@ -51,8 +51,8 @@ def ask_with_memory(question_answer):
         retriever = vector_store.as_retriever(search_type='similarity', search_kwargs={'k': question_answer.top_k, 'namespace':question_answer.namespace})
 
         mydocs = retriever.get_relevant_documents( question_answer.question)
-        from pprint import pprint
-        pprint(mydocs)
+        #from pprint import pprint
+        #pprint(mydocs)
 
 
 

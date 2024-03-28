@@ -112,7 +112,7 @@ async def reader(channel: aioredis.client.Redis):
                 async with aiohttp.ClientSession() as session:
                     response = await session.post(webhook,  json= repr(e),  headers={"Content-Type": "application/json"})
                     
-                print(f"ERRORE {e}, webhook: {webhook}")
+                logger.error(f"ERRORE {e}, webhook: {webhook}")
             traceback.print_exc() 
             logger.error(e)
            
@@ -166,7 +166,7 @@ async def delete_namespace_main(namespace: str ):
         #from pinecone.core.client.exceptions import NotFoundException
         #a = NotFoundException()
         #a.body
-        print(ex.body)
+        #print(ex.body)
         raise HTTPException(status_code=ex.status, detail=json.loads(ex.body) )
 
 @app.delete("/api/id/{id}/namespace/{namespace}")

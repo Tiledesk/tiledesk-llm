@@ -1,9 +1,11 @@
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_community.document_loaders import TextLoader, JSONLoader
 from tilellm.models.item_model import MetadataItem, PineconeQueryResult, PineconeItems
+from tilellm.tools.document_tool_simple import get_content_by_url
 from tilellm.shared import const
 from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
+
 import os
 
 
@@ -26,17 +28,40 @@ def add_pc_item(item):
             delete_pc_ids_namespace(id=id,namespace=namespace)
         except:
             pass
+
         emb_dimension = get_embeddings_dimension(embedding)
 
         oai_embeddings = OpenAIEmbeddings(api_key=gptkey, model=embedding) #default text-embedding-ada-002 1536, text-embedding-3-large 3072, text-embedding-3-small 1536 
         vector_store = create_pc_index(embeddings=oai_embeddings, emb_dimension= emb_dimension)
+
+        chuncks=[]
+        total_tokens=0
+        cost=0
+
+        if type_source=='url':
+            documents = get_content_by_url(source)
+            for document in documents:
+                document.metadata["id"]=id
+                document.metadata["source"] = source
+                document.metadata["type"] = type_source
+                document.metadata["embedding"] = embedding
+
+                chuncks.extend(chunk_data(data=[document]))
+
+            a = vector_store.from_documents(chuncks, embedding=oai_embeddings, index_name=const.PINECONE_INDEX,
+                                            namespace=namespace)
+            total_tokens, cost = calc_embedding_cost(chuncks, embedding)
+            logger.info(len(chuncks), total_tokens, cost)
+            #from pprint import pprint
+            #pprint(documents)
+
+        else:
+            metadata = MetadataItem(id=id, source=source, type=type_source, embedding=embedding)
+            document = Document(page_content=content, metadata=metadata.dict())
         
-        metadata = MetadataItem(id=id, source=source, type=type_source, embedding=embedding)
-        document = Document(page_content=content, metadata=metadata.dict())
-        
-        chuncks = chunk_data(data=[document])
-        total_tokens, cost = calc_embedding_cost(chuncks,embedding)
-        a = vector_store.from_documents(chuncks, embedding=oai_embeddings, index_name=const.PINECONE_INDEX, namespace=namespace)
+            chuncks.extend(chunk_data(data=[document]))
+            total_tokens, cost = calc_embedding_cost(chuncks, embedding)
+            a = vector_store.from_documents(chuncks, embedding=oai_embeddings, index_name=const.PINECONE_INDEX, namespace=namespace)
         
         return {"id": f"{id}", "chunks": f"{len(chuncks)}", "total_tokens": f"{total_tokens}", "cost": f"{cost:.6f}"}
 

@@ -10,12 +10,7 @@ def get_content_by_url(url:str):
     )
     docs = loader.load()
 
-
-
-
-
-
-    from pprint import pprint
-    pprint(docs)
+    #from pprint import pprint
+    #pprint(docs)
 
     return docs
