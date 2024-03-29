@@ -94,9 +94,13 @@ async def reader(channel: aioredis.client.Redis):
 
                     # A POST request to the API
                     logger.info(f"webhook {webhook}")  
-                    if webhook:     
-                        async with aiohttp.ClientSession() as session:
-                            response = await session.post(webhook,  json= pc_result,  headers={"Content-Type": "application/json"})
+                    if webhook:
+                        try:
+                            async with aiohttp.ClientSession() as session:
+                                response = await session.post(webhook,  json= pc_result,  headers={"Content-Type": "application/json"})
+                        except Exception as ewh:
+                            logger.error(ewh)
+                            pass
                            
                             
                     await channel.xack(
@@ -115,6 +119,8 @@ async def reader(channel: aioredis.client.Redis):
                 logger.error(f"ERRORE {e}, webhook: {webhook}")
             traceback.print_exc() 
             logger.error(e)
+            pass
+
            
 
 @asynccontextmanager
