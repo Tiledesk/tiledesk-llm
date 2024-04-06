@@ -151,6 +151,7 @@ async def create_scrape_item_main(item: ItemSingle, redis_client: aioredis.clien
 
 @app.post("/api/qa")
 async def post_ask_with_memory_main(question_answer:QuestionAnswer ):
+    print(question_answer)
     logger.debug(question_answer) 
     result = ask_with_memory(question_answer)
     logger.debug(result)

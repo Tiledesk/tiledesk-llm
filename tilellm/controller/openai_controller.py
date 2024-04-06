@@ -1,3 +1,4 @@
+import fastapi
 from langchain.chains import ConversationalRetrievalChain, LLMChain # Per la conversazione va usata questa classe
 from langchain_core.prompts import PromptTemplate, SystemMessagePromptTemplate
 from langchain_openai import ChatOpenAI
@@ -15,7 +16,6 @@ def ask_with_memory(question_answer):
     
     try:
         logger.info(question_answer)
-
         #question = str
         #namespace: str
         #gptkey: str
@@ -50,9 +50,10 @@ def ask_with_memory(question_answer):
 
         retriever = vector_store.as_retriever(search_type='similarity', search_kwargs={'k': question_answer.top_k, 'namespace':question_answer.namespace})
 
-        mydocs = retriever.get_relevant_documents( question_answer.question)
+        #mydocs = retriever.get_relevant_documents( question_answer.question)
         #from pprint import pprint
-        #pprint(mydocs)
+        #pprint(len(mydocs))
+
 
 
 
@@ -89,7 +90,7 @@ def ask_with_memory(question_answer):
             crc = ConversationalRetrievalChain.from_llm(llm=llm,
                                                         retriever=retriever,
                                                         return_source_documents=True)
-        
+
             result = crc.invoke({'question': question_answer.question, 'chat_history': question_answer_list})
 
         docs = result["source_documents"]
@@ -102,6 +103,8 @@ def ask_with_memory(question_answer):
 
         ids = list(set(ids))
         sources = list(set(sources))
+        source = " ".join(sources)
+        id = ids[0]
 
         logger.info(result)
 
@@ -116,9 +119,11 @@ def ask_with_memory(question_answer):
 
         result_to_return = RetrievalResult(
             answer=result['answer'],
-            sources=sources,
             namespace=question_answer.namespace,
+            sources=sources,
             ids=ids,
+            source= source,
+            id=id,
             prompt_token_size=prompt_token_size,
             success=success,
             error_message = None, 
@@ -126,7 +131,7 @@ def ask_with_memory(question_answer):
 
         )
 
-        
+        return result_to_return.dict()
     except Exception as e:
         import traceback 
         traceback.print_exc() 
@@ -143,10 +148,9 @@ def ask_with_memory(question_answer):
             chat_history_dict = chat_history_dict
 
         )
+        raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
 
-    #print("Prompt tokens:", openai_callback_handler.prompt_tokens)
-    #print("Completion tokens:", openai_callback_handler.total_cost)
-    return result_to_return.dict()
+
 
 def add_pc_item(item):
     return pinecone_add_item(item)

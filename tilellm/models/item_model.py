@@ -73,6 +73,8 @@ class QuestionAnswer(BaseModel):
 class RetrievalResult(BaseModel):
     answer:str = Field(default="No answer")
     sources: Optional[List[str]]|None =None
+    source:str |None= None
+    id:str |None= None
     namespace: str
     ids: Optional[List[str]]|None =None
     prompt_token_size: int = Field(default=0)
