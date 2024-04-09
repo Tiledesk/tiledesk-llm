@@ -77,7 +77,7 @@ async def reader(channel: aioredis.client.Redis):
             for stream, message_data in messages:
                 for message in message_data:
                     message_id, message_values = message
-                    #print(f"Received message {message_id}: {message_values}")#
+                    #print(f"Received message {message_id}: {message_values}")
                     import ast
                      
                     byte_str = message_values[b"single"]

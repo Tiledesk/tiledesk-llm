@@ -6,8 +6,8 @@ class ItemSingle(BaseModel):
     id: str
     source: str | None = None
     type: str | None = None
-    content: str | None =None
-    gptkey: str | None =None
+    content: str | None = None
+    gptkey: str | None = None
     embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
     namespace: str | None =None
     webhook: str = Field(default_factory=lambda: "")

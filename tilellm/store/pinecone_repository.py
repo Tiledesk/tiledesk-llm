@@ -152,7 +152,7 @@ def get_pc_ids_namespace(id:str, namespace:str):
 
         logger.debug(f"pinecone total vector in {namespace}: {total_vectors}")
         pc_res = index.query(
-            vector=[0] * 1536,  # [0,0,0,0......0]#
+            vector=[0] * 1536,  # [0,0,0,0......0]
             top_k=total_vectors,
             filter={"id": {"$eq": id}},
             namespace=namespace,
