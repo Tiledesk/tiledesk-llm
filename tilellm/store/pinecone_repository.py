@@ -140,6 +140,7 @@ def get_pc_ids_namespace(id:str, namespace:str):
 
         # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
         describe = index.describe_index_stats()
+
         logger.debug(describe)
         namespaces = describe.get("namespaces", {})
         total_vectors = 1

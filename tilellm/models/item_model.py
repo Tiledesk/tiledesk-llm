@@ -10,7 +10,7 @@ class ItemSingle(BaseModel):
     gptkey: str |None =None
     embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
     namespace: str |None =None
-    webhook: str |None =None
+    webhook: str = Field(default_factory=lambda: "")
 
 class MetadataItem(BaseModel):
     id: str

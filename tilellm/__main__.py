@@ -82,6 +82,7 @@ async def reader(channel: aioredis.client.Redis):
                      
                     byte_str = message_values[b"single"]
                     dict_str = byte_str.decode("UTF-8")
+                    logger.info(dict_str)
                     item = ast.literal_eval(dict_str)
                     itemSingle = ItemSingle(**item)
                     webhook = item.get('webhook',"")
