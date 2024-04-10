@@ -46,10 +46,11 @@ def add_pc_item(item):
                 document.metadata["type"] = type_source
                 document.metadata["embedding"] = embedding
 
+
                 chuncks.extend(chunk_data(data=[document]))
 
             a = vector_store.from_documents(chuncks, embedding=oai_embeddings, index_name=const.PINECONE_INDEX,
-                                            namespace=namespace)
+                                            namespace=namespace, text_key=const.PINECONE_TEXT_KEY)
             total_tokens, cost = calc_embedding_cost(chuncks, embedding)
             logger.info(len(chuncks), total_tokens, cost)
             #from pprint import pprint
@@ -61,7 +62,7 @@ def add_pc_item(item):
         
             chuncks.extend(chunk_data(data=[document]))
             total_tokens, cost = calc_embedding_cost(chuncks, embedding)
-            a = vector_store.from_documents(chuncks, embedding=oai_embeddings, index_name=const.PINECONE_INDEX, namespace=namespace)
+            a = vector_store.from_documents(chuncks, embedding=oai_embeddings, index_name=const.PINECONE_INDEX, namespace=namespace, text_key=const.PINECONE_TEXT_KEY)
         
         return {"id": f"{id}", "chunks": f"{len(chuncks)}", "total_tokens": f"{total_tokens}", "cost": f"{cost:.6f}"}
 
@@ -160,12 +161,13 @@ def get_pc_ids_namespace(id:str, namespace:str):
             include_metadata=True
         )
         matches = pc_res.get('matches')
-        #from pprint import pprint
-        #pprint(matches)
+        from pprint import pprint
+        pprint(matches)
         #ids = [obj.get('id') for obj in matches]
+        print(type(matches[0].get('id')))
         result = []
         for obj in matches:
-            result.append(PineconeQueryResult(id = obj.get('id'),
+            result.append(PineconeQueryResult(id = obj.get('id',""),
                                               metadata_id = obj.get('metadata').get('id'),
                                               metadata_source = obj.get('metadata').get('source'),
                                               metadata_type =  obj.get('metadata').get('type'),
@@ -248,6 +250,7 @@ def create_pc_index(embeddings, emb_dimension):
 
         
     if const.PINECONE_INDEX in pc.list_indexes().names():
+        print(const.PINECONE_TEXT_KEY)
         print(f'Index {const.PINECONE_INDEX} esiste. Loading embeddings ... ', end='')
         vector_store = Pinecone.from_existing_index(index_name=const.PINECONE_INDEX,
                                                     embedding=embeddings,
