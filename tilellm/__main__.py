@@ -220,6 +220,10 @@ async def get_items_source_namespace_main(source:str, namespace:str ):
         logger.error(ex.body)
         raise HTTPException(status_code=ex.status, detail=json.loads(ex.body) )
 
+@app.get("/")
+async def get_root_endpoint():
+    return "Hello from Tiledesk LLM python server!!"
+
 def main():
     print(f"Ambiente: {environment}")
     import uvicorn
