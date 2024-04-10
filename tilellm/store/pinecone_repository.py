@@ -49,8 +49,12 @@ def add_pc_item(item):
 
                 chuncks.extend(chunk_data(data=[document]))
 
-            a = vector_store.from_documents(chuncks, embedding=oai_embeddings, index_name=const.PINECONE_INDEX,
-                                            namespace=namespace, text_key=const.PINECONE_TEXT_KEY)
+            a = vector_store.from_documents(chuncks,
+                                            embedding=oai_embeddings,
+                                            index_name=const.PINECONE_INDEX,
+                                            namespace=namespace,
+                                            text_key=const.PINECONE_TEXT_KEY)
+
             total_tokens, cost = calc_embedding_cost(chuncks, embedding)
             logger.info(len(chuncks), total_tokens, cost)
             #from pprint import pprint
@@ -62,7 +66,11 @@ def add_pc_item(item):
         
             chuncks.extend(chunk_data(data=[document]))
             total_tokens, cost = calc_embedding_cost(chuncks, embedding)
-            a = vector_store.from_documents(chuncks, embedding=oai_embeddings, index_name=const.PINECONE_INDEX, namespace=namespace, text_key=const.PINECONE_TEXT_KEY)
+            a = vector_store.from_documents(chuncks,
+                                            embedding=oai_embeddings,
+                                            index_name=const.PINECONE_INDEX,
+                                            namespace=namespace,
+                                            text_key=const.PINECONE_TEXT_KEY)
         
         return {"id": f"{id}", "chunks": f"{len(chuncks)}", "total_tokens": f"{total_tokens}", "cost": f"{cost:.6f}"}
 
