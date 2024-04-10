@@ -5,17 +5,17 @@ from typing import Dict, Optional, List
 class ItemSingle(BaseModel):
     id: str
     source: str | None = None
-    type: str |None = None
-    content: str |None =None
-    gptkey: str |None =None
+    type: str | None = None
+    content: str | None =None
+    gptkey: str | None = None
     embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
-    namespace: str |None =None
-    webhook: str |None =None
+    namespace: str | None =None
+    webhook: str = Field(default_factory=lambda: "")
 
 class MetadataItem(BaseModel):
     id: str
     source: str | None = None
-    type: str |None = None
+    type: str | None = None
     embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
 
 class ChatEntry(BaseModel):
