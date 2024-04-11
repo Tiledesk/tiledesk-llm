@@ -93,4 +93,8 @@ class PineconeQueryResult(BaseModel):
 class PineconeItems(BaseModel):
     matches: List[PineconeQueryResult]
 
+class PineconeItemToDelete(BaseModel):
+    id : str
+    namespace : str
+
 

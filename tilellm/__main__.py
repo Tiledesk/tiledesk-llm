@@ -12,7 +12,7 @@ import asyncio
 from aioredis import from_url
 import aiohttp
 
-from tilellm.models.item_model import ItemSingle, QuestionAnswer
+from tilellm.models.item_model import ItemSingle, QuestionAnswer, PineconeItemToDelete
 from tilellm.store.redis_repository import redis_xgroup_create
 from tilellm.controller.openai_controller import (ask_with_memory,
                                                   add_pc_item,
@@ -22,6 +22,7 @@ from tilellm.controller.openai_controller import (ask_with_memory,
                                                   get_sources_namespace)
 
 import logging
+
 
 
 
@@ -191,6 +192,25 @@ async def delete_item_id_namespace_main(id: str, namespace: str ):
         #a.body
         logger.error(ex.body)
         raise HTTPException(status_code=ex.status, detail=json.loads(ex.body) )
+
+
+@app.post("/api/delete/id", deprecated=True, description="This endpoint is deprecated and  is no longer supported. Use method DELETE /api/id/{id}/namespace/{namespace}")
+async def delete_item_id_namespace_post(itemtodelete: PineconeItemToDelete):
+    try:
+        id = itemtodelete.id
+        namespace = itemtodelete.namespace
+        logger.info(f"cancellazione id {id} dal namespace {namespace}")
+        result = delete_id_from_namespace(id,namespace)
+
+        return JSONResponse(content={"message": f"ids {id} in Namespace {namespace} deleted"})
+    except Exception as ex:
+        import json
+        #from pinecone.core.client.exceptions import NotFoundException
+        #a = NotFoundException()
+        #a.body
+        logger.error(ex.body)
+        raise HTTPException(status_code=ex.status, detail=json.loads(ex.body) )
+
 
 @app.get("/api/id/{id}/namespace/{namespace}")
 async def get_items_id_namespace_main(id:str, namespace:str ):
