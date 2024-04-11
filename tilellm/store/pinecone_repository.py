@@ -126,10 +126,12 @@ def delete_pc_ids_namespace(id:str, namespace:str):
         )
         matches = pc_res.get('matches')
         ids = [obj.get('id') for obj in matches]
-
-        delete_response = index.delete(
+        if not ids:
+            raise IndexError(f"Empty list for {id} and namespace {namespace}")
+        index.delete(
             ids=ids,
             namespace=namespace)
+
     except Exception as ex:
 
         logger.error(ex)
@@ -172,7 +174,7 @@ def get_pc_ids_namespace(id:str, namespace:str):
         from pprint import pprint
         pprint(matches)
         #ids = [obj.get('id') for obj in matches]
-        print(type(matches[0].get('id')))
+        #print(type(matches[0].get('id')))
         result = []
         for obj in matches:
             result.append(PineconeQueryResult(id = obj.get('id',""),
@@ -226,6 +228,7 @@ def get_pc_sources_namespace(source:str, namespace:str):
         # from pprint import pprint
         # pprint(matches)
         # ids = [obj.get('id') for obj in matches]
+        #print(type(matches[0].get('id')))
         result = []
         for obj in matches:
             result.append(PineconeQueryResult(id=obj.get('id'),

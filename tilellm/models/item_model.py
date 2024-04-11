@@ -97,4 +97,14 @@ class PineconeItemToDelete(BaseModel):
     id : str
     namespace : str
 
+class ScrapeStatusReq(BaseModel):
+    id : str
+    namespace : str
+    namespace_list : Optional[List[str]]|None =None
+
+class ScrapeStatusResponse(BaseModel):
+    status_message: str =  Field(default="Crawling is not started")
+    status_code: int =  Field(default=0)
+    queue_order: int =  Field(default=-1)
+
 
