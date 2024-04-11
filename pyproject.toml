@@ -26,8 +26,12 @@ python-dotenv = "^1.0.1"
 langchain_community = "^0.0.24"
 tiktoken = "^0.6.0"
 beautifulsoup4 ="^4.12.3"
-uvicorn = "^0.28"
+#uvicorn = "^0.28"
 unstructured= "^0.12.6"
+
+[tool.poetry.dependencies.uvicorn]
+version = "^0.28"
+extras = ["standard"]
 # Add other dependencies here as needed
 #[tool.poetry.dependencies.unstructured]
 #version = "^0.12.6"

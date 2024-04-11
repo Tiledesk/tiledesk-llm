@@ -171,8 +171,8 @@ def get_pc_ids_namespace(id:str, namespace:str):
             include_metadata=True
         )
         matches = pc_res.get('matches')
-        from pprint import pprint
-        pprint(matches)
+        #from pprint import pprint
+        #pprint(matches)
         #ids = [obj.get('id') for obj in matches]
         #print(type(matches[0].get('id')))
         result = []
