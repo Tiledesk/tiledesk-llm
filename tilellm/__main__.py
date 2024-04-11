@@ -190,9 +190,9 @@ async def srape_status_main(scarpestatusreq: ScrapeStatusReq,  redis_client: aio
     try:
         retrieved_data = await redis_client.get(f"{scarpestatusreq.namespace}/{scarpestatusreq.id}")
         if retrieved_data:
-            print(retrieved_data.decode('utf-8'))
-        scrapestatus_response = ScrapeStatusResponse.model_validate(json.loads(retrieved_data.decode('utf-8')))
-
+            scrapestatus_response = ScrapeStatusResponse.model_validate(json.loads(retrieved_data.decode('utf-8')))
+        else:
+            raise Exception(f"Not Found, id: {scarpestatusreq.namespace}, namespace: {scarpestatusreq.id}")
         return JSONResponse(content=scrapestatus_response.model_dump())
     except Exception as ex:
         raise HTTPException(status_code=400, detail=repr(ex))
