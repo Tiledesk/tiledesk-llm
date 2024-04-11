@@ -43,6 +43,8 @@ ENVIRONMENTS = {
     'prod': '.environ.prod',
 }
 
+expiration_in_seconds = 48 * 60 * 60
+
 logger = logging.getLogger(__name__)
 from dotenv import load_dotenv
 
@@ -91,7 +93,7 @@ async def reader(channel: aioredis.client.Redis):
                     scrape_status_response = ScrapeStatusResponse(status_message="Indexing started",
                                                                   status_code=2
                                                                   )
-                    addtoqueue = await channel.set(f"{item.get('namespace')}/{item.get('id')}", scrape_status_response.model_dump_json())
+                    addtoqueue = await channel.set(f"{item.get('namespace')}/{item.get('id')}", scrape_status_response.model_dump_json(), ex=expiration_in_seconds)
                     print(f"Inizio {addtoqueue}")
                     webhook = item.get('webhook',"")
 
@@ -106,7 +108,7 @@ async def reader(channel: aioredis.client.Redis):
                     scrape_status_response = ScrapeStatusResponse(status_message="Indexing finish",
                                                                   status_code=3
                                                                   )
-                    addtoqueue = await channel.set(f"{item.get('namespace')}/{item.get('id')}", scrape_status_response.model_dump_json())
+                    addtoqueue = await channel.set(f"{item.get('namespace')}/{item.get('id')}", scrape_status_response.model_dump_json(), ex=expiration_in_seconds)
                     print(f"Fine {addtoqueue}")
                     if webhook:
                         try:
@@ -128,7 +130,7 @@ async def reader(channel: aioredis.client.Redis):
             scrape_status_response = ScrapeStatusResponse(status_message="Error",
                                                           status_code=4
                                                           )
-            addtoqueue = await channel.set(f"{item.get('namespace')}/{item.get('id')}", scrape_status_response.model_dump_json())
+            addtoqueue = await channel.set(f"{item.get('namespace')}/{item.get('id')}", scrape_status_response.model_dump_json(), ex=expiration_in_seconds)
             print(f"Errore {addtoqueue}")
             import traceback 
             if webhook:     
@@ -167,7 +169,7 @@ async def create_scrape_item_main(item: ItemSingle, redis_client: aioredis.clien
     scrape_status_response = ScrapeStatusResponse(status_message = "Document added to queue",
                                                   status_code = 0
                                                   )
-    addtoqueue = await redis_client.set(f"{item.namespace}/{item.id}", scrape_status_response.model_dump_json())
+    addtoqueue = await redis_client.set(f"{item.namespace}/{item.id}", scrape_status_response.model_dump_json(), ex=expiration_in_seconds)
     logger.debug(res)
 
     return {"message": f"Item {item.id} created successfully, more {res}"}
