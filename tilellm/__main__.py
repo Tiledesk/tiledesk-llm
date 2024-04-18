@@ -69,6 +69,7 @@ async def reader(channel: aioredis.client.Redis):
     
     from tilellm.shared import const
     webhook = ""
+    token=""
     item = {}
     while True:
         try:
@@ -97,7 +98,20 @@ async def reader(channel: aioredis.client.Redis):
                                                                   )
                     addtoqueue = await channel.set(f"{item.get('namespace')}/{item.get('id')}", scrape_status_response.model_dump_json(), ex=expiration_in_seconds)
                     print(f"Inizio {addtoqueue}")
-                    webhook = item.get('webhook',"")
+                    raw_webhook = item.get('webhook',"")
+                    if '?' in raw_webhook:
+                        webhook, raw_token = raw_webhook.split('?')
+
+                        if raw_token.startswith('token='):
+                            _, token = raw_token.split('=')
+                    else:
+                        webhook=raw_webhook
+
+
+                    logger.info(f"webhook: {webhook}, token: {token}")
+
+                    print(f"webhook: {webhook}, token: {token}")
+
 
                     pc_result = add_pc_item(itemSingle)
                     #import datetime
@@ -107,7 +121,7 @@ async def reader(channel: aioredis.client.Redis):
                     #pc_result["status"] = current_time
 
                     # A POST request to the API
-                    logger.info(f"webhook {webhook}")
+
                     scrape_status_response = ScrapeStatusResponse(status_message="Indexing finish",
                                                                   status_code=3
                                                                   )
@@ -116,7 +130,7 @@ async def reader(channel: aioredis.client.Redis):
                     if webhook:
                         try:
                             async with aiohttp.ClientSession() as session:
-                                response = await session.post(webhook,  json= pc_result.model_dump(exclude_none=True),  headers={"Content-Type": "application/json"})
+                                response = await session.post(webhook,  json= pc_result.model_dump(exclude_none=True),  headers={"Content-Type": "application/json",  "X-Auth-Token":token})
                         except Exception as ewh:
                             logger.error(ewh)
                             pass
@@ -138,7 +152,7 @@ async def reader(channel: aioredis.client.Redis):
             if webhook:
                 res = PineconeIndexingResult(status=400, error=repr(e))
                 async with aiohttp.ClientSession() as session:
-                    response = await session.post(webhook,  json= res.model_dump(exclude_none=True),  headers={"Content-Type": "application/json"})
+                    response = await session.post(webhook,  json= res.model_dump(exclude_none=True),  headers={"Content-Type": "application/json", "X-Auth-Token":token})
 
                 logger.error(f"ERRORE {e}, webhook: {webhook}")
             traceback.print_exc()
