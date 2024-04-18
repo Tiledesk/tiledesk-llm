@@ -6,16 +6,18 @@ from fastapi.responses import JSONResponse
 
 import argparse
 
-import redis
+
+
 import aioredis
 import asyncio
 from aioredis import from_url
 import aiohttp
 import json
 
-from tilellm.models.item_model import ItemSingle, QuestionAnswer, PineconeItemToDelete,ScrapeStatusReq,ScrapeStatusResponse
+from tilellm.models.item_model import ItemSingle, QuestionAnswer, PineconeItemToDelete, ScrapeStatusReq, ScrapeStatusResponse, PineconeIndexingResult
 from tilellm.store.redis_repository import redis_xgroup_create
 from tilellm.controller.openai_controller import (ask_with_memory,
+                                                  ask_with_sequence,
                                                   add_pc_item,
                                                   delete_namespace,
                                                   delete_id_from_namespace,
@@ -65,7 +67,7 @@ async def get_redis_client():
 
 async def reader(channel: aioredis.client.Redis):  
     
-    from tilellm.shared import const  
+    from tilellm.shared import const
     webhook = ""
     item = {}
     while True:
@@ -77,14 +79,14 @@ async def reader(channel: aioredis.client.Redis):
                 count=1,
                 block=0  # Set block to 0 for non-blocking
             )
-                
-            
+
+
             for stream, message_data in messages:
                 for message in message_data:
+
                     message_id, message_values = message
-                    #print(f"Received message {message_id}: {message_values}")
                     import ast
-                     
+
                     byte_str = message_values[b"single"]
                     dict_str = byte_str.decode("UTF-8")
                     logger.info(dict_str)
@@ -98,10 +100,11 @@ async def reader(channel: aioredis.client.Redis):
                     webhook = item.get('webhook',"")
 
                     pc_result = add_pc_item(itemSingle)
-                    import datetime
-                    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")
+                    #import datetime
+                    #current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")
 
-                    pc_result["date"]= current_time
+                    #pc_result["date"]= current_time
+                    #pc_result["status"] = current_time
 
                     # A POST request to the API
                     logger.info(f"webhook {webhook}")
@@ -113,32 +116,32 @@ async def reader(channel: aioredis.client.Redis):
                     if webhook:
                         try:
                             async with aiohttp.ClientSession() as session:
-                                response = await session.post(webhook,  json= pc_result,  headers={"Content-Type": "application/json"})
+                                response = await session.post(webhook,  json= pc_result.model_dump(exclude_none=True),  headers={"Content-Type": "application/json"})
                         except Exception as ewh:
                             logger.error(ewh)
                             pass
-                           
-                            
-                    await channel.xack(
-                        const.STREAM_NAME, 
-                        const.STREAM_CONSUMER_GROUP, 
-                        message_id)    
-                                 
 
-            
+
+                    await channel.xack(
+                        const.STREAM_NAME,
+                        const.STREAM_CONSUMER_GROUP,
+                        message_id)
+
+
         except Exception as e:
             scrape_status_response = ScrapeStatusResponse(status_message="Error",
                                                           status_code=4
                                                           )
             addtoqueue = await channel.set(f"{item.get('namespace')}/{item.get('id')}", scrape_status_response.model_dump_json(), ex=expiration_in_seconds)
             print(f"Errore {addtoqueue}")
-            import traceback 
-            if webhook:     
+            import traceback
+            if webhook:
+                res = PineconeIndexingResult(status=400, error=repr(e))
                 async with aiohttp.ClientSession() as session:
-                    response = await session.post(webhook,  json= repr(e),  headers={"Content-Type": "application/json"})
-                    
+                    response = await session.post(webhook,  json= res.model_dump(exclude_none=True),  headers={"Content-Type": "application/json"})
+
                 logger.error(f"ERRORE {e}, webhook: {webhook}")
-            traceback.print_exc() 
+            traceback.print_exc()
             logger.error(e)
             pass
 
@@ -181,6 +184,15 @@ async def post_ask_with_memory_main(question_answer:QuestionAnswer ):
     result = ask_with_memory(question_answer)
     logger.debug(result)
     return JSONResponse(content=result)
+    #return result@app.post("/api/qa")
+
+@app.post("/api/qachain")
+async def post_ask_with_memory_main(question_answer:QuestionAnswer ):
+    print(question_answer)
+    logger.debug(question_answer)
+    result = ask_with_sequence(question_answer)
+    logger.debug(result)
+    return JSONResponse(content=result)
     #return result
 
 @app.post("/api/list/namespace")
@@ -205,11 +217,7 @@ async def delete_namespace_main(namespace: str ):
         result = delete_namespace(namespace)
         return JSONResponse(content={"message":f"Namespace {namespace} deleted"})
     except Exception as ex:
-        import json
-        #from pinecone.core.client.exceptions import NotFoundException
-        #a = NotFoundException()
-        #a.body
-        #print(ex.body)
+        logger.error(ex)
         raise HTTPException(status_code=400, detail=repr(ex) )
 
 @app.delete("/api/id/{id}/namespace/{namespace}")

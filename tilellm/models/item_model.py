@@ -1,5 +1,6 @@
-from pydantic import BaseModel, Field,  validator, field_validator, ValidationError
+from pydantic import BaseModel, Field,  validator, field_validator, ValidationError, BaseConfig
 from typing import Dict, Optional, List
+import datetime
 
 
 class ItemSingle(BaseModel):
@@ -106,5 +107,17 @@ class ScrapeStatusResponse(BaseModel):
     status_message: str =  Field(default="Crawling is not started")
     status_code: int =  Field(default=0)
     queue_order: int =  Field(default=-1)
+
+class PineconeIndexingResult(BaseModel):
+    #  {"id": f"{id}", "chunks": f"{len(chuncks)}", "total_tokens": f"{total_tokens}", "cost": f"{cost:.6f}"}
+    id : str |None =None
+    chunks : int |None =None
+    total_tokens : int |None =None
+    cost : str |None =None
+    status : int =  Field(default=300)
+    date : str = Field(default_factory=lambda : datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f"))
+    error : Optional[str] |None =None
+
+
 
 

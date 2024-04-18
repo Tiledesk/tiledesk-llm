@@ -1,7 +1,7 @@
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_community.document_loaders import TextLoader, JSONLoader
-from tilellm.models.item_model import MetadataItem, PineconeQueryResult, PineconeItems
-from tilellm.tools.document_tool_simple import get_content_by_url
+from tilellm.models.item_model import MetadataItem, PineconeQueryResult, PineconeItems, PineconeIndexingResult
+from tilellm.tools.document_tool_simple import get_content_by_url,get_content_by_url_with_bs
 from tilellm.shared import const
 from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
@@ -59,6 +59,23 @@ def add_pc_item(item):
             logger.info(len(chuncks), total_tokens, cost)
             #from pprint import pprint
             #pprint(documents)
+        elif type_source == 'urlbs':
+            docarry = get_content_by_url_with_bs(source)
+            chuncks = list()
+            for doc in docarry:
+                metadata = MetadataItem(id=id, source=source, type=type_source, embedding=embedding)
+                document = Document(page_content=doc, metadata=metadata.dict())
+                chuncks.append(document)
+            #chuncks.extend(chunk_data(data=documents))
+            total_tokens, cost = calc_embedding_cost(chuncks, embedding)
+            a = vector_store.from_documents(chuncks,
+                                            embedding=oai_embeddings,
+                                            index_name=const.PINECONE_INDEX,
+                                            namespace=namespace,
+                                            text_key=const.PINECONE_TEXT_KEY)
+
+
+
 
         else:
             metadata = MetadataItem(id=id, source=source, type=type_source, embedding=embedding)
@@ -71,8 +88,9 @@ def add_pc_item(item):
                                             index_name=const.PINECONE_INDEX,
                                             namespace=namespace,
                                             text_key=const.PINECONE_TEXT_KEY)
-        
-        return {"id": f"{id}", "chunks": f"{len(chuncks)}", "total_tokens": f"{total_tokens}", "cost": f"{cost:.6f}"}
+
+        pinecone_result = PineconeIndexingResult(id=id, chunks=len(chuncks), total_tokens=total_tokens, cost=f"{cost:.6f}")
+        return pinecone_result #{"id": f"{id}", "chunks": f"{len(chuncks)}", "total_tokens": f"{total_tokens}", "cost": f"{cost:.6f}"}
 
 def delete_pc_namespace(namespace:str):
     import pinecone
