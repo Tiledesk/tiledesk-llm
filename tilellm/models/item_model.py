@@ -13,11 +13,13 @@ class ItemSingle(BaseModel):
     namespace: str | None =None
     webhook: str = Field(default_factory=lambda: "")
 
+
 class MetadataItem(BaseModel):
     id: str
     source: str | None = None
     type: str | None = None
     embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
+
 
 class ChatEntry(BaseModel):
     question: str
@@ -41,9 +43,6 @@ class ChatHistory(BaseModel):
                 raise ValidationError(f"Error processing entry '{key}': {str(e)}")
         return cls(chat_history=chat_history)
     
-    
-
-
 
 class QuestionAnswer(BaseModel):
     question: str
@@ -71,11 +70,12 @@ class QuestionAnswer(BaseModel):
             raise ValueError("top_k must be a positive integer.")
         return v
 
+
 class RetrievalResult(BaseModel):
-    answer:str = Field(default="No answer")
+    answer: str = Field(default="No answer")
     sources: Optional[List[str]]|None =None
-    source:str |None= None
-    id:str |None= None
+    source: str |None= None
+    id: str |None= None
     namespace: str
     ids: Optional[List[str]]|None =None
     prompt_token_size: int = Field(default=0)
@@ -85,38 +85,52 @@ class RetrievalResult(BaseModel):
 
 
 class PineconeQueryResult(BaseModel):
-    id : str
-    metadata_id : str
-    metadata_source : str
-    metadata_type : str
-    text : str
+    id: str
+    metadata_id: str
+    metadata_source: str
+    metadata_type: str
+    text: Optional[str] | None = None
+
 
 class PineconeItems(BaseModel):
     matches: List[PineconeQueryResult]
 
+
 class PineconeItemToDelete(BaseModel):
-    id : str
-    namespace : str
+    id: str
+    namespace: str
+
 
 class ScrapeStatusReq(BaseModel):
-    id : str
-    namespace : str
-    namespace_list : Optional[List[str]]|None =None
+    id: str
+    namespace: str
+    namespace_list: Optional[List[str]] | None = None
+
 
 class ScrapeStatusResponse(BaseModel):
     status_message: str =  Field(default="Crawling is not started")
     status_code: int =  Field(default=0)
     queue_order: int =  Field(default=-1)
 
+
 class PineconeIndexingResult(BaseModel):
     #  {"id": f"{id}", "chunks": f"{len(chuncks)}", "total_tokens": f"{total_tokens}", "cost": f"{cost:.6f}"}
-    id : str |None =None
-    chunks : int |None =None
-    total_tokens : int |None =None
-    cost : str |None =None
-    status : int =  Field(default=300)
-    date : str = Field(default_factory=lambda : datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f"))
-    error : Optional[str] |None =None
+    id: str | None = None
+    chunks: int | None = None
+    total_tokens: int | None = None
+    cost: str | None = None
+    status: int = Field(default=300)
+    date: str = Field(default_factory=lambda: datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f"))
+    error: Optional[str] | None = None
+
+
+class PineconeItemNamespaceResult(BaseModel):
+    namespace: str
+    vector_count: int
+
+
+class PineconeNamespaceResult(BaseModel):
+    namespaces: Optional[List[PineconeItemNamespaceResult]]
 
 
 
