@@ -138,6 +138,8 @@ async def reader(channel: aioredis.client.Redis):
                                 res = await session.post(webhook,
                                                          json=pc_result.model_dump(exclude_none=True),
                                                          headers={"Content-Type": "application/json", "X-Auth-Token": token})
+                                print(res)
+                                print(await res.json())
                         except Exception as ewh:
                             logger.error(ewh)
                             pass
@@ -162,7 +164,8 @@ async def reader(channel: aioredis.client.Redis):
                 async with aiohttp.ClientSession() as session:
                     response = await session.post(webhook,  json=res.model_dump(exclude_none=True),
                                                   headers={"Content-Type": "application/json", "X-Auth-Token": token})
-
+                    print(response)
+                    print(await response.json())
                 logger.error(f"Error {e}, webhook: {webhook}")
             traceback.print_exc()
             logger.error(e)
