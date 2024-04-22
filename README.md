@@ -10,19 +10,13 @@ pip install -e .
 
 # Launch
 
+
 ```commandline
+export REDIS_URL = "redis://localhost:6379/0"
+export PINECONE_API_KEY="pinecone api key"
+export PINECONE_TEXT_KEY="pinecone field for text - default text in pod content"
+export PINECONE_INDEX = "pinecone index name"
 tilellm 
-    --host      | default 0.0.0.0
-    --port      | default=8000
-    --redis_url | default="redis://localhost:6379/0"
-    --env       | default="dev" | dev|prod
-    --log_path  | default="log_conf.yaml"
-```
-create a .environ file with this variable:
-```commandline
-PINECONE_API_KEY="pinecone api key"
-PINECONE_TEXT_KEY="pinecone field for text - default text in pod content"
-PINECONE_INDEX = "pinecone index name"
 ```
 
 # Docker

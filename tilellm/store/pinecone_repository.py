@@ -158,9 +158,11 @@ async def delete_pc_ids_namespace(metadata_id: str, namespace: str):
             include_metadata=False
         )
         matches = pc_res.get('matches')
+
         ids = [obj.get('id') for obj in matches]
         if not ids:
             raise IndexError(f"Empty list for {metadata_id} and namespace {namespace}")
+
         index.delete(
             ids=ids,
             namespace=namespace)

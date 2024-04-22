@@ -314,9 +314,10 @@ async def delete_item_id_namespace_post(item_to_delete: PineconeItemToDelete):
         logger.info(f"cancellazione id {metadata_id} dal namespace {namespace}")
         result = await delete_id_from_namespace(metadata_id, namespace)
 
-        return JSONResponse(content={"message": f"ids {metadata_id} in Namespace {namespace} deleted"})
+        return JSONResponse(content={"success": True, "message": f"ids {metadata_id} in Namespace {namespace} deleted"})
     except Exception as ex:
-        raise HTTPException(status_code=400, detail=repr(ex))
+        return JSONResponse(content={"success": True, "message": f"ids {metadata_id} in Namespace {namespace} non deleted due to {repr(ex)}"})
+        # raise HTTPException(status_code=400, detail=repr(ex))
 
 
 @app.get("/api/id/{metadata_id}/namespace/{namespace}")
