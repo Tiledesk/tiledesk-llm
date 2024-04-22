@@ -5,6 +5,11 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-04-22]
+
+### 0.1.6
+- fixed: response of /api/delete/id
+
 ## [2024-04-20]
 
 ### 0.1.5
