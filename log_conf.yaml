@@ -1,42 +1,27 @@
 version: 1
-disable_existing_loggers: False
+disable_existing_loggers: false
 formatters:
-  default:
-    "()": uvicorn.logging.DefaultFormatter
-    use_colors: True
-    #(): coloredlogs.ColoredFormatter
-    #format: *formatColorConsole
-    format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-  access:
-    # "()": uvicorn.logging.AccessFormatter
-    format: '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+  simple:
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 handlers:
-  default:
-    formatter: default
+  console:
     class: logging.StreamHandler
-    stream: ext://sys.stderr
-  access:
-    formatter: access
-    class: logging.StreamHandler
+    formatter: simple
+    level: DEBUG
     stream: ext://sys.stdout
+  file:
+    class: logging.FileHandler
+    formatter: simple
+    level: INFO
+    filename: myapp.log
 loggers:
-  uvicorn.info:
-    level: INFO
+  myapp:
+    level: DEBUG
     handlers:
-      - default
-    propagate: no
-  uvicorn.error:
-    level: INFO
-    handlers:
-      - default
-    propagate: no
-  uvicorn.access:
-    level: INFO
-    handlers:
-      - access
+      - console
+      - file
     propagate: no
 root:
   level: DEBUG
   handlers:
-    - default
-  propagate: no
+    - console

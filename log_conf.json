@@ -1,0 +1,39 @@
+{
+  "loggers": {
+    "myapp": {
+      "level": "DEBUG",
+      "propagate": false,
+      "handlers": [
+        "console",
+        "file"
+      ]
+    }
+  },
+  "version": 1,
+  "disable_existing_loggers": false,
+  "handlers": {
+    "console": {
+      "formatter": "simple",
+      "class": "logging.StreamHandler",
+      "stream": "ext://sys.stdout",
+      "level": "DEBUG"
+    },
+    "file": {
+      "level": "INFO",
+      "formatter": "simple",
+      "class": "logging.FileHandler",
+      "filename": "myapp.log"
+    }
+  },
+  "root": {
+    "level": "DEBUG",
+    "handlers": [
+      "console"
+    ]
+  },
+  "formatters": {
+    "simple": {
+      "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    }
+  }
+}

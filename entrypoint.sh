@@ -29,16 +29,15 @@ do
       ;;
   esac
 done
-echo "$environment"
 # Validate required argument
 if [ -z "$environment" ]; then
-  echo "Info: --environment argument is set to dev."
+  # echo "Info: --environment argument is set to dev."
   environment="dev"
 
 fi
 
-echo "$environment"
+echo "$ENVIRON"
 # Connect to Redis using the parsed URL
 ##tilellm --redis_url "$redisurl"
-gunicorn --bind 0.0.0.0:8000  -w 2 --env ENVIRON="$environment" --worker-class uvicorn.workers.UvicornWorker tilellm.__main__:app
+gunicorn --bind 0.0.0.0:8000  -w 2 --env ENVIRON="$environment" --log-config-json log_conf.json --worker-class uvicorn.workers.UvicornWorker tilellm.__main__:app
 
