@@ -1,10 +1,11 @@
 import os
 from contextlib import asynccontextmanager
 from fastapi import (FastAPI, 
-  Depends, HTTPException)
+                     Depends,
+                     HTTPException)
 from fastapi.responses import JSONResponse
 
-import argparse
+# import argparse
 
 import aioredis
 import asyncio
@@ -14,7 +15,13 @@ import json
 from dotenv import load_dotenv
 
 from tilellm.shared.const import populate_constant
-from tilellm.models.item_model import ItemSingle, QuestionAnswer, PineconeItemToDelete, ScrapeStatusReq, ScrapeStatusResponse, PineconeIndexingResult
+from tilellm.models.item_model import (ItemSingle,
+                                       QuestionAnswer,
+                                       PineconeItemToDelete,
+                                       ScrapeStatusReq,
+                                       ScrapeStatusResponse,
+                                       PineconeIndexingResult)
+
 from tilellm.store.redis_repository import redis_xgroup_create
 from tilellm.controller.openai_controller import (ask_with_memory,
                                                   ask_with_sequence,
@@ -101,8 +108,9 @@ async def reader(channel: aioredis.client.Redis):
                                                                   status_code=2
                                                                   )
                     add_to_queue = await channel.set(f"{item.get('namespace')}/{item.get('id')}",
-                                                   scrape_status_response.model_dump_json(),
-                                                   ex=expiration_in_seconds)
+                                                     scrape_status_response.model_dump_json(),
+                                                     ex=expiration_in_seconds)
+
                     logger.debug(f"Start {add_to_queue}")
                     raw_webhook = item.get('webhook', "")
                     if '?' in raw_webhook:
@@ -137,7 +145,8 @@ async def reader(channel: aioredis.client.Redis):
                             async with aiohttp.ClientSession() as session:
                                 res = await session.post(webhook,
                                                          json=pc_result.model_dump(exclude_none=True),
-                                                         headers={"Content-Type": "application/json", "X-Auth-Token": token})
+                                                         headers={"Content-Type": "application/json",
+                                                                  "X-Auth-Token": token})
                                 print(res)
                                 print(await res.json())
                         except Exception as ewh:
@@ -197,11 +206,14 @@ async def create_scrape_item_main(item: ItemSingle, redis_client: aioredis.clien
     """
     from tilellm.shared import const
     logger.debug(item) 
-    res = await redis_client.xadd(const.STREAM_NAME, {"single": item.model_dump_json()} , id="*")
-    scrape_status_response = ScrapeStatusResponse(status_message = "Document added to queue",
-                                                  status_code = 0
+    res = await redis_client.xadd(const.STREAM_NAME, {"single": item.model_dump_json()}, id="*")
+    scrape_status_response = ScrapeStatusResponse(status_message="Document added to queue",
+                                                  status_code=0
                                                   )
-    addtoqueue = await redis_client.set(f"{item.namespace}/{item.id}", scrape_status_response.model_dump_json(), ex=expiration_in_seconds)
+    addtoqueue = await redis_client.set(f"{item.namespace}/{item.id}",
+                                        scrape_status_response.model_dump_json(),
+                                        ex=expiration_in_seconds)
+
     logger.debug(res)
 
     return {"message": f"Item {item.id} created successfully, more {res}"}
@@ -224,7 +236,7 @@ async def post_ask_with_memory_chain_main(question_answer: QuestionAnswer):
     result = ask_with_sequence(question_answer)
     logger.debug(result)
     return JSONResponse(content=result)
-    #return result
+    # return result
 
 
 @app.get("/api/list/namespace")
@@ -258,16 +270,18 @@ async def list_namespace_items_main(namespace: str):
         logger.error(ex)
         raise HTTPException(status_code=400, detail=repr(ex))
 
+
 @app.post("/api/scrape/status")
-async def srape_status_main(scarpestatusreq: ScrapeStatusReq,  redis_client: aioredis.client.Redis = Depends(get_redis_client) ):
+async def scrape_status_main(scrape_status_req: ScrapeStatusReq,
+                             redis_client: aioredis.client.Redis = Depends(get_redis_client)):
     try:
-        retrieved_data = await redis_client.get(f"{scarpestatusreq.namespace}/{scarpestatusreq.id}")
+        retrieved_data = await redis_client.get(f"{scrape_status_req.namespace}/{scrape_status_req.id}")
         if retrieved_data:
-            scrapestatus_response = ScrapeStatusResponse.model_validate(json.loads(retrieved_data.decode('utf-8')))
+            scrape_status_response = ScrapeStatusResponse.model_validate(json.loads(retrieved_data.decode('utf-8')))
         else:
             # FIXME recuperare da pinecone id e namespace...
-            raise Exception(f"Not Found, id: {scarpestatusreq.id}, namespace:  {scarpestatusreq.namespace}")
-        return JSONResponse(content=scrapestatus_response.model_dump())
+            raise Exception(f"Not Found, id: {scrape_status_req.id}, namespace:  {scrape_status_req.namespace}")
+        return JSONResponse(content=scrape_status_response.model_dump())
     except Exception as ex:
         raise HTTPException(status_code=400, detail=repr(ex))
 
@@ -281,13 +295,13 @@ async def delete_namespace_main(namespace: str):
     """
     try:
         result = await delete_namespace(namespace)
-        return JSONResponse(content={"message":f"Namespace {namespace} deleted"})
+        return JSONResponse(content={"message": f"Namespace {namespace} deleted"})
     except Exception as ex:
-        raise HTTPException(status_code=400, detail=repr(ex) )
+        raise HTTPException(status_code=400, detail=repr(ex))
 
 
 @app.delete("/api/id/{metadata_id}/namespace/{namespace}")
-async def delete_item_id_namespace_main(metadata_id: str, namespace: str ):
+async def delete_item_id_namespace_main(metadata_id: str, namespace: str):
     """
     Delete items from namespace identified by id and namespace
     :param metadata_id:
@@ -304,7 +318,9 @@ async def delete_item_id_namespace_main(metadata_id: str, namespace: str ):
         raise HTTPException(status_code=400, detail=repr(ex))
 
 
-@app.post("/api/delete/id", deprecated=True, description="This endpoint is deprecated and  is no longer supported. Use method DELETE /api/id/{id}/namespace/{namespace}")
+@app.post("/api/delete/id", deprecated=True,
+          description="This endpoint is deprecated and  is no longer supported. "
+                      "Use method DELETE /api/id/{id}/namespace/{namespace}")
 async def delete_item_id_namespace_post(item_to_delete: PineconeItemToDelete):
     """
     Delete items from namespace given document id via POST.
@@ -314,12 +330,12 @@ async def delete_item_id_namespace_post(item_to_delete: PineconeItemToDelete):
     try:
         metadata_id = item_to_delete.id
         namespace = item_to_delete.namespace
-        logger.info(f"cancellazione id {metadata_id} dal namespace {namespace}")
+        logger.info(f"delete of id {metadata_id} dal namespace {namespace}")
         result = await delete_id_from_namespace(metadata_id, namespace)
 
         return JSONResponse(content={"success": True, "message": f"ids {metadata_id} in Namespace {namespace} deleted"})
     except Exception as ex:
-        return JSONResponse(content={"success": True, "message": f"ids {metadata_id} in Namespace {namespace} non deleted due to {repr(ex)}"})
+        return JSONResponse(content={"success": True, "message": f"ids {metadata_id} in Namespace {namespace} not deleted due to {repr(ex)}"})
         # raise HTTPException(status_code=400, detail=repr(ex))
 
 

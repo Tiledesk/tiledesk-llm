@@ -5,6 +5,11 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-04-30]
+
+### 0.1.8
+- added: log_conf.json to Dockerfile
+
 ## [2024-04-24]
 
 ### 0.1.7

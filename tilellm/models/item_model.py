@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field,  validator, field_validator, ValidationError, BaseConfig
+from pydantic import BaseModel, Field,  field_validator, ValidationError
 from typing import Dict, Optional, List
 import datetime
 
@@ -7,10 +7,10 @@ class ItemSingle(BaseModel):
     id: str
     source: str | None = None
     type: str | None = None
-    content: str | None =None
+    content: str | None = None
     gptkey: str | None = None
     embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
-    namespace: str | None =None
+    namespace: str | None = None
     webhook: str = Field(default_factory=lambda: "")
 
 
@@ -24,7 +24,7 @@ class MetadataItem(BaseModel):
 class ChatEntry(BaseModel):
     question: str
     answer: str
-    #metadata: Optional[Dict[str, str]] = None  # Optional field for additional data
+    # metadata: Optional[Dict[str, str]] = None  # Optional field for additional data
 
 
 class ChatHistory(BaseModel):
@@ -48,13 +48,13 @@ class QuestionAnswer(BaseModel):
     question: str
     namespace: str
     gptkey: str
-    model: str =Field(default="gpt-3.5-turbo") 
+    model: str = Field(default="gpt-3.5-turbo")
     temperature: float = Field(default=0.0)
     top_k: int = Field(default=5)
     max_tokens: int = Field(default=128)
     embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
     system_context: Optional[str] = None
-    chat_history_dict : Optional[Dict[str, ChatEntry]] = None
+    chat_history_dict: Optional[Dict[str, ChatEntry]] = None
 
     @field_validator("temperature")
     def temperature_range(cls, v):
@@ -73,15 +73,15 @@ class QuestionAnswer(BaseModel):
 
 class RetrievalResult(BaseModel):
     answer: str = Field(default="No answer")
-    sources: Optional[List[str]]|None =None
-    source: str |None= None
-    id: str |None= None
+    sources: Optional[List[str]] | None = None
+    source: str | None = None
+    id: str | None = None
     namespace: str
-    ids: Optional[List[str]]|None =None
+    ids: Optional[List[str]] | None = None
     prompt_token_size: int = Field(default=0)
     success: bool = Field(default=False)
-    error_message: Optional[str]|None =None
-    chat_history_dict:Optional[Dict[str, ChatEntry]]
+    error_message: Optional[str] | None = None
+    chat_history_dict: Optional[Dict[str, ChatEntry]]
 
 
 class PineconeQueryResult(BaseModel):
@@ -108,13 +108,13 @@ class ScrapeStatusReq(BaseModel):
 
 
 class ScrapeStatusResponse(BaseModel):
-    status_message: str =  Field(default="Crawling is not started")
-    status_code: int =  Field(default=0)
-    queue_order: int =  Field(default=-1)
+    status_message: str = Field(default="Crawling is not started")
+    status_code: int = Field(default=0)
+    queue_order: int = Field(default=-1)
 
 
 class PineconeIndexingResult(BaseModel):
-    #  {"id": f"{id}", "chunks": f"{len(chuncks)}", "total_tokens": f"{total_tokens}", "cost": f"{cost:.6f}"}
+    #  {"id": f"{id}", "chunks": f"{len(chunks)}", "total_tokens": f"{total_tokens}", "cost": f"{cost:.6f}"}
     id: str | None = None
     chunks: int | None = None
     total_tokens: int | None = None
@@ -131,7 +131,3 @@ class PineconeItemNamespaceResult(BaseModel):
 
 class PineconeNamespaceResult(BaseModel):
     namespaces: Optional[List[PineconeItemNamespaceResult]]
-
-
-
-
