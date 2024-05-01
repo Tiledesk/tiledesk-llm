@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "tilellm"
-version = "0.1.8"
+version = "0.1.9"
 description = "tiledesk for RAG"
 authors = ["Gianluca Lorenzo <gianluca.lorenzo@gmail.com>"]
 repository = "https://github.com/Tiledesk/tiledesk-llm"

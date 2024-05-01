@@ -5,6 +5,11 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-05-01]
+
+### 0.1.9
+- modified: log_conf.json to INFO Level
+
 ## [2024-04-30]
 
 ### 0.1.8
