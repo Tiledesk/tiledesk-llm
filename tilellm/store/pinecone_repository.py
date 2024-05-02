@@ -75,7 +75,8 @@ async def add_pc_item(item):
                                         text_key=const.PINECONE_TEXT_KEY)
 
         total_tokens, cost = calc_embedding_cost(chunks, embedding)
-        logger.info(len(chunks), total_tokens, cost)
+        logger.info(f"chunks: {len(chunks)}, total_tokens: {total_tokens}, cost: {cost: .6f}")
+
         # from pprint import pprint
         # pprint(documents)
     elif type_source == 'urlbs':
