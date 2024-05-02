@@ -62,6 +62,7 @@ load_dotenv(ENVIRONMENTS.get(environment) or '.environ')
 # os.environ.__setitem__("ENVIRON", environment)
 
 redis_url = os.environ.get("REDIS_URL")
+tilellm_role = os.environ.get("TILELLM_ROLE")
 
 
 async def get_redis_client():
@@ -78,108 +79,111 @@ async def reader(channel: aioredis.client.Redis):
     :param channel:
     :return:
     """
-    
+
     from tilellm.shared import const
+    logger.debug(f"My role is {tilellm_role}")
     webhook = ""
     token = ""
     item = {}
-    while True:
-        try:
-            messages = await channel.xreadgroup(
-                groupname=const.STREAM_CONSUMER_GROUP,
-                consumername=const.STREAM_CONSUMER_NAME,
-                streams={const.STREAM_NAME: '>'},
-                count=1,
-                block=0  # Set block to 0 for non-blocking
-            )
+    if tilellm_role == "train":
+        while True:
+            try:
+                messages = await channel.xreadgroup(
+                    groupname=const.STREAM_CONSUMER_GROUP,
+                    consumername=const.STREAM_CONSUMER_NAME,
+                    streams={const.STREAM_NAME: '>'},
+                    count=1,
+                    block=0  # Set block to 0 for non-blocking
+                )
 
-            for stream, message_data in messages:
-                for message in message_data:
+                for stream, message_data in messages:
+                    for message in message_data:
+                        logger.debug(f"My role is {tilellm_role} consume message")
+                        message_id, message_values = message
+                        import ast
 
-                    message_id, message_values = message
-                    import ast
+                        byte_str = message_values[b"single"]
+                        dict_str = byte_str.decode("UTF-8")
+                        logger.info(dict_str)
+                        item = ast.literal_eval(dict_str)
+                        item_single = ItemSingle(**item)
+                        scrape_status_response = ScrapeStatusResponse(status_message="Indexing started",
+                                                                      status_code=2
+                                                                      )
+                        add_to_queue = await channel.set(f"{item.get('namespace')}/{item.get('id')}",
+                                                         scrape_status_response.model_dump_json(),
+                                                         ex=expiration_in_seconds)
 
-                    byte_str = message_values[b"single"]
-                    dict_str = byte_str.decode("UTF-8")
-                    logger.info(dict_str)
-                    item = ast.literal_eval(dict_str)
-                    item_single = ItemSingle(**item)
-                    scrape_status_response = ScrapeStatusResponse(status_message="Indexing started",
-                                                                  status_code=2
-                                                                  )
-                    add_to_queue = await channel.set(f"{item.get('namespace')}/{item.get('id')}",
-                                                     scrape_status_response.model_dump_json(),
-                                                     ex=expiration_in_seconds)
+                        logger.debug(f"Start {add_to_queue}")
+                        raw_webhook = item.get('webhook', "")
+                        if '?' in raw_webhook:
+                            webhook, raw_token = raw_webhook.split('?')
 
-                    logger.debug(f"Start {add_to_queue}")
-                    raw_webhook = item.get('webhook', "")
-                    if '?' in raw_webhook:
-                        webhook, raw_token = raw_webhook.split('?')
+                            if raw_token.startswith('token='):
+                                _, token = raw_token.split('=')
+                        else:
+                            webhook = raw_webhook
 
-                        if raw_token.startswith('token='):
-                            _, token = raw_token.split('=')
-                    else:
-                        webhook = raw_webhook
+                        logger.info(f"webhook: {webhook}, token: {token}")
 
-                    logger.info(f"webhook: {webhook}, token: {token}")
+                        pc_result = await add_pc_item(item_single)
+                        # import datetime
+                        # current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")
 
-                    pc_result = await add_pc_item(item_single)
-                    # import datetime
-                    # current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")
+                        # pc_result["date"]= current_time
+                        # pc_result["status"] = current_time
 
-                    # pc_result["date"]= current_time
-                    # pc_result["status"] = current_time
+                        # A POST request to the API
 
-                    # A POST request to the API
+                        scrape_status_response = ScrapeStatusResponse(status_message="Indexing finish",
+                                                                      status_code=3
+                                                                      )
+                        add_to_queue = await channel.set(f"{item.get('namespace')}/{item.get('id')}",
+                                                         scrape_status_response.model_dump_json(),
+                                                         ex=expiration_in_seconds)
 
-                    scrape_status_response = ScrapeStatusResponse(status_message="Indexing finish",
-                                                                  status_code=3
-                                                                  )
-                    add_to_queue = await channel.set(f"{item.get('namespace')}/{item.get('id')}",
-                                                     scrape_status_response.model_dump_json(),
-                                                     ex=expiration_in_seconds)
+                        logger.debug(f"End {add_to_queue}")
+                        if webhook:
+                            try:
+                                async with aiohttp.ClientSession() as session:
+                                    res = await session.post(webhook,
+                                                             json=pc_result.model_dump(exclude_none=True),
+                                                             headers={"Content-Type": "application/json",
+                                                                      "X-Auth-Token": token})
+                                    logger.info(res)
+                                    logger.info(f"===========> {await res.json()}")
+                            except Exception as ewh:
+                                logger.error(ewh)
+                                pass
 
-                    logger.debug(f"End {add_to_queue}")
-                    if webhook:
-                        try:
-                            async with aiohttp.ClientSession() as session:
-                                res = await session.post(webhook,
-                                                         json=pc_result.model_dump(exclude_none=True),
-                                                         headers={"Content-Type": "application/json",
-                                                                  "X-Auth-Token": token})
-                                logger.info(res)
-                                logger.info(f"===========> {await res.json()}")
-                        except Exception as ewh:
-                            logger.error(ewh)
-                            pass
+                        await channel.xack(
+                            const.STREAM_NAME,
+                            const.STREAM_CONSUMER_GROUP,
+                            message_id)
 
-                    await channel.xack(
-                        const.STREAM_NAME,
-                        const.STREAM_CONSUMER_GROUP,
-                        message_id)
+            except Exception as e:
+                scrape_status_response = ScrapeStatusResponse(status_message="Error",
+                                                              status_code=4
+                                                              )
+                add_to_queue = await channel.set(f"{item.get('namespace')}/{item.get('id')}",
+                                                 scrape_status_response.model_dump_json(),
+                                                 ex=expiration_in_seconds)
 
-        except Exception as e:
-            scrape_status_response = ScrapeStatusResponse(status_message="Error",
-                                                          status_code=4
-                                                          )
-            add_to_queue = await channel.set(f"{item.get('namespace')}/{item.get('id')}",
-                                             scrape_status_response.model_dump_json(),
-                                             ex=expiration_in_seconds)
-
-            logger.error(f"Error {add_to_queue}")
-            import traceback
-            if webhook:
-                res = PineconeIndexingResult(status=400, error=repr(e))
-                async with aiohttp.ClientSession() as session:
-                    response = await session.post(webhook,  json=res.model_dump(exclude_none=True),
-                                                  headers={"Content-Type": "application/json", "X-Auth-Token": token})
-                    logger.error(response)
-                    logger.error(f"{await response.json()}")
-                logger.error(f"Error {e}, webhook: {webhook}")
-            traceback.print_exc()
-            logger.error(e)
-            pass
-           
+                logger.error(f"Error {add_to_queue}")
+                import traceback
+                if webhook:
+                    res = PineconeIndexingResult(status=400, error=repr(e))
+                    async with aiohttp.ClientSession() as session:
+                        response = await session.post(webhook,  json=res.model_dump(exclude_none=True),
+                                                      headers={"Content-Type": "application/json", "X-Auth-Token": token})
+                        logger.error(response)
+                        logger.error(f"{await response.json()}")
+                    logger.error(f"Error {e}, webhook: {webhook}")
+                traceback.print_exc()
+                logger.error(e)
+                pass
+    else:
+        logger.debug(f"My role is {tilellm_role}")
 
 @asynccontextmanager
 async def redis_consumer(app: FastAPI):
@@ -191,8 +195,8 @@ async def redis_consumer(app: FastAPI):
     
     await redis_client.close()   
 
-populate_constant()
 
+populate_constant()
 app = FastAPI(lifespan=redis_consumer)
 
 
@@ -384,7 +388,7 @@ async def get_root_endpoint():
 
 
 def main():
-    print(f"Ambiente: {environment}")
+    logger.debug(f"Environment: {environment}")
     import uvicorn
     uvicorn.run("tilellm.__main__:app", host="0.0.0.0", port=8000, reload=True, log_level="info")#, log_config=args.log_path
 

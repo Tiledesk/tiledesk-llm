@@ -5,6 +5,12 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-05-02]
+
+### 0.1.10
+- fixed: any fields of metadata cannot be None.
+- added: TILELLM_ROLE=qa|train in order to manage qa and train 
+
 ## [2024-05-01]
 
 ### 0.1.9

@@ -54,7 +54,19 @@ async def add_pc_item(item):
             document.metadata["type"] = type_source
             document.metadata["embedding"] = embedding
 
+            for key, value in document.metadata.items():
+                if isinstance(value, list) and all(item is None for item in value):
+                    document.metadata[key] = [""]
+                elif value is None:
+                    document.metadata[key] = ""
+
             chunks.extend(chunk_data(data=[document]))
+
+
+
+        # from pprint import pprint
+        # pprint(documents)
+        logger.debug(documents)
 
         a = vector_store.from_documents(chunks,
                                         embedding=oai_embeddings,

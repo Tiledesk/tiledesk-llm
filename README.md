@@ -15,7 +15,8 @@ pip install -e .
 export REDIS_URL="redis://localhost:6379/0"
 export PINECONE_API_KEY="pinecone api key"
 export PINECONE_TEXT_KEY="pinecone field for text - default text in pod content"
-export PINECONE_INDEX = "pinecone index name"
+export PINECONE_INDEX="pinecone index name"
+export TILELLM_ROLE="role in pod. Train enable all the APIs, qa do not consume redis queue only Q&A"
 tilellm 
 ```
 
@@ -27,7 +28,7 @@ sudo docker build -t tilellm .
 
 
 ```
- sudo docker run -d -p 8000:8000 --env environment="dev|prod" --env PINECONE_API_KEY="yourapikey" --env PINECONE_TEXT_KEY="text|content" --env PINECONE_INDEX="index_name" --env REDIS_URL="redis://redis:6379/0" --name tilellm --link test-redis:redis tilellm
+ sudo docker run -d -p 8000:8000 --env environment="dev|prod" --env PINECONE_API_KEY="yourapikey" --env PINECONE_TEXT_KEY="text|content" --env PINECONE_INDEX="index_name" --env TILELLM_ROLE="train|qa" --env REDIS_URL="redis://redis:6379/0" --name tilellm --link test-redis:redis tilellm
 
  
 ```
