@@ -18,6 +18,7 @@ from tilellm.shared.const import populate_constant
 from tilellm.models.item_model import (ItemSingle,
                                        QuestionAnswer,
                                        PineconeItemToDelete,
+                                       PineconeNamespaceToDelete,
                                        ScrapeStatusReq,
                                        ScrapeStatusResponse,
                                        PineconeIndexingResult)
@@ -115,6 +116,7 @@ async def reader(channel: aioredis.client.Redis):
                                                          ex=expiration_in_seconds)
 
                         logger.debug(f"Start {add_to_queue}")
+
                         raw_webhook = item.get('webhook', "")
                         if '?' in raw_webhook:
                             webhook, raw_token = raw_webhook.split('?')
@@ -125,6 +127,20 @@ async def reader(channel: aioredis.client.Redis):
                             webhook = raw_webhook
 
                         logger.info(f"webhook: {webhook}, token: {token}")
+
+                        if webhook:
+                            res = PineconeIndexingResult(id=item.get('id'), status=200)
+                            try:
+                                async with aiohttp.ClientSession() as session:
+                                    res = await session.post(webhook,
+                                                             json=res.model_dump(exclude_none=True),
+                                                             headers={"Content-Type": "application/json",
+                                                                      "X-Auth-Token": token})
+                                    logger.info(res)
+                                    logger.info(f"200 ==>{await res.json()}")
+                            except Exception as ewh:
+                                logger.error(ewh)
+                                pass
 
                         pc_result = await add_pc_item(item_single)
                         # import datetime
@@ -172,7 +188,7 @@ async def reader(channel: aioredis.client.Redis):
                 logger.error(f"Error {add_to_queue}")
                 import traceback
                 if webhook:
-                    res = PineconeIndexingResult(status=400, error=repr(e))
+                    res = PineconeIndexingResult(id=item.get('id'), status=400, error=repr(e))
                     async with aiohttp.ClientSession() as session:
                         response = await session.post(webhook,  json=res.model_dump(exclude_none=True),
                                                       headers={"Content-Type": "application/json", "X-Auth-Token": token})
@@ -278,14 +294,37 @@ async def list_namespace_items_main(namespace: str):
 @app.post("/api/scrape/status")
 async def scrape_status_main(scrape_status_req: ScrapeStatusReq,
                              redis_client: aioredis.client.Redis = Depends(get_redis_client)):
+    """
+    Check status of indexing
+    :param scrape_status_req:
+    :param redis_client:
+    :return:
+    """
     try:
         retrieved_data = await redis_client.get(f"{scrape_status_req.namespace}/{scrape_status_req.id}")
         if retrieved_data:
+            logger.debug(retrieved_data)
             scrape_status_response = ScrapeStatusResponse.model_validate(json.loads(retrieved_data.decode('utf-8')))
+            return JSONResponse(content=scrape_status_response.model_dump())
         else:
-            # FIXME recuperare da pinecone id e namespace...
-            raise Exception(f"Not Found, id: {scrape_status_req.id}, namespace:  {scrape_status_req.namespace}")
-        return JSONResponse(content=scrape_status_response.model_dump())
+            try:
+                retrieved_pinecone_data = await get_ids_namespace(metadata_id=scrape_status_req.id,
+                                                                  namespace=scrape_status_req.namespace)
+
+                if retrieved_pinecone_data.matches:
+                    logger.debug(retrieved_pinecone_data.matches[0].date)
+                    date_from_metadata = retrieved_pinecone_data.matches[0].date
+                    scrape_status_response = ScrapeStatusResponse(
+                        status_message=f"Indexing finished - verified in Pinecone metadata - date:{date_from_metadata}",
+                        status_code=3,
+                        queue_order=-1)
+                    return JSONResponse(content=scrape_status_response.model_dump())
+
+                else:
+                    raise Exception("Pinecone data not found")
+            except Exception as int_ex:
+                raise Exception(f"{repr(int_ex)}, id: {scrape_status_req.id}, namespace: {scrape_status_req.namespace}")
+
     except Exception as ex:
         raise HTTPException(status_code=400, detail=repr(ex))
 
@@ -302,6 +341,20 @@ async def delete_namespace_main(namespace: str):
         return JSONResponse(content={"message": f"Namespace {namespace} deleted"})
     except Exception as ex:
         raise HTTPException(status_code=400, detail=repr(ex))
+
+
+@app.post("/api/delete/namespace")
+async def delete_namespace_main(namespace_to_delete: PineconeNamespaceToDelete):
+    """
+    Delete Pinecone namespace by namespace_id
+    :param namespace_to_delete:
+    :return:
+    """
+    try:
+        result = await delete_namespace(namespace_to_delete.namespace)
+        return JSONResponse(content={"success": "true", "message": f"{namespace_to_delete.namespace} is deleted from database"})
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail={"success": "false", "message": repr(ex)})
 
 
 @app.delete("/api/id/{metadata_id}/namespace/{namespace}")

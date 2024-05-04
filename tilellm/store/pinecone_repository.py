@@ -142,7 +142,9 @@ async def delete_pc_ids_namespace(metadata_id: str, namespace: str):
     :return:
     """
     import pinecone
-    from langchain_community.vectorstores import Pinecone
+
+
+
 
     try:
         pc = pinecone.Pinecone(
@@ -236,6 +238,7 @@ async def get_pc_ids_namespace(metadata_id: str, namespace: str):
                                               metadata_id=obj.get('metadata').get('id'),
                                               metadata_source=obj.get('metadata').get('source'),
                                               metadata_type=obj.get('metadata').get('type'),
+                                              date=obj.get('metadata').get('date', 'Date not defined'),
                                               text=obj.get('metadata').get(const.PINECONE_TEXT_KEY)
                                               #su pod content, su Serverless text
                                               )
@@ -299,6 +302,7 @@ async def get_pc_all_obj_namespace(namespace: str):
                                               metadata_id=obj.get('metadata').get('id'),
                                               metadata_source=obj.get('metadata').get('source'),
                                               metadata_type=obj.get('metadata').get('type'),
+                                              date=obj.get('metadata').get('date', 'Date not defined'),
                                               text=None  # su pod content, su Serverless text
                                               )
                           )
@@ -396,6 +400,7 @@ async def get_pc_sources_namespace(source: str, namespace: str):
                                               metadata_id=obj.get('metadata').get('id'),
                                               metadata_source=obj.get('metadata').get('source'),
                                               metadata_type=obj.get('metadata').get('type'),
+                                              date=obj.get('metadata').get('date', 'Date not defined'),
                                               text=obj.get('metadata').get(const.PINECONE_TEXT_KEY)
                                               # su pod content, su Serverless text
                                               )
@@ -434,7 +439,6 @@ async def create_pc_index(embeddings, emb_dimension):
                                                     )  # text-key nuova versione è text
     else:
         logger.debug(f'Create index {const.PINECONE_INDEX} and embeddings ...')
-        # FIXME Cercare una soluzione megliore per gestire creazione di indici. Anche in produzione si potrebbe pensare di usare serverless...
 
         if os.environ.get("ENVIRON") == "dev":
             pc.create_index(const.PINECONE_INDEX,

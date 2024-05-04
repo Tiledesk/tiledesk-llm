@@ -19,6 +19,7 @@ class MetadataItem(BaseModel):
     source: str | None = None
     type: str | None = None
     embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
+    date: str = Field(default_factory=lambda: datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f"))
 
 
 class ChatEntry(BaseModel):
@@ -89,11 +90,16 @@ class PineconeQueryResult(BaseModel):
     metadata_id: str
     metadata_source: str
     metadata_type: str
+    date: Optional[str] = Field(default="Date not defined")
     text: Optional[str] | None = None
 
 
 class PineconeItems(BaseModel):
     matches: List[PineconeQueryResult]
+
+
+class PineconeNamespaceToDelete(BaseModel):
+    namespace: str
 
 
 class PineconeItemToDelete(BaseModel):

@@ -5,6 +5,14 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+
+## [2024-05-03]
+
+### 0.1.12
+- fixed: send status 200 to webhook and id for status 400
+- added: DELETE of namespace by POST
+- fixed: /api/scrape/status check not only on redis but on Pinecone too
+
 ## [2024-05-02]
 
 ### 0.1.11
