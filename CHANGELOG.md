@@ -6,6 +6,11 @@
 ### **Copyrigth**: *Tiledesk SRL*
 
 
+## [2024-05-06]
+
+### 0.1.13
+- fixed: delete ids from namespace. top_k max 10k
+
 ## [2024-05-03]
 
 ### 0.1.12

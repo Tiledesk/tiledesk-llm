@@ -141,11 +141,9 @@ async def delete_pc_ids_namespace(metadata_id: str, namespace: str):
     :param namespace:
     :return:
     """
+    # FIXME problema con namespace di cardinalità superiore a 10000
+
     import pinecone
-
-
-
-
     try:
         pc = pinecone.Pinecone(
             api_key=const.PINECONE_API_KEY
@@ -158,29 +156,44 @@ async def delete_pc_ids_namespace(metadata_id: str, namespace: str):
         logger.debug(describe)
         namespaces = describe.get("namespaces", {})
         total_vectors = 1
+        # batch_size = 100
+
+        offset = 0
 
         if namespaces:
             if namespace in namespaces.keys():
                 total_vectors = namespaces.get(namespace).get('vector_count')
 
         logger.debug(total_vectors)
-        pc_res = index.query(
-            vector=[0] * 1536,  # [0,0,0,0......0]
-            top_k=total_vectors,
-            filter={"id": {"$eq": metadata_id}},
-            namespace=namespace,
-            include_values=False,
-            include_metadata=False
-        )
-        matches = pc_res.get('matches')
 
-        ids = [obj.get('id') for obj in matches]
-        if not ids:
-            raise IndexError(f"Empty list for {metadata_id} and namespace {namespace}")
+        batch_size = min([total_vectors, 10000])
+        while offset < total_vectors:
 
-        index.delete(
-            ids=ids,
-            namespace=namespace)
+            pc_res = index.query(
+                vector=[0] * 1536,  # [0,0,0,0......0]
+                top_k=batch_size,
+                filter={"id": {"$eq": metadata_id}},
+                namespace=namespace,
+                include_values=False,
+                include_metadata=False
+            )
+            matches = pc_res.get('matches')
+
+            ids = [obj.get('id') for obj in matches]
+
+            if offset == 0 and not ids:
+                raise IndexError(f"Empty list for {metadata_id} and namespace {namespace}")
+            elif offset > 0 and not ids:
+                break
+
+            index.delete(
+                ids=ids,
+                namespace=namespace)
+
+            if batch_size < 10000:
+                break
+            else:
+                offset += len(ids)
 
     except Exception as ex:
 
@@ -218,16 +231,17 @@ async def get_pc_ids_namespace(metadata_id: str, namespace: str):
                 total_vectors = namespaces.get(namespace).get('vector_count')
 
         logger.debug(f"pinecone total vector in {namespace}: {total_vectors}")
-
+        batch_size = min([total_vectors, 10000])
         pc_res = index.query(
             vector=[0] * 1536,  # [0,0,0,0......0]
-            top_k=total_vectors,
+            top_k=batch_size,
             filter={"id": {"$eq": metadata_id}},
             namespace=namespace,
             include_values=False,
             include_metadata=True
         )
         matches = pc_res.get('matches')
+
         # from pprint import pprint
         # pprint(matches)
         # ids = [obj.get('id') for obj in matches]
