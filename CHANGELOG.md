@@ -5,7 +5,11 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-05-07]
 
+### 0.1.14
+- added parameter to entrypoint.sh
+- 
 ## [2024-05-06]
 
 ### 0.1.13
