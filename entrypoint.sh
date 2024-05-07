@@ -35,9 +35,23 @@ if [ -z "$environment" ]; then
   environment="dev"
 
 fi
+if [ -z "$WORKERS" ]; then
+  WORKERS=3
+fi
+if [ -z "$TIMEOUT" ]; then
+  TIMEOUT=180
+fi
+if [ -z "$MAXREQUESTS" ]; then
+  MAXREQUESTS=1200
+fi
+if [ -z "$MAXRJITTER" ]; then
+  MAXRJITTER=5
+fi
+if [ -z "$GRACEFULTIMEOUT" ]; then
+  GRACEFULTIMEOUT=30
+fi
 
-echo "$ENVIRON"
-# Connect to Redis using the parsed URL
-##tilellm --redis_url "$redisurl"
-gunicorn --bind 0.0.0.0:8000  -w 2 --env ENVIRON="$environment" --log-config-json log_conf.json --worker-class uvicorn.workers.UvicornWorker tilellm.__main__:app
+echo "start gunicorn with $ENVIRON --workers $WORKERS --timeout $TIMEOUT --max-requests $MAXREQUESTS --max-requests-jitter $MAXRJITTER --graceful-timeout $GRACEFULTIMEOUT"
+
+gunicorn --bind 0.0.0.0:8000  --workers $WORKERS --timeout $TIMEOUT --max-requests $MAXREQUESTS --max-requests-jitter $MAXRJITTER --graceful-timeout $GRACEFULTIMEOUT --env ENVIRON="$environment" --log-config-json log_conf.json --worker-class uvicorn.workers.UvicornWorker tilellm.__main__:app
 
