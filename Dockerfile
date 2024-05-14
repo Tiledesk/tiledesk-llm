@@ -7,8 +7,12 @@ COPY log_conf.json /tiledesk-llm/log_conf.json
 COPY pyproject.toml /tiledesk-llm/pyproject.toml
 COPY ./tilellm /tiledesk-llm/tilellm
 
+
+
 RUN pip install .
 RUN pip install "uvicorn[standard]" gunicorn
+RUN python -m nltk.downloader punkt
+RUN python -m nltk.downloader averaged_perceptron_tagger
 # Aggiustare redis
 ENV REDIS_HOST=redis
 ENV REDIS_URL=redis://redis:6379/0

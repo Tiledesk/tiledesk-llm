@@ -39,16 +39,16 @@ if [ -z "$WORKERS" ]; then
   WORKERS=3
 fi
 if [ -z "$TIMEOUT" ]; then
-  TIMEOUT=180
+  TIMEOUT=240
 fi
 if [ -z "$MAXREQUESTS" ]; then
-  MAXREQUESTS=1200
+  MAXREQUESTS=2000
 fi
 if [ -z "$MAXRJITTER" ]; then
   MAXRJITTER=5
 fi
 if [ -z "$GRACEFULTIMEOUT" ]; then
-  GRACEFULTIMEOUT=30
+  GRACEFULTIMEOUT=60
 fi
 
 echo "start gunicorn with $ENVIRON --workers $WORKERS --timeout $TIMEOUT --max-requests $MAXREQUESTS --max-requests-jitter $MAXRJITTER --graceful-timeout $GRACEFULTIMEOUT"
