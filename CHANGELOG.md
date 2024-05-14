@@ -5,6 +5,12 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-05-14]
+
+### 0.1.15
+- minor fix: Dockerfile
+
+
 ## [2024-05-07]
 
 ### 0.1.14
