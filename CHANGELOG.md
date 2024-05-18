@@ -5,6 +5,12 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-05-18]
+
+### 0.1.16
+- added: /api/scrape/single without redis queue
+- added: /api/scrape/enqueue to enqueue item into redis queue 
+
 ## [2024-05-14]
 
 ### 0.1.15
@@ -15,7 +21,7 @@
 
 ### 0.1.14
 - added parameter to entrypoint.sh
-- 
+
 ## [2024-05-06]
 
 ### 0.1.13

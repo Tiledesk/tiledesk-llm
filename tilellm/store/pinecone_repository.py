@@ -297,9 +297,11 @@ async def get_pc_all_obj_namespace(namespace: str):
 
         logger.debug(f"pinecone total vector in {namespace}: {total_vectors}")
 
+        batch_size = min([total_vectors, 1000])
+
         pc_res = index.query(
             vector=[0] * 1536,  # [0,0,0,0......0]
-            top_k=total_vectors,
+            top_k=batch_size,
             # filter={"id": {"$eq": id}},
             namespace=namespace,
             include_values=False,
