@@ -33,7 +33,7 @@ async def add_pc_item(item):
     try:
         await delete_pc_ids_namespace(metadata_id=metadata_id, namespace=namespace)
     except Exception as ex:
-        logger.error(ex)
+        logger.warning(ex)
         pass
 
     emb_dimension = get_embeddings_dimension(embedding)
@@ -196,9 +196,7 @@ async def delete_pc_ids_namespace(metadata_id: str, namespace: str):
                 offset += len(ids)
 
     except Exception as ex:
-
-        logger.error(ex)
-
+        # logger.error(ex)
         raise ex
 
 
@@ -456,7 +454,7 @@ async def create_pc_index(embeddings, emb_dimension):
     else:
         logger.debug(f'Create index {const.PINECONE_INDEX} and embeddings ...')
 
-        if os.environ.get("ENVIRON") == "dev":
+        if os.environ.get("PINECONE_TYPE") == "serverless":
             pc.create_index(const.PINECONE_INDEX,
                             dimension=emb_dimension,
                             metric='cosine',
