@@ -324,14 +324,14 @@ async def create_scrape_item_single(item: ItemSingle, redis_client: aioredis.cli
 
         logger.error(f"Error {add_to_queue}")
         import traceback
-        if webhook:
-            res = PineconeIndexingResult(id=item.id, status=400, error=repr(e))
-            async with aiohttp.ClientSession() as session:
-                response = await session.post(webhook, json=res.model_dump(exclude_none=True),
-                                              headers={"Content-Type": "application/json", "X-Auth-Token": token})
-                logger.error(response)
-                logger.error(f"{await response.json()}")
-            logger.error(f"Error {e}, webhook: {webhook}")
+        # if webhook:
+        #    res = PineconeIndexingResult(id=item.id, status=400, error=repr(e))
+        #    async with aiohttp.ClientSession() as session:
+        #        response = await session.post(webhook, json=res.model_dump(exclude_none=True),
+        #                                      headers={"Content-Type": "application/json", "X-Auth-Token": token})
+        #        logger.error(response)
+        #        logger.error(f"{await response.json()}")
+        #    logger.error(f"Error {e}, webhook: {webhook}")
         traceback.print_exc()
         logger.error(e)
         raise HTTPException(status_code=400, detail=repr(e))
