@@ -144,3 +144,6 @@ qa.json
 .idea/tiledesk-llm.iml
 .idea/vcs.xml
 .idea/inspectionProfiles/profiles_settings.xml
+
+
+/worker/node_modules
