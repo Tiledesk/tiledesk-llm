@@ -1,3 +1,4 @@
+# STAGE 1: LLM
 FROM python:3.10
 
 WORKDIR /tiledesk-llm
@@ -23,5 +24,47 @@ EXPOSE 8000
 COPY entrypoint.sh /tiledesk-llm/entrypoint.sh
 RUN chmod +x /tiledesk-llm/entrypoint.sh
 
-ENTRYPOINT ["/tiledesk-llm/entrypoint.sh"]
+# STAGE 2: WORKER
 
+RUN curl -sL https://deb.nodesource.com/setup_16.x | bash -
+RUN apt-get install -y nodejs
+
+####
+RUN npm install -g npm@8.x.x
+
+#RUN sed -i 's/stable\/updates/stable-security\/updates/' /etc/apt/sources.list
+
+RUN apt-get update
+
+# Create app directory
+WORKDIR /usr/src/app
+COPY ./worker .
+
+
+ARG NPM_TOKEN
+
+RUN if [ "$NPM_TOKEN" ]; \
+    then RUN COPY .npmrc_ .npmrc \
+    else export SOMEVAR=world; \
+    fi
+
+
+# Install app dependencies
+# A wildcard is used to ensure both package.json AND package-lock.json are copied
+# where available (npm@5+)
+COPY worker/package*.json ./
+
+RUN npm install --production
+
+
+
+RUN rm -f .npmrc
+
+# Bundle app source
+#COPY . .
+
+WORKDIR /tiledesk-llm
+
+EXPOSE 3009
+
+ENTRYPOINT ["sh","-c","/tiledesk-llm/entrypoint.sh & node /usr/src/app/index.js"]
