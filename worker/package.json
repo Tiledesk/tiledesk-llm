@@ -9,6 +9,7 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@tiledesk/tiledesk-train-jobworker": "^0.0.11",
     "express": "^4.19.2"
   }
 }
