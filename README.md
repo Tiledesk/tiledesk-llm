@@ -13,6 +13,7 @@ pip install -e .
 
 ```commandline
 export REDIS_URL="redis://localhost:6379/0"
+export PINECONE_TYPE="serverless|pod"
 export PINECONE_API_KEY="pinecone api key"
 export PINECONE_TEXT_KEY="pinecone field for text - default text in pod content"
 export PINECONE_INDEX="pinecone index name"

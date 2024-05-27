@@ -5,6 +5,11 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-05-20]
+
+### 0.1.17
+- added: PIENCONE_TYPE = "serverless|pod"
+
 ## [2024-05-18]
 
 ### 0.1.16
