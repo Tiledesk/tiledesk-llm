@@ -4,14 +4,10 @@ const app = express();
 if (process.env.TILELLM_ROLE === 'train') {
     const trainJobworker = require('@tiledesk/tiledesk-train-jobworker')
 } else {
-    console.log("Worker non parte!!!!!!!")
+    console.log("Worker is on QA module: Train-jobworker disabled!")
 }
 
 app.get('/', (req, res) => {
-    console.log("Tiledesk Trainer Worker Container works!");
-    if (trainJobworker) {
-        console.log("(Test Log) trainJobworker: ", trainJobworker);
-    }
     res.status(200).send("Tiledesk Trainer Worker Container works!");
 })
 
