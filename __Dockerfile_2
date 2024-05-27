@@ -38,6 +38,8 @@ RUN apt-get update
 
 # Create app directory
 WORKDIR /usr/src/app
+COPY ./worker .
+
 
 ARG NPM_TOKEN
 
@@ -59,10 +61,10 @@ RUN npm install --production
 RUN rm -f .npmrc
 
 # Bundle app source
-COPY . .
+#COPY . .
 
 WORKDIR /tiledesk-llm
 
 EXPOSE 3009
 
-ENTRYPOINT ["/tiledesk-llm/entrypoint.sh", "&", "node", "/usr/src/app/index.js"]
+ENTRYPOINT ["sh","-c","/tiledesk-llm/entrypoint.sh & node /usr/src/app/index.js"]
