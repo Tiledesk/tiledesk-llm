@@ -25,11 +25,13 @@
       "stream": "ext://sys.stderr"
     }
   },
+
   "root": {
     "level": "INFO",
     "handlers": [
       "stdout","stderr"
-    ]
+    ],
+     "propagate": false
   },
   "formatters": {
     "simple": {

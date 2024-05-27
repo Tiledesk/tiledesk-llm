@@ -320,6 +320,7 @@ async def delete_id_from_namespace(metadata_id:str, namespace:str):
     try:
         return await delete_pc_ids_namespace(metadata_id=metadata_id, namespace=namespace)
     except Exception as ex:
+        logger.error(ex)
         raise ex
 
 

@@ -46,7 +46,7 @@ import logging
 # args = parser.parse_args()
 
 ENVIRONMENTS = {
-    'dev': '.environ',
+    'serverless': '.environ',
     'prod': '.environ.prod',
 }
 
@@ -55,7 +55,7 @@ expiration_in_seconds = 48 * 60 * 60
 logger = logging.getLogger(__name__)
 
 
-environment = os.environ.get("ENVIRON", "dev")
+environment = os.environ.get("PINECONE_TYPE", "serverless")
 # environment = "prod"
 load_dotenv(ENVIRONMENTS.get(environment) or '.environ')
 
@@ -270,18 +270,18 @@ async def create_scrape_item_single(item: ItemSingle, redis_client: aioredis.cli
 
         logger.info(f"webhook: {webhook}, token: {token}")
 
-        if webhook:
-            res = PineconeIndexingResult(id=item.id, status=200)
-            try:
-                async with aiohttp.ClientSession() as session:
-                    res = await session.post(webhook,
-                                             json=res.model_dump(exclude_none=True),
-                                             headers={"Content-Type": "application/json",
-                                                      "X-Auth-Token": token})
-                    logger.info(f"200 {await res.json()}")
-            except Exception as ewh:
-                logger.error(ewh)
-                pass
+        # if webhook:
+        #    res = PineconeIndexingResult(id=item.id, status=200)
+        #    try:
+        #        async with aiohttp.ClientSession() as session:
+        #            res = await session.post(webhook,
+        #                                     json=res.model_dump(exclude_none=True),
+        #                                     headers={"Content-Type": "application/json",
+        #                                              "X-Auth-Token": token})
+        #            logger.info(f"200 {await res.json()}")
+        #    except Exception as ewh:
+        #        logger.error(ewh)
+        #        pass
 
         pc_result = await add_pc_item(item)
         # import datetime
@@ -299,20 +299,20 @@ async def create_scrape_item_single(item: ItemSingle, redis_client: aioredis.cli
                                          scrape_status_response.model_dump_json(),
                                          ex=expiration_in_seconds)
 
-        logger.debug(f"End {add_to_queue}")
-        if webhook:
-            try:
-                async with aiohttp.ClientSession() as session:
-                    res = await session.post(webhook,
-                                             json=pc_result.model_dump(exclude_none=True),
-                                             headers={"Content-Type": "application/json",
-                                                      "X-Auth-Token": token})
-                    logger.info(f"300 {await res.json()}")
-            except Exception as ewh:
-                logger.error(ewh)
-                pass
+        # logger.debug(f"End {add_to_queue}")
+        # if webhook:
+        #    try:
+        #        async with aiohttp.ClientSession() as session:
+        #            res = await session.post(webhook,
+        #                                     json=pc_result.model_dump(exclude_none=True),
+        #                                     headers={"Content-Type": "application/json",
+        #                                              "X-Auth-Token": token})
+        #            logger.info(f"300 {await res.json()}")
+        #    except Exception as ewh:
+        #        logger.error(ewh)
+        #        pass
 
-        return JSONResponse(content={"message": f"Item {item.id} created successfully"})
+        return JSONResponse(content=pc_result.model_dump(exclude_none=True)) # {"message": f"Item {item.id} created successfully"})
 
     except Exception as e:
         scrape_status_response = ScrapeStatusResponse(status_message="Error",
@@ -324,14 +324,14 @@ async def create_scrape_item_single(item: ItemSingle, redis_client: aioredis.cli
 
         logger.error(f"Error {add_to_queue}")
         import traceback
-        if webhook:
-            res = PineconeIndexingResult(id=item.id, status=400, error=repr(e))
-            async with aiohttp.ClientSession() as session:
-                response = await session.post(webhook, json=res.model_dump(exclude_none=True),
-                                              headers={"Content-Type": "application/json", "X-Auth-Token": token})
-                logger.error(response)
-                logger.error(f"{await response.json()}")
-            logger.error(f"Error {e}, webhook: {webhook}")
+        # if webhook:
+        #    res = PineconeIndexingResult(id=item.id, status=400, error=repr(e))
+        #    async with aiohttp.ClientSession() as session:
+        #        response = await session.post(webhook, json=res.model_dump(exclude_none=True),
+        #                                      headers={"Content-Type": "application/json", "X-Auth-Token": token})
+        #        logger.error(response)
+        #        logger.error(f"{await response.json()}")
+        #    logger.error(f"Error {e}, webhook: {webhook}")
         traceback.print_exc()
         logger.error(e)
         raise HTTPException(status_code=400, detail=repr(e))
