@@ -30,6 +30,7 @@ async def add_pc_item(item):
     gpt_key = item.gptkey
     embedding = item.embedding
     namespace = item.namespace
+    scrape_type = item.scrape_type
     try:
         await delete_pc_ids_namespace(metadata_id=metadata_id, namespace=namespace)
     except Exception as ex:
@@ -47,7 +48,7 @@ async def add_pc_item(item):
     cost = 0
 
     if type_source == 'url':
-        documents = get_content_by_url(source)
+        documents = get_content_by_url(source, scrape_type)
         for document in documents:
             document.metadata["id"] = metadata_id
             document.metadata["source"] = source
