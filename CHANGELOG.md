@@ -7,6 +7,11 @@
 
 ## [2024-05-20]
 
+### 0.1.18
+- added: scrape_type =0|1
+
+## [2024-05-20]
+
 ### 0.1.17
 - added: PIENCONE_TYPE = "serverless|pod"
 

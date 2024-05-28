@@ -9,6 +9,7 @@ class ItemSingle(BaseModel):
     type: str | None = None
     content: str | None = None
     gptkey: str | None = None
+    scrape_type: int = Field(default_factory=lambda: 0)
     embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
     namespace: str | None = None
     webhook: str = Field(default_factory=lambda: "")
