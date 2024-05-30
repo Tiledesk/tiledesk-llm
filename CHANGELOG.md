@@ -9,6 +9,7 @@
 
 ### 0.1.18
 - added: scrape_type =0|1
+- added: trainer_worker as a node application
 
 ## [2024-05-20]
 
