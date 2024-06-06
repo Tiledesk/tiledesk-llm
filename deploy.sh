@@ -1,5 +1,5 @@
 # npm version patch
-version="0.1.18"
+version="0.1.20"
 echo "version $version"
 
 if [ "$version" != "" ]; then

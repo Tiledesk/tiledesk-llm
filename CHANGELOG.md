@@ -6,6 +6,10 @@
 ### **Copyrigth**: *Tiledesk SRL*
 
 ## [2024-06-06]
+### 0.1.20
+- added: log_conf.json
+
+## [2024-06-06]
 
 ### 0.1.19
 - minor fix: return 400 if url is not correct
