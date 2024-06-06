@@ -8,21 +8,24 @@ import requests
 
 #"https://help.tiledesk.com/mychatbots/articles/il-pnrr-per-la-ricerca-e-linnovazione/"
 def get_content_by_url(url: str, scrape_type: int):
-    urls =[url]
-    if scrape_type == 0:
-        loader = UnstructuredURLLoader(
-            urls=urls, mode="elements", strategy="fast",
-        )
-    else:
-        loader = UnstructuredURLLoader(
-            urls=urls, mode="single"
-        )
-    docs = loader.load()
+    try:
+        urls = [url]
+        if scrape_type == 0:
+            loader = UnstructuredURLLoader(
+                urls=urls, mode="elements", strategy="fast", continue_on_failure=False
+            )
+        else:
+            loader = UnstructuredURLLoader(
+                urls=urls, mode="single", continue_on_failure=False
+            )
+        docs = loader.load()
 
-    # from pprint import pprint
-    # pprint(docs)
+        # from pprint import pprint
+        # pprint(docs)
 
-    return docs
+        return docs
+    except Exception as ex:
+        raise ex
 
 def get_content_by_url_with_bs(url:str):
     html = requests.get(url)

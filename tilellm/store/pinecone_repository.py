@@ -47,68 +47,73 @@ async def add_pc_item(item):
     total_tokens = 0
     cost = 0
 
-    if type_source == 'url':
-        documents = get_content_by_url(source, scrape_type)
-        for document in documents:
-            document.metadata["id"] = metadata_id
-            document.metadata["source"] = source
-            document.metadata["type"] = type_source
-            document.metadata["embedding"] = embedding
+    try:
+        if type_source == 'url':
+            documents = get_content_by_url(source, scrape_type)
+            for document in documents:
+                document.metadata["id"] = metadata_id
+                document.metadata["source"] = source
+                document.metadata["type"] = type_source
+                document.metadata["embedding"] = embedding
 
-            for key, value in document.metadata.items():
-                if isinstance(value, list) and all(item is None for item in value):
-                    document.metadata[key] = [""]
-                elif value is None:
-                    document.metadata[key] = ""
+                for key, value in document.metadata.items():
+                    if isinstance(value, list) and all(item is None for item in value):
+                        document.metadata[key] = [""]
+                    elif value is None:
+                        document.metadata[key] = ""
+
+                chunks.extend(chunk_data(data=[document]))
+
+
+
+            # from pprint import pprint
+            # pprint(documents)
+            logger.debug(documents)
+
+            a = vector_store.from_documents(chunks,
+                                            embedding=oai_embeddings,
+                                            index_name=const.PINECONE_INDEX,
+                                            namespace=namespace,
+                                            text_key=const.PINECONE_TEXT_KEY)
+
+            total_tokens, cost = calc_embedding_cost(chunks, embedding)
+            logger.info(f"chunks: {len(chunks)}, total_tokens: {total_tokens}, cost: {cost: .6f}")
+
+            # from pprint import pprint
+            # pprint(documents)
+        elif type_source == 'urlbs':
+            doc_array = get_content_by_url_with_bs(source)
+            chunks = list()
+            for doc in doc_array:
+                metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding)
+                document = Document(page_content=doc, metadata=metadata.dict())
+                chunks.append(document)
+            # chunks.extend(chunk_data(data=documents))
+            total_tokens, cost = calc_embedding_cost(chunks, embedding)
+            a = vector_store.from_documents(chunks,
+                                            embedding=oai_embeddings,
+                                            index_name=const.PINECONE_INDEX,
+                                            namespace=namespace,
+                                            text_key=const.PINECONE_TEXT_KEY)
+
+        else:
+            metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding)
+            document = Document(page_content=content, metadata=metadata.dict())
 
             chunks.extend(chunk_data(data=[document]))
+            total_tokens, cost = calc_embedding_cost(chunks, embedding)
+            a = vector_store.from_documents(chunks,
+                                            embedding=oai_embeddings,
+                                            index_name=const.PINECONE_INDEX,
+                                            namespace=namespace,
+                                            text_key=const.PINECONE_TEXT_KEY)
 
-
-
-        # from pprint import pprint
-        # pprint(documents)
-        logger.debug(documents)
-
-        a = vector_store.from_documents(chunks,
-                                        embedding=oai_embeddings,
-                                        index_name=const.PINECONE_INDEX,
-                                        namespace=namespace,
-                                        text_key=const.PINECONE_TEXT_KEY)
-
-        total_tokens, cost = calc_embedding_cost(chunks, embedding)
-        logger.info(f"chunks: {len(chunks)}, total_tokens: {total_tokens}, cost: {cost: .6f}")
-
-        # from pprint import pprint
-        # pprint(documents)
-    elif type_source == 'urlbs':
-        doc_array = get_content_by_url_with_bs(source)
-        chunks = list()
-        for doc in doc_array:
-            metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding)
-            document = Document(page_content=doc, metadata=metadata.dict())
-            chunks.append(document)
-        # chunks.extend(chunk_data(data=documents))
-        total_tokens, cost = calc_embedding_cost(chunks, embedding)
-        a = vector_store.from_documents(chunks,
-                                        embedding=oai_embeddings,
-                                        index_name=const.PINECONE_INDEX,
-                                        namespace=namespace,
-                                        text_key=const.PINECONE_TEXT_KEY)
-
-    else:
-        metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding)
-        document = Document(page_content=content, metadata=metadata.dict())
-
-        chunks.extend(chunk_data(data=[document]))
-        total_tokens, cost = calc_embedding_cost(chunks, embedding)
-        a = vector_store.from_documents(chunks,
-                                        embedding=oai_embeddings,
-                                        index_name=const.PINECONE_INDEX,
-                                        namespace=namespace,
-                                        text_key=const.PINECONE_TEXT_KEY)
-
-    pinecone_result = PineconeIndexingResult(id=metadata_id, chunks=len(chunks), total_tokens=total_tokens,
-                                             cost=f"{cost:.6f}")
+        pinecone_result = PineconeIndexingResult(id=metadata_id, chunks=len(chunks), total_tokens=total_tokens,
+                                                 cost=f"{cost:.6f}")
+    except Exception as ex:
+        pinecone_result = PineconeIndexingResult(id=metadata_id, chunks=len(chunks), total_tokens=total_tokens,
+                                                 status=400,
+                                                 cost=f"{cost:.6f}")
     # {"id": f"{id}", "chunks": f"{len(chunks)}", "total_tokens": f"{total_tokens}", "cost": f"{cost:.6f}"}
     return pinecone_result
 
@@ -149,7 +154,7 @@ async def delete_pc_ids_namespace(metadata_id: str, namespace: str):
         pc = pinecone.Pinecone(
             api_key=const.PINECONE_API_KEY
         )
-        # index_host = "https://tilellm-s9kvboq.svc.apw5-4e34-81fa.pinecone.io"#os.environ.get("PINECONE_INDEX_HOST")
+
         host = pc.describe_index(const.PINECONE_INDEX).host
         index = pc.Index(name=const.PINECONE_INDEX, host=host)
         # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
@@ -195,6 +200,65 @@ async def delete_pc_ids_namespace(metadata_id: str, namespace: str):
                 break
             else:
                 offset += len(ids)
+
+    except Exception as ex:
+        # logger.error(ex)
+        raise ex
+
+
+async def delete_pc_ids_namespace_pod(metadata_id: str, namespace: str):
+    """
+    Delete from pinecone items
+    :param metadata_id:
+    :param namespace:
+    :return:
+    """
+    # FIXME problema con namespace di cardinalità superiore a 10000
+
+    import pinecone
+    try:
+        pc = pinecone.Pinecone(
+            api_key=const.PINECONE_API_KEY
+        )
+        # index_host = "https://tilellm-s9kvboq.svc.apw5-4e34-81fa.pinecone.io"#os.environ.get("PINECONE_INDEX_HOST")
+        host = pc.describe_index(const.PINECONE_INDEX).host
+        index = pc.Index(name=const.PINECONE_INDEX, host=host)
+        # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
+        describe = index.describe_index_stats()
+        logger.debug(describe)
+        namespaces = describe.get("namespaces", {})
+        total_vectors = 1
+        # batch_size = 100
+
+        import numpy as np
+        import time
+        # Next, we'll create a random vector to use as a query.
+        # query_vector = np.random.uniform(-1, 1, size=1536).tolist()
+        query_vector = [0] * 1536
+        # Now, cycle through the index, and add a slight sleep time in between batches to make sure we don't overwhelm the index.
+        deletes = []
+        deleted = 0
+        batch_size = 100
+        results = index.query(vector=query_vector,
+                              filter={"id": {"$eq": metadata_id}},
+                              top_k=batch_size,
+                              namespace=namespace,
+                              include_values=False,
+                              include_metadata=False)
+        while len(results['matches']) > 0:
+            ids = [i['id'] for i in results['matches']]
+            index.delete(ids=ids, namespace=namespace)
+            deleted += len(ids)
+            time.sleep(1.50)
+            results = index.query(vector=query_vector,
+                                  filter={"id": {"$eq": metadata_id}},
+                                  top_k=batch_size,
+                                  namespace=namespace,
+                                  include_values=False,
+                                  include_metadata=False)
+
+        logger.info(f"{deleted}")
+        return deleted
 
     except Exception as ex:
         # logger.error(ex)

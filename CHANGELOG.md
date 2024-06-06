@@ -5,6 +5,11 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-06-06]
+
+### 0.1.19
+- minor fix: return 400 if url is not correct
+
 ## [2024-05-20]
 
 ### 0.1.18
