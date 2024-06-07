@@ -5,6 +5,10 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-06-07]
+### 0.1.21
+- added: support for pdf, docx and txt
+
 ## [2024-06-06]
 ### 0.1.20
 - added: log_conf.json

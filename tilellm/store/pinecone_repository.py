@@ -3,7 +3,12 @@ from tilellm.models.item_model import (MetadataItem,
                                        PineconeItems,
                                        PineconeIndexingResult
                                        )
-from tilellm.tools.document_tool_simple import get_content_by_url, get_content_by_url_with_bs
+from tilellm.tools.document_tool_simple import (get_content_by_url,
+                                                get_content_by_url_with_bs,
+                                                load_document,
+                                                load_from_wikipedia
+                                                )
+
 from tilellm.shared import const
 from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
@@ -48,8 +53,13 @@ async def add_pc_item(item):
     cost = 0
 
     try:
-        if type_source == 'url':
-            documents = get_content_by_url(source, scrape_type)
+        if type_source == 'url' or 'pdf' or 'docx' or 'txt':
+            documents = []
+            if type_source == 'url':
+                documents = get_content_by_url(source, scrape_type)
+            elif type_source == 'pdf' or 'docx' or 'txt':
+                documents = load_document(source, type_source)
+
             for document in documents:
                 document.metadata["id"] = metadata_id
                 document.metadata["source"] = source
@@ -609,3 +619,5 @@ def get_embeddings_dimension(embedding):
         emb_dimension = 1536
 
     return emb_dimension
+
+

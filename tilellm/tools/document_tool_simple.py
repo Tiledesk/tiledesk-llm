@@ -4,9 +4,12 @@ from langchain_community.document_loaders import BSHTMLLoader
 from langchain_community.document_loaders import UnstructuredURLLoader
 from langchain_community.document_loaders import AsyncChromiumLoader
 import requests
+import logging
+
+logger = logging.getLogger(__name__)
 
 
-#"https://help.tiledesk.com/mychatbots/articles/il-pnrr-per-la-ricerca-e-linnovazione/"
+# "https://help.tiledesk.com/mychatbots/articles/il-pnrr-per-la-ricerca-e-linnovazione/"
 def get_content_by_url(url: str, scrape_type: int):
     try:
         urls = [url]
@@ -27,12 +30,44 @@ def get_content_by_url(url: str, scrape_type: int):
     except Exception as ex:
         raise ex
 
+
+def load_document(url: str, type_source: str):
+    # import os
+    # name, extension = os.path.splitext(file)
+
+    if type_source == 'pdf':
+        from langchain_community.document_loaders import PyPDFLoader
+        logger.info(f'Loading {url}')
+        loader = PyPDFLoader(url)
+    elif type_source == 'docx':
+        from langchain_community.document_loaders import Docx2txtLoader
+        logger.info(f'Loading {url}')
+        loader = Docx2txtLoader(url)
+    elif type_source == 'txt':
+        from langchain_community.document_loaders import TextLoader
+        logger.info(f'Loading {url}')
+        loader = TextLoader(url)
+    else:
+        logger.info('Document format is not supported!')
+        return None
+
+    data = loader.load()
+    return data
+
+
+def load_from_wikipedia(query, lang='en', load_max_docs=2):
+    from langchain_community.document_loaders import WikipediaLoader
+    loader = WikipediaLoader(query=query, lang=lang, load_max_docs=load_max_docs)
+    data = loader.load()
+    return data
+
+
 def get_content_by_url_with_bs(url:str):
     html = requests.get(url)
-    #urls = [url]
+    # urls = [url]
     # Load HTML
-    #loader = await AsyncChromiumLoader(urls)
-    #html = loader.load()
+    # loader = await AsyncChromiumLoader(urls)
+    # html = loader.load()
 
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(html.content, 'html.parser')
@@ -66,8 +101,11 @@ def get_content_by_url_with_bs(url:str):
         testi.append(testo_doc)
 
         # Aggiungi una riga vuota tra i segmenti
-        #if index < len(h1_tags) - 1:
+        # if index < len(h1_tags) - 1:
         #    print()  # Stampa una riga vuota tra i segmenti
 
 
     return testi
+
+
+
