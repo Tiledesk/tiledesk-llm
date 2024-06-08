@@ -32,7 +32,7 @@ done
 # Validate required argument
 if [ -z "$environment" ]; then
   # echo "Info: --environment argument is set to dev."
-  environment="dev"
+  environment=""
 
 fi
 if [ -z "$WORKERS" ]; then
@@ -53,5 +53,5 @@ fi
 
 echo "start gunicorn with $ENVIRON --workers $WORKERS --timeout $TIMEOUT --max-requests $MAXREQUESTS --max-requests-jitter $MAXRJITTER --graceful-timeout $GRACEFULTIMEOUT"
 
-gunicorn --bind 0.0.0.0:8000  --workers $WORKERS --timeout $TIMEOUT --max-requests $MAXREQUESTS --max-requests-jitter $MAXRJITTER --graceful-timeout $GRACEFULTIMEOUT --env PINECONE_TYPE="$environment" --log-config-json log_conf.json --worker-class uvicorn.workers.UvicornWorker tilellm.__main__:app
+gunicorn --bind 0.0.0.0:8000  --workers $WORKERS --timeout $TIMEOUT --max-requests $MAXREQUESTS --max-requests-jitter $MAXRJITTER --graceful-timeout $GRACEFULTIMEOUT --log-config-json log_conf.json --worker-class uvicorn.workers.UvicornWorker tilellm.__main__:app
 

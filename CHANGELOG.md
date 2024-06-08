@@ -5,6 +5,10 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-06-08]
+### 0.2.0
+- refactor: refactor repository in order to manage pod and serverless
+
 ## [2024-06-07]
 ### 0.1.21
 - added: support for pdf, docx and txt

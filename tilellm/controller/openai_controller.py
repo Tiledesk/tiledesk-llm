@@ -2,18 +2,21 @@ import fastapi
 from langchain.chains import ConversationalRetrievalChain, LLMChain # Per la conversazione va usata questa classe
 from langchain_core.prompts import PromptTemplate, SystemMessagePromptTemplate
 from langchain_openai import ChatOpenAI
-from tilellm.store.pinecone_repository import add_pc_item as pinecone_add_item
-from tilellm.store.pinecone_repository import create_pc_index, get_embeddings_dimension
+# from tilellm.store.pinecone_repository import add_pc_item as pinecone_add_item
+# from tilellm.store.pinecone_repository import create_pc_index, get_embeddings_dimension
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.callbacks.openai_info import OpenAICallbackHandler
 from tilellm.models.item_model import RetrievalResult, ChatEntry
+from tilellm.shared.utility import inject_repo
+# from tilellm.store.pinecone_repository_base import PineconeRepositoryBase
 
 import logging
 
 logger = logging.getLogger(__name__)
 
 
-async def ask_with_memory(question_answer):
+@inject_repo
+async def ask_with_memory(question_answer, repo=None):
     
     try:
         logger.info(question_answer)
@@ -41,10 +44,10 @@ async def ask_with_memory(question_answer):
                          max_tokens=question_answer.max_tokens,
                          callbacks=[openai_callback_handler])
 
-        emb_dimension = get_embeddings_dimension(question_answer.embedding)
+        emb_dimension = repo.get_embeddings_dimension(question_answer.embedding)
         oai_embeddings = OpenAIEmbeddings(api_key=question_answer.gptkey, model=question_answer.embedding) 
         
-        vector_store = await create_pc_index(oai_embeddings, emb_dimension)
+        vector_store = await repo.create_pc_index(oai_embeddings, emb_dimension)
 
         retriever = vector_store.as_retriever(search_type='similarity',
                                               search_kwargs={'k': question_answer.top_k,
@@ -150,7 +153,8 @@ async def ask_with_memory(question_answer):
         raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
 
 
-async def ask_with_sequence(question_answer):
+@inject_repo
+async def ask_with_sequence(question_answer, repo=None):
     try:
         logger.info(question_answer)
         # question = str
@@ -178,10 +182,10 @@ async def ask_with_sequence(question_answer):
 
                          callbacks=[openai_callback_handler])
 
-        emb_dimension = get_embeddings_dimension(question_answer.embedding)
+        emb_dimension = repo.get_embeddings_dimension(question_answer.embedding)
         oai_embeddings = OpenAIEmbeddings(api_key=question_answer.gptkey, model=question_answer.embedding)
 
-        vector_store = await create_pc_index(oai_embeddings, emb_dimension)
+        vector_store = await repo.create_pc_index(oai_embeddings, emb_dimension)
         idllmchain = get_idproduct_chain(llm)
         res = idllmchain.invoke(question_answer.question)
 
@@ -287,92 +291,107 @@ async def ask_with_sequence(question_answer):
         raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
 
 
-async def add_pc_item(item):
+@inject_repo
+async def add_pc_item(item, repo=None):
     """
     Add items to namespace
+    :type repo: PineconeRepositoryBase
     :param item:
+    :param repo:
     :return:
     """
-    return await pinecone_add_item(item)
+    return await repo.add_pc_item(item)
 
 
-async def delete_namespace(namespace: str):
+@inject_repo
+async def delete_namespace(namespace: str, repo=None):
     """
     Delete Namespace from index
     :param namespace:
+    :param repo:
     :return:
     """
-    from tilellm.store.pinecone_repository import delete_pc_namespace
+    # from tilellm.store.pinecone_repository import delete_pc_namespace
     try:
-        return await delete_pc_namespace(namespace)
+        return await repo.delete_pc_namespace(namespace)
     except Exception as ex:
         raise ex
 
 
-async def delete_id_from_namespace(metadata_id:str, namespace:str):
+@inject_repo
+async def delete_id_from_namespace(metadata_id: str, namespace: str, repo=None):
     """
     Delete items from namespace
     :param metadata_id:
     :param namespace:
+    :param repo:
     :return:
     """
-    from tilellm.store.pinecone_repository import delete_pc_ids_namespace # , delete_pc_ids_namespace1
+    # from tilellm.store.pinecone_repository import delete_pc_ids_namespace # , delete_pc_ids_namespace1
     try:
-        return await delete_pc_ids_namespace(metadata_id=metadata_id, namespace=namespace)
+        return await repo.delete_pc_ids_namespace(metadata_id=metadata_id, namespace=namespace)
     except Exception as ex:
         logger.error(ex)
         raise ex
 
 
-async def get_list_namespace():
+@inject_repo
+async def get_list_namespace(repo=None):
     """
     Get list namespaces with namespace id and vector count
+    :param repo:
     :return: list of all namespaces in index
     """
-    from tilellm.store.pinecone_repository import pinecone_list_namespaces
+    # from tilellm.store.pinecone_repository import pinecone_list_namespaces
     try:
-        return await pinecone_list_namespaces()
+        return await repo.pinecone_list_namespaces()
     except Exception as ex:
         raise ex
 
 
-async def get_ids_namespace(metadata_id: str, namespace: str):
+@inject_repo
+async def get_ids_namespace(metadata_id: str, namespace: str, repo=None):
     """
     Get all items from namespace given id
     :param metadata_id:
     :param namespace:
+    :param repo:
     :return:
     """
-    from tilellm.store.pinecone_repository import get_pc_ids_namespace
+    # from tilellm.store.pinecone_repository import get_pc_ids_namespace
     try:
-        return await get_pc_ids_namespace(metadata_id=metadata_id, namespace=namespace)
+        return await repo.get_pc_ids_namespace(metadata_id=metadata_id, namespace=namespace)
     except Exception as ex:
         raise ex
 
 
-async def get_listitems_namespace(namespace: str):
+@inject_repo
+async def get_listitems_namespace(namespace: str, repo=None):
     """
     Get all items from given namespace
     :param namespace: namespace_id
+    :param repo:
     :return: list of al items
     """
-    from tilellm.store.pinecone_repository import get_pc_all_obj_namespace
+    # from tilellm.store.pinecone_repository import get_pc_all_obj_namespace
     try:
-        return await get_pc_all_obj_namespace(namespace=namespace)
+        return await repo.get_pc_all_obj_namespace(namespace=namespace)
     except Exception as ex:
         raise ex
 
 
-async def get_sources_namespace(source: str, namespace: str):
+@inject_repo
+async def get_sources_namespace(source: str, namespace: str, repo=None):
     """
     Get all item from namespace given source
     :param source:
     :param namespace:
+    :param repo:
     :return:
     """
-    from tilellm.store.pinecone_repository import get_pc_sources_namespace
+    # from tilellm.store.pinecone_repository import get_pc_sources_namespace
     try:
-        return await get_pc_sources_namespace(source=source, namespace=namespace)
+        return await repo.get_pc_sources_namespace(source=source, namespace=namespace)
     except Exception as ex:
         raise ex
 
