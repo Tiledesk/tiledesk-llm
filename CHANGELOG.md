@@ -5,6 +5,11 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-06-15]
+### 0.2.1
+- update: langchain v. 0.1.16
+- modified: prompt for q&A
+
 ## [2024-06-08]
 ### 0.2.0
 - refactor: refactor repository in order to manage pod and serverless
