@@ -6,6 +6,12 @@
 ### **Copyrigth**: *Tiledesk SRL*
 
 ## [2024-06-15]
+### 0.2.2
+- fix: indexing of txt documents
+
+
+
+## [2024-06-15]
 ### 0.2.1
 - update: langchain v. 0.1.16
 - modified: prompt for q&A

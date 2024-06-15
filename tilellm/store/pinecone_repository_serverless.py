@@ -62,7 +62,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                     type_source == 'txt'):
 
                 documents = []
-                if type_source == 'url':
+                if type_source == 'url' or type_source == 'txt':
                     documents = get_content_by_url(source, scrape_type)
                 else:  # elif type_source == 'pdf' or 'docx' or 'txt':
                     documents = load_document(source, type_source)
