@@ -37,6 +37,8 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
         embedding = item.embedding
         namespace = item.namespace
         scrape_type = item.scrape_type
+        chunk_size = item.chunk_size
+        chunk_overlap = item.chunk_overlap
         try:
             await self.delete_pc_ids_namespace(metadata_id=metadata_id, namespace=namespace)
         except Exception as ex:
@@ -77,7 +79,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                         elif value is None:
                             document.metadata[key] = ""
 
-                    chunks.extend(self.chunk_data(data=[document]))
+                    chunks.extend(self.chunk_data(data=[document], chunk_size=chunk_size, chunk_overlap=chunk_overlap))
 
                 # from pprint import pprint
                 # pprint(documents)
@@ -113,7 +115,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding)
                 document = Document(page_content=content, metadata=metadata.dict())
 
-                chunks.extend(self.chunk_data(data=[document]))
+                chunks.extend(self.chunk_data(data=[document], chunk_size=chunk_size, chunk_overlap=chunk_overlap))
                 total_tokens, cost = self.calc_embedding_cost(chunks, embedding)
                 a = vector_store.from_documents(chunks,
                                                 embedding=oai_embeddings,
@@ -138,7 +140,6 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
         :param namespace:
         :return:
         """
-        # FIXME problema con namespace di cardinalità superiore a 10000
 
         import pinecone
         try:
@@ -148,14 +149,10 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
 
             host = pc.describe_index(const.PINECONE_INDEX).host
             index = pc.Index(name=const.PINECONE_INDEX, host=host)
-            # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
             describe = index.describe_index_stats()
             logger.debug(describe)
             namespaces = describe.get("namespaces", {})
             total_vectors = 1
-            # batch_size = 100
-
-            offset = 0
 
             if namespaces:
                 if namespace in namespaces.keys():
@@ -163,34 +160,9 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
 
             logger.debug(total_vectors)
 
-            batch_size = min([total_vectors, 10000])
-            while offset < total_vectors:
-
-                pc_res = index.query(
-                    vector=[0] * 1536,  # [0,0,0,0......0]
-                    top_k=batch_size,
-                    filter={"id": {"$eq": metadata_id}},
-                    namespace=namespace,
-                    include_values=False,
-                    include_metadata=False
-                )
-                matches = pc_res.get('matches')
-
-                ids = [obj.get('id') for obj in matches]
-
-                if offset == 0 and not ids:
-                    raise IndexError(f"Empty list for {metadata_id} and namespace {namespace}")
-                elif offset > 0 and not ids:
-                    break
-
-                index.delete(
-                    ids=ids,
-                    namespace=namespace)
-
-                if batch_size < 10000:
-                    break
-                else:
-                    offset += len(ids)
+            index.delete(
+                filter={"id": {"$eq": metadata_id}},
+                namespace=namespace)
 
         except Exception as ex:
             # logger.error(ex)

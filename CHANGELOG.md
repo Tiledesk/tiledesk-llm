@@ -5,6 +5,11 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-06-21]
+### 0.2.3
+- fix: delete chunks from namespace by metadata id
+- added: /api/desc/namespace/{ns} for namespace description 
+
 ## [2024-06-15]
 ### 0.2.2
 - fix: indexing of txt documents

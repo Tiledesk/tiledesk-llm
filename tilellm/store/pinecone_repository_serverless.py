@@ -39,6 +39,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
         embedding = item.embedding
         namespace = item.namespace
         scrape_type = item.scrape_type
+        chunk_size = item.chunk_size
+        chunk_overlap = item.chunk_overlap
         try:
             await self.delete_pc_ids_namespace(metadata_id=metadata_id, namespace=namespace)
         except Exception as ex:
@@ -80,7 +82,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                         elif value is None:
                             document.metadata[key] = ""
 
-                    chunks.extend(self.chunk_data(data=[document]))
+                    chunks.extend(self.chunk_data(data=[document], chunk_size=chunk_size, chunk_overlap=chunk_overlap))
 
                 # from pprint import pprint
                 # pprint(documents)
@@ -124,7 +126,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                 metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding)
                 document = Document(page_content=content, metadata=metadata.dict())
 
-                chunks.extend(self.chunk_data(data=[document]))
+                chunks.extend(self.chunk_data(data=[document], chunk_size=chunk_size, chunk_overlap=chunk_overlap))
                 total_tokens, cost = self.calc_embedding_cost(chunks, embedding)
                 a = vector_store.from_documents(chunks,
                                                 embedding=oai_embeddings,

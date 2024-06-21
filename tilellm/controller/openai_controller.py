@@ -599,6 +599,14 @@ async def get_listitems_namespace(namespace: str, repo=None):
     except Exception as ex:
         raise ex
 
+@inject_repo
+async def get_desc_namespace(namespace: str, repo=None):
+    try:
+        return await repo.get_pc_desc_namespace(namespace=namespace)
+    except Exception as ex:
+        raise ex
+
+
 
 @inject_repo
 async def get_sources_namespace(source: str, namespace: str, repo=None):

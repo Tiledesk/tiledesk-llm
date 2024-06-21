@@ -2,20 +2,16 @@ from abc import abstractmethod
 from tilellm.models.item_model import (MetadataItem,
                                        PineconeQueryResult,
                                        PineconeItems,
-                                       PineconeIndexingResult
+                                       PineconeIndexingResult,
+                                       PineconeItemNamespaceResult,
+                                       PineconeIdSummaryResult,
+                                       PineconeDescNamespaceResult
                                        )
-from tilellm.tools.document_tool_simple import (get_content_by_url,
-                                                get_content_by_url_with_bs,
-                                                load_document,
-                                                load_from_wikipedia
-                                                )
 
 from tilellm.shared import const
 from langchain_core.vectorstores import VectorStore
-from langchain_core.documents import Document
-from langchain_openai import OpenAIEmbeddings
-import uuid
 import os
+from typing import List, Dict
 
 import logging
 
@@ -211,6 +207,75 @@ class PineconeRepositoryBase:
                                                   )
                               )
             res = PineconeItems(matches=result)
+            logger.debug(res)
+            return res
+
+        except Exception as ex:
+
+            logger.error(ex)
+
+            raise ex
+
+    @staticmethod
+    async def get_pc_desc_namespace(namespace: str):
+        """
+        Query Pinecone to get all object
+        :param namespace:
+        :return:
+        """
+        import pinecone
+
+        try:
+            pc = pinecone.Pinecone(
+                api_key=const.PINECONE_API_KEY
+            )
+
+            host = pc.describe_index(const.PINECONE_INDEX).host
+            index = pc.Index(name=const.PINECONE_INDEX, host=host)
+
+            # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
+            describe = index.describe_index_stats()
+            print(describe)
+            logger.debug(describe)
+            namespaces = describe.get("namespaces", {})
+            total_vectors = 1
+            description = PineconeItemNamespaceResult(namespace=namespace, vector_count=0)
+            if namespaces:
+                if namespace in namespaces.keys():
+                    total_vectors = namespaces.get(namespace).get('vector_count')
+                    description = PineconeItemNamespaceResult(namespace=namespace, vector_count=total_vectors)
+
+            logger.debug(f"pinecone total vector in {namespace}: {total_vectors}")
+            print(description)
+            batch_size = min([total_vectors, 10000])
+
+            pc_res = index.query(
+                vector=[0] * 1536,  # [0,0,0,0......0]
+                top_k=batch_size,
+                # filter={"id": {"$eq": id}},
+                namespace=namespace,
+                include_values=False,
+                include_metadata=True
+            )
+            matches = pc_res.get('matches')
+            # from pprint import pprint
+            # pprint(matches)
+            # ids = [obj.get('id') for obj in matches]
+            # print(type(matches[0].get('id')))
+            result = []
+            ids_count: Dict[str, PineconeIdSummaryResult] = {}
+
+            for obj in matches:
+                metadata_id = obj.get('metadata').get('id')
+                if metadata_id in ids_count:
+                    ids_count[metadata_id].chunks_count += 1
+                else:
+                    ids_count[metadata_id] = PineconeIdSummaryResult(metadata_id=metadata_id,
+                                                                     source=obj.get('metadata').get('source'),
+                                                                     chunks_count=1)
+
+            res = PineconeDescNamespaceResult(namespace_desc=description, ids=list(ids_count.values()))
+            print(res)
             logger.debug(res)
             return res
 

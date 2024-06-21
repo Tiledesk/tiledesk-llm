@@ -31,23 +31,16 @@ from tilellm.controller.openai_controller import (ask_with_memory,
                                                   delete_id_from_namespace,
                                                   get_ids_namespace,
                                                   get_listitems_namespace,
+                                                  get_desc_namespace,
                                                   get_list_namespace,
                                                   get_sources_namespace)
 
 import logging
 
-# parser = argparse.ArgumentParser(description="Tiledesk: llms integration")
-# parser.add_argument("--host", default="0.0.0.0", help="Hostname for FastAPI")
-# parser.add_argument("--port", type=int, default=8000, help="Port for FastAPI")
-# parser.add_argument("--redis_url", default="redis://localhost:6379/0", help="Redis url")
-# parser.add_argument("--environment", default="dev", help="Environment dev|prod")
-# parser.add_argument("--log_path", default="log_conf.yaml", help="Log configuration file path. Default log_conf.yaml")
-
-# args = parser.parse_args()
 
 ENVIRONMENTS = {
     'serverless': '.environ',
-    'prod': '.environ.prod',
+    'pod': '.environ.prod',
 }
 
 expiration_in_seconds = 48 * 60 * 60
@@ -56,8 +49,9 @@ logger = logging.getLogger(__name__)
 
 
 environment = os.environ.get("PINECONE_TYPE", "serverless")
-# environment = "prod"
+# environment = "serverless"
 load_dotenv(ENVIRONMENTS.get(environment) or '.environ')
+
 
 # print(os.environ.get("PINECONE_API_KEY"))
 # os.environ.__setitem__("ENVIRON", environment)
@@ -370,6 +364,21 @@ async def list_namespace_main():
         logger.error(ex)
         raise HTTPException(status_code=400, detail=repr(ex))
 
+@app.get("/api/desc/namespace/{namespace}")
+async def list_namespace_items_main(namespace: str):
+    """
+    Get description for given namespace
+    :param namespace: namespace_id
+    :return: description of namespace
+    """
+    try:
+        logger.info(f"retrieve description for namespace {namespace}")
+        result = await get_desc_namespace(namespace)
+
+        return JSONResponse(content=result.model_dump(exclude_none=True))
+    except Exception as ex:
+        logger.error(ex)
+        raise HTTPException(status_code=400, detail=repr(ex))
 
 @app.get("/api/listitems/namespace/{namespace}")
 async def list_namespace_items_main(namespace: str):

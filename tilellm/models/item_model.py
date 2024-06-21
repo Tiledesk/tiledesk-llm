@@ -13,6 +13,9 @@ class ItemSingle(BaseModel):
     embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
     namespace: str | None = None
     webhook: str = Field(default_factory=lambda: "")
+    chunk_size: int = Field(default_factory=lambda: 256)
+    chunk_overlap: int = Field(default_factory=lambda: 10)
+
 
 
 class MetadataItem(BaseModel):
@@ -136,5 +139,16 @@ class PineconeItemNamespaceResult(BaseModel):
     vector_count: int
 
 
+class PineconeIdSummaryResult(BaseModel):
+    metadata_id: str
+    source: str
+    chunks_count: int
+
+
 class PineconeNamespaceResult(BaseModel):
     namespaces: Optional[List[PineconeItemNamespaceResult]]
+
+
+class PineconeDescNamespaceResult(BaseModel):
+    namespace_desc: PineconeItemNamespaceResult
+    ids: Optional[List[PineconeIdSummaryResult]]
