@@ -7,6 +7,7 @@ STREAM_CONSUMER_GROUP = "llmconsumergroup"
 PINECONE_API_KEY = None
 PINECONE_INDEX = None
 PINECONE_TEXT_KEY = None
+VOYAGEAI_API_KEY = None
 
 contextualize_q_system_prompt = """Given a chat history and the latest user question \
                         which might reference context in the chat history, formulate a standalone question \
@@ -23,10 +24,11 @@ qa_system_prompt = """You are an helpful assistant for question-answering tasks.
 
 
 def populate_constant():
-    global PINECONE_API_KEY, PINECONE_INDEX, PINECONE_TEXT_KEY
+    global PINECONE_API_KEY, PINECONE_INDEX, PINECONE_TEXT_KEY, VOYAGEAI_API_KEY
     PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
     PINECONE_INDEX = os.environ.get("PINECONE_INDEX")
     PINECONE_TEXT_KEY = os.environ.get("PINECONE_TEXT_KEY")
+    VOYAGEAI_API_KEY = os.environ.get("VOYAGEAI_API_KEY")
 
 
 

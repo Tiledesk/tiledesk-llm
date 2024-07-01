@@ -3,6 +3,7 @@ from tilellm.models.item_model import (MetadataItem,
                                        PineconeQueryResult,
                                        PineconeItems,
                                        PineconeIndexingResult,
+                                       PineconeNamespaceResult,
                                        PineconeItemNamespaceResult,
                                        PineconeIdSummaryResult,
                                        PineconeDescNamespaceResult
@@ -50,7 +51,7 @@ class PineconeRepositoryBase:
         pass
 
     @staticmethod
-    async def get_pc_ids_namespace( metadata_id: str, namespace: str):
+    async def get_pc_ids_namespace( metadata_id: str, namespace: str) -> PineconeItems:
         """
         Get from Pinecone all items from namespace given document id
         :param metadata_id:
@@ -116,9 +117,8 @@ class PineconeRepositoryBase:
             raise ex
 
     @staticmethod
-    async def pinecone_list_namespaces():
+    async def pinecone_list_namespaces() -> PineconeNamespaceResult:
         import pinecone
-        from tilellm.models.item_model import PineconeNamespaceResult, PineconeItemNamespaceResult
 
         try:
             pc = pinecone.Pinecone(
@@ -152,7 +152,7 @@ class PineconeRepositoryBase:
             raise ex
 
     @staticmethod
-    async def get_pc_all_obj_namespace(namespace: str):
+    async def get_pc_all_obj_namespace(namespace: str) -> PineconeItems:
         """
         Query Pinecone to get all object
         :param namespace:
@@ -217,11 +217,11 @@ class PineconeRepositoryBase:
             raise ex
 
     @staticmethod
-    async def get_pc_desc_namespace(namespace: str):
+    async def get_pc_desc_namespace(namespace: str) -> PineconeDescNamespaceResult:
         """
         Query Pinecone to get all object
         :param namespace:
-        :return:
+        :return: PineconeDescNamespaceResult
         """
         import pinecone
 
@@ -235,7 +235,7 @@ class PineconeRepositoryBase:
 
             # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
             describe = index.describe_index_stats()
-            print(describe)
+
             logger.debug(describe)
             namespaces = describe.get("namespaces", {})
             total_vectors = 1
@@ -246,7 +246,7 @@ class PineconeRepositoryBase:
                     description = PineconeItemNamespaceResult(namespace=namespace, vector_count=total_vectors)
 
             logger.debug(f"pinecone total vector in {namespace}: {total_vectors}")
-            print(description)
+
             batch_size = min([total_vectors, 10000])
 
             pc_res = index.query(
@@ -275,7 +275,7 @@ class PineconeRepositoryBase:
                                                                      chunks_count=1)
 
             res = PineconeDescNamespaceResult(namespace_desc=description, ids=list(ids_count.values()))
-            print(res)
+
             logger.debug(res)
             return res
 
@@ -286,7 +286,7 @@ class PineconeRepositoryBase:
             raise ex
 
     @staticmethod
-    async def get_pc_sources_namespace(source: str, namespace: str):
+    async def get_pc_sources_namespace(source: str, namespace: str) -> PineconeItems:
         """
         Get from Pinecone all items from namespace given source
         :param source:

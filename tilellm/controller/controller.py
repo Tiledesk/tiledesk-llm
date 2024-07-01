@@ -1,7 +1,7 @@
 import uuid
 
 import fastapi
-from langchain.chains import ConversationalRetrievalChain, LLMChain # Deprecata
+from langchain.chains import ConversationalRetrievalChain, LLMChain  # Deprecata
 from langchain_core.prompts import PromptTemplate, SystemMessagePromptTemplate
 from langchain_openai import ChatOpenAI
 # from tilellm.store.pinecone_repository import add_pc_item as pinecone_add_item
@@ -9,8 +9,8 @@ from langchain_openai import ChatOpenAI
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.callbacks.openai_info import OpenAICallbackHandler
 from tilellm.models.item_model import RetrievalResult, ChatEntry, PineconeIndexingResult, PineconeNamespaceResult, \
-    PineconeDescNamespaceResult, PineconeItems
-from tilellm.shared.utility import inject_repo
+    PineconeDescNamespaceResult, PineconeItems, SimpleAnswer
+from tilellm.shared.utility import inject_repo, inject_llm
 import tilellm.shared.const as const
 # from tilellm.store.pinecone_repository_base import PineconeRepositoryBase
 
@@ -22,16 +22,20 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.chat_history import BaseChatMessageHistory
 
+from langchain.schema import(
+    AIMessage,
+    HumanMessage,
+    SystemMessage
+
+)
 
 import logging
-
 
 logger = logging.getLogger(__name__)
 
 
 @inject_repo
 async def ask_with_memory1(question_answer, repo=None):
-    
     try:
         logger.info(question_answer)
         # question = str
@@ -43,7 +47,7 @@ async def ask_with_memory1(question_answer, repo=None):
         # max_tokens: int = Field(default=128)
         # system_context: Optional[str]
         # chat_history_dict : Dict[str, ChatEntry]
-        
+
         question_answer_list = []
         if question_answer.chat_history_dict is not None:
             for key, entry in question_answer.chat_history_dict.items():
@@ -51,16 +55,16 @@ async def ask_with_memory1(question_answer, repo=None):
 
         logger.info(question_answer_list)
         openai_callback_handler = OpenAICallbackHandler()
-        
-        llm = ChatOpenAI(model_name=question_answer.model, 
+
+        llm = ChatOpenAI(model_name=question_answer.model,
                          temperature=question_answer.temperature,
                          openai_api_key=question_answer.gptkey,
                          max_tokens=question_answer.max_tokens,
                          callbacks=[openai_callback_handler])
 
         emb_dimension = repo.get_embeddings_dimension(question_answer.embedding)
-        oai_embeddings = OpenAIEmbeddings(api_key=question_answer.gptkey, model=question_answer.embedding) 
-        
+        oai_embeddings = OpenAIEmbeddings(api_key=question_answer.gptkey, model=question_answer.embedding)
+
         vector_store = await repo.create_pc_index(oai_embeddings, emb_dimension)
 
         retriever = vector_store.as_retriever(search_type='similarity',
@@ -82,7 +86,7 @@ async def ask_with_memory1(question_answer, repo=None):
             # )
             # llm = LLMChain(llm=OpenAI(), prompt=prompt)
             sys_template = """{system_context}.
-                              
+
                               {context}
                            """
 
@@ -95,24 +99,23 @@ async def ask_with_memory1(question_answer, repo=None):
                 return_source_documents=True,
                 verbose=True,
                 combine_docs_chain_kwargs={"prompt": sys_prompt}
-                )
+            )
             # from pprint import pprint
             # pprint(crc.combine_docs_chain.llm_chain.prompt.messages)
             # crc.combine_docs_chain.llm_chain.prompt.messages[0]=SystemMessagePromptTemplate.from_template(sys_prompt)
-            
+
             result = crc.invoke({'question': question_answer.question,
                                  'system_context': question_answer.system_context,
                                  'chat_history': question_answer_list}
                                 )
-           
+
         else:
             print("blocco else")
-            #PromptTemplate.from_template()
+            # PromptTemplate.from_template()
             crc = ConversationalRetrievalChain.from_llm(llm=llm,
                                                         retriever=retriever,
                                                         return_source_documents=True,
                                                         verbose=True)
-
 
             # 'Use the following pieces of context to answer the user\'s question. If you don\'t know the answer, just say that you don\'t know, don\'t try to make up an answer.',
             result = crc.invoke({'question': question_answer.question,
@@ -137,7 +140,7 @@ async def ask_with_memory1(question_answer, repo=None):
         logger.info(result)
 
         question_answer_list.append((result['question'], result['answer']))
-        
+
         chat_entries = [ChatEntry(question=q, answer=a) for q, a in question_answer_list]
         chat_history_dict = {str(i): entry for i, entry in enumerate(chat_entries)}
 
@@ -159,8 +162,8 @@ async def ask_with_memory1(question_answer, repo=None):
 
         return result_to_return.dict()
     except Exception as e:
-        import traceback 
-        traceback.print_exc() 
+        import traceback
+        traceback.print_exc()
         question_answer_list = []
         if question_answer.chat_history_dict is not None:
             for key, entry in question_answer.chat_history_dict.items():
@@ -175,6 +178,34 @@ async def ask_with_memory1(question_answer, repo=None):
         )
         raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
 
+
+@inject_llm
+async def ask_to_llm(question, chat_model=None):
+    try:
+        logger.info(question)
+        if question.llm == "cohere":
+            quest = question.system_context+" "+question.question
+            messages = [
+                HumanMessage(content=quest)
+            ]
+        else:
+            messages = [
+                SystemMessage(content=question.system_context),
+                HumanMessage(content=question.question)
+            ]
+
+        a = chat_model.invoke(messages)
+        return SimpleAnswer(content=a.content)
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        question_answer_list = []
+
+        result_to_return = SimpleAnswer(
+            content=repr(e)
+        )
+        raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
 
 @inject_repo
 async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
@@ -311,7 +342,7 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
                 {"input": question_answer.question, 'chat_history': question_answer_list},
                 config={"configurable": {"session_id": uuid.uuid4().hex}
                         },  # constructs a key "abc123" in `store`.
-                )
+            )
 
             # print(store)
             # print(question_answer_list)
@@ -419,7 +450,6 @@ async def ask_with_sequence(question_answer, repo=None) -> RetrievalResult:
         vector_store = await repo.create_pc_index(oai_embeddings, emb_dimension)
         idllmchain = get_idproduct_chain(llm)
         res = idllmchain.invoke(question_answer.question)
-
 
         retriever = vector_store.as_retriever(search_type='similarity', search_kwargs={'k': question_answer.top_k,
                                                                                        'namespace': question_answer.namespace})
@@ -531,6 +561,7 @@ async def add_pc_item(item, repo=None) -> PineconeIndexingResult:
     :param repo:
     :return: PineconeIndexingResult
     """
+
     return await repo.add_pc_item(item)
 
 
@@ -617,7 +648,6 @@ async def get_desc_namespace(namespace: str, repo=None) -> PineconeDescNamespace
         return await repo.get_pc_desc_namespace(namespace=namespace)
     except Exception as ex:
         raise ex
-
 
 
 @inject_repo

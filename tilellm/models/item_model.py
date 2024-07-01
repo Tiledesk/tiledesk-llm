@@ -13,9 +13,8 @@ class ItemSingle(BaseModel):
     embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
     namespace: str | None = None
     webhook: str = Field(default_factory=lambda: "")
-    chunk_size: int = Field(default_factory=lambda: 256)
-    chunk_overlap: int = Field(default_factory=lambda: 10)
-
+    chunk_size: int = Field(default_factory=lambda: 1000)
+    chunk_overlap: int = Field(default_factory=lambda: 400)
 
 
 class MetadataItem(BaseModel):
@@ -58,6 +57,7 @@ class QuestionAnswer(BaseModel):
     top_k: int = Field(default=5)
     max_tokens: int = Field(default=128)
     embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
+    debug: bool = Field(default_factory=lambda: False)
     system_context: Optional[str] = None
     chat_history_dict: Optional[Dict[str, ChatEntry]] = None
 
@@ -76,15 +76,45 @@ class QuestionAnswer(BaseModel):
         return v
 
 
+class QuestionToLLM(BaseModel):
+    question: str
+    llm_key: str
+    llm: str
+    model: str = Field(default="gpt-3.5-turbo")
+    temperature: float = Field(default=0.0)
+    max_tokens: int = Field(default=128)
+    debug: bool = Field(default_factory=lambda: False)
+    system_context: str = Field(default="You are a helpful AI bot. Always reply in the same language of the question.")
+
+    @field_validator("temperature")
+    def temperature_range(cls, v):
+        """Ensures temperature is within valid range (usually 0.0 to 1.0)."""
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("Temperature must be between 0.0 and 1.0.")
+        return v
+
+    @field_validator("max_tokens")
+    def max_tokens_range(cls, v):
+        """Ensures max_tokens is a positive integer."""
+        if not 50 <= v <= 2000:
+            raise ValueError("top_k must be a positive integer.")
+        return v
+
+
+class SimpleAnswer(BaseModel):
+    content: str
+
+
 class RetrievalResult(BaseModel):
     answer: str = Field(default="No answer")
-    sources: Optional[List[str]] | None = None
-    source: str | None = None
-    id: str | None = None
-    namespace: str
-    ids: Optional[List[str]] | None = None
-    prompt_token_size: int = Field(default=0)
     success: bool = Field(default=False)
+    namespace: str
+    id: str | None = None
+    ids: Optional[List[str]] | None = None
+    source: str | None = None
+    sources: Optional[List[str]] | None = None
+    content_chunks: Optional[List[str]] | None = None
+    prompt_token_size: int = Field(default=0)
     error_message: Optional[str] | None = None
     chat_history_dict: Optional[Dict[str, ChatEntry]]
 

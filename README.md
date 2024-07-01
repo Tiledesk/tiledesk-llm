@@ -85,3 +85,26 @@ pc.create_index(const.PINECONE_INDEX,
                                )
                 )
 ```
+
+## Models
+### OpenAI - engine: openai
+- gpt-3.5-turbo
+- gpt-4
+- gpt-4-turbo
+- got-4o
+
+### Cohere - engine: cohere
+- command-r
+- command-r-plus
+
+### Google - engine: google
+- gemini-pro
+
+### Anthropic - engine: anthropic
+- claude-3-5-sonnet-20240620
+
+### Groq - engine: groq
+- Llama3-70b-8192
+- Llama3-8b-8192
+- Mixtral-8x7b-32768
+- Gemma-7b-It

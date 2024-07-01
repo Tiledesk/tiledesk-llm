@@ -23,6 +23,9 @@ def get_content_by_url(url: str, scrape_type: int):
             )
         docs = loader.load()
 
+        for doc in docs:
+            doc.metadata = clean_metadata(doc.metadata)
+
         # from pprint import pprint
         # pprint(docs)
 
@@ -106,6 +109,20 @@ def get_content_by_url_with_bs(url:str):
 
 
     return testi
+
+
+def is_valid_value(value):
+    if isinstance(value, (str, int, float, bool)):
+        return True
+    elif isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return True
+    return False
+
+
+def clean_metadata(dictionary):
+    return {k: v for k, v in dictionary.items() if is_valid_value(v)}
+
+
 
 
 

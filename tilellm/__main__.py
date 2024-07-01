@@ -21,19 +21,20 @@ from tilellm.models.item_model import (ItemSingle,
                                        PineconeNamespaceToDelete,
                                        ScrapeStatusReq,
                                        ScrapeStatusResponse,
-                                       PineconeIndexingResult)
+                                       PineconeIndexingResult, RetrievalResult, PineconeNamespaceResult,
+                                       PineconeDescNamespaceResult, PineconeItems, QuestionToLLM, SimpleAnswer)
 
 from tilellm.store.redis_repository import redis_xgroup_create
-from tilellm.controller.openai_controller import (ask_with_memory,
-                                                  ask_with_sequence,
-                                                  add_pc_item,
-                                                  delete_namespace,
-                                                  delete_id_from_namespace,
-                                                  get_ids_namespace,
-                                                  get_listitems_namespace,
-                                                  get_desc_namespace,
-                                                  get_list_namespace,
-                                                  get_sources_namespace)
+from tilellm.controller.controller import (ask_with_memory,
+                                           ask_with_sequence,
+                                           add_pc_item,
+                                           delete_namespace,
+                                           delete_id_from_namespace,
+                                           get_ids_namespace,
+                                           get_listitems_namespace,
+                                           get_desc_namespace,
+                                           get_list_namespace,
+                                           get_sources_namespace, ask_to_llm)
 
 import logging
 
@@ -215,7 +216,7 @@ async def enqueue_scrape_item_main(item: ItemSingle, redis_client: aioredis.clie
     enqueue item to redis. Consumer read message and add it to namespace
     :param item:
     :param redis_client:
-    :return:
+    :return: PineconeIndexingResult
     """
     from tilellm.shared import const
     logger.debug(item) 
@@ -231,13 +232,14 @@ async def enqueue_scrape_item_main(item: ItemSingle, redis_client: aioredis.clie
 
     return {"message": f"Item {item.id} created successfully, more {res}"}
 
-@app.post("/api/scrape/single")
+
+@app.post("/api/scrape/single", response_model=PineconeIndexingResult)
 async def create_scrape_item_single(item: ItemSingle, redis_client: aioredis.client.Redis = Depends(get_redis_client)):
     """
     Add item to namespace
     :param item:
     :param redis_client:
-    :return:
+    :return: PineconeIndexingResult
     """
     webhook = ""
     token = ""
@@ -248,8 +250,8 @@ async def create_scrape_item_single(item: ItemSingle, redis_client: aioredis.cli
                                                       status_code=2
                                                       )
         add_to_queue = await redis_client.set(f"{item.namespace}/{item.id}",
-                                            scrape_status_response.model_dump_json(),
-                                            ex=expiration_in_seconds)
+                                              scrape_status_response.model_dump_json(),
+                                              ex=expiration_in_seconds)
 
         logger.debug(f"Start {add_to_queue}")
 
@@ -290,8 +292,8 @@ async def create_scrape_item_single(item: ItemSingle, redis_client: aioredis.cli
                                                       status_code=3
                                                       )
         add_to_queue = await redis_client.set(f"{item.namespace}/{item.id}",
-                                         scrape_status_response.model_dump_json(),
-                                         ex=expiration_in_seconds)
+                                              scrape_status_response.model_dump_json(),
+                                              ex=expiration_in_seconds)
 
         # logger.debug(f"End {add_to_queue}")
         # if webhook:
@@ -313,8 +315,8 @@ async def create_scrape_item_single(item: ItemSingle, redis_client: aioredis.cli
                                                       status_code=4
                                                       )
         add_to_queue = await redis_client.set(f"{item.namespace}/{item.id}",
-                                         scrape_status_response.model_dump_json(),
-                                         ex=expiration_in_seconds)
+                                              scrape_status_response.model_dump_json(),
+                                              ex=expiration_in_seconds)
 
         logger.error(f"Error {add_to_queue}")
         import traceback
@@ -330,27 +332,48 @@ async def create_scrape_item_single(item: ItemSingle, redis_client: aioredis.cli
         logger.error(e)
         raise HTTPException(status_code=400, detail=repr(e))
 
-@app.post("/api/qa")
+
+@app.post("/api/qa", response_model=RetrievalResult)
 async def post_ask_with_memory_main(question_answer: QuestionAnswer):
+    """
+    Query and Aswer with chat history
+    :param question_answer:
+    :return: RetrievalResult
+    """
     logger.debug(question_answer)
 
     result = await ask_with_memory(question_answer)
 
     logger.debug(result)
-    return JSONResponse(content=result)
+    return JSONResponse(content=result.model_dump())
 
 
-@app.post("/api/qachain")
+@app.post("/api/ask", response_model=SimpleAnswer)
+async def post_ask_to_llm_main(question: QuestionToLLM):
+    """
+    Query and Answer with a LLM
+    :param question:
+    :return: RetrievalResult
+    """
+    logger.info(question)
+
+    result = await ask_to_llm(question=question)
+
+    logger.debug(result)
+    return JSONResponse(content=result.model_dump())
+
+
+@app.post("/api/qachain", response_model=RetrievalResult)
 async def post_ask_with_memory_chain_main(question_answer: QuestionAnswer):
     print(question_answer)
     logger.debug(question_answer)
-    result = ask_with_sequence(question_answer)
+    result = await ask_with_sequence(question_answer)
     logger.debug(result)
-    return JSONResponse(content=result)
+    return JSONResponse(content=result.model_dump())
     # return result
 
 
-@app.get("/api/list/namespace")
+@app.get("/api/list/namespace", response_model=PineconeNamespaceResult)
 async def list_namespace_main():
     """
     Get all namespaces with id and vector count
@@ -364,7 +387,8 @@ async def list_namespace_main():
         logger.error(ex)
         raise HTTPException(status_code=400, detail=repr(ex))
 
-@app.get("/api/desc/namespace/{namespace}")
+
+@app.get("/api/desc/namespace/{namespace}", response_model=PineconeDescNamespaceResult)
 async def list_namespace_items_main(namespace: str):
     """
     Get description for given namespace
@@ -380,7 +404,8 @@ async def list_namespace_items_main(namespace: str):
         logger.error(ex)
         raise HTTPException(status_code=400, detail=repr(ex))
 
-@app.get("/api/listitems/namespace/{namespace}")
+
+@app.get("/api/listitems/namespace/{namespace}", response_model=PineconeItems)
 async def list_namespace_items_main(namespace: str):
     """
     Get all item with given namespace
@@ -397,7 +422,8 @@ async def list_namespace_items_main(namespace: str):
         raise HTTPException(status_code=400, detail=repr(ex))
 
 
-@app.post("/api/scrape/status")
+@app.post("/api/scrape/status", response_model=
+          ScrapeStatusResponse)
 async def scrape_status_main(scrape_status_req: ScrapeStatusReq,
                              redis_client: aioredis.client.Redis = Depends(get_redis_client)):
     """
@@ -502,7 +528,7 @@ async def delete_item_id_namespace_post(item_to_delete: PineconeItemToDelete):
         # raise HTTPException(status_code=400, detail=repr(ex))
 
 
-@app.get("/api/id/{metadata_id}/namespace/{namespace}")
+@app.get("/api/id/{metadata_id}/namespace/{namespace}", response_model=PineconeItems)
 async def get_items_id_namespace_main(metadata_id: str, namespace: str):
     """
     Get all items from namespace given id of document
@@ -512,7 +538,7 @@ async def get_items_id_namespace_main(metadata_id: str, namespace: str):
     """
     try:
         logger.info(f"retrieve id {metadata_id} dal namespace {namespace}")
-        result = await get_ids_namespace(metadata_id,namespace)
+        result = await get_ids_namespace(metadata_id, namespace)
 
         return JSONResponse(content=result.model_dump())
     except Exception as ex:
@@ -520,8 +546,8 @@ async def get_items_id_namespace_main(metadata_id: str, namespace: str):
         raise HTTPException(status_code=400, detail=repr(ex))
 
 
-@app.get("/api/items")#?source={source}&namespace={namespace}
-async def get_items_source_namespace_main(source: str, namespace: str ):
+@app.get("/api/items", response_model=PineconeItems)#?source={source}&namespace={namespace}
+async def get_items_source_namespace_main(source: str, namespace: str):
     """
     Get all item given the source and namespace
     :param source: source of document
@@ -533,7 +559,7 @@ async def get_items_source_namespace_main(source: str, namespace: str ):
 
         from urllib.parse import unquote
         source = unquote(source)
-        result = await get_sources_namespace(source,namespace)
+        result = await get_sources_namespace(source, namespace)
 
         return JSONResponse(content=result.model_dump())
     except Exception as ex:
