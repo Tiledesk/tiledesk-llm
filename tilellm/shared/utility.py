@@ -3,6 +3,7 @@ from functools import wraps
 
 import logging
 
+import langchain_aws
 from langchain_voyageai import VoyageAIEmbeddings
 from langchain_openai import OpenAIEmbeddings
 from tilellm.shared import const
@@ -118,6 +119,38 @@ def inject_llm(func):
                                   temperature=question.temperature,
                                   max_tokens=question.max_tokens
                                   )
+
+        elif question.llm == "aws":
+            import os
+
+            os.environ["AWS_SECRET_ACCESS_KEY"] = question.llm_key.aws_secret_access_key
+            os.environ["AWS_ACCESS_KEY_ID"] = question.llm_key.aws_access_key_id
+
+            # chat_model = ChatBedrock(model_id=question.model,
+            #                         model_kwargs={"temperature": question.temperature,"max_tokens":question.max_tokens },
+            #                         region_name="eu-central-1"
+            #                         )
+
+            import boto3
+            #session = boto3.Session(
+            #                        aws_access_key_id=question.llm_key.aws_secret_access_key,
+            #                        aws_secret_access_key=question.llm_key.aws_secret_access_key,
+            #                        region_name=question.llm_key.region_name
+            #                        )
+
+
+
+            chat_model = ChatBedrockConverse(
+                model=question.model,
+                temperature=question.temperature,
+                max_tokens=question.max_tokens,
+                region_name=question.llm_key.region_name
+
+                #                                 base_url="http://bedroc-proxy-paacejvmzcgv-121947512.eu-central-1.elb.amazonaws.com/api/v1/",
+
+            )  # model_kwargs={"temperature": 0.001},
+
+            #print(chat_model.session)
 
         else:
             chat_model = ChatOpenAI(api_key=question.llm_key,

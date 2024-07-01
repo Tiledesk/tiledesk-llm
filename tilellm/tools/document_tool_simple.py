@@ -15,11 +15,13 @@ def get_content_by_url(url: str, scrape_type: int):
         urls = [url]
         if scrape_type == 0:
             loader = UnstructuredURLLoader(
-                urls=urls, mode="elements", strategy="fast", continue_on_failure=False
+                urls=urls, mode="elements", strategy="fast", continue_on_failure=False,
+                headers={'user-agent': 'Mozilla/5.0'}
             )
         else:
             loader = UnstructuredURLLoader(
-                urls=urls, mode="single", continue_on_failure=False
+                urls=urls, mode="single", continue_on_failure=False,
+                headers={'user-agent': 'Mozilla/5.0'}
             )
         docs = loader.load()
 

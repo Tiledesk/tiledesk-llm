@@ -6,6 +6,10 @@
 ### **Copyrigth**: *Tiledesk SRL*
 
 ## [2024-07-01]
+### 0.2.5
+- fix: user-agent for scrape
+
+## [2024-07-01]
 ### 0.2.4
 - fix: scrape_type=0
 - added: /api/ask to ask to llm 

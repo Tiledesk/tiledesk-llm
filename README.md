@@ -87,6 +87,8 @@ pc.create_index(const.PINECONE_INDEX,
 ```
 
 ## Models
+Models for /api/ask
+
 ### OpenAI - engine: openai
 - gpt-3.5-turbo
 - gpt-4

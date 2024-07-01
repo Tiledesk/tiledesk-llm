@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field,  field_validator, ValidationError
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Union
 import datetime
 
 
@@ -76,9 +76,15 @@ class QuestionAnswer(BaseModel):
         return v
 
 
+class AWSAuthentication(BaseModel):
+    aws_access_key_id: str
+    aws_secret_access_key: str
+    region_name: str
+
+
 class QuestionToLLM(BaseModel):
     question: str
-    llm_key: str
+    llm_key: Union[str, AWSAuthentication]
     llm: str
     model: str = Field(default="gpt-3.5-turbo")
     temperature: float = Field(default=0.0)
