@@ -51,6 +51,34 @@ class PineconeRepositoryBase:
         pass
 
     @staticmethod
+    async def delete_pc_chunk_id_namespace(chunk_id: str, namespace: str):
+        """
+        delete chunk from pinecone
+        :param chunk_id:
+        :param namespace:
+        :return:
+        """
+        """
+                Delete namespace from Pinecone index
+                :param namespace:
+                :return:
+                """
+        import pinecone
+        try:
+            pc = pinecone.Pinecone(
+                api_key=const.PINECONE_API_KEY
+            )
+            host = pc.describe_index(const.PINECONE_INDEX).host
+            index = pc.Index(name=const.PINECONE_INDEX, host=host)
+            # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX,)
+            delete_response = index.delete(ids=[chunk_id], namespace=namespace)
+        except Exception as ex:
+
+            logger.error(ex)
+
+            raise ex
+
+    @staticmethod
     async def get_pc_ids_namespace( metadata_id: str, namespace: str) -> PineconeItems:
         """
         Get from Pinecone all items from namespace given document id

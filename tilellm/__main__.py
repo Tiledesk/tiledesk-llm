@@ -30,11 +30,13 @@ from tilellm.controller.controller import (ask_with_memory,
                                            add_pc_item,
                                            delete_namespace,
                                            delete_id_from_namespace,
+                                           delete_chunk_id_from_namespace,
                                            get_ids_namespace,
                                            get_listitems_namespace,
                                            get_desc_namespace,
                                            get_list_namespace,
-                                           get_sources_namespace, ask_to_llm)
+                                           get_sources_namespace,
+                                           ask_to_llm)
 
 import logging
 
@@ -472,6 +474,26 @@ async def delete_namespace_main(namespace: str):
         result = await delete_namespace(namespace)
         return JSONResponse(content={"message": f"Namespace {namespace} deleted"})
     except Exception as ex:
+        raise HTTPException(status_code=400, detail=repr(ex))
+
+
+@app.delete("/api/chunk/{chunk_id}/namespace/{namespace}")
+async def delete_item_chunk_id_namespace_main(chunk_id: str, namespace: str):
+    """
+    Delete items from namespace identified by id and namespace
+    :param chunk_id:
+    :param namespace:
+    :return:
+    """
+    try:
+
+        logger.info(f"delete id {chunk_id} dal namespace {namespace}")
+        result = await delete_chunk_id_from_namespace(chunk_id, namespace)
+
+        return JSONResponse(content={"message": f"ids {chunk_id} in Namespace {namespace} deleted"})
+    except Exception as ex:
+        print(repr(ex))
+        logger.error(ex)
         raise HTTPException(status_code=400, detail=repr(ex))
 
 

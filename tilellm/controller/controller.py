@@ -240,7 +240,7 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
 
         vector_store = await repo.create_pc_index(oai_embeddings, emb_dimension)
 
-        retriever = vector_store.as_retriever(search_type='similarity',
+        retriever = vector_store.as_retriever(search_type=question_answer.search_type,
                                               search_kwargs={'k': question_answer.top_k,
                                                              'namespace': question_answer.namespace}
                                               )
@@ -596,6 +596,20 @@ async def delete_id_from_namespace(metadata_id: str, namespace: str, repo=None):
         logger.error(ex)
         raise ex
 
+@inject_repo
+async def delete_chunk_id_from_namespace(chunk_id:str, namespace: str, repo=None):
+    """
+    Delete chunk by id from namespace
+    :param chunk_id:
+    :param namespace:
+    :param repo:
+    :return:
+    """
+    try:
+        return await repo.delete_pc_chunk_id_namespace(chunk_id=chunk_id, namespace=namespace)
+    except Exception as ex:
+        logger.error(ex)
+        raise ex
 
 @inject_repo
 async def get_list_namespace(repo=None) -> PineconeNamespaceResult:

@@ -5,6 +5,11 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-07-09]
+### 0.2.6
+- add: DELETE /api/chunk/<chunk_id>/namespace/<namespace>
+- add: search_type parameter similarity|mmr 
+
 ## [2024-07-01]
 ### 0.2.5
 - fix: user-agent for scrape
