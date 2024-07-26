@@ -45,6 +45,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
         scrape_type = item.scrape_type
         chunk_size = item.chunk_size
         chunk_overlap = item.chunk_overlap
+        parameters_scrape_type_4 = item.parameters_scrape_type_4
         try:
             await self.delete_pc_ids_namespace(metadata_id=metadata_id, namespace=namespace)
         except Exception as ex:
@@ -73,7 +74,9 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
                 documents = []
                 if type_source == 'url' or type_source == 'txt':
-                    documents = get_content_by_url(source, scrape_type)
+                    documents = await get_content_by_url(source,
+                                                         scrape_type,
+                                                         parameters_scrape_type_4=parameters_scrape_type_4)
                 else:  # elif type_source == 'pdf' or 'docx' or 'txt':
                     documents = load_document(source, type_source)
 

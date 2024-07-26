@@ -2,6 +2,9 @@ import uuid
 
 import fastapi
 from langchain.chains import ConversationalRetrievalChain, LLMChain  # Deprecata
+from langchain.retrievers import ContextualCompressionRetriever
+from langchain.retrievers.document_compressors import DocumentCompressorPipeline
+from langchain_community.document_transformers import EmbeddingsRedundantFilter
 from langchain_core.prompts import PromptTemplate, SystemMessagePromptTemplate
 from langchain_openai import ChatOpenAI
 # from tilellm.store.pinecone_repository import add_pc_item as pinecone_add_item
@@ -240,10 +243,19 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
 
         vector_store = await repo.create_pc_index(oai_embeddings, emb_dimension)
 
-        retriever = vector_store.as_retriever(search_type=question_answer.search_type,
-                                              search_kwargs={'k': question_answer.top_k,
-                                                             'namespace': question_answer.namespace}
-                                              )
+        vs_retriever = vector_store.as_retriever(search_type=question_answer.search_type,
+                                                 search_kwargs={'k': question_answer.top_k,
+                                                                'namespace': question_answer.namespace}
+                                                 )
+
+        redundant_filter = EmbeddingsRedundantFilter(embeddings=oai_embeddings,
+                                                     similarity_threshold=question_answer.similarity_threshold)
+        pipeline_compressor = DocumentCompressorPipeline(
+            transformers=[redundant_filter]
+        )
+        retriever = ContextualCompressionRetriever(
+            base_compressor=pipeline_compressor, base_retriever=vs_retriever
+        )
 
         if question_answer.system_context is not None and question_answer.system_context:
 

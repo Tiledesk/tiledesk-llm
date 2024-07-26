@@ -1,6 +1,23 @@
-from pydantic import BaseModel, Field,  field_validator, ValidationError
+from pydantic import BaseModel, Field, field_validator, ValidationError, model_validator
 from typing import Dict, Optional, List, Union
 import datetime
+
+
+class ParametersScrapeType4(BaseModel):
+    unwanted_tags: Optional[List[str]] = Field(default_factory=list)
+    tags_to_extract: Optional[List[str]] = Field(default_factory=list)
+    unwanted_classnames: Optional[List[str]] = Field(default_factory=list)
+    desired_classnames: Optional[List[str]] = Field(default_factory=list)
+    remove_lines: Optional[bool] = Field(default=False)
+    remove_comments: Optional[bool] = Field(default=False)
+
+    @model_validator(mode='after')
+    def check_booleans(cls, values):
+        remove_lines = values.remove_lines
+        remove_comments = values.remove_comments
+        if remove_lines is None or remove_comments is None:
+            raise ValueError('remove_lines and remove_comments must be provided in ParametersScrapeType4')
+        return values
 
 
 class ItemSingle(BaseModel):
@@ -15,6 +32,19 @@ class ItemSingle(BaseModel):
     webhook: str = Field(default_factory=lambda: "")
     chunk_size: int = Field(default_factory=lambda: 1000)
     chunk_overlap: int = Field(default_factory=lambda: 400)
+    parameters_scrape_type_4: Optional[ParametersScrapeType4] = None
+
+    @model_validator(mode='after')
+    def check_scrape_type(cls, values):
+        scrape_type = values.scrape_type
+        parameters_scrape_type_4 = values.parameters_scrape_type_4
+
+        if scrape_type == 4:
+            if parameters_scrape_type_4 is None:
+                raise ValueError('parameters_scrape_type_4 must be provided when scrape_type is 4')
+        else:
+            values.parameters_scrape_type_4 = None
+        return values
 
 
 class MetadataItem(BaseModel):
@@ -57,6 +87,7 @@ class QuestionAnswer(BaseModel):
     top_k: int = Field(default=5)
     max_tokens: int = Field(default=128)
     embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
+    similarity_threshold: float = Field(default_factory=lambda: 1.0)
     debug: bool = Field(default_factory=lambda: False)
     system_context: Optional[str] = None
     search_type: str = Field(default_factory=lambda: "similarity")

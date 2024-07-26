@@ -5,6 +5,11 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-07-26]
+### 0.2.7
+- add: scrape_type=3|4 
+- add: to /api/qa "similarity_threshold" 
+
 ## [2024-07-09]
 ### 0.2.6
 - add: DELETE /api/chunk/<chunk_id>/namespace/<namespace>

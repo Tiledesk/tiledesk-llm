@@ -14,6 +14,8 @@ RUN pip install .
 RUN pip install "uvicorn[standard]" gunicorn
 RUN python -m nltk.downloader punkt
 RUN python -m nltk.downloader averaged_perceptron_tagger
+RUN playwright install chromium
+RUN playwright install-deps chromium
 # Aggiustare redis
 ENV REDIS_HOST=redis
 ENV REDIS_URL=redis://redis:6379/0

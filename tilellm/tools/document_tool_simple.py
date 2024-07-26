@@ -3,14 +3,30 @@ from langchain_community.document_loaders import BSHTMLLoader
 
 from langchain_community.document_loaders import UnstructuredURLLoader
 from langchain_community.document_loaders import AsyncChromiumLoader
+from langchain_community.document_loaders import PlaywrightURLLoader
+
 import requests
 import logging
+
+from langchain_community.document_transformers import BeautifulSoupTransformer
+from langchain_core.documents import Document
 
 logger = logging.getLogger(__name__)
 
 
 # "https://help.tiledesk.com/mychatbots/articles/il-pnrr-per-la-ricerca-e-linnovazione/"
-def get_content_by_url(url: str, scrape_type: int):
+async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Document]:
+    """
+    Get content by url! parse html page and extract content.
+    If scrape_type=0 Unstructured analyze the page and extract some useful information about page, like UL, Title etc.
+    If scrape_type=1, extract all the content.
+    If scape_type=2 is used playwright.
+    If scape_type=3 is used AsyncChromiumLoader and the html is transformed in text
+    If scape_type=4 is used AsyncChromiumLoader and BS4 in order to select the html element to extract
+    :param url: str representing url
+    :param scrape_type: 0|1|2!3!4
+    :return: list[Document]
+    """
     try:
         urls = [url]
         if scrape_type == 0:
@@ -18,12 +34,37 @@ def get_content_by_url(url: str, scrape_type: int):
                 urls=urls, mode="elements", strategy="fast", continue_on_failure=False,
                 headers={'user-agent': 'Mozilla/5.0'}
             )
-        else:
+            docs = await loader.aload()
+
+        elif scrape_type == 1:
             loader = UnstructuredURLLoader(
                 urls=urls, mode="single", continue_on_failure=False,
                 headers={'user-agent': 'Mozilla/5.0'}
             )
-        docs = loader.load()
+            docs = await loader.aload()
+        elif scrape_type == 2:
+            loader = PlaywrightURLLoader(urls=urls)
+            docs = await loader.aload()
+        elif scrape_type == 3:
+            loader = AsyncChromiumLoader(urls=urls, user_agent='Mozilla/5.0')
+            docs = await loader.aload()
+            from langchain_community.document_transformers import Html2TextTransformer
+            html2text = Html2TextTransformer()
+            docs_transformed = html2text.transform_documents(docs)
+            docs = docs_transformed
+        else:
+            params_type_4 = kwargs.get("parameters_scrape_type_4")
+            loader = AsyncChromiumLoader(urls=urls, user_agent='Mozilla/5.0')
+            docs = await loader.aload()
+            bs_transformer = BeautifulSoupTransformer()
+            docs_transformed = bs_transformer.transform_documents(docs,
+                                                                  tags_to_extract=params_type_4.tags_to_extract,
+                                                                  unwanted_tags =params_type_4.unwanted_tags,
+                                                                  unwanted_classnames=params_type_4.unwanted_classnames,
+                                                                  remove_lines=params_type_4.remove_lines,
+                                                                  remove_comments=params_type_4.remove_comments
+                                                                  )
+            docs = docs_transformed
 
         for doc in docs:
             doc.metadata = clean_metadata(doc.metadata)
@@ -57,6 +98,8 @@ def load_document(url: str, type_source: str):
         return None
 
     data = loader.load()
+    # from pprint import pprint
+    # pprint(data)
     return data
 
 
@@ -67,7 +110,7 @@ def load_from_wikipedia(query, lang='en', load_max_docs=2):
     return data
 
 
-def get_content_by_url_with_bs(url:str):
+def get_content_by_url_with_bs(url: str):
     html = requests.get(url)
     # urls = [url]
     # Load HTML
