@@ -186,29 +186,63 @@ async def ask_with_memory1(question_answer, repo=None):
 async def ask_to_llm(question, chat_model=None):
     try:
         logger.info(question)
-        if question.llm == "cohere":
-            quest = question.system_context+" "+question.question
-            messages = [
-                HumanMessage(content=quest)
-            ]
-        else:
-            messages = [
-                SystemMessage(content=question.system_context),
-                HumanMessage(content=question.question)
-            ]
+        chat_history_list = []
 
-        a = chat_model.invoke(messages)
-        return SimpleAnswer(content=a.content)
+        if question.chat_history_dict is not None:
+            for key, entry in question.chat_history_dict.items():
+                chat_history_list.append(HumanMessage(content=entry.question))  # ('human', entry.question))
+                chat_history_list.append(AIMessage(content=entry.answer))
+
+        # from pprint import pprint
+        # pprint(chat_history_list)
+
+        qa_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", question.system_context),
+                MessagesPlaceholder("chat_history_a"),
+                ("human", "{input}"),
+            ]
+        )
+
+        store = {}
+
+        def get_session_history(session_id: str) -> BaseChatMessageHistory:
+            if session_id not in store:
+                store[session_id] = ChatMessageHistory()
+            return store[session_id]
+
+        runnable = qa_prompt | chat_model
+
+        runnable_with_history = RunnableWithMessageHistory(
+            runnable,
+            get_session_history,
+            input_messages_key="input",
+
+        )
+
+        result = await runnable_with_history.ainvoke(
+            {"input": question.question, 'chat_history_a': chat_history_list},
+            config={"configurable": {"session_id": uuid.uuid4().hex}
+                    },
+        )
+
+        if not question.chat_history_dict:
+            question.chat_history_dict = {}
+
+        num = len(question.chat_history_dict.keys())
+        question.chat_history_dict[str(num)] = {"question": question.question, "answer": result.content}
+
+        return SimpleAnswer(answer=result.content, chat_history_dict=question.chat_history_dict)
 
     except Exception as e:
         import traceback
         traceback.print_exc()
         question_answer_list = []
 
-        result_to_return = SimpleAnswer(
-            content=repr(e)
-        )
+        result_to_return = SimpleAnswer(answer=repr(e),
+                                        chat_history_dict={})
         raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
+
 
 @inject_repo
 async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:

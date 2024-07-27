@@ -87,7 +87,7 @@ def inject_embedding():
 def inject_llm(func):
     @wraps(func)
     async def wrapper(question, *args, **kwargs):
-        print(question)
+        logger.debug(question)
         if question.llm == "openai":
             chat_model = ChatOpenAI(api_key=question.llm_key,
                                     model=question.model,
@@ -131,16 +131,21 @@ def inject_llm(func):
             #                         region_name="eu-central-1"
             #                         )
 
-            import boto3
-            #session = boto3.Session(
-            #                        aws_access_key_id=question.llm_key.aws_secret_access_key,
+            # import boto3
+
+            # client_br = boto3.client('bedrock-runtime',
+            #                         aws_access_key_id=question.llm_key.aws_secret_access_key,
+            #                         aws_secret_access_key=question.llm_key.aws_secret_access_key,
+            #                         region_name=question.llm_key.region_name
+            #                         )
+            # session = boto3.Session(aws_access_key_id=question.llm_key.aws_secret_access_key,
             #                        aws_secret_access_key=question.llm_key.aws_secret_access_key,
             #                        region_name=question.llm_key.region_name
             #                        )
-
-
+            # client_ss = session.client("bedrock-runtime")
 
             chat_model = ChatBedrockConverse(
+                # client=client_br,
                 model=question.model,
                 temperature=question.temperature,
                 max_tokens=question.max_tokens,
@@ -150,7 +155,8 @@ def inject_llm(func):
 
             )  # model_kwargs={"temperature": 0.001},
 
-            #print(chat_model.session)
+            # print(chat_model.client._get_credentials().access_key)
+
 
         else:
             chat_model = ChatOpenAI(api_key=question.llm_key,

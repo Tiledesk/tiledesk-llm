@@ -123,6 +123,7 @@ class QuestionToLLM(BaseModel):
     max_tokens: int = Field(default=128)
     debug: bool = Field(default_factory=lambda: False)
     system_context: str = Field(default="You are a helpful AI bot. Always reply in the same language of the question.")
+    chat_history_dict: Optional[Dict[str, ChatEntry]] = None
 
     @field_validator("temperature")
     def temperature_range(cls, v):
@@ -140,7 +141,8 @@ class QuestionToLLM(BaseModel):
 
 
 class SimpleAnswer(BaseModel):
-    content: str
+    answer: str = Field(default="No answer")
+    chat_history_dict: Optional[Dict[str, ChatEntry]]
 
 
 class RetrievalResult(BaseModel):

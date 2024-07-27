@@ -5,6 +5,11 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-07-27]
+### 0.2.8
+- add: history on /api/ask 
+
+
 ## [2024-07-26]
 ### 0.2.7
 - add: scrape_type=3|4 
