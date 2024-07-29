@@ -5,6 +5,10 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-07-29]
+### 0.2.9
+- add: n_messages on /api/ask to set the maximum number of messages to include 
+
 ## [2024-07-27]
 ### 0.2.8
 - add: history on /api/ask 

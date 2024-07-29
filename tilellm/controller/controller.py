@@ -199,7 +199,7 @@ async def ask_to_llm(question, chat_model=None):
         qa_prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", question.system_context),
-                MessagesPlaceholder("chat_history_a"),
+                MessagesPlaceholder("chat_history_a", n_messages=question.n_messages),
                 ("human", "{input}"),
             ]
         )

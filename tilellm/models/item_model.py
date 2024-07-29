@@ -124,12 +124,20 @@ class QuestionToLLM(BaseModel):
     debug: bool = Field(default_factory=lambda: False)
     system_context: str = Field(default="You are a helpful AI bot. Always reply in the same language of the question.")
     chat_history_dict: Optional[Dict[str, ChatEntry]] = None
+    n_messages: int = Field(default_factory=lambda: None)
 
     @field_validator("temperature")
     def temperature_range(cls, v):
         """Ensures temperature is within valid range (usually 0.0 to 1.0)."""
         if not 0.0 <= v <= 1.0:
             raise ValueError("Temperature must be between 0.0 and 1.0.")
+        return v
+
+    @field_validator("n_messages")
+    def n_messages_range(cls, v):
+        """Ensures n_messages is within greater than 0"""
+        if not v > 0:
+            raise ValueError("n_messages must be greater than 0")
         return v
 
     @field_validator("max_tokens")
