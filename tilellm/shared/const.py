@@ -15,12 +15,18 @@ contextualize_q_system_prompt = """Given a chat history and the latest user ques
                         just reformulate it if needed and otherwise return it as is."""
 
 qa_system_prompt = """You are an helpful assistant for question-answering tasks. \
-                        Use ONLY the following pieces of retrieved context to answer the question. \
-                        If you don't know the answer, just say that you don't know. \
-                        If none of the retrieved context answer the question, add this word to the end <NOANS> \
+                      Use ONLY the pieces of retrieved context delimited by #### to answer the question. \
+                      The first step is to extrac relevant information to the question from retrieved context.
+                      If you don't know the answer, just say that you don't know. \
+                      Respond with "No relevant information were found <NOANS>" if no relevant information were found.
+                      
+                      
                         
 
-                        {context}"""
+                      ####
+                      {context}
+                      ####
+                      """
 
 
 def populate_constant():

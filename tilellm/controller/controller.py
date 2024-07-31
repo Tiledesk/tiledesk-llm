@@ -416,7 +416,8 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
         source = " ".join(sources)
         metadata_id = ids[0]
 
-        logger.info(result)
+        #logger.info(result)
+        #print(result['answer'])
 
         result['answer'], success = verify_answer(result['answer'])
 

@@ -5,6 +5,12 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-07-31]
+### 0.2.10
+- fix: write log
+- updated: version of libs
+
+
 ## [2024-07-29]
 ### 0.2.9
 - add: n_messages on /api/ask to set the maximum number of messages to include 
