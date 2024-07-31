@@ -199,7 +199,7 @@ async def ask_to_llm(question, chat_model=None):
         qa_prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", question.system_context),
-                MessagesPlaceholder("chat_history_a", n_messages=question.n_messages),
+                MessagesPlaceholder("chat_history", n_messages=question.n_messages),
                 ("human", "{input}"),
             ]
         )
@@ -208,7 +208,7 @@ async def ask_to_llm(question, chat_model=None):
 
         def get_session_history(session_id: str) -> BaseChatMessageHistory:
             if session_id not in store:
-                store[session_id] = ChatMessageHistory()
+                store[session_id] = load_session_history(question.chat_history_dict) #ChatMessageHistory()
             return store[session_id]
 
         runnable = qa_prompt | chat_model
@@ -217,15 +217,16 @@ async def ask_to_llm(question, chat_model=None):
             runnable,
             get_session_history,
             input_messages_key="input",
+            history_messages_key="chat_history"
 
         )
 
         result = await runnable_with_history.ainvoke(
-            {"input": question.question, 'chat_history_a': chat_history_list},
+            {"input": question.question},# 'chat_history_a': chat_history_list},
             config={"configurable": {"session_id": uuid.uuid4().hex}
                     },
         )
-
+        # logger.info(result)
         if not question.chat_history_dict:
             question.chat_history_dict = {}
 
@@ -259,11 +260,14 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
         # chat_history_dict : Dict[str, ChatEntry]
 
         question_answer_list = []
+        chat_history_list = []
         if question_answer.chat_history_dict is not None:
             for key, entry in question_answer.chat_history_dict.items():
+                chat_history_list.append(HumanMessage(content=entry.question))  # ('human', entry.question))
+                chat_history_list.append(AIMessage(content=entry.answer))
+
                 question_answer_list.append((entry.question, entry.answer))
 
-        logger.info(question_answer_list)
         openai_callback_handler = OpenAICallbackHandler()
 
         llm = ChatOpenAI(model_name=question_answer.model,
@@ -324,7 +328,7 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
 
             def get_session_history(session_id: str) -> BaseChatMessageHistory:
                 if session_id not in store:
-                    store[session_id] = ChatMessageHistory()
+                    store[session_id] = load_session_history(question_answer.chat_history_dict)
                 return store[session_id]
 
             conversational_rag_chain = RunnableWithMessageHistory(
@@ -336,7 +340,7 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
             )
 
             result = conversational_rag_chain.invoke(
-                {"input": question_answer.question, 'chat_history': question_answer_list},
+                {"input": question_answer.question, }, #'chat_history': chat_history_list},
                 config={"configurable": {"session_id": uuid.uuid4().hex}
                         },  # constructs a key "abc123" in `store`.
             )
@@ -351,6 +355,7 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
                     ("human", "{input}"),
                 ]
             )
+            # logger.info(contextualize_q_prompt)
             history_aware_retriever = create_history_aware_retriever(
                 llm, retriever, contextualize_q_prompt
             )
@@ -373,7 +378,7 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
 
             def get_session_history(session_id: str) -> BaseChatMessageHistory:
                 if session_id not in store:
-                    store[session_id] = ChatMessageHistory()
+                    store[session_id] = load_session_history(question_answer.chat_history_dict)
                 return store[session_id]
 
             conversational_rag_chain = RunnableWithMessageHistory(
@@ -385,13 +390,10 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
             )
 
             result = conversational_rag_chain.invoke(
-                {"input": question_answer.question, 'chat_history': question_answer_list},
+                {"input": question_answer.question},  #'chat_history': chat_history_list},
                 config={"configurable": {"session_id": uuid.uuid4().hex}
                         },  # constructs a key "abc123" in `store`.
             )
-
-            # print(store)
-            # print(question_answer_list)
 
         docs = result["context"]
         # from pprint import pprint
@@ -416,8 +418,9 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
         source = " ".join(sources)
         metadata_id = ids[0]
 
-        #logger.info(result)
-        #print(result['answer'])
+        logger.info(f"input: {result['input']}")
+        logger.info(f"chat_history: {result['chat_history']}")
+        logger.info(f"answer: {result['answer']}")
 
         result['answer'], success = verify_answer(result['answer'])
 
@@ -658,6 +661,7 @@ async def delete_chunk_id_from_namespace(chunk_id:str, namespace: str, repo=None
         logger.error(ex)
         raise ex
 
+
 @inject_repo
 async def get_list_namespace(repo=None) -> PineconeNamespaceResult:
     """
@@ -747,3 +751,12 @@ def verify_answer(s):
     else:
         success = True
     return s, success
+
+
+def load_session_history(history) -> BaseChatMessageHistory:
+    chat_history = ChatMessageHistory()
+    if history is not None:
+        for key, entry in history.items():
+            chat_history.add_message(HumanMessage(content=entry.question))  # ('human', entry.question))
+            chat_history.add_message(AIMessage(content=entry.answer))
+    return chat_history

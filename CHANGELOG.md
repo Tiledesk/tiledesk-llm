@@ -6,6 +6,10 @@
 ### **Copyrigth**: *Tiledesk SRL*
 
 ## [2024-07-31]
+### 0.2.11
+- fix: log
+
+## [2024-07-31]
 ### 0.2.10
 - fix: write log
 - updated: version of libs
