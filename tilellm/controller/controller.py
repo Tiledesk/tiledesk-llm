@@ -1,18 +1,23 @@
 import uuid
+from typing import List
 
 import fastapi
 from langchain.chains import ConversationalRetrievalChain, LLMChain  # Deprecata
 from langchain.retrievers import ContextualCompressionRetriever
 from langchain.retrievers.document_compressors import DocumentCompressorPipeline
 from langchain_community.document_transformers import EmbeddingsRedundantFilter
+from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate, SystemMessagePromptTemplate
+from langchain_core.runnables import RunnablePassthrough
 from langchain_openai import ChatOpenAI
 # from tilellm.store.pinecone_repository import add_pc_item as pinecone_add_item
 # from tilellm.store.pinecone_repository import create_pc_index, get_embeddings_dimension
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.callbacks.openai_info import OpenAICallbackHandler
+from pydantic.v1 import BaseModel, Field
+
 from tilellm.models.item_model import RetrievalResult, ChatEntry, PineconeIndexingResult, PineconeNamespaceResult, \
-    PineconeDescNamespaceResult, PineconeItems, SimpleAnswer
+    PineconeDescNamespaceResult, PineconeItems, SimpleAnswer, QuotedAnswer
 from tilellm.shared.utility import inject_repo, inject_llm
 import tilellm.shared.const as const
 # from tilellm.store.pinecone_repository_base import PineconeRepositoryBase
@@ -24,6 +29,10 @@ from langchain.chains import create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.chat_history import BaseChatMessageHistory
+
+from langchain_community.agent_toolkits.load_tools import load_tools
+from langchain.agents import AgentType, initialize_agent
+from tilellm.agents.shopify_agent import lookup as shopify_lookup_agent
 
 from langchain.schema import(
     AIMessage,
@@ -295,44 +304,60 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
             base_compressor=pipeline_compressor, base_retriever=vs_retriever
         )
 
+        # Contextualize question
+        contextualize_q_system_prompt = const.contextualize_q_system_prompt
+        contextualize_q_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", contextualize_q_system_prompt),
+                MessagesPlaceholder("chat_history"),
+                ("human", "{input}"),
+            ]
+        )
+        history_aware_retriever = create_history_aware_retriever(
+            llm, retriever, contextualize_q_prompt
+        )
+
         if question_answer.system_context is not None and question_answer.system_context:
-
-            # Contextualize question
-            contextualize_q_system_prompt = const.contextualize_q_system_prompt
-            contextualize_q_prompt = ChatPromptTemplate.from_messages(
-                [
-                    ("system", contextualize_q_system_prompt),
-                    MessagesPlaceholder("chat_history"),
-                    ("human", "{input}"),
-                ]
-            )
-            history_aware_retriever = create_history_aware_retriever(
-                llm, retriever, contextualize_q_prompt
-            )
-
-            # Answer question
+            # Answer question - prompt from user
             qa_system_prompt = question_answer.system_context
-            qa_prompt = ChatPromptTemplate.from_messages(
-                [
-                    ("system", qa_system_prompt),
-                    MessagesPlaceholder("chat_history"),
-                    ("human", "{input}"),
-                ]
+        else:
+            # Answer question - prompt default
+            qa_system_prompt = const.qa_system_prompt
+
+        qa_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", qa_system_prompt),
+                MessagesPlaceholder("chat_history"),
+                ("human", "{input}"),
+            ]
+        )
+
+        question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
+
+        rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
+
+        store = {}
+
+        def get_session_history(session_id: str) -> BaseChatMessageHistory:
+            if session_id not in store:
+                store[session_id] = load_session_history(question_answer.chat_history_dict)
+            return store[session_id]
+
+
+        if question_answer.citations:
+            rag_chain_from_docs = (
+                    RunnablePassthrough.assign(context=(lambda x: format_docs_with_id(x["context"])))
+                    | qa_prompt
+                    | llm.with_structured_output(QuotedAnswer)
             )
 
-            question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
+            retrieve_docs = (lambda x: x["input"]) | retriever
 
-            rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
-
-            store = {}
-
-            def get_session_history(session_id: str) -> BaseChatMessageHistory:
-                if session_id not in store:
-                    store[session_id] = load_session_history(question_answer.chat_history_dict)
-                return store[session_id]
-
+            chain_w_citations = RunnablePassthrough.assign(context=retrieve_docs).assign(
+                answer=rag_chain_from_docs
+            )
             conversational_rag_chain = RunnableWithMessageHistory(
-                rag_chain,
+                chain_w_citations,
                 get_session_history,
                 input_messages_key="input",
                 history_messages_key="chat_history",
@@ -340,47 +365,17 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
             )
 
             result = conversational_rag_chain.invoke(
-                {"input": question_answer.question, }, #'chat_history': chat_history_list},
+                {"input": question_answer.question, },  # 'chat_history': chat_history_list},
                 config={"configurable": {"session_id": uuid.uuid4().hex}
-                        },  # constructs a key "abc123" in `store`.
+                        }  # constructs a key "abc123" in `store`.
             )
+
+            # from pprint import pprint
+            # pprint(result["answer"])
+            citations = result['answer'].citations
+            result['answer'], success = verify_answer(result['answer'].answer)
 
         else:
-            # Contextualize question
-            contextualize_q_system_prompt = const.contextualize_q_system_prompt
-            contextualize_q_prompt = ChatPromptTemplate.from_messages(
-                [
-                    ("system", contextualize_q_system_prompt),
-                    MessagesPlaceholder("chat_history"),
-                    ("human", "{input}"),
-                ]
-            )
-            # logger.info(contextualize_q_prompt)
-            history_aware_retriever = create_history_aware_retriever(
-                llm, retriever, contextualize_q_prompt
-            )
-
-            # Answer question
-            qa_system_prompt = const.qa_system_prompt
-            qa_prompt = ChatPromptTemplate.from_messages(
-                [
-                    ("system", qa_system_prompt),
-                    MessagesPlaceholder("chat_history"),
-                    ("human", "{input}"),
-                ]
-            )
-
-            question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
-
-            rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
-
-            store = {}
-
-            def get_session_history(session_id: str) -> BaseChatMessageHistory:
-                if session_id not in store:
-                    store[session_id] = load_session_history(question_answer.chat_history_dict)
-                return store[session_id]
-
             conversational_rag_chain = RunnableWithMessageHistory(
                 rag_chain,
                 get_session_history,
@@ -390,10 +385,12 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
             )
 
             result = conversational_rag_chain.invoke(
-                {"input": question_answer.question},  #'chat_history': chat_history_list},
+                {"input": question_answer.question, },  # 'chat_history': chat_history_list},
                 config={"configurable": {"session_id": uuid.uuid4().hex}
-                        },  # constructs a key "abc123" in `store`.
+                        }  # constructs a key "abc123" in `store`.
             )
+            result['answer'], success = verify_answer(result['answer'])
+            citations = None
 
         docs = result["context"]
         # from pprint import pprint
@@ -422,7 +419,7 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
         logger.info(f"chat_history: {result['chat_history']}")
         logger.info(f"answer: {result['answer']}")
 
-        result['answer'], success = verify_answer(result['answer'])
+
 
         question_answer_list.append((result['input'], result['answer']))
 
@@ -439,6 +436,7 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
             ids=ids,
             source=source,
             id=metadata_id,
+            citations = citations,
             prompt_token_size=prompt_token_size,
             content_chunks=content_chunks,
             success=success,
@@ -462,6 +460,75 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
             error_message=repr(e),
             chat_history_dict=chat_history_dict
         )
+        raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
+
+@inject_llm
+async def ask_to_agent(question_to_agent, chat_model=None):
+    try:
+        logger.info(question_to_agent)
+        #chat_history_list = []
+        #tools = load_tools(
+        #    question_to_agent.tools,
+        #    endpoint="https://swapi-graphql.netlify.app/.netlify/functions/index",
+        #    api_key="ciccio"
+        #)
+        #agent = initialize_agent(
+        #    tools, chat_model, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=True
+        #)
+        #result = agent.invoke(question_to_agent.question)
+        result_history = ""
+        if question_to_agent.chat_history_dict is not None:
+            #for key, entry in question_to_agent.chat_history_dict.items():
+            #    chat_history_list.append(HumanMessage(content=entry.question))  # ('human', entry.question))
+            #    chat_history_list.append(AIMessage(content=entry.answer))
+            # "chat_history": "Human: My name is Bob\\nAI: Hello Bob!",
+
+            for i in range(len(question_to_agent.chat_history_dict)):
+                entry = question_to_agent.chat_history_dict[str(i)]
+                result_history += f"Human: {entry.question}\n"
+                result_history += f"AI: {entry.answer}\n"
+
+            result_history = result_history.strip()  # Remove trailing newline
+            print(result_history)
+
+
+        #qa_prompt = ChatPromptTemplate.from_messages(
+        #    [
+        #        ("system", question_to_agent.system_context),
+        #        MessagesPlaceholder("tools_result"),
+        #        MessagesPlaceholder("chat_history", n_messages=question_to_agent.n_messages),
+        #        ("human", "{input}"),
+        #    ]
+        #)
+
+        #store = {}
+
+        #def get_session_history(session_id: str) -> BaseChatMessageHistory:
+        #    if session_id not in store:
+        #        store[session_id] = load_session_history(question_to_agent.chat_history_dict)  # ChatMessageHistory()
+        #    return store[session_id]
+
+        result_shopify = shopify_lookup_agent(question_to_agent=question_to_agent, chat_model=chat_model, chat_history=result_history)
+        print(f"RESULT: {result_shopify.get('output')} type: {type(result_shopify.get('output'))}")
+
+
+        if not question_to_agent.chat_history_dict:
+            question_to_agent.chat_history_dict = {}
+
+        num = len(question_to_agent.chat_history_dict.keys())
+        question_to_agent.chat_history_dict[str(num)] = dict({"question": question_to_agent.question, "answer": result_shopify.get("output")})
+
+        answer_to_agent = SimpleAnswer(answer=result_shopify.get("output"), chat_history_dict=question_to_agent.chat_history_dict)
+        print(answer_to_agent)
+        return answer_to_agent
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        question_answer_list = []
+
+        result_to_return = SimpleAnswer(answer=repr(e),
+                                        chat_history_dict={})
         raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
 
 
@@ -760,3 +827,12 @@ def load_session_history(history) -> BaseChatMessageHistory:
             chat_history.add_message(HumanMessage(content=entry.question))  # ('human', entry.question))
             chat_history.add_message(AIMessage(content=entry.answer))
     return chat_history
+
+
+def format_docs_with_id(docs: List[Document]) -> str:
+    formatted = [
+        f"Source ID: {i}\nArticle Source: {doc.metadata['source']}\nArticle Snippet: {doc.page_content}"
+        for i, doc in enumerate(docs)
+    ]
+    return "\n\n" + "\n\n".join(formatted)
+

@@ -59,7 +59,7 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
             bs_transformer = BeautifulSoupTransformer()
             docs_transformed = bs_transformer.transform_documents(docs,
                                                                   tags_to_extract=params_type_4.tags_to_extract,
-                                                                  unwanted_tags =params_type_4.unwanted_tags,
+                                                                  unwanted_tags=params_type_4.unwanted_tags,
                                                                   unwanted_classnames=params_type_4.unwanted_classnames,
                                                                   remove_lines=params_type_4.remove_lines,
                                                                   remove_comments=params_type_4.remove_comments

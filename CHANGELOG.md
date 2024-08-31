@@ -5,6 +5,10 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-08-31]
+### 0.2.12
+- add: citations
+
 ## [2024-07-31]
 ### 0.2.11
 - fix: log

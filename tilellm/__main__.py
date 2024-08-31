@@ -22,7 +22,8 @@ from tilellm.models.item_model import (ItemSingle,
                                        ScrapeStatusReq,
                                        ScrapeStatusResponse,
                                        PineconeIndexingResult, RetrievalResult, PineconeNamespaceResult,
-                                       PineconeDescNamespaceResult, PineconeItems, QuestionToLLM, SimpleAnswer)
+                                       PineconeDescNamespaceResult, PineconeItems, QuestionToLLM, SimpleAnswer,
+                                       QuestionToAgent)
 
 from tilellm.store.redis_repository import redis_xgroup_create
 from tilellm.controller.controller import (ask_with_memory,
@@ -36,7 +37,7 @@ from tilellm.controller.controller import (ask_with_memory,
                                            get_desc_namespace,
                                            get_list_namespace,
                                            get_sources_namespace,
-                                           ask_to_llm)
+                                           ask_to_llm, ask_to_agent)
 
 import logging
 
@@ -348,6 +349,23 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
 
     logger.debug(result)
     return JSONResponse(content=result.model_dump())
+
+
+@app.post("/api/agent", response_model=SimpleAnswer)
+async def post_ask_to_agent_main(question_to_agent: QuestionToAgent):
+    """
+    Query and Aswer with chat history
+    :param question_to_agent:
+    :return: SimpleAnswer
+    """
+    print(question_to_agent)
+    logger.debug(question_to_agent)
+
+    result = await ask_to_agent(question_to_agent)
+
+    logger.debug(result)
+    return JSONResponse(content=result.model_dump())
+
 
 
 @app.post("/api/ask", response_model=SimpleAnswer)

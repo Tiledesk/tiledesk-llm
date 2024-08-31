@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field, field_validator, ValidationError, model_validator
-from typing import Dict, Optional, List, Union
+from pydantic import BaseModel, Field, field_validator, ValidationError, model_validator, RootModel
+from typing import Dict, Optional, List, Union, Any
 import datetime
 
 
@@ -89,6 +89,7 @@ class QuestionAnswer(BaseModel):
     embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
     similarity_threshold: float = Field(default_factory=lambda: 1.0)
     debug: bool = Field(default_factory=lambda: False)
+    citations: bool = Field(default_factory=lambda: False)
     system_context: Optional[str] = None
     search_type: str = Field(default_factory=lambda: "similarity")
     chat_history_dict: Optional[Dict[str, ChatEntry]] = None
@@ -148,6 +149,56 @@ class QuestionToLLM(BaseModel):
         return v
 
 
+class ToolOptions(RootModel[Dict[str, Any]]):
+    #__root__: Dict[str, Any] = Field(default_factory=dict)
+    pass
+
+
+class QuestionToAgent(BaseModel):
+    question: str
+    llm_key: Union[str, AWSAuthentication]
+    llm: str
+    model: str = Field(default="gpt-3.5-turbo")
+    tools: Optional[List[Dict[str, ToolOptions]]] = Field(default_factory=dict)
+    system_context: str = Field(default="You are a helpful AI bot. Always reply in the same language of the question.")
+    temperature: float = Field(default=0.0)
+    max_tokens: int = Field(default=128)
+    chat_history_dict: Optional[Dict[str, ChatEntry]] = None
+    n_messages: int = Field(default_factory=lambda: None)
+
+    @field_validator("n_messages")
+    def n_messages_range(cls, v):
+        """Ensures n_messages is within greater than 0"""
+        if not v > 0:
+            raise ValueError("n_messages must be greater than 0")
+        return v
+
+class Citation(BaseModel):
+    source_id: int = Field(
+        ...,
+        description="The integer ID of a SPECIFIC source which justifies the answer.",
+    )
+    source_name: str = Field(
+        ...,
+        description="The Article Source of a SPECIFIC source which justifies the answer.",
+    )
+    quote: str = Field(
+        ...,
+        description="The VERBATIM quote from the specified source that justifies the answer.",
+    )
+
+class QuotedAnswer(BaseModel):
+    """Answer the user question based only on the given sources, and cite the sources used."""
+
+    answer: str = Field(
+        ...,
+        description="The answer to the user question, which is based only on the given sources.",
+    )
+    citations: List[Citation] = Field(
+        ..., description="Citations from the given sources that justify the answer."
+    )
+
+
 class SimpleAnswer(BaseModel):
     answer: str = Field(default="No answer")
     chat_history_dict: Optional[Dict[str, ChatEntry]]
@@ -161,6 +212,7 @@ class RetrievalResult(BaseModel):
     ids: Optional[List[str]] | None = None
     source: str | None = None
     sources: Optional[List[str]] | None = None
+    citations: Optional[List[Citation]] | None = None
     content_chunks: Optional[List[str]] | None = None
     prompt_token_size: int = Field(default=0)
     error_message: Optional[str] | None = None
