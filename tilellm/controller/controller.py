@@ -345,6 +345,7 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
 
 
         if question_answer.citations:
+
             rag_chain_from_docs = (
                     RunnablePassthrough.assign(context=(lambda x: format_docs_with_id(x["context"])))
                     | qa_prompt
@@ -355,23 +356,26 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
 
             chain_w_citations = RunnablePassthrough.assign(context=retrieve_docs).assign(
                 answer=rag_chain_from_docs
-            )
+            ).assign(only_answer=lambda text: text["answer"].answer)
+
             conversational_rag_chain = RunnableWithMessageHistory(
                 chain_w_citations,
                 get_session_history,
                 input_messages_key="input",
                 history_messages_key="chat_history",
-                output_messages_key="answer",
+                output_messages_key="only_answer",
+
             )
 
             result = conversational_rag_chain.invoke(
-                {"input": question_answer.question, },  # 'chat_history': chat_history_list},
+                {"input": question_answer.question },  # 'chat_history': chat_history_list},
                 config={"configurable": {"session_id": uuid.uuid4().hex}
                         }  # constructs a key "abc123" in `store`.
             )
 
+            # print(result.keys())
             # from pprint import pprint
-            # pprint(result["answer"])
+            # print(f"===== {result['only_ans']} =====")
             citations = result['answer'].citations
             result['answer'], success = verify_answer(result['answer'].answer)
 
@@ -412,7 +416,8 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
 
         ids = list(set(ids))
         sources = list(set(sources))
-        source = " ".join(sources)
+        # source = " ".join(sources)
+        source = " ".join([cit.source_name for cit in citations])
         metadata_id = ids[0]
 
         logger.info(f"input: {result['input']}")

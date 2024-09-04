@@ -89,7 +89,7 @@ class QuestionAnswer(BaseModel):
     embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
     similarity_threshold: float = Field(default_factory=lambda: 1.0)
     debug: bool = Field(default_factory=lambda: False)
-    citations: bool = Field(default_factory=lambda: False)
+    citations: bool = Field(default_factory=lambda: True)
     system_context: Optional[str] = None
     search_type: str = Field(default_factory=lambda: "similarity")
     chat_history_dict: Optional[Dict[str, ChatEntry]] = None

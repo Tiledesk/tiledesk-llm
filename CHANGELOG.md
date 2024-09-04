@@ -5,6 +5,10 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-09-04]
+### 0.2.13
+- modify: source on qa
+
 ## [2024-08-31]
 ### 0.2.12
 - add: citations
