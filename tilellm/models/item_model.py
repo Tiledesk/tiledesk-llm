@@ -1,6 +1,8 @@
-from pydantic import BaseModel, Field, field_validator, ValidationError, model_validator, RootModel
+from pydantic import BaseModel, Field, field_validator, ValidationError, model_validator, RootModel, root_validator
 from typing import Dict, Optional, List, Union, Any
 import datetime
+
+
 
 
 class ParametersScrapeType4(BaseModel):
@@ -108,6 +110,13 @@ class QuestionAnswer(BaseModel):
             raise ValueError("top_k must be a positive integer.")
         return v
 
+    @model_validator(mode='after')
+    def check_citations_max_tokens(cls, values):
+        """Sets max_tokens to at least 1024 if citations=True."""
+        if values.citations and values.max_tokens < 1024:
+            values.max_tokens = 1024
+        return values
+
 
 class AWSAuthentication(BaseModel):
     aws_access_key_id: str
@@ -180,7 +189,7 @@ class Citation(BaseModel):
     )
     source_name: str = Field(
         ...,
-        description="The Article Source (URL if available) of a SPECIFIC source which justifies the answer.",
+        description="The Article Source as URL (if available) of a SPECIFIC source which justifies the answer.",
     )
     #quote: str = Field(
     #    ...,

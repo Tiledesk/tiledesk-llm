@@ -379,6 +379,7 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
             citations = result['answer'].citations
             result['answer'], success = verify_answer(result['answer'].answer)
 
+
         else:
             conversational_rag_chain = RunnableWithMessageHistory(
                 rag_chain,
@@ -395,6 +396,7 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
             )
             result['answer'], success = verify_answer(result['answer'])
             citations = None
+
 
         docs = result["context"]
         # from pprint import pprint
@@ -417,8 +419,11 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
         ids = list(set(ids))
         sources = list(set(sources))
 
-        # source = " ".join(sources)
-        source = " ".join(set([cit.source_name for cit in citations]))
+        if question_answer.citations:
+            source = " ".join(set([cit.source_name for cit in citations]))
+        else:
+            source = " ".join(sources)
+
         metadata_id = ids[0]
 
         logger.info(f"input: {result['input']}")

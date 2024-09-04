@@ -6,6 +6,10 @@
 ### **Copyrigth**: *Tiledesk SRL*
 
 ## [2024-09-04]
+### 0.2.16
+- fix: max_tokens=1024 if citations=True  
+
+## [2024-09-04]
 ### 0.2.15
 - fix: citations without quote
 
