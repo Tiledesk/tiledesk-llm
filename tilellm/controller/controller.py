@@ -416,8 +416,9 @@ async def ask_with_memory(question_answer, repo=None) -> RetrievalResult:
 
         ids = list(set(ids))
         sources = list(set(sources))
+
         # source = " ".join(sources)
-        source = " ".join([cit.source_name for cit in citations])
+        source = " ".join(set([cit.source_name for cit in citations]))
         metadata_id = ids[0]
 
         logger.info(f"input: {result['input']}")
