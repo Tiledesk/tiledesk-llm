@@ -180,12 +180,12 @@ class Citation(BaseModel):
     )
     source_name: str = Field(
         ...,
-        description="The Article Source of a SPECIFIC source which justifies the answer.",
+        description="The Article Source (URL if available) of a SPECIFIC source which justifies the answer.",
     )
-    quote: str = Field(
-        ...,
-        description="The VERBATIM quote from the specified source that justifies the answer.",
-    )
+    #quote: str = Field(
+    #    ...,
+    #    description="The VERBATIM quote from the specified source that justifies the answer.",
+    #)
 
 class QuotedAnswer(BaseModel):
     """Answer the user question based only on the given sources, and cite the sources used."""

@@ -6,6 +6,10 @@
 ### **Copyrigth**: *Tiledesk SRL*
 
 ## [2024-09-04]
+### 0.2.14
+- modify: citations without quote
+- 
+## [2024-09-04]
 ### 0.2.13
 - modify: source on qa
 
