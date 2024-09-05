@@ -13,7 +13,9 @@ COPY ./tilellm /tiledesk-llm/tilellm
 RUN pip install .
 RUN pip install "uvicorn[standard]" gunicorn
 RUN python -m nltk.downloader punkt
+RUN python -m nltk.downloader punkt_tab
 RUN python -m nltk.downloader averaged_perceptron_tagger
+RUN python -m nltk.downloader averaged_perceptron_tagger_eng
 RUN playwright install chromium
 RUN playwright install-deps chromium
 # Aggiustare redis

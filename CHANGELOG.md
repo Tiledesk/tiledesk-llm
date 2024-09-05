@@ -5,6 +5,10 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-09-05]
+### 0.2.17
+- fix: nltk download on Dockerfile   
+
 ## [2024-09-04]
 ### 0.2.16
 - fix: max_tokens=1024 if citations=True  
