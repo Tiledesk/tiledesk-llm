@@ -113,6 +113,9 @@ celerybeat.pid
 .venv
 .environ
 .environ.prod
+deploy_old.sh
+docker-compose-test.yml
+docker-compose.yml
 env/
 venv/
 ENV/

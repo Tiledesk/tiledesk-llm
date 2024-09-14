@@ -5,6 +5,11 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-09-14]
+### 0.2.18
+- upgrade: worker
+- modify: default value for scrape type: 4
+
 ## [2024-09-05]
 ### 0.2.17
 - fix: nltk download on Dockerfile   

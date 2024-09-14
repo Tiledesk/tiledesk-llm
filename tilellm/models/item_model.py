@@ -10,8 +10,8 @@ class ParametersScrapeType4(BaseModel):
     tags_to_extract: Optional[List[str]] = Field(default_factory=list)
     unwanted_classnames: Optional[List[str]] = Field(default_factory=list)
     desired_classnames: Optional[List[str]] = Field(default_factory=list)
-    remove_lines: Optional[bool] = Field(default=False)
-    remove_comments: Optional[bool] = Field(default=False)
+    remove_lines: Optional[bool] = Field(default=True)
+    remove_comments: Optional[bool] = Field(default=True)
 
     @model_validator(mode='after')
     def check_booleans(cls, values):

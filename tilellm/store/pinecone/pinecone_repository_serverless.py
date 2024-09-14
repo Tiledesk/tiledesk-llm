@@ -135,7 +135,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
             else:
                 metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding)
-                document = Document(page_content=content, metadata=metadata.dict())
+                document = Document(page_content=content, metadata=metadata.model_dump()) #tolto dict()
 
                 chunks.extend(self.chunk_data(data=[document], chunk_size=chunk_size, chunk_overlap=chunk_overlap))
                 total_tokens, cost = self.calc_embedding_cost(chunks, embedding)
