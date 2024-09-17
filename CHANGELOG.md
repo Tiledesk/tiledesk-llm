@@ -6,6 +6,10 @@
 ### **Copyrigth**: *Tiledesk SRL*
 
 ## [2024-09-14]
+### 0.2.19
+- upgrade: worker to 0.0.25
+- 
+## [2024-09-14]
 ### 0.2.18
 - upgrade: worker
 - modify: default value for scrape type: 4
