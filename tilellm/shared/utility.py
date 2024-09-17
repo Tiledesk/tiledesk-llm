@@ -173,4 +173,22 @@ def inject_llm(func):
     return wrapper
 
 
+def inject_llm_o1(func):
+    @wraps(func)
+    async def wrapper(question, *args, **kwargs):
+        logger.debug(question)
+        chat_model = ChatOpenAI(api_key=question.llm_key,
+                                model=question.model,
+                                temperature=question.temperature,
+                                max_completion_tokens=question.max_tokens)
+
+
+
+        # Add chat_model agli kwargs
+        kwargs['chat_model'] = chat_model
+
+        # Chiama la funzione originale con i nuovi kwargs
+        return await func(question, *args, **kwargs)
+
+    return wrapper
 

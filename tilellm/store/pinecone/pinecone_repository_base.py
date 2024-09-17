@@ -443,6 +443,36 @@ class PineconeRepositoryBase:
         return chunks
 
     @staticmethod
+    def chunk_data_extended(data, chunk_size=256, chunk_overlap=10, **kwargs):
+        """
+        Chunk document in small pieces. Semantic chunking is implemented too
+        :param data:
+        :param chunk_size:
+        :param chunk_overlap:
+        :param kwargs:
+        :return:
+        """
+
+        use_semantic_chunk = kwargs['semantic']
+        if use_semantic_chunk:
+            embeddings = kwargs['embeddings']
+            breakpoint_threshold_type = kwargs['breakpoint_threshold_type']
+            logger.info(f"Semantic chunk with {breakpoint_threshold_type}")
+            from langchain_experimental.text_splitter import SemanticChunker
+            text_splitter = SemanticChunker(
+                embeddings,
+                breakpoint_threshold_type=breakpoint_threshold_type
+
+            )
+            chunks = text_splitter.split_documents(data)
+        else:
+            from langchain.text_splitter import RecursiveCharacterTextSplitter
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+            chunks = text_splitter.split_documents(data)
+
+        return chunks
+
+    @staticmethod
     def calc_embedding_cost(texts, embedding):
         """
         Calculate the embedding cost with OpenAI embedding

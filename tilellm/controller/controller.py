@@ -18,7 +18,7 @@ from pydantic.v1 import BaseModel, Field
 
 from tilellm.models.item_model import RetrievalResult, ChatEntry, PineconeIndexingResult, PineconeNamespaceResult, \
     PineconeDescNamespaceResult, PineconeItems, SimpleAnswer, QuotedAnswer
-from tilellm.shared.utility import inject_repo, inject_llm
+from tilellm.shared.utility import inject_repo, inject_llm, inject_llm_o1
 import tilellm.shared.const as const
 # from tilellm.store.pinecone_repository_base import PineconeRepositoryBase
 
@@ -188,6 +188,35 @@ async def ask_with_memory1(question_answer, repo=None):
             error_message=repr(e),
             chat_history_dict=chat_history_dict
         )
+        raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
+
+@inject_llm_o1
+async def ask_to_llm_o1(question, chat_model=None):
+    try:
+        logger.info(question)
+
+        result = await chat_model.ainvoke(
+            [{"role": "human",
+             "content": question.question
+             }]
+
+        )
+        # logger.info(result)
+        if not question.chat_history_dict:
+            question.chat_history_dict = {}
+
+        num = len(question.chat_history_dict.keys())
+        question.chat_history_dict[str(num)] = {"question": question.question, "answer": result.content}
+
+        return SimpleAnswer(answer=result.content, chat_history_dict=question.chat_history_dict)
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        question_answer_list = []
+
+        result_to_return = SimpleAnswer(answer=repr(e),
+                                        chat_history_dict={})
         raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
 
 

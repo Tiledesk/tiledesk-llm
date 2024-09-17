@@ -37,7 +37,9 @@ from tilellm.controller.controller import (ask_with_memory,
                                            get_desc_namespace,
                                            get_list_namespace,
                                            get_sources_namespace,
-                                           ask_to_llm, ask_to_agent)
+                                           ask_to_llm,
+                                           ask_to_agent,
+                                           ask_to_llm_o1)
 
 import logging
 
@@ -378,6 +380,20 @@ async def post_ask_to_llm_main(question: QuestionToLLM):
     logger.info(question)
 
     result = await ask_to_llm(question=question)
+
+    logger.debug(result)
+    return JSONResponse(content=result.model_dump())
+
+@app.post("/api/askto1", response_model=SimpleAnswer)
+async def post_ask_to_llm_o1_main(question: QuestionToLLM):
+    """
+    Query and Answer with a LLM
+    :param question:
+    :return: RetrievalResult
+    """
+    logger.info(question)
+
+    result = await ask_to_llm_o1(question=question)
 
     logger.debug(result)
     return JSONResponse(content=result.model_dump())

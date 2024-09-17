@@ -106,7 +106,33 @@ Models for /api/ask
 - claude-3-5-sonnet-20240620
 
 ### Groq - engine: groq
-- Llama3-70b-8192
-- Llama3-8b-8192
+- llama3-70b-8192
+- llama3-8b-8192
+- llama-3.1-8b-instant
+- llama-3.1-70b-versatile
 - Mixtral-8x7b-32768
 - Gemma-7b-It
+
+## Semantic chunk
+
+```json
+{
+  
+  "semantic_chunk": true,
+  "breakpoint_threshold_type": "percentile"
+  
+  
+}
+
+```
+### percentile
+The default way to split is based on percentile. In this method, all differences between sentences are calculated, and then any difference greater than the X percentile is split.
+
+### standard_deviation
+In this method, any difference greater than X standard deviations is split.
+
+### interquartile
+In this method, the interquartile distance is used to split chunks.
+
+### gradient
+In this method, the gradient of distance is used to split chunks along with the percentile method. This method is useful when chunks are highly correlated with each other or specific to a domain e.g. legal or medical. The idea is to apply anomaly detection on gradient array so that the distribution become wider and easy to identify boundaries in highly semantic data.

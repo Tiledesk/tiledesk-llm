@@ -5,6 +5,10 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-09-17]
+### 0.2.19
+- upgrade: worker to 0.0.27
+
 ## [2024-09-14]
 ### 0.2.19
 - upgrade: worker to 0.0.25

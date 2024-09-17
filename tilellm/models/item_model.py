@@ -3,6 +3,12 @@ from typing import Dict, Optional, List, Union, Any
 import datetime
 
 
+class Engine(BaseModel):
+    name: str = Field(default="pinecone")
+    type: str = Field(default="serverless")
+    apikey: str
+    vector_size: int = Field(default=1536)
+    index_name: str = Field(default="tilellm")
 
 
 class ParametersScrapeType4(BaseModel):
@@ -32,9 +38,12 @@ class ItemSingle(BaseModel):
     embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
     namespace: str | None = None
     webhook: str = Field(default_factory=lambda: "")
+    semantic_chunk: Optional[bool] = Field(default=False)
+    breakpoint_threshold_type: Optional[str] = Field(default="percentile")
     chunk_size: int = Field(default_factory=lambda: 1000)
     chunk_overlap: int = Field(default_factory=lambda: 400)
     parameters_scrape_type_4: Optional[ParametersScrapeType4] = None
+
 
     @model_validator(mode='after')
     def check_scrape_type(cls, values):

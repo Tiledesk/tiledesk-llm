@@ -82,8 +82,28 @@ def load_document(url: str, type_source: str):
     # name, extension = os.path.splitext(file)
 
     if type_source == 'pdf':
-        from langchain_community.document_loaders import PyPDFLoader
+        from langchain_community.document_loaders import (PyPDFLoader ,
+                                                          #UnstructuredPDFLoader,
+                                                          #OnlinePDFLoader
+                                                          )
         logger.info(f'Loading {url}')
+        """
+        import requests
+        import tempfile
+        
+        response = requests.get(url)
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            # Scrivi il contenuto scaricato nel file temporaneo
+            temp_file.write(response.content)
+
+            # Ottieni il percorso del file temporaneo
+            file_path = temp_file.name
+        #
+        loader = UnstructuredPDFLoader(file_path=file_path,
+            strategy="hi_res",
+            infer_table_structure=True,
+            model_name="yolox")
+        """
         loader = PyPDFLoader(url)
     elif type_source == 'docx':
         from langchain_community.document_loaders import Docx2txtLoader

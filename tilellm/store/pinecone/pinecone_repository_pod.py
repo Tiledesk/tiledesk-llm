@@ -40,6 +40,8 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
         gpt_key = item.gptkey
         embedding = item.embedding
         namespace = item.namespace
+        semantic_chunk = item.semantic_chunk
+        breakpoint_threshold_type = item.breakpoint_threshold_type
         scrape_type = item.scrape_type
         chunk_size = item.chunk_size
         chunk_overlap = item.chunk_overlap
@@ -86,7 +88,14 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                         elif value is None:
                             document.metadata[key] = ""
 
-                    chunks.extend(self.chunk_data(data=[document], chunk_size=chunk_size, chunk_overlap=chunk_overlap))
+                    chunks.extend(self.chunk_data_extended(data=[document],
+                                                           chunk_size=chunk_size,
+                                                           chunk_overlap=chunk_overlap,
+                                                           semantic=semantic_chunk,
+                                                           embeddings=oai_embeddings,
+                                                           breakpoint_threshold_type=breakpoint_threshold_type
+                                                           )
+                                  )
 
                 # from pprint import pprint
                 # pprint(documents)
@@ -108,7 +117,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 chunks = list()
                 for doc in doc_array:
                     metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding)
-                    document = Document(page_content=doc, metadata=metadata.dict())
+                    document = Document(page_content=doc, metadata=metadata.model_dump())
                     chunks.append(document)
                 # chunks.extend(chunk_data(data=documents))
                 total_tokens, cost = self.calc_embedding_cost(chunks, embedding)
@@ -122,7 +131,14 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding)
                 document = Document(page_content=content, metadata=metadata.dict())
 
-                chunks.extend(self.chunk_data(data=[document], chunk_size=chunk_size, chunk_overlap=chunk_overlap))
+                chunks.extend(self.chunk_data_extended(data=[document],
+                                                       chunk_size=chunk_size,
+                                                       chunk_overlap=chunk_overlap,
+                                                       semantic=semantic_chunk,
+                                                       embeddings=oai_embeddings,
+                                                       breakpoint_threshold_type=breakpoint_threshold_type
+                                                       )
+                              )
                 total_tokens, cost = self.calc_embedding_cost(chunks, embedding)
                 a = vector_store.from_documents(chunks,
                                                 embedding=oai_embeddings,
