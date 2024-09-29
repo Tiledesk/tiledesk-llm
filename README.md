@@ -94,6 +94,7 @@ Models for /api/ask
 - gpt-4
 - gpt-4-turbo
 - got-4o
+- got-4o-mini
 
 ### Cohere - engine: cohere
 - command-r
@@ -136,3 +137,57 @@ In this method, the interquartile distance is used to split chunks.
 
 ### gradient
 In this method, the gradient of distance is used to split chunks along with the percentile method. This method is useful when chunks are highly correlated with each other or specific to a domain e.g. legal or medical. The idea is to apply anomaly detection on gradient array so that the distribution become wider and easy to identify boundaries in highly semantic data.
+
+
+## Hybrid Search
+
+### /api/scrape/single
+
+```json
+{
+ ...
+ "embedding":"huggingface",
+  "hybrid":true,
+  "sparse_encoder":"splade|bge-m3",
+  ... 
+  "engine":
+   {
+    "name": "",
+    "type": "",
+    "apikey" : "",
+    "vector_size": 1024,
+    "index_name": "" 
+   }  
+}
+```
+
+### /api/qa
+
+```json
+{
+  "question": "question",
+  "namespace": "",
+  "debug":true,
+  "citations":true,
+  "llm": "anthropic|groq",
+  "gptkey": "api-key of llm",
+  "model": "es. claude-3-5-sonnet-20240620 | llama-3.1-70b-versatile",
+  "temperature": 0.9,
+  "max_tokens":2048,
+  "embedding":"huggingfacce",
+  "sparse_encoder":"splade|bge-m3",
+  "search_type":"hybrid",
+  "alpha": 0.2,
+  "similarity_threshold":0.95,
+  "system_context":"",
+  "top_k": 6,
+  "engine":
+  {
+    "name": "",
+    "type": "",
+    "apikey" : "",
+    "vector_size": 1024,
+    "index_name": "" 
+  }
+}
+```

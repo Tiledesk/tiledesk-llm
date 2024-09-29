@@ -1,15 +1,19 @@
-
-from langchain_community.document_loaders import BSHTMLLoader
-
-from langchain_community.document_loaders import UnstructuredURLLoader
-from langchain_community.document_loaders import AsyncChromiumLoader
-from langchain_community.document_loaders import PlaywrightURLLoader
+import time
 
 import requests
 import logging
+import asyncio
+
+
+from langchain_community.document_loaders import UnstructuredURLLoader
+from langchain_community.document_loaders import AsyncChromiumLoader
+
+
+from playwright.async_api import async_playwright
 
 from langchain_community.document_transformers import BeautifulSoupTransformer
 from langchain_core.documents import Document
+from playwright.sync_api import sync_playwright
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +47,21 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
             )
             docs = await loader.aload()
         elif scrape_type == 2:
-            loader = PlaywrightURLLoader(urls=urls)
-            docs = await loader.aload()
+
+
+            params_type_4 = kwargs.get("parameters_scrape_type_4")
+            docs= await scrape_page(url, params_type_4)
+            #loop = asyncio.new_event_loop()
+            #queue = Queue()
+            #scraping_thread = threading.Thread(target=run_scraping_in_thread, args=(loop, queue, url, params_type_4))
+            ##scraping_thread.start()
+            #scraping_thread.join()  # This will wait for the thread to finish
+            #if not queue.empty():
+            #    docs = queue.get()
+            #else:
+            #    docs =[]
+
+
         elif scrape_type == 3:
             loader = AsyncChromiumLoader(urls=urls, user_agent='Mozilla/5.0')
             docs = await loader.aload()
@@ -56,6 +73,7 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
             params_type_4 = kwargs.get("parameters_scrape_type_4")
             loader = AsyncChromiumLoader(urls=urls, user_agent='Mozilla/5.0')
             docs = await loader.aload()
+
             bs_transformer = BeautifulSoupTransformer()
             docs_transformed = bs_transformer.transform_documents(docs,
                                                                   tags_to_extract=params_type_4.tags_to_extract,
@@ -65,6 +83,7 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
                                                                   remove_comments=params_type_4.remove_comments
                                                                   )
             docs = docs_transformed
+            # print(f"=== DOCS BS4 {docs}")
 
         for doc in docs:
             doc.metadata = clean_metadata(doc.metadata)
@@ -75,6 +94,73 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
         return docs
     except Exception as ex:
         raise ex
+
+def run_scraping_in_thread(loop, queue, *args, **kwargs):
+    asyncio.set_event_loop(loop)
+    docs = loop.run_until_complete(scrape_page(*args, **kwargs))
+    queue.put(docs)
+
+async def scrape_page(url, params_type_4, time_sleep=2):
+    logger.info("Starting scraping...")
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page(user_agent="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
+                                      java_script_enabled=True)
+
+        await page.goto(url=url)
+
+        await page.wait_for_load_state()
+        time.sleep(params_type_4.time_sleep)
+        results = await page.content()
+        await browser.close()
+
+        metadata = {"source": url}
+        doc = Document(page_content=results, metadata=metadata)
+        docs = [doc]
+        #logger.info(docs)
+        bs_transformer = BeautifulSoupTransformer()
+        docs_transformed = bs_transformer.transform_documents(
+            docs,
+            tags_to_extract=params_type_4.tags_to_extract,
+            unwanted_tags=params_type_4.unwanted_tags,
+            unwanted_classnames=params_type_4.unwanted_classnames,
+            remove_lines=params_type_4.remove_lines,
+            remove_comments=params_type_4.remove_comments
+        )
+        docs = docs_transformed
+        #for doc in docs:
+        #    doc.metadata = clean_metadata(doc.metadata)
+        return docs
+
+def scrape_page_new(url, params_type_4):
+    logger.info("Starting scraping...")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page(user_agent="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
+                                      java_script_enabled=True)
+
+        page.goto(url=url, wait_until="load")
+        results = page.content()
+        browser.close()
+
+        metadata = {"source": url}
+        doc = Document(page_content=results, metadata=metadata)
+        docs = [doc]
+
+        bs_transformer = BeautifulSoupTransformer()
+        docs_transformed = bs_transformer.transform_documents(
+            docs,
+            tags_to_extract=params_type_4.tags_to_extract,
+            unwanted_tags=params_type_4.unwanted_tags,
+            unwanted_classnames=params_type_4.unwanted_classnames,
+            remove_lines=params_type_4.remove_lines,
+            remove_comments=params_type_4.remove_comments
+        )
+        docs = docs_transformed
+        for doc in docs:
+            doc.metadata = clean_metadata(doc.metadata)
+        return docs
+
 
 
 def load_document(url: str, type_source: str):

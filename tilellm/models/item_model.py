@@ -1,4 +1,5 @@
-from pydantic import BaseModel, Field, field_validator, ValidationError, model_validator, RootModel, root_validator
+from langchain_core.documents import Document
+from pydantic import BaseModel, Field, field_validator, ValidationError, model_validator, RootModel
 from typing import Dict, Optional, List, Union, Any
 import datetime
 
@@ -9,6 +10,16 @@ class Engine(BaseModel):
     apikey: str
     vector_size: int = Field(default=1536)
     index_name: str = Field(default="tilellm")
+    text_key: Optional[str] = Field(default="text")
+    metric: str = Field(default="cosine")
+
+    @model_validator(mode='after')
+    def set_text_key(self):
+        if self.type == "serverless":
+            self.text_key = "text"
+        elif self.type == "pod":
+            self.text_key = "content"
+        return self
 
 
 class ParametersScrapeType4(BaseModel):
@@ -18,6 +29,7 @@ class ParametersScrapeType4(BaseModel):
     desired_classnames: Optional[List[str]] = Field(default_factory=list)
     remove_lines: Optional[bool] = Field(default=True)
     remove_comments: Optional[bool] = Field(default=True)
+    time_sleep: Optional[float] = Field(default=2)
 
     @model_validator(mode='after')
     def check_booleans(cls, values):
@@ -33,6 +45,8 @@ class ItemSingle(BaseModel):
     source: str | None = None
     type: str | None = None
     content: str | None = None
+    hybrid: Optional[bool] = Field(default=False)
+    sparse_encoder: Optional[str] = Field(default="splade")
     gptkey: str | None = None
     scrape_type: int = Field(default_factory=lambda: 0)
     embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
@@ -43,14 +57,14 @@ class ItemSingle(BaseModel):
     chunk_size: int = Field(default_factory=lambda: 1000)
     chunk_overlap: int = Field(default_factory=lambda: 400)
     parameters_scrape_type_4: Optional[ParametersScrapeType4] = None
-
+    engine: Engine
 
     @model_validator(mode='after')
     def check_scrape_type(cls, values):
         scrape_type = values.scrape_type
         parameters_scrape_type_4 = values.parameters_scrape_type_4
 
-        if scrape_type == 4:
+        if scrape_type == 4 or scrape_type == 2:
             if parameters_scrape_type_4 is None:
                 raise ValueError('parameters_scrape_type_4 must be provided when scrape_type is 4')
         else:
@@ -92,8 +106,10 @@ class ChatHistory(BaseModel):
 class QuestionAnswer(BaseModel):
     question: str
     namespace: str
+    llm: Optional[str] = Field(default="openai")
     gptkey: str
     model: str = Field(default="gpt-3.5-turbo")
+    sparse_encoder: Optional[str] = Field(default="splade") #bge-m3
     temperature: float = Field(default=0.0)
     top_k: int = Field(default=5)
     max_tokens: int = Field(default=128)
@@ -101,8 +117,10 @@ class QuestionAnswer(BaseModel):
     similarity_threshold: float = Field(default_factory=lambda: 1.0)
     debug: bool = Field(default_factory=lambda: False)
     citations: bool = Field(default_factory=lambda: True)
+    alpha: Optional[float] = Field(default=0.5)
     system_context: Optional[str] = None
     search_type: str = Field(default_factory=lambda: "similarity")
+    engine: Engine
     chat_history_dict: Optional[Dict[str, ChatEntry]] = None
 
     @field_validator("temperature")
@@ -162,7 +180,7 @@ class QuestionToLLM(BaseModel):
     @field_validator("max_tokens")
     def max_tokens_range(cls, v):
         """Ensures max_tokens is a positive integer."""
-        if not 50 <= v <= 2000:
+        if not 50 <= v <= 8192:
             raise ValueError("top_k must be a positive integer.")
         return v
 
@@ -237,7 +255,7 @@ class RetrievalResult(BaseModel):
     chat_history_dict: Optional[Dict[str, ChatEntry]]
 
 
-class PineconeQueryResult(BaseModel):
+class RepositoryQueryResult(BaseModel):
     id: str
     metadata_id: str
     metadata_source: str
@@ -246,17 +264,21 @@ class PineconeQueryResult(BaseModel):
     text: Optional[str] | None = None
 
 
-class PineconeItems(BaseModel):
-    matches: List[PineconeQueryResult]
+class RepositoryItems(BaseModel):
+    matches: List[RepositoryQueryResult]
 
+class RepositoryEngine(BaseModel):
+    engine: Engine
 
-class PineconeNamespaceToDelete(BaseModel):
+class RepositoryNamespace(BaseModel):
     namespace: str
+    engine: Engine
 
 
-class PineconeItemToDelete(BaseModel):
+class RepositoryItem(BaseModel):
     id: str
     namespace: str
+    engine: Engine
 
 
 class ScrapeStatusReq(BaseModel):
@@ -271,7 +293,7 @@ class ScrapeStatusResponse(BaseModel):
     queue_order: int = Field(default=-1)
 
 
-class PineconeIndexingResult(BaseModel):
+class IndexingResult(BaseModel):
     #  {"id": f"{id}", "chunks": f"{len(chunks)}", "total_tokens": f"{total_tokens}", "cost": f"{cost:.6f}"}
     id: str | None = None
     chunks: int | None = None
@@ -282,21 +304,24 @@ class PineconeIndexingResult(BaseModel):
     error: Optional[str] | None = None
 
 
-class PineconeItemNamespaceResult(BaseModel):
+class RepositoryItemNamespaceResult(BaseModel):
     namespace: str
     vector_count: int
 
 
-class PineconeIdSummaryResult(BaseModel):
+class RepositoryIdSummaryResult(BaseModel):
     metadata_id: str
     source: str
     chunks_count: int
 
 
-class PineconeNamespaceResult(BaseModel):
-    namespaces: Optional[List[PineconeItemNamespaceResult]]
+class RepositoryNamespaceResult(BaseModel):
+    namespaces: Optional[List[RepositoryItemNamespaceResult]]
 
 
-class PineconeDescNamespaceResult(BaseModel):
-    namespace_desc: PineconeItemNamespaceResult
-    ids: Optional[List[PineconeIdSummaryResult]]
+class RepositoryDescNamespaceResult(BaseModel):
+    namespace_desc: RepositoryItemNamespaceResult
+    ids: Optional[List[RepositoryIdSummaryResult]]
+
+class MyDocument(Document):
+    sparse_values: Optional[dict]

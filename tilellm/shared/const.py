@@ -8,13 +8,14 @@ PINECONE_API_KEY = None
 PINECONE_INDEX = None
 PINECONE_TEXT_KEY = None
 VOYAGEAI_API_KEY = None
+JWT_SECRET_KEY = None
 
 contextualize_q_system_prompt = """Given a chat history and the latest user question \
                         which might reference context in the chat history, formulate a standalone question \
                         which can be understood without the chat history. Do NOT answer the question, \
                         just reformulate it if needed and otherwise return it as is."""
 
-qa_system_prompt = """You are an helpful assistant for question-answering tasks. \
+qa_system_prompt2 = """You are an helpful assistant for question-answering tasks. \
                       Use ONLY the pieces of retrieved context delimited by #### to answer the question. \
                       The first step is to extrac relevant information to the question from retrieved context.
                       If you don't know the answer, just say that you don't know. \
@@ -26,6 +27,22 @@ qa_system_prompt = """You are an helpful assistant for question-answering tasks.
                       {context}
                       ####
                       """
+
+qa_system_prompt= """You are an helpful assistant for question-answering tasks.
+
+                     Follow these steps carefully:
+                     
+                     1. If the question was in English, answer in English. If it was in Italian, answer in Italian. 
+                        If it was in French, answer in French. If it was in Spanish, answer in Spanish, and so on, 
+                        regardless of the context language 
+                     2. Use ONLY the pieces of retrieved context delimited by #### to answer the question.
+                     3. If the context does not contain sufficient information to generate 
+                        an accurate and informative answer, return <NOANS>
+                        
+                        ####{context}####
+                        
+                        Let's think step by step.
+                     """
 
 qa_system_prompt1 = """You are an AI assistant specialized in question-answering tasks. \
                        Your goal is to provide accurate and helpful answers based solely on the given context. \
@@ -145,11 +162,13 @@ Thought:{agent_scratchpad}
 
 
 def populate_constant():
-    global PINECONE_API_KEY, PINECONE_INDEX, PINECONE_TEXT_KEY, VOYAGEAI_API_KEY
-    PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
-    PINECONE_INDEX = os.environ.get("PINECONE_INDEX")
-    PINECONE_TEXT_KEY = os.environ.get("PINECONE_TEXT_KEY")
-    VOYAGEAI_API_KEY = os.environ.get("VOYAGEAI_API_KEY")
+    global JWT_SECRET_KEY
+    JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY")
+    #global PINECONE_API_KEY, PINECONE_INDEX, PINECONE_TEXT_KEY, VOYAGEAI_API_KEY
+    #PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
+    #PINECONE_INDEX = os.environ.get("PINECONE_INDEX")
+    #PINECONE_TEXT_KEY = os.environ.get("PINECONE_TEXT_KEY")
+    #VOYAGEAI_API_KEY = os.environ.get("VOYAGEAI_API_KEY")
 
 
 

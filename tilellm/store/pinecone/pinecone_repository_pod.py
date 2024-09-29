@@ -1,12 +1,12 @@
 from tilellm.models.item_model import (MetadataItem,
-                                       PineconeIndexingResult
+                                       IndexingResult, Engine
                                        )
 from tilellm.shared.utility import inject_embedding
-from tilellm.tools.document_tool_simple import (get_content_by_url,
-                                                get_content_by_url_with_bs,
-                                                load_document,
-                                                load_from_wikipedia
-                                                )
+from tilellm.tools.document_tools import (get_content_by_url,
+                                          get_content_by_url_with_bs,
+                                          load_document,
+                                          load_from_wikipedia
+                                          )
 
 from tilellm.store.pinecone.pinecone_repository_base import PineconeRepositoryBase
 
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 class PineconeRepositoryPod(PineconeRepositoryBase):
     @inject_embedding()
-    async def add_pc_item(self, item, embedding_obj=None, embedding_dimension=None) -> PineconeIndexingResult:
+    async def add_pc_item(self, item, embedding_obj=None, embedding_dimension=None) -> IndexingResult:
         """
             Add items to name
             space into Pinecone index
@@ -46,8 +46,9 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
         chunk_size = item.chunk_size
         chunk_overlap = item.chunk_overlap
         parameters_scrape_type_4 = item.parameters_scrape_type_4
+        engine = item.engine
         try:
-            await self.delete_pc_ids_namespace(metadata_id=metadata_id, namespace=namespace)
+            await self.delete_pc_ids_namespace(engine=engine, metadata_id=metadata_id, namespace=namespace)
         except Exception as ex:
             logger.warning(ex)
             pass
@@ -56,8 +57,8 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
 
         # default text-embedding-ada-002 1536, text-embedding-3-large 3072, text-embedding-3-small 1536
         oai_embeddings = embedding_obj # OpenAIEmbeddings(api_key=gpt_key, model=embedding)
-        vector_store = await self.create_pc_index(embeddings=oai_embeddings, emb_dimension=emb_dimension)
-
+        vector_store = await self.create_pc_index(engine=engine, embeddings=oai_embeddings, emb_dimension=emb_dimension)
+        # print(f"=========== POD {type(vector_store)}")
         chunks = []
         total_tokens = 0
         cost = 0
@@ -101,11 +102,12 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 # pprint(documents)
                 logger.debug(documents)
 
-                a = vector_store.from_documents(chunks,
-                                                embedding=oai_embeddings,
-                                                index_name=const.PINECONE_INDEX,
-                                                namespace=namespace,
-                                                text_key=const.PINECONE_TEXT_KEY)
+                a = vector_store.add_documents(chunks,
+                                               #embedding=oai_embeddings,
+                                               #index_name=const.PINECONE_INDEX,
+                                               namespace=namespace,
+                                               #text_key=const.PINECONE_TEXT_KEY
+                                               )
 
                 total_tokens, cost = self.calc_embedding_cost(chunks, embedding)
                 logger.info(f"chunks: {len(chunks)}, total_tokens: {total_tokens}, cost: {cost: .6f}")
@@ -121,11 +123,12 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                     chunks.append(document)
                 # chunks.extend(chunk_data(data=documents))
                 total_tokens, cost = self.calc_embedding_cost(chunks, embedding)
-                a = vector_store.from_documents(chunks,
-                                                embedding=oai_embeddings,
-                                                index_name=const.PINECONE_INDEX,
-                                                namespace=namespace,
-                                                text_key=const.PINECONE_TEXT_KEY)
+                a = vector_store.add_documents(chunks,
+                                               #embedding=oai_embeddings,
+                                               # index_name=const.PINECONE_INDEX,
+                                               namespace=namespace,
+                                               # text_key=const.PINECONE_TEXT_KEY
+                                               )
 
             else:
                 metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding)
@@ -140,38 +143,45 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                                                        )
                               )
                 total_tokens, cost = self.calc_embedding_cost(chunks, embedding)
-                a = vector_store.from_documents(chunks,
-                                                embedding=oai_embeddings,
-                                                index_name=const.PINECONE_INDEX,
+                a = vector_store.add_documents(chunks,
+                                               #embedding=oai_embeddings,
+                                               # index_name=const.PINECONE_INDEX,
                                                 namespace=namespace,
-                                                text_key=const.PINECONE_TEXT_KEY)
+                                               # text_key=const.PINECONE_TEXT_KEY
+                                               )
 
-            pinecone_result = PineconeIndexingResult(id=metadata_id, chunks=len(chunks), total_tokens=total_tokens,
-                                                     cost=f"{cost:.6f}")
+            pinecone_result = IndexingResult(id=metadata_id, chunks=len(chunks), total_tokens=total_tokens,
+                                             cost=f"{cost:.6f}")
         except Exception as ex:
             logger.error(repr(ex))
-            pinecone_result = PineconeIndexingResult(id=metadata_id, chunks=len(chunks), total_tokens=total_tokens,
-                                                     status=400,
-                                                     cost=f"{cost:.6f}")
+            pinecone_result = IndexingResult(id=metadata_id, chunks=len(chunks), total_tokens=total_tokens,
+                                             status=400,
+                                             cost=f"{cost:.6f}")
         # {"id": f"{id}", "chunks": f"{len(chunks)}", "total_tokens": f"{total_tokens}", "cost": f"{cost:.6f}"}
         return pinecone_result
 
-    async def delete_pc_ids_namespace(self, metadata_id: str, namespace: str):
+    @inject_embedding()
+    async def add_pc_item_hybrid(self, item, embedding_obj=None, embedding_dimension=None):
+        pass
+
+
+    async def delete_pc_ids_namespace(self, engine: Engine, metadata_id: str, namespace: str):
         """
         Delete from pinecone items
+        :param engine:
         :param metadata_id:
         :param namespace:
         :return:
         """
-
+        # print(f"DELETE ID FROM NAMESPACE api {engine.apikey} index_name {engine.index_name}")
         import pinecone
         try:
             pc = pinecone.Pinecone(
-                api_key=const.PINECONE_API_KEY
+                api_key=engine.apikey # const.PINECONE_API_KEY
             )
 
-            host = pc.describe_index(const.PINECONE_INDEX).host
-            index = pc.Index(name=const.PINECONE_INDEX, host=host)
+            host = pc.describe_index(engine.index_name).host  # const.PINECONE_INDEX).host
+            index = pc.Index(name=engine.index_name, host=host)  # const.PINECONE_INDEX, host=host)
             describe = index.describe_index_stats()
             logger.debug(describe)
             namespaces = describe.get("namespaces", {})

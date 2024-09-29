@@ -5,8 +5,21 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2024-09-21]
+### 0.3.1
+- add sentence embedding with bge-m3
+- add: hybrid search with bg3-m3
+- modify: deleted env variable for vector store 
+
+## [2024-09-23]
+### 0.3.0
+- add: hybrid search
+- add: indexing based on spade 
+- minor fix
+
+
 ## [2024-09-17]
-### 0.2.19
+### 0.2.20
 - upgrade: worker to 0.0.27
 
 ## [2024-09-14]

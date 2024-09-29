@@ -1,12 +1,17 @@
 from abc import abstractmethod
+
+import time
+from langchain_pinecone import PineconeVectorStore
+
 from tilellm.models.item_model import (MetadataItem,
-                                       PineconeQueryResult,
-                                       PineconeItems,
-                                       PineconeIndexingResult,
-                                       PineconeNamespaceResult,
-                                       PineconeItemNamespaceResult,
-                                       PineconeIdSummaryResult,
-                                       PineconeDescNamespaceResult
+                                       RepositoryQueryResult,
+                                       RepositoryItems,
+                                       IndexingResult,
+                                       RepositoryNamespaceResult,
+                                       RepositoryItemNamespaceResult,
+                                       RepositoryIdSummaryResult,
+                                       RepositoryDescNamespaceResult, Engine, RepositoryNamespace
+
                                        )
 
 from tilellm.shared import const
@@ -24,22 +29,27 @@ class PineconeRepositoryBase:
     async def add_pc_item(self, item):
         pass
 
+    @abstractmethod
+    async def add_pc_item_hybrid(self, item):
+        pass
+
     @staticmethod
-    async def delete_pc_namespace(namespace: str):
+    async def delete_pc_namespace(namespace_to_delete: RepositoryNamespace):
         """
         Delete namespace from Pinecone index
-        :param namespace:
+        :param namespace_to_delete:
         :return:
         """
+        engine = namespace_to_delete.engine
         import pinecone
         try:
             pc = pinecone.Pinecone(
-                api_key=const.PINECONE_API_KEY
+                api_key=engine.apikey
             )
-            host = pc.describe_index(const.PINECONE_INDEX).host
-            index = pc.Index(name=const.PINECONE_INDEX, host=host)
+            host = pc.describe_index(engine.index_name).host
+            index = pc.Index(name=engine.index_name, host=host)
             # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
-            delete_response = index.delete(delete_all=True, namespace=namespace)
+            delete_response = index.delete(delete_all=True, namespace=namespace_to_delete.namespace)
         except Exception as ex:
 
             logger.error(ex)
@@ -47,29 +57,26 @@ class PineconeRepositoryBase:
             raise ex
 
     @abstractmethod
-    async def delete_pc_ids_namespace(self, metadata_id: str, namespace: str):
+    async def delete_pc_ids_namespace(self, engine: Engine, metadata_id: str, namespace: str):
         pass
 
     @staticmethod
-    async def delete_pc_chunk_id_namespace(chunk_id: str, namespace: str):
+    async def delete_pc_chunk_id_namespace(engine: Engine, chunk_id: str, namespace: str):
         """
         delete chunk from pinecone
+        :param engine: Engine
         :param chunk_id:
         :param namespace:
         :return:
         """
-        """
-                Delete namespace from Pinecone index
-                :param namespace:
-                :return:
-                """
+
         import pinecone
         try:
             pc = pinecone.Pinecone(
-                api_key=const.PINECONE_API_KEY
+                api_key=engine.apikey
             )
-            host = pc.describe_index(const.PINECONE_INDEX).host
-            index = pc.Index(name=const.PINECONE_INDEX, host=host)
+            host = pc.describe_index(engine.index_name).host
+            index = pc.Index(name=engine.index_name, host=host)
             # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX,)
             delete_response = index.delete(ids=[chunk_id], namespace=namespace)
         except Exception as ex:
@@ -79,9 +86,10 @@ class PineconeRepositoryBase:
             raise ex
 
     @staticmethod
-    async def get_pc_ids_namespace( metadata_id: str, namespace: str) -> PineconeItems:
+    async def get_pc_ids_namespace(engine: Engine, metadata_id: str, namespace: str) -> RepositoryItems:
         """
         Get from Pinecone all items from namespace given document id
+        :param engine: Engine
         :param metadata_id:
         :param namespace:
         :return:
@@ -90,11 +98,11 @@ class PineconeRepositoryBase:
 
         try:
             pc = pinecone.Pinecone(
-                api_key=const.PINECONE_API_KEY
+                api_key=engine.apikey
             )
 
-            host = pc.describe_index(const.PINECONE_INDEX).host
-            index = pc.Index(name=const.PINECONE_INDEX, host=host)
+            host = pc.describe_index(engine.index_name).host
+            index = pc.Index(name=engine.index_name, host=host)
 
             # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
             describe = index.describe_index_stats()
@@ -125,16 +133,16 @@ class PineconeRepositoryBase:
             # print(type(matches[0].get('id')))
             result = []
             for obj in matches:
-                result.append(PineconeQueryResult(id=obj.get('id', ""),
-                                                  metadata_id=obj.get('metadata').get('id'),
-                                                  metadata_source=obj.get('metadata').get('source'),
-                                                  metadata_type=obj.get('metadata').get('type'),
-                                                  date=obj.get('metadata').get('date', 'Date not defined'),
-                                                  text=obj.get('metadata').get(const.PINECONE_TEXT_KEY)
-                                                  # su pod content, su Serverless text
-                                                  )
+                result.append(RepositoryQueryResult(id=obj.get('id', ""),
+                                                    metadata_id=obj.get('metadata').get('id'),
+                                                    metadata_source=obj.get('metadata').get('source'),
+                                                    metadata_type=obj.get('metadata').get('type'),
+                                                    date=obj.get('metadata').get('date', 'Date not defined'),
+                                                    text=obj.get('metadata').get(const.PINECONE_TEXT_KEY)
+                                                    # su pod content, su Serverless text
+                                                    )
                               )
-            res = PineconeItems(matches=result)
+            res = RepositoryItems(matches=result)
             logger.debug(res)
             return res
 
@@ -145,16 +153,16 @@ class PineconeRepositoryBase:
             raise ex
 
     @staticmethod
-    async def pinecone_list_namespaces() -> PineconeNamespaceResult:
+    async def pinecone_list_namespaces(engine: Engine) -> RepositoryNamespaceResult:
         import pinecone
 
         try:
             pc = pinecone.Pinecone(
-                api_key=const.PINECONE_API_KEY
+                api_key=engine.apikey
             )
 
-            host = pc.describe_index(const.PINECONE_INDEX).host
-            index = pc.Index(name=const.PINECONE_INDEX, host=host)
+            host = pc.describe_index(engine.index_name).host
+            index = pc.Index(name=engine.index_name, host=host)
 
             describe = index.describe_index_stats()
 
@@ -165,13 +173,13 @@ class PineconeRepositoryBase:
 
             for namespace in namespaces.keys():
                 total_vectors = namespaces.get(namespace).get('vector_count')
-                pc_item_namespace = PineconeItemNamespaceResult(namespace=namespace, vector_count=total_vectors)
+                pc_item_namespace = RepositoryItemNamespaceResult(namespace=namespace, vector_count=total_vectors)
                 results.append(pc_item_namespace)
                 logger.debug(f"{namespace}, {total_vectors}")
 
             logger.debug(f"pinecone total vector in {results}")
 
-            return PineconeNamespaceResult(namespaces=results)
+            return RepositoryNamespaceResult(namespaces=results)
 
         except Exception as ex:
 
@@ -180,9 +188,10 @@ class PineconeRepositoryBase:
             raise ex
 
     @staticmethod
-    async def get_pc_all_obj_namespace(namespace: str) -> PineconeItems:
+    async def get_pc_all_obj_namespace(engine: Engine, namespace: str) -> RepositoryItems:
         """
         Query Pinecone to get all object
+        :param engine: Engine
         :param namespace:
         :return:
         """
@@ -190,11 +199,11 @@ class PineconeRepositoryBase:
 
         try:
             pc = pinecone.Pinecone(
-                api_key=const.PINECONE_API_KEY
+                api_key=engine.apikey
             )
 
-            host = pc.describe_index(const.PINECONE_INDEX).host
-            index = pc.Index(name=const.PINECONE_INDEX, host=host)
+            host = pc.describe_index(engine.index_name).host
+            index = pc.Index(name=engine.index_name, host=host)
 
             # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
             describe = index.describe_index_stats()
@@ -226,15 +235,15 @@ class PineconeRepositoryBase:
             # print(type(matches[0].get('id')))
             result = []
             for obj in matches:
-                result.append(PineconeQueryResult(id=obj.get('id', ""),
-                                                  metadata_id=obj.get('metadata').get('id'),
-                                                  metadata_source=obj.get('metadata').get('source'),
-                                                  metadata_type=obj.get('metadata').get('type'),
-                                                  date=obj.get('metadata').get('date', 'Date not defined'),
-                                                  text=None  # su pod content, su Serverless text
-                                                  )
+                result.append(RepositoryQueryResult(id=obj.get('id', ""),
+                                                    metadata_id=obj.get('metadata').get('id'),
+                                                    metadata_source=obj.get('metadata').get('source'),
+                                                    metadata_type=obj.get('metadata').get('type'),
+                                                    date=obj.get('metadata').get('date', 'Date not defined'),
+                                                    text=None  # su pod content, su Serverless text
+                                                    )
                               )
-            res = PineconeItems(matches=result)
+            res = RepositoryItems(matches=result)
             logger.debug(res)
             return res
 
@@ -245,9 +254,10 @@ class PineconeRepositoryBase:
             raise ex
 
     @staticmethod
-    async def get_pc_desc_namespace(namespace: str) -> PineconeDescNamespaceResult:
+    async def get_pc_desc_namespace(engine: Engine, namespace: str) -> RepositoryDescNamespaceResult:
         """
         Query Pinecone to get all object
+        :param engine: Engine
         :param namespace:
         :return: PineconeDescNamespaceResult
         """
@@ -255,11 +265,11 @@ class PineconeRepositoryBase:
 
         try:
             pc = pinecone.Pinecone(
-                api_key=const.PINECONE_API_KEY
+                api_key=engine.apikey
             )
 
-            host = pc.describe_index(const.PINECONE_INDEX).host
-            index = pc.Index(name=const.PINECONE_INDEX, host=host)
+            host = pc.describe_index(engine.index_name).host
+            index = pc.Index(name=engine.index_name, host=host)
 
             # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
             describe = index.describe_index_stats()
@@ -267,11 +277,11 @@ class PineconeRepositoryBase:
             logger.debug(describe)
             namespaces = describe.get("namespaces", {})
             total_vectors = 1
-            description = PineconeItemNamespaceResult(namespace=namespace, vector_count=0)
+            description = RepositoryItemNamespaceResult(namespace=namespace, vector_count=0)
             if namespaces:
                 if namespace in namespaces.keys():
                     total_vectors = namespaces.get(namespace).get('vector_count')
-                    description = PineconeItemNamespaceResult(namespace=namespace, vector_count=total_vectors)
+                    description = RepositoryItemNamespaceResult(namespace=namespace, vector_count=total_vectors)
 
             logger.debug(f"pinecone total vector in {namespace}: {total_vectors}")
 
@@ -291,18 +301,18 @@ class PineconeRepositoryBase:
             # ids = [obj.get('id') for obj in matches]
             # print(type(matches[0].get('id')))
             result = []
-            ids_count: Dict[str, PineconeIdSummaryResult] = {}
+            ids_count: Dict[str, RepositoryIdSummaryResult] = {}
 
             for obj in matches:
                 metadata_id = obj.get('metadata').get('id')
                 if metadata_id in ids_count:
                     ids_count[metadata_id].chunks_count += 1
                 else:
-                    ids_count[metadata_id] = PineconeIdSummaryResult(metadata_id=metadata_id,
-                                                                     source=obj.get('metadata').get('source'),
-                                                                     chunks_count=1)
+                    ids_count[metadata_id] = RepositoryIdSummaryResult(metadata_id=metadata_id,
+                                                                       source=obj.get('metadata').get('source'),
+                                                                       chunks_count=1)
 
-            res = PineconeDescNamespaceResult(namespace_desc=description, ids=list(ids_count.values()))
+            res = RepositoryDescNamespaceResult(namespace_desc=description, ids=list(ids_count.values()))
 
             logger.debug(res)
             return res
@@ -314,9 +324,10 @@ class PineconeRepositoryBase:
             raise ex
 
     @staticmethod
-    async def get_pc_sources_namespace(source: str, namespace: str) -> PineconeItems:
+    async def get_pc_sources_namespace(engine: Engine, source: str, namespace: str) -> RepositoryItems:
         """
         Get from Pinecone all items from namespace given source
+        :param engine: Engine
         :param source:
         :param namespace:
         :return:
@@ -325,11 +336,11 @@ class PineconeRepositoryBase:
 
         try:
             pc = pinecone.Pinecone(
-                api_key=const.PINECONE_API_KEY
+                api_key=engine.apikey
             )
 
-            host = pc.describe_index(const.PINECONE_INDEX).host
-            index = pc.Index(name=const.PINECONE_INDEX, host=host)
+            host = pc.describe_index(engine.index_name).host
+            index = pc.Index(name=engine.index_name, host=host)
 
             # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
             describe = index.describe_index_stats()
@@ -357,16 +368,16 @@ class PineconeRepositoryBase:
             # print(type(matches[0].get('id')))
             result = []
             for obj in matches:
-                result.append(PineconeQueryResult(id=obj.get('id'),
-                                                  metadata_id=obj.get('metadata').get('id'),
-                                                  metadata_source=obj.get('metadata').get('source'),
-                                                  metadata_type=obj.get('metadata').get('type'),
-                                                  date=obj.get('metadata').get('date', 'Date not defined'),
-                                                  text=obj.get('metadata').get(const.PINECONE_TEXT_KEY)
-                                                  # su pod content, su Serverless text
-                                                  )
+                result.append(RepositoryQueryResult(id=obj.get('id'),
+                                                    metadata_id=obj.get('metadata').get('id'),
+                                                    metadata_source=obj.get('metadata').get('source'),
+                                                    metadata_type=obj.get('metadata').get('type'),
+                                                    date=obj.get('metadata').get('date', 'Date not defined'),
+                                                    text=obj.get('metadata').get(const.PINECONE_TEXT_KEY)
+                                                    # su pod content, su Serverless text
+                                                    )
                               )
-            res = PineconeItems(matches=result)
+            res = RepositoryItems(matches=result)
             logger.debug(res)
             return res
 
@@ -377,53 +388,79 @@ class PineconeRepositoryBase:
             raise ex
 
     @staticmethod
-    async def create_pc_index(embeddings, emb_dimension) -> VectorStore:
+    async def create_pc_index(engine, embeddings, emb_dimension) -> PineconeVectorStore:
         """
         Create or return existing index
+        :param engine:
         :param embeddings:
         :param emb_dimension:
         :return:
         """
         import pinecone
 
-        from langchain_community.vectorstores import Pinecone
 
-        pc = pinecone.Pinecone(
-            api_key=const.PINECONE_API_KEY
+
+        pc =  pinecone.Pinecone(
+            api_key= engine.apikey #const.PINECONE_API_KEY
         )
 
-        if const.PINECONE_INDEX in pc.list_indexes().names():
-            logger.debug(const.PINECONE_TEXT_KEY)
-            logger.debug(f'Index {const.PINECONE_INDEX} exists. Loading embeddings ... ')
-            vector_store = Pinecone.from_existing_index(index_name=const.PINECONE_INDEX,
-                                                        embedding=embeddings,
-                                                        text_key=const.PINECONE_TEXT_KEY
-                                                        )  # text-key nuova versione è text
-        else:
-            logger.debug(f'Create index {const.PINECONE_INDEX} and embeddings ...')
+        #existing_indexes = [index_info["name"] for index_info in pc.list_indexes()]
 
-            if os.environ.get("PINECONE_TYPE") == "serverless":
-                pc.create_index(const.PINECONE_INDEX,
+        if engine.index_name in pc.list_indexes().names(): #const.PINECONE_INDEX in pc.list_indexes().names():
+           # logger.debug(engine.index_name) #(const.PINECONE_TEXT_KEY)
+            #logger.debug(f'Index {const.PINECONE_INDEX} exists. Loading embeddings ... ')
+            logger.debug(f'Index {engine.index_name} exists. Loading embeddings ... ')
+            #print(f"================== {engine.index_name}, api {engine.apikey}")
+            host = pc.describe_index(engine.index_name).host
+
+            index = pc.Index(name=engine.index_name,
+                             host=host)
+
+            vector_store = PineconeVectorStore(index=index,
+                                               embedding=embeddings,
+                                               text_key=engine.text_key,
+                                               pinecone_api_key=engine.apikey,
+                                               index_name=engine.index_name)
+
+
+            #vector_store = PineconeVectorStore.from_existing_index(index_name= engine.index_name, #const.PINECONE_INDEX,
+            #                                                       embedding=embeddings,
+            #                                                       text_key= engine.text_key #const.PINECONE_TEXT_KEY
+            #                                                       )  # text-key nuova versione è text
+        else:
+            #logger.debug(f'Create index {const.PINECONE_INDEX} and embeddings ...')
+            logger.debug(f'Create index {engine.index_name} and embeddings ...')
+
+            if engine.type == "serverless": #os.environ.get("PINECONE_TYPE") == "serverless":
+                pc.create_index(engine.index_name,   # const.PINECONE_INDEX,
                                 dimension=emb_dimension,
-                                metric='cosine',
+                                metric=engine.metric,
                                 spec=pinecone.ServerlessSpec(cloud="aws",
                                                              region="us-west-2"
                                                              )
                                 )
             else:
-                pc.create_index(const.PINECONE_INDEX,
+                pc.create_index(engine.index_name, #const.PINECONE_INDEX,
                                 dimension=emb_dimension,
-                                metric='cosine',
+                                metric=engine.metric,
                                 spec=pinecone.PodSpec(pod_type="p1",
                                                       pods=1,
                                                       environment="us-west4-gpc"
                                                       )
                                 )
+            while not pc.describe_index(engine.index_name).status["ready"]:
+                time.sleep(1)
 
-            vector_store = Pinecone.from_existing_index(index_name=const.PINECONE_INDEX,
-                                                        embedding=embeddings,
-                                                        text_key=const.PINECONE_TEXT_KEY
-                                                        )
+            host = pc.describe_index(engine.index_name).host
+            index = pc.Index(name=engine.index_name, host=host)
+
+            vector_store = PineconeVectorStore(index=index,
+                                               embedding=embeddings,
+                                               text_key=engine.text_key,
+                                               pinecone_api_key=engine.apikey,
+                                               index_name=engine.index_name)
+
+
 
         return vector_store
 
@@ -445,7 +482,9 @@ class PineconeRepositoryBase:
     @staticmethod
     def chunk_data_extended(data, chunk_size=256, chunk_overlap=10, **kwargs):
         """
-        Chunk document in small pieces. Semantic chunking is implemented too
+        Chunk document in small pieces. Semantic chunking is implemented too with
+        percentile, standard_deviation, interquartile, gradient
+
         :param data:
         :param chunk_size:
         :param chunk_overlap:
