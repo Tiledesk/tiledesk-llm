@@ -155,9 +155,12 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                 | qa_prompt
                 | llm.with_structured_output(QuotedAnswer)
         )
-        chain_w_citations = RunnablePassthrough.assign(context=retrieve_docs).assign(
-            answer=rag_chain_from_docs
-        ).assign(only_answer=lambda text: text["answer"].answer)
+
+        chain_w_citations = (RunnablePassthrough.assign(context=retrieve_docs)
+                             .assign(answer=rag_chain_from_docs)
+                             .assign(only_answer=lambda text: text["answer"].answer)
+                             )
+
         conversational_rag_chain = RunnableWithMessageHistory(
             chain_w_citations,
             get_session_history,

@@ -1,4 +1,3 @@
-import os
 from functools import wraps
 
 import logging
@@ -7,10 +6,12 @@ from gc import callbacks
 import langchain_aws
 from langchain_community.callbacks.openai_info import OpenAICallbackHandler
 from langchain_community.embeddings import CohereEmbeddings #, GooglePalmEmbeddings
+from langchain_experimental.llms.ollama_functions import OllamaFunctions
 from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_ollama import ChatOllama
 from langchain_voyageai import VoyageAIEmbeddings
 from langchain_openai import OpenAIEmbeddings
-
+from openai import base_url
 
 from tilellm.shared import const
 
@@ -92,6 +93,14 @@ def inject_embedding():
 
                                                       )
                 dimension = 1024
+            elif item.embedding == "ollama":
+                from langchain_ollama.embeddings import OllamaEmbeddings
+                embedding_obj = OllamaEmbeddings(model=item.model.name,
+                                                 base_url=item.model.url
+                                                )
+                dimension = item.model.dimension
+                # dimension for llama3.2 3072
+
             else:
                 embedding_obj = OpenAIEmbeddings(api_key=item.gptkey, model=item.embedding)
                 dimension = 1536
@@ -138,6 +147,11 @@ def inject_llm(func):
                                                 max_tokens=question.max_tokens,
                                                 convert_system_message_to_human=True)
 
+        elif question.llm == "ollama":
+            chat_model = ChatOllama(model = question.model.name,
+                                    temperature=question.temperature,
+                                    um_predict = question.max_tokens,
+                                    base_url=question.model.url)
         elif question.llm == "groq":
             chat_model = ChatGroq(api_key=question.llm_key,
                                   model=question.model,
@@ -263,7 +277,28 @@ def inject_llm_chat(func):
                                   model=question.model,
                                   temperature=question.temperature,
                                   max_tokens=question.max_tokens
+
+
                                   )
+
+        elif question.llm == "ollama":
+            callback_handler = TiledeskAICallbackHandler()
+
+            from langchain_ollama.embeddings import OllamaEmbeddings
+            llm_embeddings = OllamaEmbeddings(model=question.model.name,
+                                             base_url=question.model.url
+                                             )
+            dimension = question.model.dimension
+
+            llm = ChatOllama(model=question.model.name,
+                             temperature=question.temperature,
+                             num_predict=question.max_tokens,
+                             base_url=question.model.url,
+                             format="json",
+                             callback_handler=[callback_handler]
+                             )
+
+
 
         elif question.llm == "aws":
             import os

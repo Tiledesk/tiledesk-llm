@@ -3,6 +3,11 @@ from pydantic import BaseModel, Field, field_validator, ValidationError, model_v
 from typing import Dict, Optional, List, Union, Any
 import datetime
 
+class OllamaModel(BaseModel):
+    name: str
+    url: str
+    dimension: Optional[int] = 1024
+
 
 class Engine(BaseModel):
     name: str = Field(default="pinecone")
@@ -50,6 +55,7 @@ class ItemSingle(BaseModel):
     gptkey: str | None = None
     scrape_type: int = Field(default_factory=lambda: 0)
     embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
+    model: Optional[OllamaModel] | None = None
     namespace: str | None = None
     webhook: str = Field(default_factory=lambda: "")
     semantic_chunk: Optional[bool] = Field(default=False)
@@ -108,15 +114,15 @@ class QuestionAnswer(BaseModel):
     namespace: str
     llm: Optional[str] = Field(default="openai")
     gptkey: str
-    model: str = Field(default="gpt-3.5-turbo")
+    model: Union[str, OllamaModel] = Field(default="gpt-3.5-turbo")
     sparse_encoder: Optional[str] = Field(default="splade") #bge-m3
     temperature: float = Field(default=0.0)
     top_k: int = Field(default=5)
-    max_tokens: int = Field(default=128)
+    max_tokens: int = Field(default=1024)
     embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
     similarity_threshold: float = Field(default_factory=lambda: 1.0)
     debug: bool = Field(default_factory=lambda: False)
-    citations: bool = Field(default_factory=lambda: True)
+    citations: bool = Field(default_factory=lambda: False)
     alpha: Optional[float] = Field(default=0.5)
     system_context: Optional[str] = None
     search_type: str = Field(default_factory=lambda: "similarity")
@@ -155,7 +161,7 @@ class QuestionToLLM(BaseModel):
     question: str
     llm_key: Union[str, AWSAuthentication]
     llm: str
-    model: str = Field(default="gpt-3.5-turbo")
+    model: Union[str, OllamaModel] = Field(default="gpt-3.5-turbo")
     temperature: float = Field(default=0.0)
     max_tokens: int = Field(default=128)
     debug: bool = Field(default_factory=lambda: False)
@@ -285,6 +291,7 @@ class ScrapeStatusReq(BaseModel):
     id: str
     namespace: str
     namespace_list: Optional[List[str]] | None = None
+    engine: Engine
 
 
 class ScrapeStatusResponse(BaseModel):

@@ -496,8 +496,12 @@ async def scrape_status_main(scrape_status_req: ScrapeStatusReq,
             return JSONResponse(content=scrape_status_response.model_dump())
         else:
             try:
-                retrieved_pinecone_data = await get_ids_namespace(metadata_id=scrape_status_req.id,
+                repository_engine = RepositoryEngine(engine=scrape_status_req.engine)
+                print(repository_engine.engine)
+                retrieved_pinecone_data = await get_ids_namespace(repository_engine,
+                                                                  metadata_id=scrape_status_req.id,
                                                                   namespace=scrape_status_req.namespace)
+
 
                 if retrieved_pinecone_data.matches:
                     logger.debug(retrieved_pinecone_data.matches[0].date)

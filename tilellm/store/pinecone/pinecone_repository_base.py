@@ -138,7 +138,7 @@ class PineconeRepositoryBase:
                                                     metadata_source=obj.get('metadata').get('source'),
                                                     metadata_type=obj.get('metadata').get('type'),
                                                     date=obj.get('metadata').get('date', 'Date not defined'),
-                                                    text=obj.get('metadata').get(const.PINECONE_TEXT_KEY)
+                                                    text=obj.get('metadata').get(engine.text_key)
                                                     # su pod content, su Serverless text
                                                     )
                               )
@@ -373,7 +373,7 @@ class PineconeRepositoryBase:
                                                     metadata_source=obj.get('metadata').get('source'),
                                                     metadata_type=obj.get('metadata').get('type'),
                                                     date=obj.get('metadata').get('date', 'Date not defined'),
-                                                    text=obj.get('metadata').get(const.PINECONE_TEXT_KEY)
+                                                    text=obj.get('metadata').get(engine.text_key)
                                                     # su pod content, su Serverless text
                                                     )
                               )

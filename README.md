@@ -12,12 +12,8 @@ pip install -e .
 
 
 ```commandline
-export REDIS_URL="redis://localhost:6379/0"
-export PINECONE_TYPE="serverless|pod"
-export PINECONE_API_KEY="pinecone api key"
-export PINECONE_TEXT_KEY="pinecone field for text - default text in pod content"
-export PINECONE_INDEX="pinecone index name"
-export TILELLM_ROLE="role in pod. Train enable all the APIs, qa do not consume redis queue only Q&A"
+export JWT_SECRET_KEY="yourkey-256-bit"
+export TOKENIZERS_PARALLELISM=false
 export WORKERS=INT number of workers 2*CPU+1
 export TIMEOUT=INT seconds of timeout default=180
 export MAXREQUESTS=INT The maximum number of requests a worker will process before restarting. deafult=1200
@@ -34,11 +30,9 @@ sudo docker build -t tilellm .
 
 
 ```
-sudo docker run -d -p 8000:8000 --env environment="dev|prod" \
---env PINECONE_API_KEY="yourapikey" \
---env PINECONE_TEXT_KEY="text|content" \
---env PINECONE_INDEX="index_name" \
---env TILELLM_ROLE="train|qa" \
+sudo docker run -d -p 8000:8000 \
+--env JWT_SECRET_KEY = "yourkey-256-bit"
+--env TOKENIZERS_PARALLELISM=false
 --env WORKERS=3 \
 --env TIMEOUT=180 \
 --env MAXREQUESTS=1200 \
@@ -145,19 +139,52 @@ In this method, the gradient of distance is used to split chunks along with the 
 
 ```json
 {
- ...
- "embedding":"huggingface",
-  "hybrid":true,
-  "sparse_encoder":"splade|bge-m3",
-  ... 
-  "engine":
-   {
-    "name": "",
-    "type": "",
-    "apikey" : "",
-    "vector_size": 1024,
-    "index_name": "" 
-   }  
+  "id": "content id",
+  "source": "name or url of document",
+  "type": "text|txt|url|pdf|docx",
+  "content": "content of document",
+  "hybrid": true,
+  "sparse_encoder": "splade|bge-m3",
+  "gptkey": "llm key; openai|anthropic|groq|cohere|gemini|ollama, ",
+  "scrape_type": 0,
+  "embedding": "name of embedding; huggingface|ollama|openai...|bge-m3",
+  "model": {
+    "name": "optional, used only with ollama",
+    "url": "ollama base url",
+    "dimension": 3072
+  },
+  "namespace": "vector store namespace",
+  "webhook": "string",
+  "semantic_chunk": false,
+  "breakpoint_threshold_type": "percentile",
+  "chunk_size": 1000,
+  "chunk_overlap": 100,
+  "parameters_scrape_type_4": {
+    "unwanted_tags": [
+      "string"
+    ],
+    "tags_to_extract": [
+      "string"
+    ],
+    "unwanted_classnames": [
+      "string"
+    ],
+    "desired_classnames": [
+      "string"
+    ],
+    "remove_lines": true,
+    "remove_comments": true,
+    "time_sleep": 2
+  },
+  "engine": {
+    "name": "pinecone",
+    "type": "serverless",
+    "apikey": "string",
+    "vector_size": 1536,
+    "index_name": "index name",
+    "text_key": "text for serverless; content for pod",
+    "metric": "cosine|dotproduct for hybrid"
+  }
 }
 ```
 
@@ -174,7 +201,7 @@ In this method, the gradient of distance is used to split chunks along with the 
   "model": "es. claude-3-5-sonnet-20240620 | llama-3.1-70b-versatile",
   "temperature": 0.9,
   "max_tokens":2048,
-  "embedding":"huggingfacce",
+  "embedding":"huggingface",
   "sparse_encoder":"splade|bge-m3",
   "search_type":"hybrid",
   "alpha": 0.2,

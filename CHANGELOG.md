@@ -5,8 +5,10 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
-## [2024-09-21]
-### 0.3.1
+
+## [2024-10-10]
+### 0.3.2-rc2
+- fix: /api/id/{id}/namespace/{namespace}/{token}
 - add sentence embedding with bge-m3
 - add: hybrid search with bg3-m3
 - modify: deleted env variable for vector store 
