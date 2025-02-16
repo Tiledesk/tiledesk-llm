@@ -6,6 +6,10 @@
 ### **Copyrigth**: *Tiledesk SRL*
 
 ## [2025-02-16]
+### 0.4.0-rc2
+- minor fix
+
+## [2025-02-16]
 ### 0.4.0-rc1
 - add stream support
 
