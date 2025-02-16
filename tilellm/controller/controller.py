@@ -1,7 +1,9 @@
 import uuid
-from typing import List
+from datetime import datetime
+from typing import List, AsyncGenerator
 
 import fastapi
+import asyncio
 
 
 from langchain.chains import ConversationalRetrievalChain, LLMChain  # Deprecata
@@ -12,10 +14,12 @@ from langchain_core.prompts import PromptTemplate #, SystemMessagePromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.callbacks.openai_info import OpenAICallbackHandler
+from starlette.responses import StreamingResponse
 
 from tilellm.controller.controller_utils import preprocess_chat_history, initialize_embeddings_and_index, \
     fetch_question_vectors, perform_hybrid_search, retrieve_documents, create_chains, get_or_create_session_history, \
-    generate_answer_with_history, format_result, handle_exception, initialize_retrievers
+    generate_answer_with_history, format_result, handle_exception, initialize_retrievers, create_chains_deepseek, \
+    _create_event
 from tilellm.models.item_model import (RetrievalResult,
                                        ChatEntry,
                                        IndexingResult,
@@ -31,7 +35,7 @@ from tilellm.models.item_model import (RetrievalResult,
 # from tilellm.shared.sparse_util import hybrid_score_norm, HybridRetriever
 
 from tilellm.shared.utility import inject_repo, inject_llm, inject_llm_o1, inject_llm_chat
-# import tilellm.shared.const as const
+
 
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -137,7 +141,7 @@ async def ask_to_llm_o1(question, chat_model=None):
 
 
 @inject_llm
-async def ask_to_llm(question: QuestionToLLM, chat_model=None):
+async def ask_to_llm(question: QuestionToLLM, chat_model=None) :
     try:
         logger.info(question)
         chat_history_list = []
@@ -173,19 +177,69 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None):
 
         )
 
-        result = await runnable_with_history.ainvoke(
-            {"input": question.question}, # 'chat_history_a': chat_history_list,
-            config={"configurable": {"session_id": uuid.uuid4().hex}
-                    },
-        )
-        # logger.info(result)
-        if not question.chat_history_dict:
-            question.chat_history_dict = {}
+        if question.stream:
 
-        num = len(question.chat_history_dict.keys())
-        question.chat_history_dict[str(num)] = {"question": question.question, "answer": result.content}
+            #return runnable_with_history
+           async def get_stream_llm():
+               full_response = ""
+               message_id = str(uuid.uuid4())
+               start_time = datetime.now()
 
-        return SimpleAnswer(answer=result.content, chat_history_dict=question.chat_history_dict)
+               yield _create_event("metadata", {
+                   "message_id": message_id,
+                   "status": "started",
+                   "timestamp": start_time.isoformat()
+               })
+
+               async for chunk in runnable_with_history.astream({"input": question.question},
+                                                                config={
+                                                                    "configurable": {"session_id": uuid.uuid4().hex}}):
+                   if hasattr(chunk, 'content'):
+                       full_response += chunk.content
+                       yield _create_event("chunk", {"content": chunk.content})
+                       await asyncio.sleep(0.02)  # Per un flusso più regolare
+
+               end_time = datetime.now()
+
+               if not question.chat_history_dict:
+                   question.chat_history_dict = {}
+
+               num_question = len(question.chat_history_dict.keys())
+               question.chat_history_dict[str(num_question)] = {"question": question.question, "answer": full_response}
+
+               simple_answer = SimpleAnswer(answer=full_response, chat_history_dict=question.chat_history_dict)
+               yield _create_event("metadata", {
+                   "message_id": message_id,
+                   "status": "completed",
+                   "timestamp": end_time.isoformat(),
+                   "duration": (end_time - start_time).total_seconds(),
+                   "full_response": full_response,
+                   "model_used": simple_answer.model_dump() # Sostituire con calcolo reale dei token
+               })
+
+           return StreamingResponse(
+               get_stream_llm(),
+               media_type="text/event-stream",
+               headers={"Cache-Control": "no-cache"}
+           )
+
+
+        else:
+            result = await runnable_with_history.ainvoke(
+                {"input": question.question}, # 'chat_history_a': chat_history_list,
+                config={"configurable": {"session_id": uuid.uuid4().hex}
+                        },
+            )
+            # logger.info(result)
+
+            if not question.chat_history_dict:
+                question.chat_history_dict = {}
+
+            num = len(question.chat_history_dict.keys())
+            question.chat_history_dict[str(num)] = {"question": question.question, "answer": result.content}
+
+            return SimpleAnswer(answer=result.content, chat_history_dict=question.chat_history_dict)
+
 
     except Exception as e:
         import traceback
@@ -211,6 +265,7 @@ async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler
 
         # Create chains for contextualization and Q&A
         history_aware_retriever, question_answer_chain, qa_prompt = create_chains(llm, question_answer, retriever)
+
 
         rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
 

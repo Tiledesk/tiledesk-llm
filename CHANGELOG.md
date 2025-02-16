@@ -5,6 +5,9 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2025-02-16]
+### 0.4.0-rc1
+- add stream support
 
 ## [2024-10-10]
 ### 0.3.2-rc2

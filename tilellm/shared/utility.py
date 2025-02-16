@@ -5,20 +5,20 @@ from gc import callbacks
 
 import langchain_aws
 from langchain_community.callbacks.openai_info import OpenAICallbackHandler
-from langchain_community.embeddings import CohereEmbeddings #, GooglePalmEmbeddings
+from langchain_community.embeddings import CohereEmbeddings  # , GooglePalmEmbeddings
 from langchain_experimental.llms.ollama_functions import OllamaFunctions
-from langchain_huggingface import HuggingFaceEmbeddings
+
 from langchain_ollama import ChatOllama
 from langchain_voyageai import VoyageAIEmbeddings
 from langchain_openai import OpenAIEmbeddings
-from openai import base_url
 
 from tilellm.shared import const
 
 from langchain_openai.chat_models import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_cohere import ChatCohere
-from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+
 from langchain_groq import ChatGroq
 from langchain_aws.chat_models import ChatBedrockConverse, ChatBedrock
 
@@ -81,16 +81,14 @@ def inject_embedding():
             elif item.embedding == "huggingface":
                 import torch
                 from langchain_huggingface.embeddings import HuggingFaceEmbeddings
-                from langchain_community.embeddings import HuggingFaceBgeEmbeddings
                 device = 'cuda' if torch.cuda.is_available() else 'cpu'
                 model_name = "BAAI/bge-m3"
                 model_kwargs = {'device': device}
                 encode_kwargs = {'normalize_embeddings': True} #True per cosine similarity
 
-                embedding_obj = HuggingFaceBgeEmbeddings(model_name=model_name,
-                                                         model_kwargs=model_kwargs,
-                                                         encode_kwargs=encode_kwargs
-
+                embedding_obj = HuggingFaceEmbeddings(model_name=model_name,
+                                                      model_kwargs=model_kwargs,
+                                                      encode_kwargs=encode_kwargs
                                                       )
                 dimension = 1024
             elif item.embedding == "ollama":
@@ -100,6 +98,16 @@ def inject_embedding():
                                                 )
                 dimension = item.model.dimension
                 # dimension for llama3.2 3072
+            elif item.embedding == "google":
+                embedding_obj = GoogleGenerativeAIEmbeddings(google_api_key=item.gptkey,
+                                                             model=item.model.name
+                                                             )#"models/embedding-001"
+                dimension = item.model.dimension
+
+            elif item.embedding == "cohere":
+                embedding_obj = CohereEmbeddings(model=item.model.name,
+                                                 cohere_api_key=item.gptkey)  # embed-english-light-v3.0
+                dimension = item.model.dimension
 
             else:
                 embedding_obj = OpenAIEmbeddings(api_key=item.gptkey, model=item.embedding)
@@ -126,82 +134,56 @@ def inject_llm(func):
             chat_model = ChatOpenAI(api_key=question.llm_key,
                                     model=question.model,
                                     temperature=question.temperature,
-                                    max_tokens=question.max_tokens)
+                                    max_tokens=question.max_tokens,
+                                    top_p=question.top_p)
 
         elif question.llm == "anthropic":
             chat_model = ChatAnthropic(anthropic_api_key=question.llm_key,
                                        model=question.model,
                                        temperature=question.temperature,
-                                       max_tokens=question.max_tokens)
+                                       max_tokens=question.max_tokens,
+                                       top_p=question.top_p)
 
         elif question.llm == "cohere":
             chat_model = ChatCohere(cohere_api_key=question.llm_key,
                                     model=question.model,
                                     temperature=question.temperature,
-                                    max_tokens=question.max_tokens)
+                                    max_tokens=question.max_tokens
+                                    )
+            #p è compreso tra 0.00 e 0.99
 
         elif question.llm == "google":
             chat_model = ChatGoogleGenerativeAI(google_api_key=question.llm_key,
                                                 model=question.model,
                                                 temperature=question.temperature,
                                                 max_tokens=question.max_tokens,
+                                                top_p=question.top_p,
                                                 convert_system_message_to_human=True)
+
+            #ai_msg.usage_metadata per controllare i token
 
         elif question.llm == "ollama":
             chat_model = ChatOllama(model = question.model.name,
                                     temperature=question.temperature,
-                                    um_predict = question.max_tokens,
+                                    num_predict=question.max_tokens,
+                                    top_p=question.max_tokens,
                                     base_url=question.model.url)
+
         elif question.llm == "groq":
             chat_model = ChatGroq(api_key=question.llm_key,
                                   model=question.model,
                                   temperature=question.temperature,
-                                  max_tokens=question.max_tokens
+                                  max_tokens=question.max_tokens,
+                                  top_p=question.top_p
                                   )
-
-        elif question.llm == "aws":
-            import os
-
-            os.environ["AWS_SECRET_ACCESS_KEY"] = question.llm_key.aws_secret_access_key
-            os.environ["AWS_ACCESS_KEY_ID"] = question.llm_key.aws_access_key_id
-
-            # chat_model = ChatBedrock(model_id=question.model,
-            #                         model_kwargs={"temperature": question.temperature,"max_tokens":question.max_tokens },
-            #                         region_name="eu-central-1"
-            #                         )
-
-            # import boto3
-
-            # client_br = boto3.client('bedrock-runtime',
-            #                         aws_access_key_id=question.llm_key.aws_secret_access_key,
-            #                         aws_secret_access_key=question.llm_key.aws_secret_access_key,
-            #                         region_name=question.llm_key.region_name
-            #                         )
-            # session = boto3.Session(aws_access_key_id=question.llm_key.aws_secret_access_key,
-            #                        aws_secret_access_key=question.llm_key.aws_secret_access_key,
-            #                        region_name=question.llm_key.region_name
-            #                        )
-            # client_ss = session.client("bedrock-runtime")
-
-            chat_model = ChatBedrockConverse(
-                # client=client_br,
-                model=question.model,
-                temperature=question.temperature,
-                max_tokens=question.max_tokens,
-                region_name=question.llm_key.region_name
-
-                #                                 base_url="http://bedroc-proxy-paacejvmzcgv-121947512.eu-central-1.elb.amazonaws.com/api/v1/",
-
-            )  # model_kwargs={"temperature": 0.001},
-
-            # print(chat_model.client._get_credentials().access_key)
-
 
         else:
             chat_model = ChatOpenAI(api_key=question.llm_key,
                                     model=question.model,
                                     temperature=question.temperature,
-                                    max_tokens=question.max_tokens)
+                                    max_tokens=question.max_tokens,
+                                    top_p=question.top_p
+                                    )
 
         # Add chat_model agli kwargs
         kwargs['chat_model'] = chat_model
@@ -217,52 +199,70 @@ def inject_llm_chat(func):
         logger.debug(question)
         if question.model == "openai":
             callback_handler = OpenAICallbackHandler()
-            llm_embeddings = OpenAIEmbeddings(api_key=question.gptkey, model=question.embedding)
             llm = ChatOpenAI(api_key=question.gptkey,
-                                    model=question.model,
-                                    temperature=question.temperature,
-                                    max_tokens=question.max_tokens,
-                                    callbacks=[callback_handler])
+                             model=question.model,
+                             temperature=question.temperature,
+                             max_tokens=question.max_tokens,
+                             top_p=question.top_p,
+                             callbacks=[callback_handler])
 
         elif question.llm == "anthropic":
             callback_handler = TiledeskAICallbackHandler()
-            import torch
-            from langchain_huggingface.embeddings import HuggingFaceEmbeddings
-            device = 'cuda' if torch.cuda.is_available() else 'cpu'
-            model_name = "BAAI/bge-m3"
-            model_kwargs = {'device': device}
-            encode_kwargs = {'normalize_embeddings': False}
-            llm_embeddings = HuggingFaceEmbeddings(model_name=model_name,
-                                                  model_kwargs=model_kwargs,
-                                                  encode_kwargs=encode_kwargs
-                                                  )
             llm = ChatAnthropic(anthropic_api_key=question.gptkey,
-                                       model=question.model,
-                                       temperature=question.temperature,
-                                       max_tokens=question.max_tokens,
-                                       callbacks=[callback_handler])
+                                model=question.model,
+                                temperature=question.temperature,
+                                max_tokens=question.max_tokens,
+                                top_p=question.top_p,
+                                callbacks=[callback_handler])
 
         elif question.llm == "cohere":
             callback_handler = TiledeskAICallbackHandler()
-            llm_embeddings = CohereEmbeddings(model=question.embedding, cohere_api_key=question.gptkey)
             llm = ChatCohere(cohere_api_key=question.gptkey,
-                                    model=question.model,
-                                    temperature=question.temperature,
-                                    max_tokens=question.max_tokens)
+                             model=question.model,
+                             temperature=question.temperature,
+                             max_tokens=question.max_tokens)
 
         elif question.llm == "google":
             callback_handler = TiledeskAICallbackHandler()
-            #"models/embedding-gecko-001"
-            llm_embeddings = OpenAIEmbeddings(api_key=question.gptkey, model=question.embedding)
-            # llm_embeddings = GooglePalmEmbeddings(google_api_key=question.gptkey) #, model_name=question.embedding)
             llm = ChatGoogleGenerativeAI(google_api_key=question.gptkey,
-                                                model=question.model,
-                                                temperature=question.temperature,
-                                                max_tokens=question.max_tokens,
-                                                convert_system_message_to_human=True)
+                                         model=question.model,
+                                         temperature=question.temperature,
+                                         max_tokens=question.max_tokens,
+                                         top_p=question.top_p,
+                                         convert_system_message_to_human=True)
 
         elif question.llm == "groq":
             callback_handler = TiledeskAICallbackHandler()
+            llm = ChatGroq(api_key=question.gptkey,
+                           model=question.model,
+                           temperature=question.temperature,
+                           max_tokens=question.max_tokens,
+                           top_p=question.top_p
+                           )
+
+        elif question.llm == "ollama":
+            callback_handler = TiledeskAICallbackHandler()
+            llm = ChatOllama(model=question.model.name,
+                             temperature=question.temperature,
+                             num_predict=question.max_tokens,
+                             base_url=question.model.url,
+                             format="json",
+                             callback_handler=[callback_handler]
+                             )
+
+        else:
+            callback_handler = OpenAICallbackHandler()
+            llm = ChatOpenAI(api_key=question.gptkey,
+                             model=question.model,
+                             temperature=question.temperature,
+                             max_tokens=question.max_tokens,
+                             top_p=question.top_p,
+                             callbacks=[callback_handler]
+                             )
+
+        if question.embedding == "openai":
+            llm_embeddings = OpenAIEmbeddings(api_key=question.gptkey, model=question.embedding)
+        elif question.embedding == "huggingface":
             import torch
             from langchain_huggingface.embeddings import HuggingFaceEmbeddings
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -273,82 +273,18 @@ def inject_llm_chat(func):
                                                    model_kwargs=model_kwargs,
                                                    encode_kwargs=encode_kwargs
                                                    )
-            llm = ChatGroq(api_key=question.gptkey,
-                                  model=question.model,
-                                  temperature=question.temperature,
-                                  max_tokens=question.max_tokens
-
-
-                                  )
-
-        elif question.llm == "ollama":
-            callback_handler = TiledeskAICallbackHandler()
-
+        elif question.embedding == "cohere":
+            llm_embeddings = CohereEmbeddings(model=question.embedding, cohere_api_key=question.gptkey)#embed-english-light-v3.0
+        elif question.embedding == "google":
+            llm_embeddings = GoogleGenerativeAIEmbeddings(google_api_key=question.gptkey,model=question.embedding)#"models/embedding-001"
+        elif question.embedding == "ollama":
             from langchain_ollama.embeddings import OllamaEmbeddings
             llm_embeddings = OllamaEmbeddings(model=question.model.name,
-                                             base_url=question.model.url
-                                             )
+                                              base_url=question.model.url
+                                              )
             dimension = question.model.dimension
-
-            llm = ChatOllama(model=question.model.name,
-                             temperature=question.temperature,
-                             num_predict=question.max_tokens,
-                             base_url=question.model.url,
-                             format="json",
-                             callback_handler=[callback_handler]
-                             )
-
-
-
-        elif question.llm == "aws":
-            import os
-
-            os.environ["AWS_SECRET_ACCESS_KEY"] = question.llm_key.aws_secret_access_key
-            os.environ["AWS_ACCESS_KEY_ID"] = question.llm_key.aws_access_key_id
-            callback_handler = TiledeskAICallbackHandler()
-            llm_embeddings = OpenAIEmbeddings(api_key=question.gptkey, model=question.embedding)
-
-            # chat_model = ChatBedrock(model_id=question.model,
-            #                         model_kwargs={"temperature": question.temperature,"max_tokens":question.max_tokens },
-            #                         region_name="eu-central-1"
-            #                         )
-
-            # import boto3
-
-            # client_br = boto3.client('bedrock-runtime',
-            #                         aws_access_key_id=question.llm_key.aws_secret_access_key,
-            #                         aws_secret_access_key=question.llm_key.aws_secret_access_key,
-            #                         region_name=question.llm_key.region_name
-            #                         )
-            # session = boto3.Session(aws_access_key_id=question.llm_key.aws_secret_access_key,
-            #                        aws_secret_access_key=question.llm_key.aws_secret_access_key,
-            #                        region_name=question.llm_key.region_name
-            #                        )
-            # client_ss = session.client("bedrock-runtime")
-
-            llm = ChatBedrockConverse(
-                # client=client_br,
-                model=question.model,
-                temperature=question.temperature,
-                max_tokens=question.max_tokens,
-                region_name=question.llm_key.region_name
-
-                #                                 base_url="http://bedroc-proxy-paacejvmzcgv-121947512.eu-central-1.elb.amazonaws.com/api/v1/",
-
-            )  # model_kwargs={"temperature": 0.001},
-
-            # print(chat_model.client._get_credentials().access_key)
-
-
         else:
-            callback_handler = OpenAICallbackHandler()
             llm_embeddings = OpenAIEmbeddings(api_key=question.gptkey, model=question.embedding)
-            llm = ChatOpenAI(api_key=question.gptkey,
-                             model=question.model,
-                             temperature=question.temperature,
-                             max_tokens=question.max_tokens,
-                             callbacks=[callback_handler]
-                             )
 
         # Add chat_model agli kwargs
         kwargs['llm'] = llm

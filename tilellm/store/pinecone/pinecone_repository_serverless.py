@@ -299,6 +299,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             chunk_ids = ids[i: i + embedding_chunk_size]
             chunk_metadatas = metadatas[i: i + embedding_chunk_size]
             embedding_values = embeddings.embed_documents(chunk_texts)#embeddings[i: i + embedding_chunk_size]
+            #print(len(embedding_values[1]))
             sparse_values = sparse_vectors[i: i + embedding_chunk_size]
 
             vector_tuples = [

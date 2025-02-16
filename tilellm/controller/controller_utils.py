@@ -3,6 +3,7 @@ import uuid
 from typing import List
 
 import fastapi
+from langchain.chains.retrieval_qa.base import RetrievalQA
 
 from langchain_core.documents import Document
 
@@ -21,7 +22,7 @@ from langchain.retrievers import ContextualCompressionRetriever
 import tilellm.shared.const as const
 
 from langchain.chains import create_history_aware_retriever
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from langchain_community.chat_message_histories import ChatMessageHistory
@@ -138,6 +139,39 @@ def create_chains(llm, question_answer, retriever):
     question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
     return history_aware_retriever, question_answer_chain, qa_prompt
 
+def create_chains_deepseek(llm, question_answer, retriever):
+    # Contextualize question
+
+    prompt_template = PromptTemplate.from_template(template=const.qa_system_reason)
+
+    result_string = "\n".join(map(lambda x: x.page_content, retriever.invoke(question_answer.question)))
+    prompt_res = prompt_template.invoke({"context":result_string,"question":question_answer.question})
+
+    result = llm.invoke(prompt_res,)
+
+    contextualize_q_system_prompt = const.contextualize_q_system_prompt
+    contextualize_q_prompt = ChatPromptTemplate.from_messages(
+        [
+            ("human", contextualize_q_system_prompt),
+            MessagesPlaceholder("chat_history"),
+            ("human", "{input}"),
+        ]
+    )
+    history_aware_retriever = create_history_aware_retriever(
+        llm, retriever, contextualize_q_prompt
+    )
+    qa_system_deepseek = question_answer.system_context if question_answer.system_context else const.qa_system_prompt
+    qa_prompt = ChatPromptTemplate.from_messages(
+        [
+            ("human", qa_system_deepseek),
+            MessagesPlaceholder("chat_history"),
+            ("human", "{input}"),
+        ]
+    )
+    question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
+    return history_aware_retriever, question_answer_chain, qa_prompt
+
+
 
 # Function to get or create session history
 def get_or_create_session_history(store, session_id, chat_history_dict):
@@ -177,7 +211,7 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
             output_messages_key="answer",
         )
 
-    result = conversational_rag_chain.invoke(
+    result = await conversational_rag_chain.ainvoke(
         {"input": question_answer.question},
         config={"configurable": {"session_id": uuid.uuid4().hex}}
     )
@@ -290,3 +324,7 @@ def verify_answer(s):
     else:
         success = True
     return s, success
+
+def _create_event(event_type: str, data: dict) -> str:
+    import json
+    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"

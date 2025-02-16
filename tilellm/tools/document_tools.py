@@ -15,6 +15,7 @@ from langchain_community.document_transformers import BeautifulSoupTransformer
 from langchain_core.documents import Document
 from playwright.sync_api import sync_playwright
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -272,6 +273,7 @@ def is_valid_value(value):
 
 def clean_metadata(dictionary):
     return {k: v for k, v in dictionary.items() if is_valid_value(v)}
+
 
 
 

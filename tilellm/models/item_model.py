@@ -5,9 +5,12 @@ import datetime
 
 class OllamaModel(BaseModel):
     name: str
-    url: str
-    dimension: Optional[int] = 1024
+    url: Optional[str] = Field(default_factory=lambda: "")
+    dimension: Optional[int] = 1024 #qwel2-deepseek 3584, llama3.2 3072
 
+class EmbeddingModel(BaseModel):
+    name: str
+    name_of_model: str
 
 class Engine(BaseModel):
     name: str = Field(default="pinecone")
@@ -118,8 +121,9 @@ class QuestionAnswer(BaseModel):
     sparse_encoder: Optional[str] = Field(default="splade") #bge-m3
     temperature: float = Field(default=0.0)
     top_k: int = Field(default=5)
-    max_tokens: int = Field(default=1024)
-    embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
+    max_tokens: int = Field(default=512)
+    top_p: Optional[float] = Field(default=1.0)
+    embedding: Union[str,EmbeddingModel] = Field(default_factory=lambda: "text-embedding-ada-002")
     similarity_threshold: float = Field(default_factory=lambda: 1.0)
     debug: bool = Field(default_factory=lambda: False)
     citations: bool = Field(default_factory=lambda: False)
@@ -131,6 +135,13 @@ class QuestionAnswer(BaseModel):
 
     @field_validator("temperature")
     def temperature_range(cls, v):
+        """Ensures temperature is within valid range (usually 0.0 to 1.0)."""
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("Temperature must be between 0.0 and 1.0.")
+        return v
+
+    @field_validator("top_p")
+    def top_p_range(cls, v):
         """Ensures temperature is within valid range (usually 0.0 to 1.0)."""
         if not 0.0 <= v <= 1.0:
             raise ValueError("Temperature must be between 0.0 and 1.0.")
@@ -163,7 +174,9 @@ class QuestionToLLM(BaseModel):
     llm: str
     model: Union[str, OllamaModel] = Field(default="gpt-3.5-turbo")
     temperature: float = Field(default=0.0)
-    max_tokens: int = Field(default=128)
+    max_tokens: int = Field(default=128),
+    top_p: Optional[float] = Field(default=1.0)
+    stream: Optional[bool] = Field(default_factory=lambda: False)
     debug: bool = Field(default_factory=lambda: False)
     system_context: str = Field(default="You are a helpful AI bot. Always reply in the same language of the question.")
     chat_history_dict: Optional[Dict[str, ChatEntry]] = None
@@ -188,6 +201,13 @@ class QuestionToLLM(BaseModel):
         """Ensures max_tokens is a positive integer."""
         if not 50 <= v <= 8192:
             raise ValueError("top_k must be a positive integer.")
+        return v
+
+    @field_validator("top_p")
+    def top_p_range(cls, v):
+        """Ensures temperature is within valid range (usually 0.0 to 1.0)."""
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("Temperature must be between 0.0 and 1.0.")
         return v
 
 

@@ -1,6 +1,6 @@
 import os
 from contextlib import asynccontextmanager
-from fastapi import (FastAPI, 
+from fastapi import (FastAPI,
                      Depends,
                      HTTPException)
 from fastapi.responses import JSONResponse
@@ -219,6 +219,8 @@ async def redis_consumer(app: FastAPI):
 
 populate_constant()
 app = FastAPI(lifespan=redis_consumer)
+
+
 
 
 @app.post("/api/scrape/enqueue")
@@ -447,11 +449,13 @@ async def post_ask_to_llm_main(question: QuestionToLLM):
     :return: RetrievalResult
     """
     logger.info(question)
+    if question.stream:
+        return await ask_to_llm(question=question)
 
-    result = await ask_to_llm(question=question)
-
-    logger.debug(result)
-    return JSONResponse(content=result.model_dump())
+    else:
+        result = await ask_to_llm(question=question)
+        logger.debug(result)
+        return JSONResponse(content=result.model_dump())
 
 @app.post("/api/askto1", response_model=SimpleAnswer)
 async def post_ask_to_llm_o1_main(question: QuestionToLLM):
