@@ -123,6 +123,7 @@ class QuestionAnswer(BaseModel):
     top_k: int = Field(default=5)
     max_tokens: int = Field(default=512)
     top_p: Optional[float] = Field(default=1.0)
+    stream: Optional[bool] = Field(default_factory=lambda: False)
     embedding: Union[str,EmbeddingModel] = Field(default_factory=lambda: "text-embedding-ada-002")
     similarity_threshold: float = Field(default_factory=lambda: 1.0)
     debug: bool = Field(default_factory=lambda: False)
@@ -168,6 +169,10 @@ class AWSAuthentication(BaseModel):
     region_name: str
 
 
+#thinking: Optional[Dict[str, Any]] = Field(default=None)
+#    """Parameters for Claude reasoning,
+#    e.g., ``{"type": "enabled", "budget_tokens": 10_000}
+
 class QuestionToLLM(BaseModel):
     question: str
     llm_key: Union[str, AWSAuthentication]
@@ -178,6 +183,7 @@ class QuestionToLLM(BaseModel):
     top_p: Optional[float] = Field(default=1.0)
     stream: Optional[bool] = Field(default_factory=lambda: False)
     debug: bool = Field(default_factory=lambda: False)
+    thinking: Optional[Dict[str, Any]] = Field(default=None)
     system_context: str = Field(default="You are a helpful AI bot. Always reply in the same language of the question.")
     chat_history_dict: Optional[Dict[str, ChatEntry]] = None
     n_messages: int = Field(default_factory=lambda: None)
@@ -199,7 +205,7 @@ class QuestionToLLM(BaseModel):
     @field_validator("max_tokens")
     def max_tokens_range(cls, v):
         """Ensures max_tokens is a positive integer."""
-        if not 50 <= v <= 8192:
+        if not 50 <= v <= 132000:
             raise ValueError("top_k must be a positive integer.")
         return v
 
@@ -261,6 +267,22 @@ class QuotedAnswer(BaseModel):
     )
 
 
+class PartialQuotedAnswer(BaseModel):
+    delta: str = Field(
+        ...,
+        description="token for the answer to the user question, which is based only on the given sources.",
+    ) # Singolo token
+    citations: List[Citation] = Field(
+        ..., description="Citations from the given sources that justify the answer."
+    )
+
+class QuotedAnswerForStream(PartialQuotedAnswer):
+    answer: str = Field(
+        ...,
+        description="The answer to the user question, which is based only on the given sources.",
+    )
+    complete: bool = True
+
 class SimpleAnswer(BaseModel):
     answer: str = Field(default="No answer")
     chat_history_dict: Optional[Dict[str, ChatEntry]]
@@ -278,6 +300,7 @@ class RetrievalResult(BaseModel):
     content_chunks: Optional[List[str]] | None = None
     prompt_token_size: int = Field(default=0)
     error_message: Optional[str] | None = None
+    duration: Optional[float]= Field(default=0)
     chat_history_dict: Optional[Dict[str, ChatEntry]]
 
 

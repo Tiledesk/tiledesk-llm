@@ -4,7 +4,7 @@ from typing import List, AsyncGenerator
 
 import fastapi
 import asyncio
-
+from fastapi.responses import JSONResponse
 
 from langchain.chains import ConversationalRetrievalChain, LLMChain  # Deprecata
 
@@ -14,7 +14,8 @@ from langchain_core.prompts import PromptTemplate #, SystemMessagePromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.callbacks.openai_info import OpenAICallbackHandler
-from starlette.responses import StreamingResponse
+#from starlette.responses import StreamingResponse
+from fastapi.responses import StreamingResponse
 
 from tilellm.controller.controller_utils import preprocess_chat_history, initialize_embeddings_and_index, \
     fetch_question_vectors, perform_hybrid_search, retrieve_documents, create_chains, get_or_create_session_history, \
@@ -34,9 +35,7 @@ from tilellm.models.item_model import (RetrievalResult,
                                        QuestionToLLM)
 # from tilellm.shared.sparse_util import hybrid_score_norm, HybridRetriever
 
-from tilellm.shared.utility import inject_repo, inject_llm, inject_llm_o1, inject_llm_chat
-
-
+from tilellm.shared.utility import inject_repo, inject_llm, inject_llm_chat, inject_reason_llm
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
@@ -89,30 +88,33 @@ async def ask_hybrid_with_memory(question_answer, repo=None, llm=None, callback_
         get_session_history = lambda session_id: get_or_create_session_history(store, session_id,
                                                                                question_answer.chat_history_dict)
 
-        # Generate the final answer, with or without citations
-        result, citations, success = await generate_answer_with_history(llm=llm,
+        # Generate the final answer, with or without citations result, citations, success
+        result_to_return = await generate_answer_with_history(llm=llm,
                                                                question_answer=question_answer,
                                                                rag_chain = rag_chain,
                                                                retriever = retriever,
                                                                get_session_history = get_session_history,
-                                                               qa_prompt=qa_prompt)
+                                                               qa_prompt=qa_prompt,
+                                                               callback_handler=callback_handler,
+                                                               question_answer_list=question_answer_list
+                                                               )
 
-        question_answer_list.append((result['input'], result['answer']))
+        #question_answer_list.append((result['input'], result['answer']))
 
-        result_to_return = format_result(result=result,
-                                         citations=citations,
-                                         question_answer=question_answer,
-                                         callback_handler=callback_handler,
-                                         question_answer_list=question_answer_list,
-                                         success = success)
+        #result_to_return = format_result(result=result,
+        #                                 citations=citations,
+        #                                 question_answer=question_answer,
+        #                                 callback_handler=callback_handler,
+        #                                 question_answer_list=question_answer_list,
+        #                                 success = success)
 
         return result_to_return
     except Exception as e:
         return handle_exception(e, question_answer)
 
 
-@inject_llm_o1
-async def ask_to_llm_o1(question, chat_model=None):
+@inject_reason_llm
+async def ask_reason_llm(question, chat_model=None):
     try:
         logger.info(question)
 
@@ -122,14 +124,19 @@ async def ask_to_llm_o1(question, chat_model=None):
              }]
 
         )
+
+        #print(result)
         # logger.info(result)
         if not question.chat_history_dict:
             question.chat_history_dict = {}
 
-        num = len(question.chat_history_dict.keys())
-        question.chat_history_dict[str(num)] = {"question": question.question, "answer": result.content}
+        #num = len(question.chat_history_dict.keys())
+        #question.chat_history_dict[str(num)] = {"question": question.question, "answer": result.content}
 
-        return SimpleAnswer(answer=result.content, chat_history_dict=question.chat_history_dict)
+        return SimpleAnswer(answer=result, chat_history_dict=question.chat_history_dict)
+
+
+
 
     except Exception as e:
         import traceback
@@ -196,7 +203,7 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None) :
                                                                     "configurable": {"session_id": uuid.uuid4().hex}}):
                    if hasattr(chunk, 'content'):
                        full_response += chunk.content
-                       yield _create_event("chunk", {"content": chunk.content})
+                       yield _create_event("chunk", {"content": chunk.content, "message_id": message_id})
                        await asyncio.sleep(0.02)  # Per un flusso più regolare
 
                end_time = datetime.now()
@@ -238,7 +245,8 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None) :
             num = len(question.chat_history_dict.keys())
             question.chat_history_dict[str(num)] = {"question": question.question, "answer": result.content}
 
-            return SimpleAnswer(answer=result.content, chat_history_dict=question.chat_history_dict)
+
+            return JSONResponse(content=SimpleAnswer(answer=result.content, chat_history_dict=question.chat_history_dict).model_dump())
 
 
     except Exception as e:
@@ -276,21 +284,23 @@ async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler
 
 
         # Generate the final answer, with or without citations
-        result, citations, success = await generate_answer_with_history(llm=llm,
+        result_to_return = await generate_answer_with_history(llm=llm, #result, citations, success
                                                                         question_answer=question_answer,
                                                                         rag_chain=rag_chain,
                                                                         retriever=retriever,
                                                                         get_session_history=get_session_history,
-                                                                        qa_prompt=qa_prompt)
+                                                                        qa_prompt=qa_prompt,
+                                                                        callback_handler=callback_handler,
+                                                                        question_answer_list=question_answer_list)
 
-        question_answer_list.append((result['input'], result['answer']))
+        #question_answer_list.append((result['input'], result['answer']))
 
-        result_to_return = format_result(result=result,
-                                         citations=citations,
-                                         question_answer=question_answer,
-                                         callback_handler=callback_handler,
-                                         question_answer_list=question_answer_list,
-                                         success=success)
+        #result_to_return = format_result(result=result,
+        #                                 citations=citations,
+        #                                 question_answer=question_answer,
+        #                                 callback_handler=callback_handler,
+        #                                 question_answer_list=question_answer_list,
+        #                                 success=success)
 
 
         return result_to_return

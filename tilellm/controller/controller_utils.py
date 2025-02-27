@@ -1,3 +1,7 @@
+import json
+from datetime import datetime
+import asyncio
+from fastapi.responses import StreamingResponse
 import traceback
 import uuid
 from typing import List
@@ -7,11 +11,12 @@ from langchain.chains.retrieval_qa.base import RetrievalQA
 
 from langchain_core.documents import Document
 
-from langchain_core.runnables import RunnablePassthrough
+from langchain_core.runnables import RunnablePassthrough, RunnableLambda
+from starlette.responses import JSONResponse
 
 from tilellm.models.item_model import (RetrievalResult,
                                        ChatEntry,
-                                       QuotedAnswer
+                                       QuotedAnswer, QuotedAnswerForStream, Citation
                                        )
 
 from tilellm.shared.sparse_util import hybrid_score_norm, HybridRetriever
@@ -129,6 +134,7 @@ def create_chains(llm, question_answer, retriever):
         llm, retriever, contextualize_q_prompt
     )
     qa_system_prompt = question_answer.system_context if question_answer.system_context else const.qa_system_prompt
+
     qa_prompt = ChatPromptTemplate.from_messages(
         [
             ("system", qa_system_prompt),
@@ -181,49 +187,105 @@ def get_or_create_session_history(store, session_id, chat_history_dict):
 
 
 # Function to generate answer with chat history consideration
-async def generate_answer_with_history(llm, question_answer, rag_chain, retriever, get_session_history, qa_prompt):
-    if question_answer.citations:
-        retrieve_docs = (lambda x: x["input"]) | retriever
-        rag_chain_from_docs = (
-                RunnablePassthrough.assign(context=(lambda x: format_docs_with_id(x["context"])))
-                | qa_prompt
-                | llm.with_structured_output(QuotedAnswer)
-        )
+async def generate_answer_with_history(llm, question_answer, rag_chain, retriever, get_session_history, qa_prompt, callback_handler, question_answer_list):
 
-        chain_w_citations = (RunnablePassthrough.assign(context=retrieve_docs)
-                             .assign(answer=rag_chain_from_docs)
-                             .assign(only_answer=lambda text: text["answer"].answer)
-                             )
+    def extract_content(input_dict):
+        # print(input_dict["answer"])
+        return {"input": input_dict["input"], "answer": input_dict["answer"]}
 
-        conversational_rag_chain = RunnableWithMessageHistory(
-            chain_w_citations,
-            get_session_history,
-            input_messages_key="input",
-            history_messages_key="chat_history",
-            output_messages_key="only_answer",
-        )
+    citation_rag_chain = None
+    if question_answer.stream:
+        if question_answer.citations:
+            retrieve_docs = (lambda x: x["input"]) | retriever
+            rag_chain_from_docs = (
+                    RunnablePassthrough.assign(context=(lambda x: format_docs_with_id(x["context"])))
+                    | qa_prompt
+                    | llm
+            )
+
+            chain_w_citations = (
+                RunnablePassthrough.assign(context=retrieve_docs)
+                .assign(answer=rag_chain_from_docs)
+                .assign(only_answer=RunnableLambda(extract_content)#lambda text: text["answer"].answer)
+                                 )
+            )
+
+            conversational_rag_chain = RunnableWithMessageHistory(
+                chain_w_citations,
+                get_session_history,
+                input_messages_key="input",
+                history_messages_key="chat_history",
+                output_messages_key="answer",
+            )
+        else:
+            conversational_rag_chain = RunnableWithMessageHistory(
+                rag_chain,
+                get_session_history,
+                input_messages_key="input",
+                history_messages_key="chat_history",
+                output_messages_key="answer",
+            )
+        return await get_streaming_response(conversational_rag_chain, question_answer, callback_handler, question_answer_list )
     else:
-        conversational_rag_chain = RunnableWithMessageHistory(
-            rag_chain,
-            get_session_history,
-            input_messages_key="input",
-            history_messages_key="chat_history",
-            output_messages_key="answer",
+
+        if question_answer.citations:
+            retrieve_docs = (lambda x: x["input"]) | retriever
+            rag_chain_from_docs = (
+                    RunnablePassthrough.assign(context=(lambda x: format_docs_with_id(x["context"])))
+                    | qa_prompt
+                    | llm.with_structured_output(QuotedAnswer)
+            )
+
+            chain_w_citations = (RunnablePassthrough.assign(context=retrieve_docs)
+                                 .assign(answer=rag_chain_from_docs)
+                                 .assign(only_answer=lambda text: text["answer"].answer)
+                                 )
+
+            conversational_rag_chain = RunnableWithMessageHistory(
+                chain_w_citations,
+                get_session_history,
+                input_messages_key="input",
+                history_messages_key="chat_history",
+                output_messages_key="only_answer",
+            )
+        else:
+            conversational_rag_chain = RunnableWithMessageHistory(
+                rag_chain,
+                get_session_history,
+                input_messages_key="input",
+                history_messages_key="chat_history",
+                output_messages_key="answer",
+            )
+        start_time = datetime.now() if question_answer.debug else 0
+        result = await conversational_rag_chain.ainvoke(
+            {"input": question_answer.question},
+            config={"configurable": {"session_id": uuid.uuid4().hex}}
         )
+        end_time = datetime.now() if question_answer.debug else 0
+        duration = (end_time - start_time).total_seconds() if question_answer.debug else 0.0
 
-    result = await conversational_rag_chain.ainvoke(
-        {"input": question_answer.question},
-        config={"configurable": {"session_id": uuid.uuid4().hex}}
-    )
+        citations = result['answer'].citations if question_answer.citations else None
+        result['answer'], success = verify_answer(result['answer'].answer
+                                                  if question_answer.citations else result['answer'])
+        #return result, citations, success
 
-    citations = result['answer'].citations if question_answer.citations else None
-    result['answer'], success = verify_answer(result['answer'].answer
-                                              if question_answer.citations else result['answer'])
-    return result, citations, success
+        ######################
+
+        question_answer_list.append((result['input'], result['answer']))
+
+        result_to_return = format_result(result=result,
+                                         citations=citations,
+                                         question_answer=question_answer,
+                                         callback_handler=callback_handler,
+                                         question_answer_list=question_answer_list,
+                                         success=success,
+                                         duration=duration)
+        return JSONResponse(content=result_to_return.model_dump())
+
 
 
 # Function to format the result into the expected output structure
-def format_result(result, citations, question_answer, callback_handler, question_answer_list, success):
+def format_result(result, citations, question_answer, callback_handler, question_answer_list, success, duration=0.0):
     docs = result["context"]
     ids, sources, content_chunks = extract_ids_sources(docs, question_answer.debug)
     source = format_sources(citations, sources, question_answer.citations)
@@ -249,6 +311,7 @@ def format_result(result, citations, question_answer, callback_handler, question
         prompt_token_size=prompt_token_size,
         content_chunks=content_chunks,
         success=success,
+        duration=duration,
         error_message=None,
         chat_history_dict=chat_history_dict
     )
@@ -324,6 +387,99 @@ def verify_answer(s):
     else:
         success = True
     return s, success
+
+async def get_streaming_response(runnable_with_history, question, callback_handler, question_answer_list):
+    async def get_stream_llm(run_with_history, q):
+        full_response = ""
+        message_id = str(uuid.uuid4())
+        start_time = datetime.now()
+        result = dict()
+
+        orig_question = q.question
+        q.question = q.question+"\n"+const.stream_citations_tail if q.citations else q.question
+
+        #print(q.question)
+
+        yield _create_event("metadata", {
+            "message_id": message_id,
+            "status": "started",
+            "timestamp": start_time.isoformat()
+        })
+
+        async for chunk in run_with_history.astream({"input": q.question},
+                                                         config={
+                                                             "configurable": {"session_id": uuid.uuid4().hex}}):
+
+            #no citations
+            if "answer" in chunk and isinstance(chunk["answer"], str):
+                full_response += chunk["answer"]
+                yield _create_event("chunk", {"content": chunk["answer"], "message_id": message_id})
+                await asyncio.sleep(0.02)  # Per un flusso più regolare
+            # with citations
+            elif 'answer' in chunk and hasattr(chunk['answer'], "content"):
+                full_response += chunk['answer'].content
+                yield _create_event("chunk", {"content": chunk['answer'].content, "message_id": message_id})
+                await asyncio.sleep(0.02)  # Per un flusso più regolare
+            elif 'context' in chunk:
+                result["context"]=chunk["context"]
+            elif 'input' in chunk:
+                result['input'] = chunk['input']
+                result['chat_history'] = chunk['chat_history']
+
+        citations = extract_citations(full_response) if question.citations else []
+        # q_answer = QuotedAnswer(answer = full_response, citations=citations)
+        # print(f"======={q_answer}")
+        end_time = datetime.now()
+        full_response, success = verify_answer(full_response)
+
+
+        result["answer"]=full_response
+
+
+
+        question_answer_list.append((orig_question,full_response) )
+
+        result_to_return = format_result(result=result,
+                                         citations=citations,
+                                         question_answer=q,
+                                         callback_handler=callback_handler,
+                                         question_answer_list=question_answer_list,
+                                         success=success)
+
+        yield _create_event("metadata", {
+            "message_id": message_id,
+            "status": "completed",
+            "timestamp": end_time.isoformat(),
+            "duration": (end_time - start_time).total_seconds(),
+            "full_response": full_response,
+            "model_used": result_to_return.model_dump()
+        })
+
+    return StreamingResponse(
+        get_stream_llm(runnable_with_history, question),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache"}
+    )
+
+
+def extract_citations(testo: str) -> List[Citation]:
+    import re
+
+    # regex_citazione =r'(?i)cit:\s*id:\[?(\d+)\]?,\s*source:\[?([^;\]]+?)\]?;'
+    # regex_citazione = r"Cit: id:(.+), source:(.+)"
+    # regex_citazione = r"[Cc][Ii][Tt]:\s*id:\s*(?:\[)?(\d+)(?:\])?\s*(?:,\s*source:\s*(?:\[)?(.+))(?:\])?\s*"
+    # regex_citazione = r"[Cc][Ii][Tt]:\s*id:\s*(?:\[)?(\d+)(?:\])?\s*(?:,\s*[Ss][Oo][Uu][Rr][Cc][Ee]:\s*(?:\[)?([^\]]+)?(?:\])?)?"
+    # regex_citazione = r"[Cc][Ii][Tt]:\s*id:\s*(?:\[)?(\d+)(?:\])?\s*(?:,\s*[Ss][Oo][Uu][Rr][Cc][Ee]:\s*(?:\[)?([^\]]+?)(?:\])?)?"
+    regex_citazione = r"[Cc][Ii][Tt]:\s*id:\s*(?:\[)?(\d+)(?:\])?\s*(?:,\s*[Ss][Oo][Uu][Rr][Cc][Ee]:\s*(?:\[)?(.*?)(?:\]?\s*(?:\(.*?\))?))?;"
+
+    citations = []
+    for match in re.finditer(regex_citazione, testo):
+        # print(match)
+        id_cit = int(match.group(1))
+        source_cit = match.group(2).strip()
+
+        citations.append(Citation(source_id=id_cit, source_name=source_cit))
+    return citations
 
 def _create_event(event_type: str, data: dict) -> str:
     import json

@@ -213,6 +213,7 @@ def inject_llm_chat(func):
                                 temperature=question.temperature,
                                 max_tokens=question.max_tokens,
                                 top_p=question.top_p,
+                                #thinking={"type": "enabled", "budget_tokens": 10_000},
                                 callbacks=[callback_handler])
 
         elif question.llm == "cohere":
@@ -241,12 +242,14 @@ def inject_llm_chat(func):
                            )
 
         elif question.llm == "ollama":
+            #disable_streaming = not question.stream
             callback_handler = TiledeskAICallbackHandler()
             llm = ChatOllama(model=question.model.name,
                              temperature=question.temperature,
                              num_predict=question.max_tokens,
                              base_url=question.model.url,
-                             format="json",
+                             #format="json",
+                             disable_streaming=not question.stream,
                              callback_handler=[callback_handler]
                              )
 
@@ -295,14 +298,26 @@ def inject_llm_chat(func):
 
     return wrapper
 
-def inject_llm_o1(func):
+def inject_reason_llm(func):
     @wraps(func)
     async def wrapper(question, *args, **kwargs):
         logger.debug(question)
-        chat_model = ChatOpenAI(api_key=question.llm_key,
-                                model=question.model,
-                                temperature=question.temperature,
-                                max_completion_tokens=question.max_tokens)
+        if question.llm == "openai":
+            chat_model = ChatOpenAI(api_key=question.llm_key,
+                                    model=question.model,
+                                    temperature=question.temperature,
+                                    max_completion_tokens=question.max_tokens)
+        elif question.llm == "anthropic":
+            chat_model = ChatAnthropic(anthropic_api_key=question.llm_key,
+                                       model=question.model,
+                                       temperature=question.temperature,
+                                       thinking=question.thinking,
+                                       max_tokens=question.max_tokens,)
+        else:
+            chat_model = ChatOpenAI(api_key=question.llm_key,
+                                    model=question.model,
+                                    temperature=question.temperature,
+                                    max_completion_tokens=question.max_tokens)
 
 
 

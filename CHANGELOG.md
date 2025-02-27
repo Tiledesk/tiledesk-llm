@@ -5,6 +5,11 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+
+## [2025-02-16]
+### 0.4.0-rc3
+- add: /api/thinking for o1 and claude-3.7
+
 ## [2025-02-16]
 ### 0.4.0-rc2
 - minor fix

@@ -45,7 +45,7 @@ from tilellm.controller.controller import (ask_with_memory,
                                            get_sources_namespace,
                                            ask_to_llm,
                                            ask_to_agent,
-                                           ask_to_llm_o1)
+                                           ask_reason_llm)
 
 import logging
 
@@ -421,7 +421,7 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
         result = await ask_with_memory(question_answer)
 
     logger.debug(result)
-    return JSONResponse(content=result.model_dump())
+    return result#JSONResponse(content=result.model_dump())
 
 
 @app.post("/api/agent", response_model=SimpleAnswer)
@@ -449,16 +449,12 @@ async def post_ask_to_llm_main(question: QuestionToLLM):
     :return: RetrievalResult
     """
     logger.info(question)
-    if question.stream:
-        return await ask_to_llm(question=question)
 
-    else:
-        result = await ask_to_llm(question=question)
-        logger.debug(result)
-        return JSONResponse(content=result.model_dump())
+    return await ask_to_llm(question=question)
 
-@app.post("/api/askto1", response_model=SimpleAnswer)
-async def post_ask_to_llm_o1_main(question: QuestionToLLM):
+
+@app.post("/api/thinking", response_model=SimpleAnswer)
+async def post_ask_to_llm_reason_main(question: QuestionToLLM):
     """
     Query and Answer with a LLM
     :param question:
@@ -466,7 +462,7 @@ async def post_ask_to_llm_o1_main(question: QuestionToLLM):
     """
     logger.info(question)
 
-    result = await ask_to_llm_o1(question=question)
+    result = await ask_reason_llm(question=question)
 
     logger.debug(result)
     return JSONResponse(content=result.model_dump())
