@@ -5,6 +5,9 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2025-02-16]
+### 0.4.1-rc1
+- fix: parse of claude-3.7 response if thinking is enabled
 
 ## [2025-02-16]
 ### 0.4.0-rc3

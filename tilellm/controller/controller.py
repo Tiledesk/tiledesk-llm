@@ -125,15 +125,15 @@ async def ask_reason_llm(question, chat_model=None):
 
         )
 
-        #print(result)
-        # logger.info(result)
+        #print(type(result.content))
+        logger.debug(result.content)
         if not question.chat_history_dict:
             question.chat_history_dict = {}
 
         #num = len(question.chat_history_dict.keys())
         #question.chat_history_dict[str(num)] = {"question": question.question, "answer": result.content}
 
-        return SimpleAnswer(answer=result, chat_history_dict=question.chat_history_dict)
+        return SimpleAnswer(answer=result.content, chat_history_dict=question.chat_history_dict)
 
 
 

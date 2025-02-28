@@ -284,7 +284,7 @@ class QuotedAnswerForStream(PartialQuotedAnswer):
     complete: bool = True
 
 class SimpleAnswer(BaseModel):
-    answer: str = Field(default="No answer")
+    answer: Union[str, Dict[str, Any], list] = Field(default="No answer")
     chat_history_dict: Optional[Dict[str, ChatEntry]]
 
 
