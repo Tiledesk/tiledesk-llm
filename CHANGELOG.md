@@ -5,6 +5,12 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+
+## [2025-03-08]
+### 0.4.1-rc2
+- add: stream support for /api/thinking
+
+
 ## [2025-02-16]
 ### 0.4.1-rc1
 - fix: parse of claude-3.7 response if thinking is enabled

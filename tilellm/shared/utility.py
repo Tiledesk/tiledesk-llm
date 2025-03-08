@@ -6,6 +6,7 @@ from gc import callbacks
 import langchain_aws
 from langchain_community.callbacks.openai_info import OpenAICallbackHandler
 from langchain_community.embeddings import CohereEmbeddings  # , GooglePalmEmbeddings
+from langchain_deepseek import ChatDeepSeek
 from langchain_experimental.llms.ollama_functions import OllamaFunctions
 
 from langchain_ollama import ChatOllama
@@ -177,6 +178,15 @@ def inject_llm(func):
                                   top_p=question.top_p
                                   )
 
+        elif question.llm == "deepseek":
+            chat_model = ChatDeepSeek(api_key=question.llm_key,
+                                  model=question.model,
+                                  temperature=question.temperature,
+                                  max_tokens=question.max_tokens,
+                                  top_p=question.top_p
+                                  )
+
+
         else:
             chat_model = ChatOpenAI(api_key=question.llm_key,
                                     model=question.model,
@@ -239,6 +249,15 @@ def inject_llm_chat(func):
                            temperature=question.temperature,
                            max_tokens=question.max_tokens,
                            top_p=question.top_p
+                           )
+
+        elif question.llm == "deepseek":
+            callback_handler = TiledeskAICallbackHandler()
+            llm = ChatDeepSeek(api_key=question.gptkey,
+                               model=question.model,
+                               temperature=question.temperature,
+                               max_tokens=question.max_tokens,
+                               top_p=question.top_p
                            )
 
         elif question.llm == "ollama":
@@ -312,7 +331,14 @@ def inject_reason_llm(func):
                                        model=question.model,
                                        temperature=question.temperature,
                                        thinking=question.thinking,
-                                       max_tokens=question.max_tokens,)
+                                       max_tokens=question.max_tokens)
+        elif question.llm == "deepseek":
+            chat_model = ChatDeepSeek(api_key=question.llm_key,
+                                      model=question.model,
+                                      temperature=question.temperature,
+                                      #max_tokens=question.max_tokens
+                                      )
+
         else:
             chat_model = ChatOpenAI(api_key=question.llm_key,
                                     model=question.model,

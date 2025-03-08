@@ -462,10 +462,10 @@ async def post_ask_to_llm_reason_main(question: QuestionToLLM):
     """
     logger.info(question)
 
-    result = await ask_reason_llm(question=question)
+    return await ask_reason_llm(question=question)
 
-    logger.debug(result)
-    return JSONResponse(content=result.model_dump())
+
+
 
 
 @app.post("/api/qachain", response_model=RetrievalResult)

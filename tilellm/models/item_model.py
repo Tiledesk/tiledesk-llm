@@ -287,6 +287,11 @@ class SimpleAnswer(BaseModel):
     answer: Union[str, Dict[str, Any], list] = Field(default="No answer")
     chat_history_dict: Optional[Dict[str, ChatEntry]]
 
+class ReasoningAnswer(BaseModel):
+    answer: Union[str, Dict[str, Any], list] = Field(default="No answer")
+    reasoning_content: Union[str, Dict[str, Any], list] = Field(default="No reasoningn answer")
+    chat_history_dict: Optional[Dict[str, ChatEntry]]
+
 
 class RetrievalResult(BaseModel):
     answer: str = Field(default="No answer")
