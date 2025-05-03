@@ -14,8 +14,8 @@ from tilellm.tools.document_tools import (get_content_by_url,
                                           )
 
 from tilellm.store.pinecone.pinecone_repository_base import PineconeRepositoryBase
-from tilellm.shared.utility import inject_embedding
-
+#from tilellm.shared.utility import inject_embedding
+from tilellm.shared.embedding_factory import inject_embedding
 from pinecone_text.sparse import SpladeEncoder
 
 from langchain_core.documents import Document
@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 class PineconeRepositoryServerless(PineconeRepositoryBase):
+
 
     @inject_embedding()
     async def add_pc_item(self, item:ItemSingle, embedding_obj=None, embedding_dimension=None):
@@ -115,7 +116,6 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                                   cost=f"{cost:.6f}")
 
 
-
     @inject_embedding()
     async def add_pc_item_hybrid(self, item, embedding_obj=None, embedding_dimension=None):
         """
@@ -126,7 +126,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
         :return:
         """
         logger.info(item)
-
+        print(type(embedding_obj))
         await self.delete_pc_ids_namespace(engine=item.engine,
                                            metadata_id=item.id,
                                            namespace=item.namespace)

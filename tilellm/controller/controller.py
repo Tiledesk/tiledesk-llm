@@ -33,7 +33,6 @@ from tilellm.models.item_model import (RetrievalResult,
                                        RepositoryEngine,
                                        QuestionToAgent,
                                        QuestionToLLM, ReasoningAnswer)
-# from tilellm.shared.sparse_util import hybrid_score_norm, HybridRetriever
 
 from tilellm.shared.utility import inject_repo, inject_llm, inject_llm_chat, inject_reason_llm
 

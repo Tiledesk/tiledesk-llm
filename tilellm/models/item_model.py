@@ -1,16 +1,61 @@
+from huggingface_hub import snapshot_download
 from langchain_core.documents import Document
 from pydantic import BaseModel, Field, field_validator, ValidationError, model_validator, RootModel
 from typing import Dict, Optional, List, Union, Any
 import datetime
+from enum import Enum
 
-class OllamaModel(BaseModel):
+from pydantic.v1 import validator
+
+
+class EmbeddingProviders(str, Enum):
+    OPENAI = "openai"
+    HUGGINGFACE = "huggingface"
+    OLLAMA = "ollama"
+    GOOGLE = "google"
+    COHERE = "cohere"
+    VOYAGE = "voyage"
+
+EMBEDDING_CONFIGS = {
+    "all-MiniLM-L6-v2": {
+        "dimension": 384,
+        "normalize": True,
+        "device": "auto"
+    },
+    "BAAI/bge-m3": {
+        "dimension": 1024,
+        "normalize": False,
+        "device": "cuda"
+    },
+    "voyage-multilingual-2": {
+        "dimension": 1024,
+        "voyage_api_key": "your-default-key"
+    }
+}
+
+def prepare_huggingface_model(model_name: str):
+    """Scarica e cachea il modello Hugging Face"""
+    return snapshot_download(
+        repo_id=model_name,
+        local_dir=f"./models/{model_name.replace('/', '_')}"
+    )
+
+class LlmEmbeddingModel(BaseModel):
+    provider: EmbeddingProviders
     name: str
     url: Optional[str] = Field(default_factory=lambda: "")
     dimension: Optional[int] = 1024 #qwel2-deepseek 3584, llama3.2 3072
 
+    @validator('name')
+    def validate_model_name(cls, v, values):
+        if values.get('provider') == EmbeddingProviders.HUGGINGFACE:
+            prepare_huggingface_model(v)  # Scarica il modello all'validazione
+        return v
+
 class EmbeddingModel(BaseModel):
-    name: str
-    name_of_model: str
+    embedding_provider: str
+    embedding_key: str
+    embedding_model: str
 
 class Engine(BaseModel):
     name: str = Field(default="pinecone")
@@ -28,7 +73,7 @@ class Engine(BaseModel):
         elif self.type == "pod":
             self.text_key = "content"
         return self
-
+import torch
 
 class ParametersScrapeType4(BaseModel):
     unwanted_tags: Optional[List[str]] = Field(default_factory=list)
@@ -58,7 +103,7 @@ class ItemSingle(BaseModel):
     gptkey: str | None = None
     scrape_type: int = Field(default_factory=lambda: 0)
     embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
-    model: Optional[OllamaModel] | None = None
+    model: Optional[LlmEmbeddingModel] | None = None
     namespace: str | None = None
     webhook: str = Field(default_factory=lambda: "")
     semantic_chunk: Optional[bool] = Field(default=False)
@@ -117,7 +162,7 @@ class QuestionAnswer(BaseModel):
     namespace: str
     llm: Optional[str] = Field(default="openai")
     gptkey: str
-    model: Union[str, OllamaModel] = Field(default="gpt-3.5-turbo")
+    model: Union[str, LlmEmbeddingModel] = Field(default="gpt-3.5-turbo")
     sparse_encoder: Optional[str] = Field(default="splade") #bge-m3
     temperature: float = Field(default=0.0)
     top_k: int = Field(default=5)
@@ -177,7 +222,7 @@ class QuestionToLLM(BaseModel):
     question: str
     llm_key: Union[str, AWSAuthentication]
     llm: str
-    model: Union[str, OllamaModel] = Field(default="gpt-3.5-turbo")
+    model: Union[str, LlmEmbeddingModel] = Field(default="gpt-3.5-turbo")
     temperature: float = Field(default=0.0)
     max_tokens: int = Field(default=128),
     top_p: Optional[float] = Field(default=1.0)

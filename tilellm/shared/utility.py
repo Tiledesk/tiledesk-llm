@@ -1,18 +1,16 @@
 from functools import wraps
 
 import logging
-from gc import callbacks
 
-import langchain_aws
 from langchain_community.callbacks.openai_info import OpenAICallbackHandler
 from langchain_community.embeddings import CohereEmbeddings  # , GooglePalmEmbeddings
 from langchain_deepseek import ChatDeepSeek
-from langchain_experimental.llms.ollama_functions import OllamaFunctions
 
 from langchain_ollama import ChatOllama
 from langchain_voyageai import VoyageAIEmbeddings
 from langchain_openai import OpenAIEmbeddings
 
+from tilellm.models.item_model import EmbeddingModel
 from tilellm.shared import const
 
 from langchain_openai.chat_models import ChatOpenAI
@@ -21,12 +19,22 @@ from langchain_cohere import ChatCohere
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 
 from langchain_groq import ChatGroq
-from langchain_aws.chat_models import ChatBedrockConverse, ChatBedrock
 
 from tilellm.shared.tiledesk_chatmodel_info import TiledeskAICallbackHandler
 
 logger = logging.getLogger(__name__)
 
+
+
+
+
+
+
+ADA_AND_3_MODELS = {
+    "text-embedding-ada-002",
+    "text-embedding-3-small",
+    "text-embedding-3-large"
+}
 
 def inject_repo(func):
     """
@@ -61,6 +69,97 @@ def inject_repo(func):
 
 
 def inject_embedding():
+    def decorator(func):
+        @wraps(func)
+        async def wrapper(self, item, *args, **kwargs):
+
+            if item.model:  # Caso nuovo con configurazione avanzata
+                if item.model.name.lower() == "ollama":
+                    from langchain_ollama.embeddings import OllamaEmbeddings
+                    embedding_obj = OllamaEmbeddings(
+                        model=item.model.name,
+                        base_url=item.model.url or "http://localhost:11434"
+                    )
+                    dimension = item.model.dimension or 4096  # Default per Ollama
+
+                elif item.model.name.lower() == "huggingface":
+                    import torch
+                    from langchain_huggingface.embeddings import HuggingFaceEmbeddings
+                    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+                    embedding_obj = HuggingFaceEmbeddings(
+                        model_name=item.model.name,  # Es: "sentence-transformers/all-MiniLM-L6-v2"
+                        model_kwargs={'device': device},
+                        encode_kwargs={'normalize_embeddings': True}
+                    )
+                    dimension = item.model.dimension or 384  # Dimensione tipica per MiniLM-L6
+
+                elif item.model.name.lower() in ["google", "cohere", "voyage"]:
+                    # Gestione provider con API key esterna
+                    provider_map = {
+                        "google": GoogleGenerativeAIEmbeddings,
+                        "cohere": CohereEmbeddings,
+                        "voyage": VoyageAIEmbeddings
+                    }
+                    embedding_obj = provider_map[item.model.name.lower()](
+                        model=item.model.name,
+                        **{f"{item.model.name.lower()}_api_key": item.gptkey}
+                    )
+                    dimension = item.model.dimension or 1024
+
+                else:  # Default per modelli OpenAI personalizzati
+                    embedding_obj = OpenAIEmbeddings(
+                        api_key=item.gptkey,
+                        model=item.model.name
+                    )
+                    dimension = item.model.dimension or 1536
+
+            else:  # Retrocompatibilità con campo embedding stringa
+                from langchain_huggingface.embeddings import HuggingFaceEmbeddings
+                from langchain_ollama.embeddings import OllamaEmbeddings
+                embedding_map = {
+                    "text-embedding-ada-002": (OpenAIEmbeddings, 1536),
+                    "text-embedding-3-small": (OpenAIEmbeddings, 1536),
+                    "text-embedding-3-large": (OpenAIEmbeddings, 3072),
+                    "voyage-multilingual-2": (VoyageAIEmbeddings, 1024),
+                    "huggingface": (HuggingFaceEmbeddings, 1024),
+                    "ollama": (OllamaEmbeddings, 4096),
+                    "google": (GoogleGenerativeAIEmbeddings, 768),
+                    "cohere": (CohereEmbeddings, 1024)
+                }
+
+                if item.embedding in embedding_map:
+                    import torch
+                    cls, dim = embedding_map[item.embedding]
+                    embedding_obj = cls(**{
+                        "api_key": item.gptkey,
+                        "model": item.embedding
+                    }) if cls != HuggingFaceEmbeddings else HuggingFaceEmbeddings(
+                        model_name="BAAI/bge-m3",
+                        model_kwargs={'device': 'cuda' if torch.cuda.is_available() else 'cpu'},
+                        encode_kwargs={'normalize_embeddings': True}
+                    )
+                    dimension = dim
+                else:  # Fallback a OpenAI
+                    embedding_obj = OpenAIEmbeddings(
+                        api_key=item.gptkey,
+                        model=item.embedding
+                    )
+                    dimension = 1536
+
+            # Aggiungi var1 e var2 agli kwargs
+            kwargs['embedding_obj'] = embedding_obj
+            kwargs['embedding_dimension'] = dimension
+
+            # Chiama la funzione originale con i nuovi kwargs
+            return await func(self, item, *args, **kwargs)
+
+        return wrapper
+
+    return decorator
+
+
+def inject_embedding_old():
     def decorator(func):
         @wraps(func)
         async def wrapper(self, item, *args, **kwargs):
@@ -207,7 +306,7 @@ def inject_llm_chat(func):
     @wraps(func)
     async def wrapper(question, *args, **kwargs):
         logger.debug(question)
-        if question.model == "openai":
+        if question.llm == "openai":
             callback_handler = OpenAICallbackHandler()
             llm = ChatOpenAI(api_key=question.gptkey,
                              model=question.model,
@@ -282,8 +381,69 @@ def inject_llm_chat(func):
                              callbacks=[callback_handler]
                              )
 
+        # Verifichiamo se è un'istanza di EmbeddingModel
+        if isinstance(question.embedding, EmbeddingModel):
+            provider = question.embedding.embedding_provider
+            key = question.embedding.embedding_key
+            model_name = question.embedding.embedding_model
+
+            if provider == "openai":
+                llm_embeddings = OpenAIEmbeddings(api_key=key, model=model_name)
+            elif provider == "huggingface":
+                from langchain_huggingface.embeddings import HuggingFaceEmbeddings
+                import torch
+                device = 'cuda' if torch.cuda.is_available() else 'cpu'
+                llm_embeddings = HuggingFaceEmbeddings(
+                    model_name=model_name,
+                    model_kwargs={'device': device},
+                    encode_kwargs={'normalize_embeddings': False}
+                )
+            elif provider == "cohere":
+                llm_embeddings = CohereEmbeddings(model=model_name, cohere_api_key=key)
+            elif provider == "google":
+                llm_embeddings = GoogleGenerativeAIEmbeddings(google_api_key=key, model=model_name)
+            elif provider == "ollama":
+                from langchain_ollama.embeddings import OllamaEmbeddings
+                llm_embeddings = OllamaEmbeddings(model=model_name, base_url=key) ### Importante se uso ollama la url viene passata nella key
+            else:
+                raise ValueError(f"Provider non supportato: {provider}")
+
+
+        else:
+            embedding_str = question.embedding
+            if embedding_str == "huggingface":
+                from langchain_huggingface.embeddings import HuggingFaceEmbeddings
+                import torch
+                device = 'cuda' if torch.cuda.is_available() else 'cpu'
+                llm_embeddings = HuggingFaceEmbeddings(
+                    model_name="BAAI/bge-m3",
+                    model_kwargs={'device': device},
+                    encode_kwargs={'normalize_embeddings': False}
+                )
+            elif embedding_str == "cohere":
+                llm_embeddings = CohereEmbeddings(model="embed-english-light-v3.0", cohere_api_key=question.gptkey)
+            elif embedding_str == "google":
+                llm_embeddings = GoogleGenerativeAIEmbeddings(google_api_key=question.gptkey,
+                                                              model="models/embedding-001")
+            elif embedding_str == "ollama":
+                from langchain_ollama.embeddings import OllamaEmbeddings
+                llm_embeddings = OllamaEmbeddings(
+                    model=question.model.name,
+                    base_url=question.model.url
+                )
+            else:
+                # Default OpenAI con nome modello dalla stringa
+                llm_embeddings = OpenAIEmbeddings(
+                    api_key=question.gptkey,
+                    model=embedding_str if embedding_str in ADA_AND_3_MODELS else "text-embedding-ada-002"
+                )
+
+        """
+        # FIXME va implementato il controllo se è embedding model o stringa
         if question.embedding == "openai":
             llm_embeddings = OpenAIEmbeddings(api_key=question.gptkey, model=question.embedding)
+        elif isinstance(question.embedding, EmbeddingModel):
+            llm_embeddings = OpenAIEmbeddings(api_key=question.embedding.embedding_key, model=question.embedding.embedding_model)
         elif question.embedding == "huggingface":
             import torch
             from langchain_huggingface.embeddings import HuggingFaceEmbeddings
@@ -307,6 +467,8 @@ def inject_llm_chat(func):
             dimension = question.model.dimension
         else:
             llm_embeddings = OpenAIEmbeddings(api_key=question.gptkey, model=question.embedding)
+        
+        """
 
         # Add chat_model agli kwargs
         kwargs['llm'] = llm
