@@ -14,9 +14,7 @@ from tilellm.models.item_model import (MetadataItem,
 
                                        )
 
-from tilellm.shared import const
-from langchain_core.vectorstores import VectorStore
-import os
+
 from typing import List, Dict
 
 import logging
@@ -399,9 +397,9 @@ class PineconeRepositoryBase:
         import pinecone
 
 
-
         pc =  pinecone.Pinecone(
-            api_key= engine.apikey #const.PINECONE_API_KEY
+            api_key= engine.apikey
+            #const.PINECONE_API_KEY
         )
 
         #existing_indexes = [index_info["name"] for index_info in pc.list_indexes()]
@@ -413,20 +411,16 @@ class PineconeRepositoryBase:
             #print(f"================== {engine.index_name}, api {engine.apikey}")
             host = pc.describe_index(engine.index_name).host
 
-            index = pc.Index(name=engine.index_name,
+            index = pc.IndexAsyncio(name=engine.index_name,
                              host=host)
 
             vector_store = PineconeVectorStore(index=index,
                                                embedding=embeddings,
                                                text_key=engine.text_key,
                                                pinecone_api_key=engine.apikey,
-                                               index_name=engine.index_name)
+                                               index_name=engine.index_name
+                                               )
 
-
-            #vector_store = PineconeVectorStore.from_existing_index(index_name= engine.index_name, #const.PINECONE_INDEX,
-            #                                                       embedding=embeddings,
-            #                                                       text_key= engine.text_key #const.PINECONE_TEXT_KEY
-            #                                                       )  # text-key nuova versione è text
         else:
             #logger.debug(f'Create index {const.PINECONE_INDEX} and embeddings ...')
             logger.debug(f'Create index {engine.index_name} and embeddings ...')
@@ -452,13 +446,14 @@ class PineconeRepositoryBase:
                 time.sleep(1)
 
             host = pc.describe_index(engine.index_name).host
-            index = pc.Index(name=engine.index_name, host=host)
+            index = pc.IndexAsyncio(name=engine.index_name, host=host)
 
             vector_store = PineconeVectorStore(index=index,
                                                embedding=embeddings,
                                                text_key=engine.text_key,
                                                pinecone_api_key=engine.apikey,
-                                               index_name=engine.index_name)
+                                               index_name=engine.index_name
+                                               )
 
 
 

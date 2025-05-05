@@ -64,7 +64,9 @@ async def initialize_embeddings_and_index(question_answer, repo, llm_embeddings)
     emb_dimension = repo.get_embeddings_dimension(question_answer.embedding)
     sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
     vector_store = await repo.create_pc_index(question_answer.engine, llm_embeddings, emb_dimension)
-    index = vector_store.get_pinecone_index(question_answer.engine.index_name, pinecone_api_key=question_answer.engine.apikey)
+    #index = vector_store.get_pinecone_index(question_answer.engine.index_name, pinecone_api_key=question_answer.engine.apikey)
+    index = vector_store.async_index
+
     return emb_dimension, sparse_encoder, index
 
 
@@ -84,7 +86,6 @@ async def initialize_retrievers(question_answer, repo, llm_embeddings):
     )
 
     pipeline_compressor = DocumentCompressorPipeline(transformers=[redundant_filter])
-
     retriever = ContextualCompressionRetriever(
         base_compressor=pipeline_compressor, base_retriever=vs_retriever
     )
@@ -100,9 +101,9 @@ async def fetch_question_vectors(question_answer, sparse_encoder, llm_embeddings
 
 
 # Function to perform hybrid search
-def perform_hybrid_search(question_answer, index, dense_vector, sparse_vector):
+async def perform_hybrid_search(question_answer, index, dense_vector, sparse_vector):
     dense, sparse = hybrid_score_norm(dense_vector, sparse_vector, alpha=question_answer.alpha)
-    results = index.query(
+    results = await index.query(
         top_k=question_answer.top_k,
         vector=dense,
         sparse_vector=sparse,
@@ -120,7 +121,7 @@ def retrieve_documents(question_answer, results):
 
 
 # Function to create chains for contextualization and Q&A
-def create_chains(llm, question_answer, retriever):
+async def create_chains(llm, question_answer, retriever):
     # Contextualize question
     contextualize_q_system_prompt = const.contextualize_q_system_prompt
     contextualize_q_prompt = ChatPromptTemplate.from_messages(
@@ -197,6 +198,7 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
     if question_answer.stream:
         if question_answer.citations:
             retrieve_docs = (lambda x: x["input"]) | retriever
+
             rag_chain_from_docs = (
                     RunnablePassthrough.assign(context=(lambda x: format_docs_with_id(x["context"])))
                     | qa_prompt
@@ -261,6 +263,8 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
             {"input": question_answer.question},
             config={"configurable": {"session_id": uuid.uuid4().hex}}
         )
+
+
         end_time = datetime.now() if question_answer.debug else 0
         duration = (end_time - start_time).total_seconds() if question_answer.debug else 0.0
 
@@ -280,6 +284,7 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                                          question_answer_list=question_answer_list,
                                          success=success,
                                          duration=duration)
+
         return JSONResponse(content=result_to_return.model_dump())
 
 
@@ -292,6 +297,7 @@ def format_result(result, citations, question_answer, callback_handler, question
     metadata_id = ids[0]
 
     prompt_token_size = callback_handler.total_tokens
+
 
     logger.info(f"input: {result['input']}")
     logger.info(f"chat_history: {result['chat_history']}")

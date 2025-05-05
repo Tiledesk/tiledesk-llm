@@ -1,21 +1,18 @@
 import os
 from contextlib import asynccontextmanager
+
+
 from fastapi import (FastAPI,
                      Depends,
                      HTTPException)
 from fastapi.responses import JSONResponse
 
-from pydantic_core import from_json
-
-# import argparse
-
-import aioredis
 import asyncio
-from aioredis import from_url
+from redis.asyncio import Redis, from_url
 import aiohttp
 import json
 from dotenv import load_dotenv
-from openai import api_key
+
 
 from tilellm.shared.const import populate_constant
 from tilellm.shared.utility import decode_jwt
@@ -73,14 +70,16 @@ tilellm_role = os.environ.get("TILELLM_ROLE")
 
 
 async def get_redis_client():
+    redis_client = None
     try:
         redis_client = await from_url(redis_url)
         yield redis_client
     finally:
-        await redis_client.close()
+        if redis_client:
+            await redis_client.aclose()
 
 
-async def reader(channel: aioredis.client.Redis):
+async def reader(channel: Redis):
     """
     The reader consume the redis queue
     :param channel:
@@ -224,7 +223,7 @@ app = FastAPI(lifespan=redis_consumer)
 
 
 @app.post("/api/scrape/enqueue")
-async def enqueue_scrape_item_main(item: ItemSingle, redis_client: aioredis.client.Redis = Depends(get_redis_client)):
+async def enqueue_scrape_item_main(item: ItemSingle, redis_client: Redis = Depends(get_redis_client)):
     """
     enqueue item to redis. Consumer read message and add it to namespace
     :param item:
@@ -247,7 +246,7 @@ async def enqueue_scrape_item_main(item: ItemSingle, redis_client: aioredis.clie
 
 
 @app.post("/api/scrape/single", response_model=IndexingResult)
-async def create_scrape_item_single(item: ItemSingle, redis_client: aioredis.client.Redis = Depends(get_redis_client)):
+async def create_scrape_item_single(item: ItemSingle, redis_client: Redis = Depends(get_redis_client)):
     """
     Add item to namespace
     :param item:
@@ -348,7 +347,7 @@ async def create_scrape_item_single(item: ItemSingle, redis_client: aioredis.cli
         raise HTTPException(status_code=400, detail=repr(e))
 
 @app.post("/api/scrape/hybrid", response_model=IndexingResult)
-async def create_scrape_item_hybrid(item: ItemSingle, redis_client: aioredis.client.Redis = Depends(get_redis_client)):
+async def create_scrape_item_hybrid(item: ItemSingle, redis_client: Redis = Depends(get_redis_client)):
     """
     Add item to namespace
     :param item:
@@ -481,7 +480,7 @@ async def post_ask_with_memory_chain_main(question_answer: QuestionAnswer):
 @app.post("/api/scrape/status", response_model=
           ScrapeStatusResponse)
 async def scrape_status_main(scrape_status_req: ScrapeStatusReq,
-                             redis_client: aioredis.client.Redis = Depends(get_redis_client)):
+                             redis_client: Redis = Depends(get_redis_client)):
     """
     Check status of indexing
     :param scrape_status_req:

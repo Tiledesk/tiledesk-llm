@@ -56,6 +56,7 @@ class EmbeddingFactory:
 
     def _create_huggingface(self, config: Dict) -> Tuple[Embeddings, int]:
         from langchain_huggingface import HuggingFaceEmbeddings
+        #FIXME da togliere o referenziare direttamente la chache
         self._prepare_huggingface_model(config["model_name"])
 
         device = config.get("device", "cuda" if torch.cuda.is_available() else "cpu")

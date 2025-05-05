@@ -1,6 +1,4 @@
 import datetime
-import torch
-
 from langchain_core.utils import batch_iterate
 
 from tilellm.models.item_model import (MetadataItem,
@@ -21,8 +19,6 @@ from pinecone_text.sparse import SpladeEncoder
 from langchain_core.documents import Document
 
 import uuid
-
-
 
 import logging
 
@@ -126,7 +122,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
         :return:
         """
         logger.info(item)
-        print(type(embedding_obj))
+
         await self.delete_pc_ids_namespace(engine=item.engine,
                                            metadata_id=item.id,
                                            namespace=item.namespace)
@@ -149,7 +145,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                                                   scrape_type=item.scrape_type,
                                                   parameters_scrape_type_4=item.parameters_scrape_type_4)
 
-                chunks = self.chunk_documents(item=item,
+                chunks = await self.chunk_documents(item=item,
                                               documents=documents,
                                               embeddings=embedding_obj
                                               )
@@ -177,16 +173,16 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             sparse_encoder = TiledeskSparseEncoders(item.sparse_encoder)
             doc_sparse_vectors = sparse_encoder.encode_documents(contents)
 
-            indice = vector_store.get_pinecone_index(item.engine.index_name, pinecone_api_key=item.engine.apikey)
-
-            await self.upsert_vector_store_hybrid(indice,
-                                                  contents,
-                                                  chunks,
-                                                  item.id,
-                                                  namespace = item.namespace,
-                                                  engine=item.engine,
-                                                  embeddings=embedding_obj,
-                                                  sparse_vectors=doc_sparse_vectors)
+            #indice = vector_store.async_index #index #get_pinecone_index(item.engine.index_name, pinecone_api_key=item.engine.apikey)
+            async with vector_store.async_index as indice:
+                await self.upsert_vector_store_hybrid(indice,
+                                                      contents,
+                                                      chunks,
+                                                      item.id,
+                                                      namespace = item.namespace,
+                                                      engine=item.engine,
+                                                      embeddings=embedding_obj,
+                                                      sparse_vectors=doc_sparse_vectors)
 
             return IndexingResult(id=item.id, chunks=len(chunks), total_tokens=total_tokens,
                                   cost=f"{cost:.6f}")
@@ -258,7 +254,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                 document.metadata[key] = ""
         return document
 
-    def chunk_documents(self, item, documents, embeddings):
+    async def chunk_documents(self, item, documents, embeddings):
         chunks = []
         for document in documents:
             document.metadata["id"] = item.id
@@ -298,8 +294,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             chunk_texts = contents[i: i + embedding_chunk_size]
             chunk_ids = ids[i: i + embedding_chunk_size]
             chunk_metadatas = metadatas[i: i + embedding_chunk_size]
-            embedding_values = embeddings.embed_documents(chunk_texts)#embeddings[i: i + embedding_chunk_size]
-            #print(len(embedding_values[1]))
+            embedding_values = await embeddings.aembed_documents(chunk_texts)#embeddings[i: i + embedding_chunk_size]
             sparse_values = sparse_vectors[i: i + embedding_chunk_size]
 
             vector_tuples = [
@@ -312,15 +307,20 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             ]
 
             if async_req:
-                async_res = [
-                    indice.upsert(vectors=batch_vector_tuples,
-                                  namespace=namespace,
-                                  async_req=async_req)
-                    for batch_vector_tuples in batch_iterate(batch_size, vector_tuples)
-                ]
-                [res.get() for res in async_res]
+                print(type(indice))
+                resp = await indice.upsert(vectors=vector_tuples,
+                                    namespace=namespace,
+                                    batch_size=50)
+
+                #async_res = [
+                #    await indice.upsert(vectors=batch_vector_tuples,
+                #                  namespace=namespace)
+                #    for batch_vector_tuples in batch_iterate(batch_size, vector_tuples)
+                #]
+                #[res.get() for res in async_res]
+                logger.info(f"response upsert: {resp}")
             else:
-                indice.upsert(vectors=vector_tuples,
+                await indice.upsert(vectors=vector_tuples,
                               namespace=namespace,
                               async_req=async_req)
 

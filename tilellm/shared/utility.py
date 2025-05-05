@@ -388,7 +388,8 @@ def inject_llm_chat(func):
             model_name = question.embedding.embedding_model
 
             if provider == "openai":
-                llm_embeddings = OpenAIEmbeddings(api_key=key, model=model_name)
+                llm_embeddings = OpenAIEmbeddings(api_key=key, model=model_name, timeout=30)
+
             elif provider == "huggingface":
                 from langchain_huggingface.embeddings import HuggingFaceEmbeddings
                 import torch
@@ -435,7 +436,8 @@ def inject_llm_chat(func):
                 # Default OpenAI con nome modello dalla stringa
                 llm_embeddings = OpenAIEmbeddings(
                     api_key=question.gptkey,
-                    model=embedding_str if embedding_str in ADA_AND_3_MODELS else "text-embedding-ada-002"
+                    model=embedding_str if embedding_str in ADA_AND_3_MODELS else "text-embedding-ada-002",
+                    timeout=30,
                 )
 
         """

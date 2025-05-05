@@ -71,43 +71,36 @@ async def ask_hybrid_with_memory(question_answer, repo=None, llm=None, callback_
         # Fetch vectors for the given question
         dense_vector, sparse_vector = await fetch_question_vectors(question_answer, sparse_encoder, llm_embeddings)
 
-        # Perform hybrid search
-        results = perform_hybrid_search(question_answer, index, dense_vector, sparse_vector)
+        async with index as index:
+            # Perform hybrid search
+            results = await perform_hybrid_search(question_answer, index, dense_vector, sparse_vector)
 
-        # Retrieve documents based on search results
-        retriever = retrieve_documents(question_answer, results)
+            # Retrieve documents based on search results
+            retriever = retrieve_documents(question_answer, results)
 
-        # Create chains for contextualization and Q&A
-        history_aware_retriever, question_answer_chain, qa_prompt = create_chains(llm, question_answer, retriever)
+            # Create chains for contextualization and Q&A
+            history_aware_retriever, question_answer_chain, qa_prompt = await create_chains(llm, question_answer, retriever)
 
-        rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
+            rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
 
-        # Load session history and prepare conversational chain
-        store = {}
-        get_session_history = lambda session_id: get_or_create_session_history(store, session_id,
-                                                                               question_answer.chat_history_dict)
+            # Load session history and prepare conversational chain
+            store = {}
+            get_session_history = lambda session_id: get_or_create_session_history(store, session_id,
+                                                                                   question_answer.chat_history_dict)
 
-        # Generate the final answer, with or without citations result, citations, success
-        result_to_return = await generate_answer_with_history(llm=llm,
-                                                               question_answer=question_answer,
-                                                               rag_chain = rag_chain,
-                                                               retriever = retriever,
-                                                               get_session_history = get_session_history,
-                                                               qa_prompt=qa_prompt,
-                                                               callback_handler=callback_handler,
-                                                               question_answer_list=question_answer_list
-                                                               )
+            # Generate the final answer, with or without citations result, citations, success
+            result_to_return = await generate_answer_with_history(llm=llm,
+                                                                   question_answer=question_answer,
+                                                                   rag_chain = rag_chain,
+                                                                   retriever = retriever,
+                                                                   get_session_history = get_session_history,
+                                                                   qa_prompt=qa_prompt,
+                                                                   callback_handler=callback_handler,
+                                                                   question_answer_list=question_answer_list
+                                                                   )
 
-        #question_answer_list.append((result['input'], result['answer']))
 
-        #result_to_return = format_result(result=result,
-        #                                 citations=citations,
-        #                                 question_answer=question_answer,
-        #                                 callback_handler=callback_handler,
-        #                                 question_answer_list=question_answer_list,
-        #                                 success = success)
         llm_embeddings=None
-
         return result_to_return
     except Exception as e:
         return handle_exception(e, question_answer)
@@ -359,14 +352,12 @@ async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler
         # Create chains for contextualization and Q&A
         history_aware_retriever, question_answer_chain, qa_prompt = create_chains(llm, question_answer, retriever)
 
-
         rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
 
         # Load session history and prepare conversational chain
         store = {}
         get_session_history = lambda session_id: get_or_create_session_history(store, session_id,
                                                                                question_answer.chat_history_dict)
-
 
         # Generate the final answer, with or without citations
         result_to_return = await generate_answer_with_history(llm=llm, #result, citations, success
@@ -378,16 +369,7 @@ async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler
                                                                         callback_handler=callback_handler,
                                                                         question_answer_list=question_answer_list)
 
-        #question_answer_list.append((result['input'], result['answer']))
-
-        #result_to_return = format_result(result=result,
-        #                                 citations=citations,
-        #                                 question_answer=question_answer,
-        #                                 callback_handler=callback_handler,
-        #                                 question_answer_list=question_answer_list,
-        #                                 success=success)
-
-        llm_embeddings = None
+        #llm_embeddings = None
         return result_to_return
     except Exception as e:
         return handle_exception(e, question_answer)
