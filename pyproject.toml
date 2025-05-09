@@ -37,7 +37,7 @@ langchain-pinecone =  "0.2.5" #"0.2.0"
 langchain-huggingface= "0.1.2"#"0.1.0"
 langchain-ollama= "0.3.2" #"0.2.3"#"0.2.0"
 langchain_xai= "0.2.3" #"0.2.0"
-vllm= "0.8.5"
+# vllm= "0.8.5"
 #peft = "0.13.0"
 
 tiktoken = "0.9.0"#"0.7.0"
@@ -63,6 +63,7 @@ FlagEmbedding= "1.3.4" #"1.2.11"
 #version = "0.10.0"
 #extras = ["splade"]
 pinecone = {extras = ["async"], version = "^6.0.2"}
+pinecone-text = "0.10.0"
 
 [tool.poetry.dependencies.uvicorn]
 version = "0.34.2" #"0.30.6" #"0.30.3"

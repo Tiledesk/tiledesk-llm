@@ -87,18 +87,24 @@ Models for /api/ask
 - gpt-3.5-turbo
 - gpt-4
 - gpt-4-turbo
-- got-4o
-- got-4o-mini
+- gpt-4o
+- gpt-4o-mini
+- gpt-4.1
 
 ### Cohere - engine: cohere
 - command-r
 - command-r-plus
 
 ### Google - engine: google
-- gemini-pro
+- gemini-2.0-flash
+
 
 ### Anthropic - engine: anthropic
 - claude-3-5-sonnet-20240620
+- claude-3.7-sonnet-20250219
+
+### Deepseek - engine deepseek
+- deepseek-chat
 
 ### Groq - engine: groq
 - llama3-70b-8192
@@ -216,5 +222,26 @@ In this method, the gradient of distance is used to split chunks along with the 
     "vector_size": 1024,
     "index_name": "" 
   }
+}
+```
+
+### /api/thinking
+
+```json
+{
+  "question": "question",
+  "namespace": "",
+  "debug":true,
+  "citations":true,
+  "stream":true,
+  "llm": "anthropic|groq",
+  "llm_key": "api-key of llm",
+  "model": "es. claude-3-5-sonnet-20240620 | llama-3.1-70b-versatile",
+  "thinking":{
+    "type": "enabled - only with Anthropic enabled",
+    "budget_tokens": 2000
+  },
+  "temperature": 0.9,
+  "max_tokens":2048
 }
 ```

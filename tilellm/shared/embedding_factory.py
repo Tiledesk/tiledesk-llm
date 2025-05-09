@@ -48,7 +48,6 @@ class EmbeddingFactory:
             "text-embedding-3-large": 3072
         }
         model_name = config.get("model_name", "text-embedding-ada-002")
-        print(f"apikey:{config['api_key']}, mode: {model_name}")
         return OpenAIEmbeddings(
             api_key=config["api_key"],
             model=model_name
@@ -56,8 +55,8 @@ class EmbeddingFactory:
 
     def _create_huggingface(self, config: Dict) -> Tuple[Embeddings, int]:
         from langchain_huggingface import HuggingFaceEmbeddings
-        #FIXME da togliere o referenziare direttamente la chache
-        self._prepare_huggingface_model(config["model_name"])
+
+        #self._prepare_huggingface_model(config["model_name"])
 
         device = config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
         return HuggingFaceEmbeddings(

@@ -5,6 +5,11 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2025-05-07]
+### 0.4.2-rc1
+- upgrade: python version to 3.12
+- upgrade: langchain version to 0.3.25
+- add: stream support for /api/ask, /api/thinking and /api/qa
 
 ## [2025-03-08]
 ### 0.4.1-rc2
