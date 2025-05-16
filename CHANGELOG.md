@@ -6,6 +6,10 @@
 ### **Copyrigth**: *Tiledesk SRL*
 
 ## [2025-05-16]
+### 0.4.2-rc3
+- fix: async connection
+
+## [2025-05-16]
 ### 0.4.2-rc2
 - fix: scrape error
 

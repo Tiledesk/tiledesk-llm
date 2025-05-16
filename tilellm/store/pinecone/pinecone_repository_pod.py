@@ -1,7 +1,8 @@
 from tilellm.models.item_model import (MetadataItem,
                                        IndexingResult, Engine
                                        )
-from tilellm.shared.utility import inject_embedding
+#from tilellm.shared.utility import inject_embedding
+from tilellm.shared.embedding_factory import inject_embedding
 from tilellm.tools.document_tools import (get_content_by_url,
                                           get_content_by_url_with_bs,
                                           load_document,
@@ -102,7 +103,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 # pprint(documents)
                 logger.debug(documents)
 
-                a = vector_store.add_documents(chunks,
+                a = await vector_store.aadd_documents(chunks,
                                                #embedding=oai_embeddings,
                                                #index_name=const.PINECONE_INDEX,
                                                namespace=namespace,
@@ -123,7 +124,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                     chunks.append(document)
                 # chunks.extend(chunk_data(data=documents))
                 total_tokens, cost = self.calc_embedding_cost(chunks, embedding)
-                a = vector_store.add_documents(chunks,
+                a = await vector_store.aadd_documents(chunks,
                                                #embedding=oai_embeddings,
                                                # index_name=const.PINECONE_INDEX,
                                                namespace=namespace,
@@ -143,7 +144,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                                                        )
                               )
                 total_tokens, cost = self.calc_embedding_cost(chunks, embedding)
-                a = vector_store.add_documents(chunks,
+                a = await vector_store.aadd_documents(chunks,
                                                #embedding=oai_embeddings,
                                                # index_name=const.PINECONE_INDEX,
                                                 namespace=namespace,
