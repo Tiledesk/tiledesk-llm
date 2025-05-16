@@ -41,7 +41,7 @@ jobs:
     - name: Extract version from package.json
       id: extract_version
       run: |
-        VERSION=$(jq -r '.version' package.json)
+        VERSION=$(grep '^version' pyproject.toml | sed -E 's/version *= *"(.*)"/\1/')
         echo "VERSION=$VERSION" >> $GITHUB_ENV
         echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
 
