@@ -5,6 +5,10 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2025-05-16]
+### 0.4.2-rc2
+- fix: scrape error
+
 ## [2025-05-07]
 ### 0.4.2-rc1
 - upgrade: python version to 3.12

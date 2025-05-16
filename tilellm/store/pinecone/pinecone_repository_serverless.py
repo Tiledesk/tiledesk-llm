@@ -62,10 +62,12 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                                                   source=item.source,
                                                   scrape_type=item.scrape_type,
                                                   parameters_scrape_type_4=item.parameters_scrape_type_4)
-                chunks = self.chunk_documents(item=item,
+
+                chunks = await self.chunk_documents(item=item,
                                               documents=documents,
                                               embeddings=embedding_obj
                                               )
+                #print(f"chunks {chunks}")
             else:
                 metadata = MetadataItem(id=item.id,
                                         source=item.source,
@@ -255,8 +257,10 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
         return document
 
     async def chunk_documents(self, item, documents, embeddings):
+        print(f"in chunk_documents item: {item} \n documents {documents} emb: {embeddings}")
         chunks = []
         for document in documents:
+
             document.metadata["id"] = item.id
             document.metadata["source"] = item.source
             document.metadata["type"] = item.type
@@ -270,6 +274,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                 embeddings=embeddings,
                 breakpoint_threshold_type=item.breakpoint_threshold_type)
             )
+        from pprint import pprint
+        pprint(chunks)
         return chunks
 
     @staticmethod

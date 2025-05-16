@@ -62,7 +62,6 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
             #else:
             #    docs =[]
 
-
         elif scrape_type == 3:
             loader = AsyncChromiumLoader(urls=urls, user_agent='Mozilla/5.0')
             docs = await loader.aload()
