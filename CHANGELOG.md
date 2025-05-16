@@ -6,6 +6,10 @@
 ### **Copyrigth**: *Tiledesk SRL*
 
 ## [2025-05-16]
+### 0.4.2-rc4
+- fix: /api/qa
+
+## [2025-05-16]
 ### 0.4.2-rc3
 - fix: async connection
 

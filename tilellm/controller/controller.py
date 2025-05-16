@@ -339,6 +339,15 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None) :
 @inject_repo
 @inject_llm_chat
 async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler=None, llm_embeddings=None) -> RetrievalResult:
+    """
+    Ask to LLM your questions
+    :param question_answer:
+    :param repo:
+    :param llm:
+    :param callback_handler:
+    :param llm_embeddings:
+    :return: RetrievalResult
+    """
     try:
 
         logger.info(question_answer)
