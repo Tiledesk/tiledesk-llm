@@ -350,7 +350,7 @@ async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler
         retriever = await initialize_retrievers(question_answer, repo, llm_embeddings)
 
         # Create chains for contextualization and Q&A
-        history_aware_retriever, question_answer_chain, qa_prompt = create_chains(llm, question_answer, retriever)
+        history_aware_retriever, question_answer_chain, qa_prompt = await create_chains(llm, question_answer, retriever)
 
         rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
 
