@@ -11,11 +11,9 @@ from tilellm.tools.document_tools import (get_content_by_url,
 
 from tilellm.store.pinecone.pinecone_repository_base import PineconeRepositoryBase
 
-from tilellm.shared import const
-from langchain_core.documents import Document
-from langchain_openai import OpenAIEmbeddings
 
-import os
+from langchain_core.documents import Document
+
 
 import logging
 
@@ -26,13 +24,13 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
     @inject_embedding()
     async def add_pc_item(self, item, embedding_obj=None, embedding_dimension=None) -> IndexingResult:
         """
-            Add items to name
-            space into Pinecone index
-            :param item:
-            :param embedding_obj:
-            :param embedding_dimension:
-            :return: PineconeIndexingResult
-            """
+        Add items to name
+        space into Pinecone index
+        :param item:
+        :param embedding_obj:
+        :param embedding_dimension:
+        :return: PineconeIndexingResult
+        """
         logger.info(item)
         metadata_id = item.id
         source = item.source
@@ -54,7 +52,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
             logger.warning(ex)
             pass
 
-        emb_dimension = embedding_dimension # self.get_embeddings_dimension(embedding)
+        emb_dimension = embedding_dimension
 
         # default text-embedding-ada-002 1536, text-embedding-3-large 3072, text-embedding-3-small 1536
         oai_embeddings = embedding_obj # OpenAIEmbeddings(api_key=gpt_key, model=embedding)
@@ -104,11 +102,8 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 logger.debug(documents)
 
                 a = await vector_store.aadd_documents(chunks,
-                                               #embedding=oai_embeddings,
-                                               #index_name=const.PINECONE_INDEX,
-                                               namespace=namespace,
-                                               #text_key=const.PINECONE_TEXT_KEY
-                                               )
+                                                      namespace=namespace
+                                                      )
 
                 total_tokens, cost = self.calc_embedding_cost(chunks, embedding)
                 logger.info(f"chunks: {len(chunks)}, total_tokens: {total_tokens}, cost: {cost: .6f}")
@@ -122,14 +117,11 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                     metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding)
                     document = Document(page_content=doc, metadata=metadata.model_dump())
                     chunks.append(document)
-                # chunks.extend(chunk_data(data=documents))
+
                 total_tokens, cost = self.calc_embedding_cost(chunks, embedding)
                 a = await vector_store.aadd_documents(chunks,
-                                               #embedding=oai_embeddings,
-                                               # index_name=const.PINECONE_INDEX,
-                                               namespace=namespace,
-                                               # text_key=const.PINECONE_TEXT_KEY
-                                               )
+                                                      namespace=namespace
+                                                      )
 
             else:
                 metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding)
@@ -145,11 +137,8 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                               )
                 total_tokens, cost = self.calc_embedding_cost(chunks, embedding)
                 a = await vector_store.aadd_documents(chunks,
-                                               #embedding=oai_embeddings,
-                                               # index_name=const.PINECONE_INDEX,
-                                                namespace=namespace,
-                                               # text_key=const.PINECONE_TEXT_KEY
-                                               )
+                                                      namespace=namespace
+                                                      )
 
             pinecone_result = IndexingResult(id=metadata_id, chunks=len(chunks), total_tokens=total_tokens,
                                              cost=f"{cost:.6f}")
@@ -158,7 +147,6 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
             pinecone_result = IndexingResult(id=metadata_id, chunks=len(chunks), total_tokens=total_tokens,
                                              status=400,
                                              cost=f"{cost:.6f}")
-        # {"id": f"{id}", "chunks": f"{len(chunks)}", "total_tokens": f"{total_tokens}", "cost": f"{cost:.6f}"}
         return pinecone_result
 
     @inject_embedding()
