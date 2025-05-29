@@ -1,6 +1,6 @@
 import os
 from contextlib import asynccontextmanager
-
+from typing import Union
 
 from fastapi import (FastAPI,
                      Depends,
@@ -24,14 +24,15 @@ from tilellm.models.item_model import (ItemSingle,
                                        ScrapeStatusResponse,
                                        IndexingResult, RetrievalResult, RepositoryNamespaceResult,
                                        RepositoryDescNamespaceResult, RepositoryItems, QuestionToLLM, SimpleAnswer,
-                                       QuestionToAgent, Engine, RepositoryEngine)
+                                       QuestionToAgent, Engine, RepositoryEngine, RetrievalChunksResult)
 
 from tilellm.store.redis_repository import redis_xgroup_create
 from tilellm.controller.controller import (ask_with_memory,
                                            ask_hybrid_with_memory,
+                                           ask_for_chunks,
                                            ask_with_sequence,
-                                           add_pc_item,
-                                           add_pc_item_hybrid,
+                                           add_item,
+                                           add_item_hybrid,
                                            delete_namespace,
                                            delete_id_from_namespace,
                                            delete_chunk_id_from_namespace,
@@ -146,7 +147,7 @@ async def reader(channel: Redis):
                                 logger.error(ewh)
                                 pass
 
-                        pc_result = await add_pc_item(item_single)
+                        pc_result = await add_item(item_single)
                         # import datetime
                         # current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")
 
@@ -255,7 +256,6 @@ async def create_scrape_item_single(item: ItemSingle, redis_client: Redis = Depe
     """
     webhook = ""
     token = ""
-
     try:
         logger.debug(item)
         scrape_status_response = ScrapeStatusResponse(status_message="Indexing started",
@@ -278,29 +278,10 @@ async def create_scrape_item_single(item: ItemSingle, redis_client: Redis = Depe
 
         logger.info(f"webhook: {webhook}, token: {token}")
 
-        # if webhook:
-        #    res = PineconeIndexingResult(id=item.id, status=200)
-        #    try:
-        #        async with aiohttp.ClientSession() as session:
-        #            res = await session.post(webhook,
-        #                                     json=res.model_dump(exclude_none=True),
-        #                                     headers={"Content-Type": "application/json",
-        #                                              "X-Auth-Token": token})
-        #            logger.info(f"200 {await res.json()}")
-        #    except Exception as ewh:
-        #        logger.error(ewh)
-        #        pass
         if item.hybrid:
-            pc_result = await add_pc_item_hybrid(item)
+            pc_result = await add_item_hybrid(item)
         else:
-            pc_result = await add_pc_item(item)
-        # import datetime
-        # current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")
-
-        # pc_result["date"]= current_time
-        # pc_result["status"] = current_time
-
-        # A POST request to the API
+            pc_result = await add_item(item)
 
         scrape_status_response = ScrapeStatusResponse(status_message="Indexing finish",
                                                       status_code=3
@@ -322,14 +303,14 @@ async def create_scrape_item_single(item: ItemSingle, redis_client: Redis = Depe
         #        logger.error(ewh)
         #        pass
 
-        return JSONResponse(content=pc_result.model_dump(exclude_none=True)) # {"message": f"Item {item.id} created successfully"})
+        return JSONResponse(content=pc_result.model_dump(exclude_none=True))
 
     except Exception as e:
         scrape_status_response = ScrapeStatusResponse(status_message="Error",
                                                       status_code=4
                                                       )
         add_to_queue = await redis_client.set(f"{item.namespace}/{item.id}",
-                                              scrape_status_response.model_dump_json(),
+                                              scrape_status_response.model_dump_json(by_alias=True),
                                               ex=expiration_in_seconds)
 
         logger.error(f"Error {add_to_queue}")
@@ -379,7 +360,7 @@ async def create_scrape_item_hybrid(item: ItemSingle, redis_client: Redis = Depe
 
         logger.info(f"webhook: {webhook}, token: {token}")
 
-        pc_result = await add_pc_item_hybrid(item)
+        pc_result = await add_item_hybrid(item)
 
         scrape_status_response = ScrapeStatusResponse(status_message="Indexing finish",
                                                       status_code=3
@@ -406,7 +387,7 @@ async def create_scrape_item_hybrid(item: ItemSingle, redis_client: Redis = Depe
         raise HTTPException(status_code=400, detail=repr(e))
 
 
-@app.post("/api/qa", response_model=RetrievalResult)
+@app.post("/api/qa", response_model=Union[RetrievalResult, RetrievalChunksResult])
 async def post_ask_with_memory_main(question_answer: QuestionAnswer):
     """
     Query and Aswer with chat history
@@ -416,9 +397,10 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
     logger.debug(question_answer)
     if question_answer.search_type == 'hybrid':
         result= await ask_hybrid_with_memory(question_answer)
+    elif question_answer.search_type == 'chunks':
+        result = await ask_for_chunks(question_answer)
     else:
         result = await ask_with_memory(question_answer)
-
     logger.debug(result)
     return result#JSONResponse(content=result.model_dump())
 
@@ -462,9 +444,6 @@ async def post_ask_to_llm_reason_main(question: QuestionToLLM):
     logger.info(question)
 
     return await ask_reason_llm(question=question)
-
-
-
 
 
 @app.post("/api/qachain", response_model=RetrievalResult)
@@ -564,7 +543,7 @@ async def list_namespace_main(token: str):
     """
     try:
         engine_dec = decode_jwt(token)
-        print(type(engine_dec))
+        #print(type(engine_dec))
         logger.debug(f"All Namespaces ")
         repository_engine = RepositoryEngine(**engine_dec)
         result = await get_list_namespace(repository_engine)
@@ -628,7 +607,6 @@ async def list_namespace_items_main(token: str, namespace: str):
         logger.info(f"retrieve namespace {namespace}")
         engine_dec = decode_jwt(token)
         repository_engine = RepositoryEngine(**engine_dec)
-
         result = await get_listitems_namespace(repository_engine, namespace)
 
         return JSONResponse(content=result.model_dump(exclude_none=True))

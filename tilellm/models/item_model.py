@@ -1,7 +1,7 @@
 from huggingface_hub import snapshot_download
 from langchain_core.documents import Document
 from pydantic import BaseModel, Field, field_validator, ValidationError, model_validator, RootModel
-from typing import Dict, Optional, List, Union, Any
+from typing import Dict, Optional, List, Union, Any, Literal
 import datetime
 from enum import Enum
 
@@ -56,24 +56,56 @@ class EmbeddingModel(BaseModel):
     embedding_provider: str
     embedding_key: str
     embedding_model: str
+    embedding_host: Optional[str] = Field(default=None)
+    embedding_dimension: Optional[int] = None
+
 
 class Engine(BaseModel):
     name: str = Field(default="pinecone")
-    type: str = Field(default="serverless")
+    type: Optional[str] = Field(default="serverless")
     apikey: str
     vector_size: int = Field(default=1536)
     index_name: str = Field(default="tilellm")
     text_key: Optional[str] = Field(default="text")
     metric: str = Field(default="cosine")
+    host: Optional[str] = Field(default="localhost")
+    port: Optional[int] = Field(default=6333)
+    deployment: Optional[Literal["local", "cloud"]] = Field(default="local")
+
+    @model_validator(mode='after')
+    def validate_fields(self):
+        if self.name == "pinecone":
+            if self.type is None:
+                self.type = "serverless"
+            if self.type not in ("serverless", "pod"):
+                raise ValueError("Type must be 'serverless' or 'pod' for Pinecone")
+
+        elif self.name == "qdrant":
+            if not self.deployment:
+                raise ValueError("Deployment is required for Qdrant (local/cloud)")
+
+            if self.deployment == "local":
+                if not (self.host and self.port):
+                    raise ValueError("Host and port are required for local Qdrant")
+
+            elif self.deployment == "cloud":
+                if self.host or self.port:
+                    raise ValueError("Host/port not allowed for cloud Qdrant")
+
+        else:
+            raise ValueError(f"Unsupported engine: {self.name}")
+
+        return self
 
     @model_validator(mode='after')
     def set_text_key(self):
-        if self.type == "serverless":
-            self.text_key = "text"
-        elif self.type == "pod":
-            self.text_key = "content"
+        if self.name == "pinecone":
+            if self.type == "serverless":
+                self.text_key = "text"
+            elif self.type == "pod":
+                self.text_key = "content"
         return self
-import torch
+
 
 class ParametersScrapeType4(BaseModel):
     unwanted_tags: Optional[List[str]] = Field(default_factory=list)
@@ -132,6 +164,7 @@ class MetadataItem(BaseModel):
     type: str | None = None
     embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
     date: str = Field(default_factory=lambda: datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f"))
+    namespace: Optional[str] = None
 
 
 class ChatEntry(BaseModel):
@@ -352,6 +385,15 @@ class RetrievalResult(BaseModel):
     error_message: Optional[str] | None = None
     duration: Optional[float]= Field(default=0)
     chat_history_dict: Optional[Dict[str, ChatEntry]]
+
+class RetrievalChunksResult(BaseModel):
+    success: bool = Field(default=False)
+    namespace: str
+    chunks: Optional[List[str]] | None = None
+    metadata: Optional[List[dict]] | None = None
+    error_message: Optional[str] | None = None
+    duration: Optional[float]= Field(default=0)
+
 
 
 class RepositoryQueryResult(BaseModel):

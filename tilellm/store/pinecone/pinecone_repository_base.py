@@ -1,3 +1,4 @@
+import datetime
 from abc import abstractmethod
 
 import time
@@ -10,7 +11,8 @@ from tilellm.models.item_model import (MetadataItem,
                                        RepositoryNamespaceResult,
                                        RepositoryItemNamespaceResult,
                                        RepositoryIdSummaryResult,
-                                       RepositoryDescNamespaceResult, Engine, RepositoryNamespace
+                                       RepositoryDescNamespaceResult, Engine, RepositoryNamespace, QuestionAnswer,
+                                       RetrievalChunksResult
 
                                        )
 
@@ -19,20 +21,61 @@ from typing import List, Dict
 
 import logging
 
+from tilellm.shared.embedding_factory import inject_embedding_qa
+from tilellm.store.vector_store_repository import VectorStoreRepository
+
 logger = logging.getLogger(__name__)
 
 
-class PineconeRepositoryBase:
+class PineconeRepositoryBase(VectorStoreRepository):
     @abstractmethod
-    async def add_pc_item(self, item):
+    async def add_item(self, item):
         pass
 
     @abstractmethod
-    async def add_pc_item_hybrid(self, item):
+    async def add_item_hybrid(self, item):
         pass
 
-    @staticmethod
-    async def delete_pc_namespace(namespace_to_delete: RepositoryNamespace):
+    @inject_embedding_qa()
+    async def get_chunks_from_repo(self, question_answer: QuestionAnswer, embedding_obj=None, embedding_dimension=None):
+        """
+
+        :param question_answer:
+        :param embedding_obj:
+        :param embedding_dimension:
+        :return:
+        """
+        try:
+            vector_store = await self.create_index(engine=question_answer.engine,
+                                                   embeddings=embedding_obj,
+                                                   emb_dimension=embedding_dimension)
+
+
+
+            start_time = datetime.datetime.now() if question_answer.debug else 0
+
+            results = await vector_store.asimilarity_search(query=question_answer.question, k=question_answer.top_k,
+                                                            namespace=question_answer.namespace)
+
+            end_time = datetime.datetime.now() if question_answer.debug else 0
+            duration = (end_time - start_time).total_seconds() if question_answer.debug else 0.0
+
+            retrieval = RetrievalChunksResult(success=True,
+                                              namespace=question_answer.namespace,
+                                              chunks=[chunk.page_content for chunk in results],
+                                              metadata=[chunk.metadata for chunk in results],
+                                              error_message=None,
+                                              duration=duration
+                                              )
+
+            return retrieval
+        except Exception as ex:
+
+            logger.error(ex)
+
+            raise ex
+
+    async def delete_namespace(self, namespace_to_delete: RepositoryNamespace):
         """
         Delete namespace from Pinecone index
         :param namespace_to_delete:
@@ -45,9 +88,10 @@ class PineconeRepositoryBase:
                 api_key=engine.apikey
             )
             host = pc.describe_index(engine.index_name).host
-            index = pc.Index(name=engine.index_name, host=host)
+            index = pc.IndexAsyncio(name=engine.index_name, host=host)
             # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
-            delete_response = index.delete(delete_all=True, namespace=namespace_to_delete.namespace)
+            async with index as index:
+                delete_response = await index.delete(delete_all=True, namespace=namespace_to_delete.namespace)
         except Exception as ex:
 
             logger.error(ex)
@@ -55,11 +99,10 @@ class PineconeRepositoryBase:
             raise ex
 
     @abstractmethod
-    async def delete_pc_ids_namespace(self, engine: Engine, metadata_id: str, namespace: str):
+    async def delete_ids_namespace(self, engine: Engine, metadata_id: str, namespace: str):
         pass
 
-    @staticmethod
-    async def delete_pc_chunk_id_namespace(engine: Engine, chunk_id: str, namespace: str):
+    async def delete_chunk_id_namespace(self, engine: Engine, chunk_id: str, namespace: str):
         """
         delete chunk from pinecone
         :param engine: Engine
@@ -83,8 +126,7 @@ class PineconeRepositoryBase:
 
             raise ex
 
-    @staticmethod
-    async def get_pc_ids_namespace(engine: Engine, metadata_id: str, namespace: str) -> RepositoryItems:
+    async def get_ids_namespace(self, engine: Engine, metadata_id: str, namespace: str) -> RepositoryItems:
         """
         Get from Pinecone all items from namespace given document id
         :param engine: Engine
@@ -100,31 +142,30 @@ class PineconeRepositoryBase:
             )
 
             host = pc.describe_index(engine.index_name).host
-            index = pc.Index(name=engine.index_name, host=host)
+            index = pc.IndexAsyncio(name=engine.index_name, host=host)
 
-            # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
-            describe = index.describe_index_stats()
-            # print(describe)
-            logger.debug(describe)
-            namespaces = describe.get("namespaces", {})
-            total_vectors = 1
+            async with index as index:
+                describe = await index.describe_index_stats()
+                # print(describe)
+                logger.debug(describe)
+                namespaces = describe.get("namespaces", {})
+                total_vectors = 1
 
-            if namespaces:
-                if namespace in namespaces.keys():
-                    total_vectors = namespaces.get(namespace).get('vector_count')
+                if namespaces:
+                    if namespace in namespaces.keys():
+                        total_vectors = namespaces.get(namespace).get('vector_count')
 
-            logger.debug(f"pinecone total vector in {namespace}: {total_vectors}")
-            batch_size = min([total_vectors, 10000])
-            pc_res = index.query(
-                vector=[0] * 1536,  # [0,0,0,0......0]
-                top_k=batch_size,
-                filter={"id": {"$eq": metadata_id}},
-                namespace=namespace,
-                include_values=False,
-                include_metadata=True
-            )
+                logger.debug(f"pinecone total vector in {namespace}: {total_vectors}")
+                batch_size = min([total_vectors, 10000])
+                pc_res = await index.query(
+                    vector=[0] * 1536,  # [0,0,0,0......0]
+                    top_k=batch_size,
+                    filter={"id": {"$eq": metadata_id}},
+                    namespace=namespace,
+                    include_values=False,
+                    include_metadata=True
+                )
             matches = pc_res.get('matches')
-
             # from pprint import pprint
             # pprint(matches)
             # ids = [obj.get('id') for obj in matches]
@@ -150,8 +191,12 @@ class PineconeRepositoryBase:
 
             raise ex
 
-    @staticmethod
-    async def pinecone_list_namespaces(engine: Engine) -> RepositoryNamespaceResult:
+    async def list_namespaces(self, engine: Engine) -> RepositoryNamespaceResult:
+        """
+
+        :param engine:
+        :return:
+        """
         import pinecone
 
         try:
@@ -160,20 +205,21 @@ class PineconeRepositoryBase:
             )
 
             host = pc.describe_index(engine.index_name).host
-            index = pc.Index(name=engine.index_name, host=host)
+            index = pc.IndexAsyncio(name=engine.index_name, host=host)
 
-            describe = index.describe_index_stats()
+            async with index as index:
+                describe = await index.describe_index_stats()
 
-            logger.debug(describe)
-            namespaces = describe.get("namespaces", {})
+                logger.debug(describe)
+                namespaces = describe.get("namespaces", {})
 
-            results = []
+                results = []
 
-            for namespace in namespaces.keys():
-                total_vectors = namespaces.get(namespace).get('vector_count')
-                pc_item_namespace = RepositoryItemNamespaceResult(namespace=namespace, vector_count=total_vectors)
-                results.append(pc_item_namespace)
-                logger.debug(f"{namespace}, {total_vectors}")
+                for namespace in namespaces.keys():
+                    total_vectors = namespaces.get(namespace).get('vector_count')
+                    pc_item_namespace = RepositoryItemNamespaceResult(namespace=namespace, vector_count=total_vectors)
+                    results.append(pc_item_namespace)
+                    logger.debug(f"{namespace}, {total_vectors}")
 
             logger.debug(f"pinecone total vector in {results}")
 
@@ -185,8 +231,7 @@ class PineconeRepositoryBase:
 
             raise ex
 
-    @staticmethod
-    async def get_pc_all_obj_namespace(engine: Engine, namespace: str) -> RepositoryItems:
+    async def get_all_obj_namespace(self, engine: Engine, namespace: str) -> RepositoryItems:
         """
         Query Pinecone to get all object
         :param engine: Engine
@@ -201,31 +246,32 @@ class PineconeRepositoryBase:
             )
 
             host = pc.describe_index(engine.index_name).host
-            index = pc.Index(name=engine.index_name, host=host)
+            index = pc.IndexAsyncio(name=engine.index_name, host=host)
 
-            # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
-            describe = index.describe_index_stats()
+            async with index as index:
+                # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
+                describe = await index.describe_index_stats()
 
-            logger.debug(describe)
-            namespaces = describe.get("namespaces", {})
-            total_vectors = 1
+                logger.debug(describe)
+                namespaces = describe.get("namespaces", {})
+                total_vectors = 1
 
-            if namespaces:
-                if namespace in namespaces.keys():
-                    total_vectors = namespaces.get(namespace).get('vector_count')
+                if namespaces:
+                    if namespace in namespaces.keys():
+                        total_vectors = namespaces.get(namespace).get('vector_count')
 
-            logger.debug(f"pinecone total vector in {namespace}: {total_vectors}")
+                logger.debug(f"pinecone total vector in {namespace}: {total_vectors}")
 
-            batch_size = min([total_vectors, 1000])
+                batch_size = min([total_vectors, 1000])
 
-            pc_res = index.query(
-                vector=[0] * 1536,  # [0,0,0,0......0]
-                top_k=batch_size,
-                # filter={"id": {"$eq": id}},
-                namespace=namespace,
-                include_values=False,
-                include_metadata=True
-            )
+                pc_res = await index.query(
+                    vector=[0] * 1536,  # [0,0,0,0......0]
+                    top_k=batch_size,
+                    # filter={"id": {"$eq": id}},
+                    namespace=namespace,
+                    include_values=False,
+                    include_metadata=True
+                )
             matches = pc_res.get('matches')
             # from pprint import pprint
             # pprint(matches)
@@ -251,8 +297,7 @@ class PineconeRepositoryBase:
 
             raise ex
 
-    @staticmethod
-    async def get_pc_desc_namespace(engine: Engine, namespace: str) -> RepositoryDescNamespaceResult:
+    async def get_desc_namespace(self, engine: Engine, namespace: str) -> RepositoryDescNamespaceResult:
         """
         Query Pinecone to get all object
         :param engine: Engine
@@ -267,32 +312,33 @@ class PineconeRepositoryBase:
             )
 
             host = pc.describe_index(engine.index_name).host
-            index = pc.Index(name=engine.index_name, host=host)
+            index = pc.IndexAsyncio(name=engine.index_name, host=host)
 
             # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
-            describe = index.describe_index_stats()
+            async with index as index:
+                describe = await index.describe_index_stats()
 
-            logger.debug(describe)
-            namespaces = describe.get("namespaces", {})
-            total_vectors = 1
-            description = RepositoryItemNamespaceResult(namespace=namespace, vector_count=0)
-            if namespaces:
-                if namespace in namespaces.keys():
-                    total_vectors = namespaces.get(namespace).get('vector_count')
-                    description = RepositoryItemNamespaceResult(namespace=namespace, vector_count=total_vectors)
+                logger.debug(describe)
+                namespaces = describe.get("namespaces", {})
+                total_vectors = 1
+                description = RepositoryItemNamespaceResult(namespace=namespace, vector_count=0)
+                if namespaces:
+                    if namespace in namespaces.keys():
+                        total_vectors = namespaces.get(namespace).get('vector_count')
+                        description = RepositoryItemNamespaceResult(namespace=namespace, vector_count=total_vectors)
 
-            logger.debug(f"pinecone total vector in {namespace}: {total_vectors}")
+                logger.debug(f"pinecone total vector in {namespace}: {total_vectors}")
 
-            batch_size = min([total_vectors, 10000])
+                batch_size = min([total_vectors, 10000])
 
-            pc_res = index.query(
-                vector=[0] * 1536,  # [0,0,0,0......0]
-                top_k=batch_size,
-                # filter={"id": {"$eq": id}},
-                namespace=namespace,
-                include_values=False,
-                include_metadata=True
-            )
+                pc_res = await index.query(
+                    vector=[0] * 1536,  # [0,0,0,0......0]
+                    top_k=batch_size,
+                    # filter={"id": {"$eq": id}},
+                    namespace=namespace,
+                    include_values=False,
+                    include_metadata=True
+                )
             matches = pc_res.get('matches')
             # from pprint import pprint
             # pprint(matches)
@@ -321,8 +367,7 @@ class PineconeRepositoryBase:
 
             raise ex
 
-    @staticmethod
-    async def get_pc_sources_namespace(engine: Engine, source: str, namespace: str) -> RepositoryItems:
+    async def get_sources_namespace(self, engine: Engine, source: str, namespace: str) -> RepositoryItems:
         """
         Get from Pinecone all items from namespace given source
         :param engine: Engine
@@ -338,27 +383,28 @@ class PineconeRepositoryBase:
             )
 
             host = pc.describe_index(engine.index_name).host
-            index = pc.Index(name=engine.index_name, host=host)
+            index = pc.IndexAsyncio(name=engine.index_name, host=host)
 
             # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
-            describe = index.describe_index_stats()
-            logger.debug(describe)
-            namespaces = describe.get("namespaces", {})
-            total_vectors = 1
+            async with index as index:
+                describe = await index.describe_index_stats()
+                logger.debug(describe)
+                namespaces = describe.get("namespaces", {})
+                total_vectors = 1
 
-            if namespaces:
-                if namespace in namespaces.keys():
-                    total_vectors = namespaces.get(namespace).get('vector_count')
+                if namespaces:
+                    if namespace in namespaces.keys():
+                        total_vectors = namespaces.get(namespace).get('vector_count')
 
-            logger.debug(f"pinecone total vector in {namespace}: {total_vectors}")
-            pc_res = index.query(
-                vector=[0] * 1536,  # [0,0,0,0......0]
-                top_k=total_vectors,
-                filter={"source": {"$eq": source}},
-                namespace=namespace,
-                include_values=False,
-                include_metadata=True
-            )
+                logger.debug(f"pinecone total vector in {namespace}: {total_vectors}")
+                pc_res = await index.query(
+                    vector=[0] * 1536,  # [0,0,0,0......0]
+                    top_k=total_vectors,
+                    filter={"source": {"$eq": source}},
+                    namespace=namespace,
+                    include_values=False,
+                    include_metadata=True
+                )
             matches = pc_res.get('matches')
             # from pprint import pprint
             # pprint(matches)
@@ -386,7 +432,7 @@ class PineconeRepositoryBase:
             raise ex
 
     @staticmethod
-    async def create_pc_index(engine, embeddings, emb_dimension) -> PineconeVectorStore:
+    async def create_index(engine, embeddings, emb_dimension) -> PineconeVectorStore:
         """
         Create or return existing index
         :param engine:
@@ -399,16 +445,11 @@ class PineconeRepositoryBase:
 
         pc =  pinecone.Pinecone(
             api_key= engine.apikey
-            #const.PINECONE_API_KEY
         )
 
-        #existing_indexes = [index_info["name"] for index_info in pc.list_indexes()]
-
         if engine.index_name in pc.list_indexes().names(): #const.PINECONE_INDEX in pc.list_indexes().names():
-           # logger.debug(engine.index_name) #(const.PINECONE_TEXT_KEY)
-            #logger.debug(f'Index {const.PINECONE_INDEX} exists. Loading embeddings ... ')
+            #logger.debug(engine.index_name)
             logger.debug(f'Index {engine.index_name} exists. Loading embeddings ... ')
-            #print(f"================== {engine.index_name}, api {engine.apikey}")
             host = pc.describe_index(engine.index_name).host
 
             index = pc.IndexAsyncio(name=engine.index_name,

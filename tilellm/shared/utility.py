@@ -38,34 +38,44 @@ ADA_AND_3_MODELS = {
 
 def inject_repo(func):
     """
-    Annotation for inject PineconeRepository.
-    If PINECONE_TYP is pod is injected PineconeRepositoryPod
-    If PINECONE_TYP is serverless is injected PineconeRepositoryServerless
-    :param func:
-    :return:
+    Annotation for injecting the correct Vector Store Repository (Pinecone or Qdrant).
+    If question.engine.name is 'pinecone', it injects PineconeRepository (Pod or Serverless).
+    If question.engine.name is 'qdrant', it injects QdrantRepository.
+    :param func: The function to wrap.
+    :return: The wrapped function.
     """
 
     @wraps(func)
     def wrapper(question, *args, **kwargs):
         engine_name = question.engine.name
-        repo_type= question.engine.type
-        #print(f"============== ENGINE {question.engine.model_dump()}")
-        #repo_type = os.environ.get("PINECONE_TYPE")
-        logger.info(f"pinecone type {repo_type}")
-        if repo_type == 'pod':
+        repo = None # Inizializza repo a None
 
-            from tilellm.store.pinecone.pinecone_repository_pod import PineconeRepositoryPod
-            repo = PineconeRepositoryPod()
-        elif repo_type == 'serverless':
-            from tilellm.store.pinecone.pinecone_repository_serverless import PineconeRepositoryServerless
-            repo = PineconeRepositoryServerless()
+        logger.info(f"Engine name: {engine_name}")
+
+        if engine_name == 'pinecone':
+            repo_type = question.engine.type
+            logger.info(f"Pinecone type: {repo_type}")
+
+            if repo_type == 'pod':
+                from tilellm.store.pinecone.pinecone_repository_pod import PineconeRepositoryPod
+                repo = PineconeRepositoryPod()
+            elif repo_type == 'serverless':
+                from tilellm.store.pinecone.pinecone_repository_serverless import PineconeRepositoryServerless
+                repo = PineconeRepositoryServerless()
+            else:
+                raise ValueError(f"Unknown Pinecone repository type: {repo_type}")
+        elif engine_name == 'qdrant':
+            logger.info("Injecting QdrantRepository")
+            from tilellm.store.qdrant.qdrant_repository_local import QdrantRepository
+            repo = QdrantRepository()
         else:
-            raise ValueError("Unknown repository type")
+            raise ValueError(f"Unknown engine name: {engine_name}")
 
         kwargs['repo'] = repo
         return func(question, *args, **kwargs)
 
     return wrapper
+
 
 
 def inject_embedding():

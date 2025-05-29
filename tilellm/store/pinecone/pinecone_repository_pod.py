@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 class PineconeRepositoryPod(PineconeRepositoryBase):
     @inject_embedding()
-    async def add_pc_item(self, item, embedding_obj=None, embedding_dimension=None) -> IndexingResult:
+    async def add_item(self, item, embedding_obj=None, embedding_dimension=None) -> IndexingResult:
         """
         Add items to name
         space into Pinecone index
@@ -47,7 +47,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
         parameters_scrape_type_4 = item.parameters_scrape_type_4
         engine = item.engine
         try:
-            await self.delete_pc_ids_namespace(engine=engine, metadata_id=metadata_id, namespace=namespace)
+            await self.delete_ids_namespace(engine=engine, metadata_id=metadata_id, namespace=namespace)
         except Exception as ex:
             logger.warning(ex)
             pass
@@ -56,7 +56,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
 
         # default text-embedding-ada-002 1536, text-embedding-3-large 3072, text-embedding-3-small 1536
         oai_embeddings = embedding_obj # OpenAIEmbeddings(api_key=gpt_key, model=embedding)
-        vector_store = await self.create_pc_index(engine=engine, embeddings=oai_embeddings, emb_dimension=emb_dimension)
+        vector_store = await self.create_index(engine=engine, embeddings=oai_embeddings, emb_dimension=emb_dimension)
         # print(f"=========== POD {type(vector_store)}")
         chunks = []
         total_tokens = 0
@@ -115,7 +115,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 chunks = list()
                 for doc in doc_array:
                     metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding)
-                    document = Document(page_content=doc, metadata=metadata.model_dump())
+                    document = Document(page_content=doc, metadata=metadata.model_dump(exclude_none=True))
                     chunks.append(document)
 
                 total_tokens, cost = self.calc_embedding_cost(chunks, embedding)
@@ -125,7 +125,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
 
             else:
                 metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding)
-                document = Document(page_content=content, metadata=metadata.dict())
+                document = Document(page_content=content, metadata=metadata.model_dump(exclude_none=True))
 
                 chunks.extend(self.chunk_data_extended(data=[document],
                                                        chunk_size=chunk_size,
@@ -150,11 +150,11 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
         return pinecone_result
 
     @inject_embedding()
-    async def add_pc_item_hybrid(self, item, embedding_obj=None, embedding_dimension=None):
+    async def add_item_hybrid(self, item, embedding_obj=None, embedding_dimension=None):
         pass
 
 
-    async def delete_pc_ids_namespace(self, engine: Engine, metadata_id: str, namespace: str):
+    async def delete_ids_namespace(self, engine: Engine, metadata_id: str, namespace: str):
         """
         Delete from pinecone items
         :param engine:

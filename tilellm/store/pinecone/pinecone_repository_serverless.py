@@ -1,5 +1,5 @@
 import datetime
-from langchain_core.utils import batch_iterate
+import uuid
 
 from tilellm.models.item_model import (MetadataItem,
                                        IndexingResult, Engine, ItemSingle
@@ -8,17 +8,15 @@ from tilellm.models.item_model import (MetadataItem,
 from tilellm.tools.document_tools import (get_content_by_url,
                                           get_content_by_url_with_bs,
                                           load_document,
-                                          load_from_wikipedia
                                           )
 
 from tilellm.store.pinecone.pinecone_repository_base import PineconeRepositoryBase
-#from tilellm.shared.utility import inject_embedding
+
 from tilellm.shared.embedding_factory import inject_embedding
-from pinecone_text.sparse import SpladeEncoder
+
 
 from langchain_core.documents import Document
 
-import uuid
 
 import logging
 
@@ -31,7 +29,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
 
     @inject_embedding()
-    async def add_pc_item(self, item:ItemSingle, embedding_obj=None, embedding_dimension=None):
+    async def add_item(self, item:ItemSingle, embedding_obj=None, embedding_dimension=None):
         """
             Add items to name
             space into Pinecone index
@@ -42,7 +40,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             """
         logger.info(item)
 
-        await self.delete_pc_ids_namespace(engine=item.engine,
+        await self.delete_ids_namespace(engine=item.engine,
                                            metadata_id=item.id,
                                            namespace=item.namespace)
 
@@ -72,7 +70,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                 metadata = MetadataItem(id=item.id,
                                         source=item.source,
                                         type=item.type,
-                                        embedding=item.embedding).model_dump()
+                                        embedding=item.embedding,
+                                        namespace=None).model_dump(exclude_none=False)
                 documents = await self.process_contents(type_source=item.type,
                                                         source=item.source,
                                                         metadata=metadata,
@@ -115,7 +114,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
 
     @inject_embedding()
-    async def add_pc_item_hybrid(self, item, embedding_obj=None, embedding_dimension=None):
+    async def add_item_hybrid(self, item, embedding_obj=None, embedding_dimension=None):
         """
         Add item for hybrid search
         :param item:
@@ -199,7 +198,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
         #return pinecone_result
 
-    async def delete_pc_ids_namespace(self, engine, metadata_id: str, namespace: str):
+    async def delete_ids_namespace(self, engine, metadata_id: str, namespace: str):
 
         import pinecone
 
@@ -235,7 +234,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
     async def create_vector_store(self, engine: Engine, embedding_obj, embedding_dimension: int, metric: str):
         engine.metric = metric
-        return await self.create_pc_index(engine=engine, embeddings=embedding_obj, emb_dimension=embedding_dimension)
+        return await self.create_index(engine=engine, embeddings=embedding_obj, emb_dimension=embedding_dimension)
 
     @staticmethod
     async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4):
@@ -257,7 +256,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
         return document
 
     async def chunk_documents(self, item, documents, embeddings):
-        print(f"in chunk_documents item: {item} \n documents {documents} emb: {embeddings}")
+        logger.debug(f"in chunk_documents item: {item} \n documents {documents} emb: {embeddings}")
         chunks = []
         for document in documents:
 
@@ -274,8 +273,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                 embeddings=embeddings,
                 breakpoint_threshold_type=item.breakpoint_threshold_type)
             )
-        from pprint import pprint
-        pprint(chunks)
+        #from pprint import pprint
+        #pprint(chunks)
         return chunks
 
     @staticmethod
@@ -284,7 +283,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             doc_array = get_content_by_url_with_bs(source)
             return [Document(page_content=doc, metadata=MetadataItem(**metadata).model_dump()) for doc in doc_array]
 
-        document = Document(page_content=content, metadata=MetadataItem(**metadata).model_dump())
+        document = Document(page_content=content, metadata=MetadataItem(**metadata).model_dump(exclude_none=True))
         return [document]
 
     @staticmethod

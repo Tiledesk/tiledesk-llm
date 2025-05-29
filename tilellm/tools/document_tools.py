@@ -1,4 +1,6 @@
 import time
+import uuid
+from datetime import datetime
 
 import requests
 import logging
@@ -15,6 +17,7 @@ from langchain_community.document_transformers import BeautifulSoupTransformer
 from langchain_core.documents import Document
 from playwright.sync_api import sync_playwright
 
+from tilellm.models.item_model import MetadataItem
 
 logger = logging.getLogger(__name__)
 
@@ -274,7 +277,38 @@ def clean_metadata(dictionary):
     return {k: v for k, v in dictionary.items() if is_valid_value(v)}
 
 
+async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4):
+    if type_source in ['url', 'txt']:
+        return await get_content_by_url(source,
+                                        scrape_type,
+                                        parameters_scrape_type_4=parameters_scrape_type_4)
+    return load_document(source, type_source)
 
 
+def calc_embedding_cost(texts, embedding):
+    """
+    Calculate the embedding cost with OpenAI embedding
+    :param texts:
+    :param embedding:
+    :return:
+    """
+    import tiktoken
+    enc = tiktoken.encoding_for_model('text-embedding-ada-002')
+    total_tokens = sum([len(enc.encode(page.page_content)) for page in texts])
+    logger.info(f'Total numer of Token: {total_tokens}')
+    cost = 0
+    try:
+        if embedding == "text-embedding-3-large":
+            cost = total_tokens / 1e6 * 0.13
+        elif embedding == "text-embedding-3-small":
+            cost = total_tokens / 1e6 * 0.02
+        else:
+            embedding = "text-embedding-ada-002"
+            cost = total_tokens / 1e6 * 0.10
 
+    except IndexError:
+        embedding = "text-embedding-ada-002"
+        cost = total_tokens / 1e6 * 0.10
 
+    logger.info(f'Embedding cost $: {cost:.6f}')
+    return total_tokens, cost

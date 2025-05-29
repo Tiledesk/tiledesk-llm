@@ -9,6 +9,9 @@ import torch
 from langchain.embeddings.base import Embeddings
 import logging
 
+from tilellm.models.item_model import EmbeddingModel
+
+
 class EmbeddingFactory:
 
     def __init__(self):
@@ -24,6 +27,7 @@ class EmbeddingFactory:
 
     def create(self, config: Dict[str, Any]) ->Tuple[Embeddings, int]:
         """Metodo principale per creare gli embedding"""
+
         try:
             if config.get("legacy_mode", False):
                 embedding, dimension = self._create_legacy(config)
@@ -173,6 +177,62 @@ def inject_embedding(factory: Optional[EmbeddingFactory] = None):
                 kwargs["embedding_dimension"] = dimension
 
                 return await func(self, item, *args, **kwargs)
+
+            except ValidationError as ve:
+                raise EmbeddingCreationError("Validazione fallita", ve)
+            except Exception as e:
+                raise EmbeddingCreationError("Errore generico", e)
+
+        return wrapper
+
+    return decorator
+
+
+def inject_embedding_qa(factory: Optional[EmbeddingFactory] = None):
+    """Decoratore per l'iniezione degli embedding"""
+
+    def decorator(func: Callable):
+        @wraps(func)
+        async def wrapper(self, question, *args, **kwargs):
+            nonlocal factory
+            factory = factory or EmbeddingFactory()
+
+            try:
+
+                if isinstance(question.embedding, EmbeddingModel):
+                    provider = question.embedding.embedding_provider
+                    key = question.embedding.embedding_key
+                    model_name = question.embedding.embedding_model
+                    base_url = question.embedding.embedding_host
+                    dimensione = question.embedding.embedding_dimension
+                    config = {
+                        "provider": provider,
+                        "model_name": model_name,
+                        "api_key": key,
+                        "dimension": dimensione,
+                        "base_url": base_url
+                    }
+                else:
+                    config = {
+                        "legacy_mode": True,
+                        "model_name": question.embedding,
+                        "api_key": question.gptkey
+                    }
+
+                # Crea gli embedding
+                result = factory.create(config)
+                # Gestione del tipo di ritorno
+                if isinstance(result, tuple):
+                    embedding_obj, dimension = result
+                else:
+                    embedding_obj = result
+                    dimension = 1536  # Default
+
+                # Inietta nei kwargs
+                kwargs["embedding_obj"] = embedding_obj
+                kwargs["embedding_dimension"] = dimension
+
+                return await func(self, question, *args, **kwargs)
 
             except ValidationError as ve:
                 raise EmbeddingCreationError("Validazione fallita", ve)

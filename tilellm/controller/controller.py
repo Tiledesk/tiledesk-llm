@@ -32,7 +32,7 @@ from tilellm.models.item_model import (RetrievalResult,
                                        RepositoryNamespace,
                                        RepositoryEngine,
                                        QuestionToAgent,
-                                       QuestionToLLM, ReasoningAnswer)
+                                       QuestionToLLM, ReasoningAnswer, QuestionAnswer, RetrievalChunksResult)
 
 from tilellm.shared.utility import inject_repo, inject_llm, inject_llm_chat, inject_reason_llm
 
@@ -383,6 +383,27 @@ async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler
     except Exception as e:
         return handle_exception(e, question_answer)
 
+@inject_repo
+async def ask_for_chunks(question_answer:QuestionAnswer, repo=None) -> RetrievalChunksResult:
+    """
+    Ask to LLM your questions
+    :param question_answer:
+    :param repo:
+    :return: RetrievalResult
+    """
+    try:
+
+        logger.info(question_answer)
+
+        await repo.get_chunks_from_repo(question_answer)
+
+        # Generate the final answer, with or without citations
+        result_to_return = await repo.get_chunks_from_repo(question_answer)
+
+        #llm_embeddings = None
+        return result_to_return
+    except Exception as e:
+        return handle_exception(e, question_answer)
 
 @inject_llm
 async def ask_to_agent(question_to_agent: QuestionToAgent, chat_model=None):
@@ -476,7 +497,7 @@ async def ask_with_sequence(question_answer, repo=None) -> RetrievalResult:
         emb_dimension = repo.get_embeddings_dimension(question_answer.embedding)
         oai_embeddings = OpenAIEmbeddings(api_key=question_answer.gptkey, model=question_answer.embedding)
 
-        vector_store = await repo.create_pc_index(oai_embeddings, emb_dimension)
+        vector_store = await repo.create_index(oai_embeddings, emb_dimension, )
         idllmchain = get_idproduct_chain(llm)
         res = idllmchain.invoke(question_answer.question)
 
@@ -573,7 +594,7 @@ async def ask_with_sequence(question_answer, repo=None) -> RetrievalResult:
 
 
 @inject_repo
-async def add_pc_item(item, repo=None) -> IndexingResult:
+async def add_item(item, repo=None) -> IndexingResult:
     """
     Add items to namespace
     :type repo: PineconeRepositoryBase
@@ -582,16 +603,16 @@ async def add_pc_item(item, repo=None) -> IndexingResult:
     :return: PineconeIndexingResult
     """
 
-    return await repo.add_pc_item(item)
+    return await repo.add_item(item)
 
 
 @inject_repo
-async def add_pc_item_hybrid(item, repo=None) -> IndexingResult:
+async def add_item_hybrid(item, repo=None) -> IndexingResult:
     """
 
     :return:
     """
-    return await repo.add_pc_item_hybrid(item)
+    return await repo.add_item_hybrid(item)
 
 
 @inject_repo
@@ -604,7 +625,7 @@ async def delete_namespace(namespace_to_delete: RepositoryNamespace, repo=None):
     """
 
     try:
-        return await repo.delete_pc_namespace(namespace_to_delete)
+        return await repo.delete_namespace(namespace_to_delete)
     except Exception as ex:
         raise ex
 
@@ -621,7 +642,8 @@ async def delete_id_from_namespace(item_to_delete: RepositoryItem, metadata_id: 
     """
 
     try:
-        return await repo.delete_pc_ids_namespace(engine=item_to_delete.engine, metadata_id=metadata_id, namespace=namespace)
+        return await repo.delete_ids_namespace(engine=item_to_delete.engine, metadata_id=metadata_id,
+                                               namespace=namespace)
     except Exception as ex:
         logger.error(ex)
         raise ex
@@ -637,9 +659,9 @@ async def delete_chunk_id_from_namespace(repository_engine: RepositoryEngine, ch
     :return:
     """
     try:
-        return await repo.delete_pc_chunk_id_namespace(engine=repository_engine.engine,
-                                                       chunk_id=chunk_id,
-                                                       namespace=namespace)
+        return await repo.delete_chunk_id_namespace(engine=repository_engine.engine,
+                                                    chunk_id=chunk_id,
+                                                    namespace=namespace)
     except Exception as ex:
         logger.error(ex)
         raise ex
@@ -655,7 +677,7 @@ async def get_list_namespace(repository_engine: RepositoryEngine, repo=None) -> 
     """
     # from tilellm.store.pinecone_repository import pinecone_list_namespaces
     try:
-        return await repo.pinecone_list_namespaces(engine=repository_engine.engine)
+        return await repo.list_namespaces(engine=repository_engine.engine)
     except Exception as ex:
         raise ex
 
@@ -671,9 +693,8 @@ async def get_ids_namespace(repository_engine: RepositoryEngine, metadata_id: st
     :return:
     """
     try:
-        return await repo.get_pc_ids_namespace(engine=repository_engine.engine,
-                                               metadata_id=metadata_id,
-                                               namespace=namespace)
+        return await repo.get_ids_namespace(engine=repository_engine.engine, metadata_id=metadata_id,
+                                            namespace=namespace)
     except Exception as ex:
         raise ex
 
@@ -687,9 +708,8 @@ async def get_listitems_namespace(repository_engine: RepositoryEngine, namespace
     :param repo:
     :return: list of al items PineconeItems
     """
-
     try:
-        return await repo.get_pc_all_obj_namespace(engine=repository_engine.engine,
+        return await repo.get_all_obj_namespace(engine=repository_engine.engine,
                                                    namespace=namespace)
     except Exception as ex:
         raise ex
@@ -705,8 +725,7 @@ async def get_desc_namespace(repository_engine: RepositoryEngine, namespace: str
     :return:
     """
     try:
-        return await repo.get_pc_desc_namespace(engine=repository_engine.engine,
-                                                namespace=namespace)
+        return await repo.get_desc_namespace(engine=repository_engine.engine, namespace=namespace)
     except Exception as ex:
         raise ex
 
@@ -723,9 +742,7 @@ async def get_sources_namespace(repository_engine: RepositoryEngine, source: str
     """
 
     try:
-        return await repo.get_pc_sources_namespace(engine=repository_engine.engine,
-                                                   source=source,
-                                                   namespace=namespace)
+        return await repo.get_sources_namespace(engine=repository_engine.engine, source=source, namespace=namespace)
     except Exception as ex:
         raise ex
 

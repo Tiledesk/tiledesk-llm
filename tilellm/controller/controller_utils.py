@@ -7,7 +7,6 @@ import uuid
 from typing import List
 
 import fastapi
-from langchain.chains.retrieval_qa.base import RetrievalQA
 
 from langchain_core.documents import Document
 
@@ -63,8 +62,7 @@ def preprocess_chat_history(question_answer):
 async def initialize_embeddings_and_index(question_answer, repo, llm_embeddings):
     emb_dimension = repo.get_embeddings_dimension(question_answer.embedding)
     sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
-    vector_store = await repo.create_pc_index(question_answer.engine, llm_embeddings, emb_dimension)
-    #index = vector_store.get_pinecone_index(question_answer.engine.index_name, pinecone_api_key=question_answer.engine.apikey)
+    vector_store = await repo.create_index(question_answer.engine, llm_embeddings, emb_dimension)
     index = vector_store.async_index
 
     return emb_dimension, sparse_encoder, index
@@ -73,11 +71,18 @@ async def initialize_embeddings_and_index(question_answer, repo, llm_embeddings)
 # Function to initialize embeddings and retrievers
 async def initialize_retrievers(question_answer, repo, llm_embeddings):
     emb_dimension = repo.get_embeddings_dimension(question_answer.embedding)
-    vector_store = await repo.create_pc_index(question_answer.engine, llm_embeddings, emb_dimension)
+    vector_store = await repo.create_index(question_answer.engine, llm_embeddings, emb_dimension)
+
+    # TODO Bisogna cercare una soluzione più elegante
+
+    if question_answer.engine.name == "qdrant":
+        search_kwargs = {'k': question_answer.top_k}
+    else:
+        search_kwargs = {'k': question_answer.top_k, 'namespace': question_answer.namespace}
 
     vs_retriever = vector_store.as_retriever(
         search_type=question_answer.search_type,
-        search_kwargs={'k': question_answer.top_k, 'namespace': question_answer.namespace}
+        search_kwargs=search_kwargs
     )
 
     redundant_filter = EmbeddingsRedundantFilter(
