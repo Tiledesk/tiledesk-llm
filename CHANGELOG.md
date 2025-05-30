@@ -5,7 +5,11 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
-## [2025-05-16]
+## [2025-05-30]
+### 0.4.3
+- upgrade: worker to 0.0.38
+
+## [2025-05-29]
 ### 0.4.3-rc1
 - add: /api/qa chunks parameters
 - add: support to qdrant vector store
