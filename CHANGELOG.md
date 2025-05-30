@@ -6,6 +6,10 @@
 ### **Copyrigth**: *Tiledesk SRL*
 
 ## [2025-05-16]
+### 0.4.3-rc2
+- upgrade torch library
+
+## [2025-05-16]
 ### 0.4.3-rc1
 - add: /api/qa chunks parameters
 - add: support to qdrant vector store
