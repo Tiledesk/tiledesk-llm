@@ -131,11 +131,11 @@ class ItemSingle(BaseModel):
     type: str | None = None
     content: str | None = None
     hybrid: Optional[bool] = Field(default=False)
-    sparse_encoder: Optional[str] = Field(default="splade")
+    sparse_encoder: Optional[str] = Field(default="splade") # spade|bge-m3
     gptkey: str | None = None
     scrape_type: int = Field(default_factory=lambda: 0)
-    embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
-    model: Optional[LlmEmbeddingModel] | None = None
+    embedding: Union[str, LlmEmbeddingModel] = Field(default="text-embedding-ada-002")
+    #model: Optional[LlmEmbeddingModel] | None = None
     namespace: str | None = None
     webhook: str = Field(default_factory=lambda: "")
     semantic_chunk: Optional[bool] = Field(default=False)
@@ -162,7 +162,7 @@ class MetadataItem(BaseModel):
     id: str
     source: str | None = None
     type: str | None = None
-    embedding: str = Field(default_factory=lambda: "text-embedding-ada-002")
+    embedding: Union[str,LlmEmbeddingModel] = Field(default_factory=lambda: "text-embedding-ada-002")
     date: str = Field(default_factory=lambda: datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f"))
     namespace: Optional[str] = None
 

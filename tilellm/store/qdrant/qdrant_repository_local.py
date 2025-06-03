@@ -848,7 +848,7 @@ class QdrantRepository(VectorStoreRepository):
     async def delete_ids_from_namespace(client: QdrantClient, collection_name: str, metadata_id: str, namespace: str):
         try:
             # Crea una QueryFilter per specificare la condizione di eliminazione
-            # Stiamo cercando payload in cui il campo `metadata_id_field` è uguale a `id_to_delete`
+            # Stiamo cercando payloads in cui il campo `metadata_id_field` è uguale a `id_to_delete`
             delete_filter = models.Filter(
                 must=[
                     models.FieldCondition(

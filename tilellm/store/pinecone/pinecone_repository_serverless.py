@@ -70,7 +70,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                 metadata = MetadataItem(id=item.id,
                                         source=item.source,
                                         type=item.type,
-                                        embedding=item.embedding,
+                                        embedding=str(item.embedding),
                                         namespace=None).model_dump(exclude_none=False)
                 documents = await self.process_contents(type_source=item.type,
                                                         source=item.source,
@@ -124,7 +124,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
         """
         logger.info(item)
 
-        await self.delete_pc_ids_namespace(engine=item.engine,
+        await self.delete_ids_namespace(engine=item.engine,
                                            metadata_id=item.id,
                                            namespace=item.namespace)
 
@@ -154,7 +154,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                 metadata = MetadataItem(id=item.id,
                                         source=item.source,
                                         type=item.type,
-                                        embedding=item.embedding).model_dump()
+                                        embedding=str(item.embedding)).model_dump()
                 documents = await self.process_contents(type_source=item.type,
                                                         source=item.source,
                                                         metadata=metadata,
@@ -263,7 +263,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             document.metadata["id"] = item.id
             document.metadata["source"] = item.source
             document.metadata["type"] = item.type
-            document.metadata["embedding"] = item.embedding
+            document.metadata["embedding"] = str(item.embedding)
             processed_document = self.process_document_metadata(document, document.metadata)
             chunks.extend(self.chunk_data_extended(
                 data=[processed_document],

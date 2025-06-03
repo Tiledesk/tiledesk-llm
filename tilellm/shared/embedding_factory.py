@@ -9,7 +9,7 @@ import torch
 from langchain.embeddings.base import Embeddings
 import logging
 
-from tilellm.models.item_model import EmbeddingModel
+from tilellm.models.item_model import EmbeddingModel, LlmEmbeddingModel
 
 
 class EmbeddingFactory:
@@ -136,7 +136,7 @@ class EmbeddingCreationError(Exception):
         super().__init__(f"{message} - Original error: {str(original_error)}" if original_error else message)
 
 
-def inject_embedding(factory: Optional[EmbeddingFactory] = None):
+def inject_embedding_old(factory: Optional[EmbeddingFactory] = None):
     """Decoratore per l'iniezione degli embedding"""
 
     def decorator(func: Callable):
@@ -165,6 +165,62 @@ def inject_embedding(factory: Optional[EmbeddingFactory] = None):
 
                 # Crea gli embedding
                 result = factory.create(config)
+                # Gestione del tipo di ritorno
+                if isinstance(result, tuple):
+                    embedding_obj, dimension = result
+                else:
+                    embedding_obj = result
+                    dimension = 1536  # Default
+
+                # Inietta nei kwargs
+                kwargs["embedding_obj"] = embedding_obj
+                kwargs["embedding_dimension"] = dimension
+
+                return await func(self, item, *args, **kwargs)
+
+            except ValidationError as ve:
+                raise EmbeddingCreationError("Validazione fallita", ve)
+            except Exception as e:
+                raise EmbeddingCreationError("Errore generico", e)
+
+        return wrapper
+
+    return decorator
+
+
+def inject_embedding(factory: Optional[EmbeddingFactory] = None):
+    """Decoratore per l'iniezione degli embedding con supporto Union"""
+
+    def decorator(func: Callable):
+        @wraps(func)
+        async def wrapper(self, item, *args, **kwargs):
+            nonlocal factory
+            factory = factory or EmbeddingFactory()
+
+            try:
+                # Gestione del tipo Union: stringa o modello
+                if isinstance(item.embedding, str):
+                    # Modalità legacy: usa la stringa come model_name
+                    config = {
+                        "legacy_mode": True,
+                        "model_name": item.embedding,
+                        "api_key": item.gptkey
+                    }
+                elif isinstance(item.embedding, LlmEmbeddingModel):
+                    # Nuova modalità: usa l'oggetto LlmEmbeddingModel
+                    config = {
+                        "provider": item.embedding.provider,
+                        "model_name": item.embedding.name,
+                        "api_key": item.gptkey,
+                        "dimension": item.embedding.dimension,
+                        "base_url": item.embedding.url
+                    }
+                else:
+                    raise TypeError(f"Tipo non supportato per embedding: {type(item.embedding)}")
+
+                # Crea gli embedding
+                result = factory.create(config)
+
                 # Gestione del tipo di ritorno
                 if isinstance(result, tuple):
                     embedding_obj, dimension = result

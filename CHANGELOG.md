@@ -6,6 +6,10 @@
 ### **Copyrigth**: *Tiledesk SRL*
 
 ## [2025-05-16]
+### 0.4.5-rc1
+- fix: hybrid indexing
+
+## [2025-05-16]
 ### 0.4.3-rc2
 - upgrade torch library
 
