@@ -6,6 +6,11 @@
 ### **Copyrigth**: *Tiledesk SRL*
 
 ## [2025-05-16]
+### 0.4.5-rc2
+- update: /api/qa added parameter chunk_only
+- add: enabled on qdrant local hybrid search
+
+## [2025-05-16]
 ### 0.4.5-rc1
 - fix: hybrid indexing
 

@@ -23,6 +23,7 @@ import logging
 
 from tilellm.shared.embedding_factory import inject_embedding_qa
 from tilellm.store.vector_store_repository import VectorStoreRepository
+from tilellm.tools.sparse_encoders import TiledeskSparseEncoders
 
 logger = logging.getLogger(__name__)
 
@@ -36,44 +37,9 @@ class PineconeRepositoryBase(VectorStoreRepository):
     async def add_item_hybrid(self, item):
         pass
 
-    @inject_embedding_qa()
-    async def get_chunks_from_repo(self, question_answer: QuestionAnswer, embedding_obj=None, embedding_dimension=None):
-        """
-
-        :param question_answer:
-        :param embedding_obj:
-        :param embedding_dimension:
-        :return:
-        """
-        try:
-            vector_store = await self.create_index(engine=question_answer.engine,
-                                                   embeddings=embedding_obj,
-                                                   emb_dimension=embedding_dimension)
-
-
-
-            start_time = datetime.datetime.now() if question_answer.debug else 0
-
-            results = await vector_store.asimilarity_search(query=question_answer.question, k=question_answer.top_k,
-                                                            namespace=question_answer.namespace)
-
-            end_time = datetime.datetime.now() if question_answer.debug else 0
-            duration = (end_time - start_time).total_seconds() if question_answer.debug else 0.0
-
-            retrieval = RetrievalChunksResult(success=True,
-                                              namespace=question_answer.namespace,
-                                              chunks=[chunk.page_content for chunk in results],
-                                              metadata=[chunk.metadata for chunk in results],
-                                              error_message=None,
-                                              duration=duration
-                                              )
-
-            return retrieval
-        except Exception as ex:
-
-            logger.error(ex)
-
-            raise ex
+    @abstractmethod
+    async def get_chunks_from_repo(self, question_answer: QuestionAnswer): #, embedding_obj=None, embedding_dimension=None):
+        pass
 
     async def delete_namespace(self, namespace_to_delete: RepositoryNamespace):
         """

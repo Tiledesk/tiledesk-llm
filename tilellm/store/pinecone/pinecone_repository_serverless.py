@@ -1,9 +1,12 @@
 import datetime
 import uuid
 
+from pinecone.core.openapi.db_data.model.query_response import QueryResponse
+
 from tilellm.models.item_model import (MetadataItem,
-                                       IndexingResult, Engine, ItemSingle
+                                       IndexingResult, Engine, ItemSingle, QuestionAnswer, RetrievalChunksResult
                                        )
+from tilellm.shared.sparse_util import hybrid_score_norm
 
 from tilellm.tools.document_tools import (get_content_by_url,
                                           get_content_by_url_with_bs,
@@ -12,8 +15,7 @@ from tilellm.tools.document_tools import (get_content_by_url,
 
 from tilellm.store.pinecone.pinecone_repository_base import PineconeRepositoryBase
 
-from tilellm.shared.embedding_factory import inject_embedding
-
+from tilellm.shared.embedding_factory import inject_embedding, inject_embedding_qa
 
 from langchain_core.documents import Document
 
@@ -28,6 +30,96 @@ logger = logging.getLogger(__name__)
 class PineconeRepositoryServerless(PineconeRepositoryBase):
 
 
+    async def perform_hybrid_search(self, question_answer, index, dense_vector, sparse_vector):
+        dense, sparse = hybrid_score_norm(dense_vector, sparse_vector, alpha=question_answer.alpha)
+        async with index as index:
+            results = await index.query(
+                top_k=question_answer.top_k,
+                vector=dense,
+                sparse_vector=sparse,
+                namespace=question_answer.namespace,
+                include_metadata=True
+            )
+        return results
+
+
+    async def initialize_embeddings_and_index(self, question_answer, llm_embeddings):
+        emb_dimension = self.get_embeddings_dimension(question_answer.embedding)
+        sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
+        vector_store = await self.create_index(question_answer.engine, llm_embeddings, emb_dimension)
+        index = vector_store.async_index
+
+        return emb_dimension, sparse_encoder, index
+
+    @inject_embedding_qa()
+    async def get_chunks_from_repo(self, question_answer: QuestionAnswer, embedding_obj=None, embedding_dimension=None):
+        """
+
+        :param question_answer:
+        :param embedding_obj:
+        :param embedding_dimension:
+        :return:
+        """
+        try:
+            vector_store = await self.create_index(engine=question_answer.engine,
+                                                   embeddings=embedding_obj,
+                                                   emb_dimension=embedding_dimension)
+
+            start_time = datetime.datetime.now() if question_answer.debug else 0
+
+            if question_answer.search_type == 'hybrid':
+                emb_dimension = self.get_embeddings_dimension(question_answer.embedding)
+                sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
+                index = vector_store.async_index
+                sparse_vector = sparse_encoder.encode_queries(question_answer.question)
+                dense_vector = await embedding_obj.aembed_query(question_answer.question)
+                results = []
+                async with index as index:
+                    # Perform hybrid search
+
+                    query_response = await self.perform_hybrid_search(question_answer, index, dense_vector, sparse_vector)
+
+                for doc in query_response.matches:
+                    doc_id = doc['id']
+                    # Creiamo una copia dei metadati per evitare modifiche indesiderate
+                    # e rimuoviamo 'text' che diventerà page_content
+                    doc_metadata = doc['metadata'].copy()
+                    page_content = doc_metadata.pop('text', '')  # Rimuove 'text' e lo usa per page_content
+
+                    # Crea un'istanza di Document e aggiungila all'array
+                    document = Document(
+                        id=doc_id,
+                        metadata=doc_metadata,
+                        page_content=page_content
+                    )
+                    results.append(document)
+            else:
+                results = await vector_store.asearch(query=question_answer.question,
+                                                     search_type=question_answer.search_type,
+                                                     k=question_answer.top_k,
+                                                     namespace=question_answer.namespace
+                                                     )
+
+            end_time = datetime.datetime.now() if question_answer.debug else 0
+            duration = (end_time - start_time).total_seconds() if question_answer.debug else 0.0
+
+
+            retrieval = RetrievalChunksResult(success=True,
+                                              namespace=question_answer.namespace,
+                                              chunks=[chunk.page_content for chunk in results],
+                                              metadata=[chunk.metadata for chunk in results],
+                                              error_message=None,
+                                              duration=duration
+                                              )
+
+            return retrieval
+        except Exception as ex:
+
+            logger.error(ex)
+
+            raise ex
+
+
     @inject_embedding()
     async def add_item(self, item:ItemSingle, embedding_obj=None, embedding_dimension=None):
         """
@@ -39,10 +131,13 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             :return:
             """
         logger.info(item)
-
-        await self.delete_ids_namespace(engine=item.engine,
-                                           metadata_id=item.id,
-                                           namespace=item.namespace)
+        try:
+            await self.delete_ids_namespace(engine=item.engine,
+                                            metadata_id=item.id,
+                                            namespace=item.namespace)
+        except Exception as ex:
+            logger.warning(ex)
+            pass
 
         vector_store = await self.create_vector_store(engine=item.engine,
                                                       embedding_obj=embedding_obj,
@@ -124,9 +219,13 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
         """
         logger.info(item)
 
-        await self.delete_ids_namespace(engine=item.engine,
+        try:
+            await self.delete_ids_namespace(engine=item.engine,
                                            metadata_id=item.id,
                                            namespace=item.namespace)
+        except Exception as ex:
+            logger.warning(ex)
+            pass
 
         vector_store = await self.create_vector_store(engine=item.engine,
                                                       embedding_obj=embedding_obj,

@@ -395,12 +395,15 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
     :return: RetrievalResult
     """
     logger.debug(question_answer)
-    if question_answer.search_type == 'hybrid':
-        result= await ask_hybrid_with_memory(question_answer)
-    elif question_answer.search_type == 'chunks':
+
+    if question_answer.chunks_only:
         result = await ask_for_chunks(question_answer)
     else:
-        result = await ask_with_memory(question_answer)
+        if question_answer.search_type == 'hybrid':
+            result= await ask_hybrid_with_memory(question_answer)
+        else:
+            result = await ask_with_memory(question_answer)
+
     logger.debug(result)
     return result#JSONResponse(content=result.model_dump())
 

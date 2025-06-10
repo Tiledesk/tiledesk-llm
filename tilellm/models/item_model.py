@@ -209,6 +209,7 @@ class QuestionAnswer(BaseModel):
     alpha: Optional[float] = Field(default=0.5)
     system_context: Optional[str] = None
     search_type: str = Field(default_factory=lambda: "similarity")
+    chunks_only: Optional[bool] = Field(default_factory=lambda: False)
     engine: Engine
     chat_history_dict: Optional[Dict[str, ChatEntry]] = None
 

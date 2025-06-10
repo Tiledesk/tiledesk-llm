@@ -5,6 +5,7 @@ from langchain_core.documents import Document
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import models, AsyncQdrantClient, QdrantClient
 
+
 from tilellm.models.item_model import (MetadataItem,
                                        RepositoryQueryResult,
                                        RepositoryItems,
@@ -21,8 +22,10 @@ from typing import Dict
 import logging
 
 from tilellm.shared.embedding_factory import inject_embedding, inject_embedding_qa
+from tilellm.shared.sparse_util import hybrid_score_norm
 from tilellm.store.vector_store_repository import VectorStoreRepository
 from tilellm.tools.document_tools import fetch_documents, get_content_by_url_with_bs, calc_embedding_cost
+from tilellm.tools.sparse_encoders import TiledeskSparseEncoders
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +33,76 @@ logger = logging.getLogger(__name__)
 class QdrantRepository(VectorStoreRepository):
 
 
+
+    async def perform_hybrid_search(self, question_answer, index, dense_vector, sparse_vector):
+        if question_answer.alpha ==0.5:
+            dense = dense_vector
+            sparse = sparse_vector
+        else:
+            dense, sparse = hybrid_score_norm(dense_vector, sparse_vector, alpha=question_answer.alpha)
+
+        filter_qdrant = models.Filter(
+            should=[
+                models.FieldCondition(
+                    key="metadata.namespace",
+                    match=models.MatchValue(
+                        value=question_answer.namespace
+                    ),
+                ),
+            ]
+        )
+
+        search_result = index.query_points(
+            collection_name=question_answer.engine.index_name,
+            query=models.FusionQuery(
+                fusion=models.Fusion.RRF  # we are using reciprocal rank fusion here
+            ),
+            prefetch=[
+                models.Prefetch(
+                    query=dense,
+                    using="text-dense"
+                ),
+
+                models.Prefetch(
+                    query=sparse,
+                    using = "text-sparse"
+                ),
+            ],
+            query_filter=filter_qdrant,  # If you don't want any filters for now
+            limit=question_answer.top_k,  # 5 the closest results
+        ).points
+
+        #search_result = index.query_points(
+        #    query_vector=dense,
+        #    query_sparse_vector=models.SparseVector(
+        #        indices=sparse.get('indices'),
+        #        values=sparse.get('values')
+        #    ),
+        #    filter=filter_qdrant,
+        #    limit=question_answer.top_k,
+        #    with_payload=True
+        #)
+
+        #metadata = [point.payload for point in search_result]
+
+
+        documents = []
+        for point in search_result:
+            if point.payload and "page_content" in point.payload:
+                payload = point.payload
+                payload["metadata"]["text"] = payload.pop("page_content")
+                documents.append(payload)
+
+        results = {"matches": documents}
+        return results
+
+    async def initialize_embeddings_and_index(self, question_answer, llm_embeddings):
+        emb_dimension = self.get_embeddings_dimension(question_answer.embedding)
+        sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
+        vector_store = await self.create_index(question_answer.engine, llm_embeddings, emb_dimension)
+        index = vector_store.client
+
+        return emb_dimension, sparse_encoder, index
 
     @inject_embedding()
     async def add_item(self, item: ItemSingle, embedding_obj=None, embedding_dimension=None):
@@ -49,8 +122,13 @@ class QdrantRepository(VectorStoreRepository):
                                                emb_dimension=embedding_dimension)
 
         qdrant_client = vector_store.client
-        await self.delete_ids_from_namespace(client=qdrant_client, collection_name=item.engine.index_name, metadata_id=item.id, namespace=item.namespace)
 
+        try:
+            await self.delete_ids_from_namespace(client=qdrant_client, collection_name=item.engine.index_name, metadata_id=item.id, namespace=item.namespace)
+
+        except Exception as ex:
+            logger.warning(ex)
+            pass
         chunks = []
         total_tokens = 0
         cost = 0
@@ -133,7 +211,104 @@ class QdrantRepository(VectorStoreRepository):
 
     @inject_embedding()
     async def add_item_hybrid(self, item, embedding_obj=None, embedding_dimension=None):
-        pass
+        """
+                Add item for hybrid search
+                :param item:
+                :param embedding_obj:
+                :param embedding_dimension:
+                :return:
+                """
+        logger.info(item)
+        try:
+            await self.delete_ids_namespace(engine=item.engine,
+                                            metadata_id=item.id,
+                                            namespace=item.namespace)
+        except Exception as ex:
+            logger.warning(ex)
+            pass
+
+        vector_store = await self.create_index(engine=item.engine,
+                                               embeddings=embedding_obj,
+                                               emb_dimension=embedding_dimension)
+
+        # default text-embedding-ada-002 1536, text-embedding-3-large 3072, text-embedding-3-small 1536
+
+        chunks = []
+        total_tokens = 0
+        cost = 0
+
+        qdrant_client = vector_store.client
+        try:
+
+            try:
+                qdrant_client.create_payload_index(
+                    collection_name=item.engine.index_name,
+                    field_name="metadata.namespace",
+                    field_schema="keyword"  # 'keyword' è buono per ID di tenant
+                )
+                print(f"Payload index created on 'tenant_id' for collection '{item.engine.index_name}'.")
+            except Exception as e:
+                if "already exists" in str(e).lower() or "already present" in str(e).lower():  # Adatta il controllo dell'errore
+                    print(
+                        f"Payload index on 'tenant_id' likely already exists for collection '{item.engine.index_name}'.")
+                else:
+                    print(f"Could not create payload index (it might already exist or another error): {e}")
+
+            if item.type in ['url', 'pdf', 'docx', 'txt']:
+                documents = await self.fetch_documents(type_source=item.type,
+                                                       source=item.source,
+                                                       scrape_type=item.scrape_type,
+                                                       parameters_scrape_type_4=item.parameters_scrape_type_4)
+
+                chunks = await self.chunk_documents(item=item,
+                                                    documents=documents,
+                                                    embeddings=embedding_obj
+                                                    )
+            else:
+                metadata = MetadataItem(id=item.id,
+                                        source=item.source,
+                                        type=item.type,
+                                        embedding=str(item.embedding)).model_dump()
+                documents = await self.process_contents(type_source=item.type,
+                                                        source=item.source,
+                                                        metadata=metadata,
+                                                        content=item.content)
+                chunks.extend(self.chunk_data_extended(
+                    data=[documents[0]],
+                    chunk_size=item.chunk_size,
+                    chunk_overlap=item.chunk_overlap,
+                    semantic=item.semantic_chunk,
+                    embeddings=embedding_obj,
+                    breakpoint_threshold_type=item.breakpoint_threshold_type)
+                )
+
+            contents = [chunk.page_content for chunk in chunks]
+            total_tokens, cost = calc_embedding_cost(chunks, item.embedding)
+
+            sparse_encoder = TiledeskSparseEncoders(item.sparse_encoder)
+            doc_sparse_vectors = sparse_encoder.encode_documents(contents)
+
+
+            #async with vector_store.async_index as indice:
+            await self.upsert_vector_store_hybrid(vector_store,
+                                                      contents,
+                                                      chunks,
+                                                      item.id,
+                                                      namespace=item.namespace,
+                                                      engine=item.engine,
+                                                      embeddings=embedding_obj,
+                                                      sparse_vectors=doc_sparse_vectors)
+
+            return IndexingResult(id=item.id, chunks=len(chunks), total_tokens=total_tokens,
+                                  cost=f"{cost:.6f}")
+
+        except Exception as ex:
+            import traceback
+            traceback.print_exc()
+            logger.error(repr(ex))
+            return IndexingResult(id=item.id, chunks=len(chunks), total_tokens=total_tokens,
+                                  status=400,
+                                  cost=f"{cost:.6f}")
 
     @inject_embedding_qa()
     async def get_chunks_from_repo(self, question_answer:QuestionAnswer, embedding_obj=None, embedding_dimension=None):
@@ -162,7 +337,55 @@ class QdrantRepository(VectorStoreRepository):
 
             start_time = datetime.datetime.now() if question_answer.debug else 0
 
-            results=await vector_store.asimilarity_search(query=question_answer.question, k=question_answer.top_k, filter=filter_qdrant)
+            if question_answer.search_type == 'hybrid':
+                emb_dimension = self.get_embeddings_dimension(question_answer.embedding)
+                sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
+                index = vector_store.client
+                sparse_vector = sparse_encoder.encode_queries(question_answer.question)
+                dense_vector = await embedding_obj.aembed_query(question_answer.question)
+                if question_answer.alpha == 0.5:
+                    dense = dense_vector
+                    sparse = sparse_vector
+                else:
+                    dense, sparse = hybrid_score_norm(dense_vector, sparse_vector, alpha=question_answer.alpha)
+
+                search_result = index.query_points(
+                    collection_name=question_answer.engine.index_name,
+                    query=models.FusionQuery(
+                        fusion=models.Fusion.RRF  # we are using reciprocal rank fusion here
+                    ),
+                    prefetch=[
+                        models.Prefetch(
+                            query=dense,
+                            using="text-dense"
+                        ),
+
+                        models.Prefetch(
+                            query=sparse,
+                            using="text-sparse"
+                        ),
+                    ],
+                    query_filter=filter_qdrant,  # If you don't want any filters for now
+                    limit=question_answer.top_k,  # 5 the closest results
+                ).points
+
+
+                results = []
+                for point in search_result:
+
+                    if point.payload and "page_content" in point.payload:
+                        document = Document(
+                            id=point.id,
+                            metadata=point.payload.get('metadata',''),
+                            page_content=point.payload.pop('page_content')
+                        )
+                        results.append(document)
+
+            else:
+                results = await vector_store.asearch(query=question_answer.question,
+                                                     k=question_answer.top_k,
+                                                     search_type=question_answer.search_type,
+                                                     filter=filter_qdrant)
 
             end_time = datetime.datetime.now() if question_answer.debug else 0
             duration = (end_time - start_time).total_seconds() if question_answer.debug else 0.0
@@ -715,12 +938,12 @@ class QdrantRepository(VectorStoreRepository):
             if not is_collection_exist:
                 qdrant_collection = client.create_collection(
                     collection_name=collection_name,
-                    vectors_config=models.VectorParams(
+                    vectors_config={"text-dense":models.VectorParams(
                         size=emb_dimension,
                         distance=metric_distance
-                    ),
+                    )},
                     sparse_vectors_config={
-                        "splade": models.SparseVectorParams(
+                        "text-sparse": models.SparseVectorParams(
                             index=models.SparseIndexParams(
                                 on_disk=True,
                                 full_scan_threshold=10000  # Opzionale, per ottimizzare le scansioni
@@ -734,6 +957,9 @@ class QdrantRepository(VectorStoreRepository):
             client=client,
             collection_name=collection_name,
             embedding=embeddings,
+            vector_name="text-dense",
+            sparse_vector_name="text-sparse"
+
         )
 
 
@@ -878,3 +1104,38 @@ class QdrantRepository(VectorStoreRepository):
 
         except Exception as e:
             logger.error(f"Errore durante l'eliminazione dei punti: {e}")
+
+    @staticmethod
+    async def upsert_vector_store_hybrid(vector_store: QdrantVectorStore, contents, chunks, metadata_id, engine, namespace, embeddings,
+                                         sparse_vectors):
+        embedding_chunk_size = 1000
+        batch_size: int = 32
+
+        ids = [f"{uuid.uuid4().hex}" for _ in range(len(chunks))]
+        metadatas = [{**chunk.metadata, "namespace": namespace} for chunk in chunks]
+
+
+        for i in range(0, len(contents), embedding_chunk_size):
+            chunk_texts = contents[i: i + embedding_chunk_size]
+            chunk_ids = ids[i: i + embedding_chunk_size]
+            chunk_metadatas = metadatas[i: i + embedding_chunk_size]
+            embedding_values = await embeddings.aembed_documents(chunk_texts)  # embeddings[i: i + embedding_chunk_size]
+            sparse_values = sparse_vectors[i: i + embedding_chunk_size]
+
+
+            print(f" collection {engine.index_name}")
+            resp = vector_store.client.upsert(collection_name=engine.index_name,
+                                                    points=[
+                                                        models.PointStruct(
+                                                            id=idr, # Un ID univoco per ogni chunk
+                                                            vector={
+                                                                "text-dense": embedding,
+                                                                "text-sparse": sparse_value
+                                                            },
+                                                            payload={"metadata":chunk,
+                                                                     "page_content": page_content}
+                                                        )
+                                                        for idr, embedding, chunk, sparse_value, page_content in
+                                                        zip(chunk_ids, embedding_values, chunk_metadatas, sparse_values, chunk_texts)])
+            logger.info(f"response upsert: {resp}")
+

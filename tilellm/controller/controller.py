@@ -17,8 +17,8 @@ from langchain_community.callbacks.openai_info import OpenAICallbackHandler
 #from starlette.responses import StreamingResponse
 from fastapi.responses import StreamingResponse
 
-from tilellm.controller.controller_utils import preprocess_chat_history, initialize_embeddings_and_index, \
-    fetch_question_vectors, perform_hybrid_search, retrieve_documents, create_chains, get_or_create_session_history, \
+from tilellm.controller.controller_utils import preprocess_chat_history, \
+    fetch_question_vectors, retrieve_documents, create_chains, get_or_create_session_history, \
     generate_answer_with_history, format_result, handle_exception, initialize_retrievers, create_chains_deepseek, \
     _create_event
 from tilellm.models.item_model import (RetrievalResult,
@@ -66,38 +66,38 @@ async def ask_hybrid_with_memory(question_answer, repo=None, llm=None, callback_
         chat_history_list, question_answer_list = preprocess_chat_history(question_answer)
 
         # Initialize embeddings and encoders
-        emb_dimension, sparse_encoder, index = await initialize_embeddings_and_index(question_answer, repo,
-                                                                                     llm_embeddings)
+        emb_dimension, sparse_encoder, index = await repo.initialize_embeddings_and_index(question_answer,
+                                                                                          llm_embeddings)
         # Fetch vectors for the given question
         dense_vector, sparse_vector = await fetch_question_vectors(question_answer, sparse_encoder, llm_embeddings)
 
-        async with index as index:
-            # Perform hybrid search
-            results = await perform_hybrid_search(question_answer, index, dense_vector, sparse_vector)
+        #async with index as index:
+        # Perform hybrid search
+        results = await repo.perform_hybrid_search(question_answer, index, dense_vector, sparse_vector)
 
-            # Retrieve documents based on search results
-            retriever = retrieve_documents(question_answer, results)
+        # Retrieve documents based on search results
+        retriever = retrieve_documents(question_answer, results)
 
-            # Create chains for contextualization and Q&A
-            history_aware_retriever, question_answer_chain, qa_prompt = await create_chains(llm, question_answer, retriever)
+        # Create chains for contextualization and Q&A
+        history_aware_retriever, question_answer_chain, qa_prompt = await create_chains(llm, question_answer, retriever)
 
-            rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
+        rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
 
-            # Load session history and prepare conversational chain
-            store = {}
-            get_session_history = lambda session_id: get_or_create_session_history(store, session_id,
+        # Load session history and prepare conversational chain
+        store = {}
+        get_session_history = lambda session_id: get_or_create_session_history(store, session_id,
                                                                                    question_answer.chat_history_dict)
 
-            # Generate the final answer, with or without citations result, citations, success
-            result_to_return = await generate_answer_with_history(llm=llm,
-                                                                   question_answer=question_answer,
-                                                                   rag_chain = rag_chain,
-                                                                   retriever = retriever,
-                                                                   get_session_history = get_session_history,
-                                                                   qa_prompt=qa_prompt,
-                                                                   callback_handler=callback_handler,
-                                                                   question_answer_list=question_answer_list
-                                                                   )
+        # Generate the final answer, with or without citations result, citations, success
+        result_to_return = await generate_answer_with_history(llm=llm,
+                                                              question_answer=question_answer,
+                                                              rag_chain = rag_chain,
+                                                              retriever = retriever,
+                                                              get_session_history = get_session_history,
+                                                              qa_prompt=qa_prompt,
+                                                              callback_handler=callback_handler,
+                                                              question_answer_list=question_answer_list
+                                                              )
 
 
         llm_embeddings=None
@@ -394,8 +394,6 @@ async def ask_for_chunks(question_answer:QuestionAnswer, repo=None) -> Retrieval
     try:
 
         logger.info(question_answer)
-
-        await repo.get_chunks_from_repo(question_answer)
 
         # Generate the final answer, with or without citations
         result_to_return = await repo.get_chunks_from_repo(question_answer)

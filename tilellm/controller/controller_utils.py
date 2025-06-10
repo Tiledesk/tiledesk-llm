@@ -59,13 +59,13 @@ def preprocess_chat_history(question_answer):
 
 
 # Function to initialize embeddings and encoders
-async def initialize_embeddings_and_index(question_answer, repo, llm_embeddings):
-    emb_dimension = repo.get_embeddings_dimension(question_answer.embedding)
-    sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
-    vector_store = await repo.create_index(question_answer.engine, llm_embeddings, emb_dimension)
-    index = vector_store.async_index
+#async def initialize_embeddings_and_index(question_answer, repo, llm_embeddings):
+#    emb_dimension = repo.get_embeddings_dimension(question_answer.embedding)
+#    sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
+#    vector_store = await repo.create_index(question_answer.engine, llm_embeddings, emb_dimension)
+#    index = vector_store.async_index
 
-    return emb_dimension, sparse_encoder, index
+#    return emb_dimension, sparse_encoder, index
 
 
 # Function to initialize embeddings and retrievers
@@ -106,16 +106,16 @@ async def fetch_question_vectors(question_answer, sparse_encoder, llm_embeddings
 
 
 # Function to perform hybrid search
-async def perform_hybrid_search(question_answer, index, dense_vector, sparse_vector):
-    dense, sparse = hybrid_score_norm(dense_vector, sparse_vector, alpha=question_answer.alpha)
-    results = await index.query(
-        top_k=question_answer.top_k,
-        vector=dense,
-        sparse_vector=sparse,
-        namespace=question_answer.namespace,
-        include_metadata=True
-    )
-    return results
+#async def perform_hybrid_search(question_answer, index, dense_vector, sparse_vector):
+#    dense, sparse = hybrid_score_norm(dense_vector, sparse_vector, alpha=question_answer.alpha)
+#    results = await index.query(
+#        top_k=question_answer.top_k,
+#        vector=dense,
+#        sparse_vector=sparse,
+#        namespace=question_answer.namespace,
+#        include_metadata=True
+#    )
+#    return results
 
 
 # Function to retrieve documents based on search results

@@ -1,8 +1,12 @@
+import datetime
+
+from fastapi import HTTPException
+
 from tilellm.models.item_model import (MetadataItem,
-                                       IndexingResult, Engine
+                                       IndexingResult, Engine, QuestionAnswer, RetrievalChunksResult
                                        )
-#from tilellm.shared.utility import inject_embedding
-from tilellm.shared.embedding_factory import inject_embedding
+
+from tilellm.shared.embedding_factory import inject_embedding, inject_embedding_qa
 from tilellm.tools.document_tools import (get_content_by_url,
                                           get_content_by_url_with_bs,
                                           load_document,
@@ -21,6 +25,12 @@ logger = logging.getLogger(__name__)
 
 
 class PineconeRepositoryPod(PineconeRepositoryBase):
+
+
+
+    async def perform_hybrid_search(self, question_answer, index, dense_vector, sparse_vector):
+        pass
+
     @inject_embedding()
     async def add_item(self, item, embedding_obj=None, embedding_dimension=None) -> IndexingResult:
         """
@@ -153,6 +163,55 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
     async def add_item_hybrid(self, item, embedding_obj=None, embedding_dimension=None):
         pass
 
+    async def initialize_embeddings_and_index(self, question_answer, llm_embeddings):
+        pass
+
+    @inject_embedding_qa()
+    async def get_chunks_from_repo(self, question_answer: QuestionAnswer, embedding_obj=None, embedding_dimension=None):
+        """
+
+        :param question_answer:
+        :param embedding_obj:
+        :param embedding_dimension:
+        :return:
+        """
+        try:
+            vector_store = await self.create_index(engine=question_answer.engine,
+                                                   embeddings=embedding_obj,
+                                                   emb_dimension=embedding_dimension)
+
+            start_time = datetime.datetime.now() if question_answer.debug else 0
+
+            if question_answer.search_type == 'hybrid':
+                raise HTTPException(
+                    status_code=403,
+                    detail="Method not implemented in POD istance"
+                )
+
+            else:
+                results = await vector_store.asearch(query=question_answer.question,
+                                                     search_type=question_answer.search_type,
+                                                     k=question_answer.top_k,
+                                                     namespace=question_answer.namespace
+                                                     )
+
+            end_time = datetime.datetime.now() if question_answer.debug else 0
+            duration = (end_time - start_time).total_seconds() if question_answer.debug else 0.0
+
+            retrieval = RetrievalChunksResult(success=True,
+                                              namespace=question_answer.namespace,
+                                              chunks=[chunk.page_content for chunk in results],
+                                              metadata=[chunk.metadata for chunk in results],
+                                              error_message=None,
+                                              duration=duration
+                                              )
+
+            return retrieval
+        except Exception as ex:
+
+            logger.error(ex)
+
+            raise ex
 
     async def delete_ids_namespace(self, engine: Engine, metadata_id: str, namespace: str):
         """
