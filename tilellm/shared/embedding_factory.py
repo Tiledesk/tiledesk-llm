@@ -4,12 +4,16 @@ from typing import Any, Callable, Dict, Optional, Tuple, Type, Union
 from huggingface_hub import snapshot_download
 from langchain_community.embeddings import CohereEmbeddings
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from pydantic import BaseModel, ValidationError
+#from openai import api_key
+from pydantic import BaseModel, ValidationError, SecretStr
 import torch
 from langchain.embeddings.base import Embeddings
 import logging
 
+from langchain_huggingface import HuggingFaceEmbeddings
+
 from tilellm.models.item_model import EmbeddingModel, LlmEmbeddingModel
+from tilellm.shared.timed_cache import TimedCache
 
 
 class EmbeddingFactory:
@@ -22,27 +26,116 @@ class EmbeddingFactory:
             "ollama": self._create_ollama,
             "google": self._create_google,
             "cohere": self._create_cohere,
+            "vllm": self._create_vllm,
             "voyage": self._create_voyage
         }
+        #self._gpu_model_cache: Dict[str, Embeddings] = {}
+        self.logger.info("EmbeddingFactory initialized with cache ")
 
-    def create(self, config: Dict[str, Any]) ->Tuple[Embeddings, int]:
-        """Metodo principale per creare gli embedding"""
+    def _get_cache_key(self, config: Dict[str, Any]) -> Tuple:
+        """
+        Genera una chiave di cache univoca e immutabile dalla configurazione.
+        La chiave include i parametri che definiscono un'istanza unica del modello.
+        """
+        key_parts = []
+        key_parts.append(config.get("provider"))
+        key_parts.append(config.get("model_name"))
 
+        # L'API key è fondamentale per l'univocità
+        api_key = config.get("api_key")
+        if api_key:
+            # Gestisce sia stringhe che SecretStr
+            key_parts.append(str(api_key))
+
+        # Parametri specifici che alterano l'oggetto creato
+        if config.get("provider") == "huggingface":
+            key_parts.append(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
+            key_parts.append(config.get("normalize", True))
+
+        if config.get("base_url"):
+            key_parts.append(config.get("base_url"))
+
+        return tuple(key_parts)
+
+    def create(self, config: Dict[str, Any]) -> Tuple[Embeddings, int]:
+        """
+        Metodo principale per creare o recuperare gli embedding dalla cache.
+        """
         try:
-            if config.get("legacy_mode", False):
-                embedding, dimension = self._create_legacy(config)
-                return embedding, dimension
+            cache_key = self._get_cache_key(config)
 
-            provider = config["provider"].lower()
-            if provider not in self.provider_map:
-                raise ValueError(f"Provider non supportato: {provider}")
+            # Funzione che sa come creare l'oggetto se non è in cache
+            def _creator() -> Tuple[Embeddings, int]:
+                self.logger.info(f"Cache miss for key {cache_key}. Creating new embedding object.")
+                if config.get("legacy_mode", False):
+                    return self._create_legacy(config)
 
-            embedding, dimension = self.provider_map[provider](config)
-            return embedding, dimension
+                provider = config["provider"].lower()
+                if provider not in self.provider_map:
+                    raise ValueError(f"Provider non supportato: {provider}")
+
+                return self.provider_map[provider](config)
+
+            # Usa TimedCache.get per ottenere l'oggetto
+            # Il costruttore (_creator) verrà chiamato solo se l'oggetto non è in cache
+            embedding_obj, dimension = TimedCache.get(
+                object_type="embedding",
+                key=cache_key,
+                constructor=_creator
+            )
+
+            return embedding_obj, dimension
 
         except Exception as e:
             self.logger.error(f"Embedding error: {str(e)}", exc_info=True)
             raise EmbeddingCreationError("Errore nella creazione degli embedding", e)
+
+
+    def _generate_model_id(self, config: Dict[str, Any]) -> str:
+        """Genera un ID univoco per il caching del modello."""
+        # Un ID semplice basato su provider e nome del modello è spesso sufficiente.
+        # Se device, normalize_embeddings, o altri parametri influenzano il modello caricato,
+        # dovresti includerli nell'ID della cache.
+        if config.get("legacy_mode", False):
+            return f"legacy_{config.get('model_name')}"
+
+        provider = config.get("provider", "unknown").lower()
+        model_name = config.get("model_name", "default")
+
+        # Per HuggingFace, includi il device e normalize_embeddings nell'ID della cache
+        # se diverse combinazioni di questi parametri richiedono istanze diverse.
+        if provider == "huggingface":
+            device = config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+            normalize = config.get("normalize", True)
+            return f"{provider}_{model_name}_{device}_{normalize}"
+
+        return f"{provider}_{model_name}"
+
+    def _get_default_dimension(self, provider: str, model_name: str) -> int:
+        """Restituisce la dimensione di default per un dato provider/modello."""
+        # Puoi espandere questo dizionario con tutte le dimensioni note
+        dimensions = {
+            "openai": {
+                "text-embedding-ada-002": 1536,
+                "text-embedding-3-small": 1536,
+                "text-embedding-3-large": 3072
+            },
+            "huggingface": {
+                "BAAI/bge-m3": 1024,  # Aggiunto esplicitamente per bge-m3
+                # Aggiungi altri modelli HuggingFace con le loro dimensioni
+            },
+            "ollama": 4096,
+            "google": 768,
+            "cohere": 1024,
+            "vllm": 3072,
+            "voyage": 1024,
+        }
+
+        if provider in dimensions and isinstance(dimensions[provider], dict):
+            return dimensions[provider].get(model_name, 768)  # Fallback per modelli specifici
+        elif provider in dimensions:
+            return dimensions[provider]  # Per provider con una singola dimensione predefinita
+        return 768  # Default fallback
 
     def _create_openai(self, config: Dict) -> Tuple[Embeddings, int]:
         from langchain_openai import OpenAIEmbeddings
@@ -58,11 +151,12 @@ class EmbeddingFactory:
         ), model_dimensions.get(model_name, 1536)
 
     def _create_huggingface(self, config: Dict) -> Tuple[Embeddings, int]:
-        from langchain_huggingface import HuggingFaceEmbeddings
+        #from langchain_huggingface import HuggingFaceEmbeddings
 
         #self._prepare_huggingface_model(config["model_name"])
 
         device = config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+
         return HuggingFaceEmbeddings(
             model_name=config["model_name"],
             model_kwargs={"device": device},
@@ -75,6 +169,14 @@ class EmbeddingFactory:
             model=config["model_name"],
             base_url=config.get("base_url", "http://localhost:11434")
         ), config.get("dimension", 4096)
+
+    def _create_vllm(self, config: Dict) -> Tuple[Embeddings, int]:
+        from langchain_openai import OpenAIEmbeddings
+        return OpenAIEmbeddings(
+            model=config["model_name"],
+            base_url=config.get("base_url", "http://localhost:8001"),
+            api_key=SecretStr("a")
+        ), config.get("dimension", 3072)
 
     def _create_google(self, config: Dict) -> Tuple[Embeddings, int]:
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
@@ -104,6 +206,7 @@ class EmbeddingFactory:
             "text-embedding-3-large": (self._create_openai, 3072),
             "huggingface": (self._create_huggingface, 1024),
             "ollama": (self._create_ollama, 4096),
+            "vllm": (self._create_vllm, 3072),
             "google": (self._create_google, 768),
             "cohere": (self._create_cohere, 1024),
             "voyage-multilingual-2": (self._create_voyage, 1024)
@@ -211,7 +314,7 @@ def inject_embedding(factory: Optional[EmbeddingFactory] = None):
                     config = {
                         "provider": item.embedding.provider,
                         "model_name": item.embedding.name,
-                        "api_key": item.gptkey,
+                        "api_key": item.embedding.api_key,
                         "dimension": item.embedding.dimension,
                         "base_url": item.embedding.url
                     }

@@ -535,7 +535,8 @@ async def delete_namespace_main(namespace_to_delete: RepositoryNamespace):
         result = await delete_namespace(namespace_to_delete)
         return JSONResponse(content={"success": "true", "message": f"{namespace_to_delete.namespace} is deleted from database"})
     except Exception as ex:
-        raise HTTPException(status_code=400, detail={"success": "false", "message": repr(ex)})
+        return JSONResponse(content={"success": "false", "message": f"namespace {namespace_to_delete.namespace} is not deleted. {repr(ex)}"})
+        #raise HTTPException(status_code=400, detail={"success": "false", "message": repr(ex)})
 
 
 @app.get("/api/list/namespace/{token}", response_model=RepositoryNamespaceResult)
@@ -660,7 +661,9 @@ async def delete_namespace_main(token: str, namespace: str):
         result = await delete_namespace(namespace_to_delete)
         return JSONResponse(content={"message": f"Namespace {namespace} deleted"})
     except Exception as ex:
-        raise HTTPException(status_code=400, detail=repr(ex))
+        return JSONResponse(content={"success": "false",
+                                     "message": f"namespace is not deleted. {repr(ex)}"})
+        #raise HTTPException(status_code=400, detail=repr(ex))
 
 
 @app.delete("/api/chunk/{chunk_id}/namespace/{namespace}/{token}")

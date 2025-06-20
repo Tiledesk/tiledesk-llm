@@ -64,17 +64,13 @@ async def ask_hybrid_with_memory(question_answer, repo=None, llm=None, callback_
 
         # Preprocess chat history
         chat_history_list, question_answer_list = preprocess_chat_history(question_answer)
-
         # Initialize embeddings and encoders
         emb_dimension, sparse_encoder, index = await repo.initialize_embeddings_and_index(question_answer,
                                                                                           llm_embeddings)
         # Fetch vectors for the given question
         dense_vector, sparse_vector = await fetch_question_vectors(question_answer, sparse_encoder, llm_embeddings)
-
-        #async with index as index:
         # Perform hybrid search
         results = await repo.perform_hybrid_search(question_answer, index, dense_vector, sparse_vector)
-
         # Retrieve documents based on search results
         retriever = retrieve_documents(question_answer, results)
 
@@ -87,7 +83,6 @@ async def ask_hybrid_with_memory(question_answer, repo=None, llm=None, callback_
         store = {}
         get_session_history = lambda session_id: get_or_create_session_history(store, session_id,
                                                                                    question_answer.chat_history_dict)
-
         # Generate the final answer, with or without citations result, citations, success
         result_to_return = await generate_answer_with_history(llm=llm,
                                                               question_answer=question_answer,

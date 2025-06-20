@@ -304,7 +304,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
         try:
 
             pc = pinecone.Pinecone(
-                api_key= engine.apikey #const.PINECONE_API_KEY
+                api_key= engine.apikey.get_secret_value() #const.PINECONE_API_KEY
             )
 
             host = pc.describe_index(engine.index_name).host#const.PINECONE_INDEX).host
@@ -411,7 +411,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             ]
 
             if async_req:
-                print(type(indice))
+                # print(type(indice))
                 resp = await indice.upsert(vectors=vector_tuples,
                                     namespace=namespace,
                                     batch_size=50)

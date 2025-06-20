@@ -3,6 +3,7 @@ from abc import abstractmethod
 
 import time
 from langchain_pinecone import PineconeVectorStore
+from pydantic import SecretStr
 
 from tilellm.models.item_model import (MetadataItem,
                                        RepositoryQueryResult,
@@ -51,7 +52,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
         import pinecone
         try:
             pc = pinecone.Pinecone(
-                api_key=engine.apikey
+                api_key=engine.apikey.get_secret_value()
             )
             host = pc.describe_index(engine.index_name).host
             index = pc.IndexAsyncio(name=engine.index_name, host=host)
@@ -80,7 +81,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
         import pinecone
         try:
             pc = pinecone.Pinecone(
-                api_key=engine.apikey
+                api_key=engine.apikey.get_secret_value()
             )
             host = pc.describe_index(engine.index_name).host
             index = pc.Index(name=engine.index_name, host=host)
@@ -104,7 +105,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
 
         try:
             pc = pinecone.Pinecone(
-                api_key=engine.apikey
+                api_key=engine.apikey.get_secret_value()
             )
 
             host = pc.describe_index(engine.index_name).host
@@ -167,7 +168,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
 
         try:
             pc = pinecone.Pinecone(
-                api_key=engine.apikey
+                api_key=engine.apikey.get_secret_value()
             )
 
             host = pc.describe_index(engine.index_name).host
@@ -208,7 +209,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
 
         try:
             pc = pinecone.Pinecone(
-                api_key=engine.apikey
+                api_key=engine.apikey.get_secret_value()
             )
 
             host = pc.describe_index(engine.index_name).host
@@ -274,7 +275,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
 
         try:
             pc = pinecone.Pinecone(
-                api_key=engine.apikey
+                api_key=engine.apikey.get_secret_value()
             )
 
             host = pc.describe_index(engine.index_name).host
@@ -345,7 +346,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
 
         try:
             pc = pinecone.Pinecone(
-                api_key=engine.apikey
+                api_key=engine.apikey.get_secret_value()
             )
 
             host = pc.describe_index(engine.index_name).host
@@ -408,9 +409,8 @@ class PineconeRepositoryBase(VectorStoreRepository):
         """
         import pinecone
 
-
         pc =  pinecone.Pinecone(
-            api_key= engine.apikey
+            api_key= engine.apikey.get_secret_value()
         )
 
         if engine.index_name in pc.list_indexes().names(): #const.PINECONE_INDEX in pc.list_indexes().names():
@@ -424,7 +424,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
             vector_store = PineconeVectorStore(index=index,
                                                embedding=embeddings,
                                                text_key=engine.text_key,
-                                               pinecone_api_key=engine.apikey,
+                                               pinecone_api_key=engine.apikey.get_secret_value(),
                                                index_name=engine.index_name
                                                )
 
@@ -458,7 +458,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
             vector_store = PineconeVectorStore(index=index,
                                                embedding=embeddings,
                                                text_key=engine.text_key,
-                                               pinecone_api_key=engine.apikey,
+                                               pinecone_api_key=engine.apikey.get_secret_value(),
                                                index_name=engine.index_name
                                                )
 

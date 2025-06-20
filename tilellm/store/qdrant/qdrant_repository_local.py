@@ -260,6 +260,8 @@ class QdrantRepository(VectorStoreRepository):
                                                        scrape_type=item.scrape_type,
                                                        parameters_scrape_type_4=item.parameters_scrape_type_4)
 
+
+
                 chunks = await self.chunk_documents(item=item,
                                                     documents=documents,
                                                     embeddings=embedding_obj
@@ -286,6 +288,7 @@ class QdrantRepository(VectorStoreRepository):
             total_tokens, cost = calc_embedding_cost(chunks, item.embedding)
 
             sparse_encoder = TiledeskSparseEncoders(item.sparse_encoder)
+
             doc_sparse_vectors = sparse_encoder.encode_documents(contents)
 
 

@@ -24,6 +24,7 @@ RUN python -c "from transformers import AutoModelForSequenceClassification; mode
 # Aggiustare redis
 ENV REDIS_HOST=redis
 ENV REDIS_URL=redis://redis:6379/0
+ENV TOKENIZERS_PARALLELISM=false
 
 # Expose the port your FastAPI application uses (modify if needed)
 EXPOSE 8000

@@ -46,7 +46,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
         source = item.source
         type_source = item.type
         content = item.content
-        gpt_key = item.gptkey
+        gpt_key = item.gptkey.get_secret_value()
         embedding = item.embedding
         namespace = item.namespace
         semantic_chunk = item.semantic_chunk
@@ -225,7 +225,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
         import pinecone
         try:
             pc = pinecone.Pinecone(
-                api_key=engine.apikey # const.PINECONE_API_KEY
+                api_key=engine.apikey.get_secret_value() # const.PINECONE_API_KEY
             )
 
             host = pc.describe_index(engine.index_name).host  # const.PINECONE_INDEX).host

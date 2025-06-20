@@ -5,6 +5,10 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2025-06-20]
+### 0.4.5-rc2
+- add: timed cache for embedding, vector store and chat 
+
 ## [2025-05-16]
 ### 0.4.5-rc2
 - update: /api/qa added parameter chunk_only

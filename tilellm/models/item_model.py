@@ -1,6 +1,6 @@
 from huggingface_hub import snapshot_download
 from langchain_core.documents import Document
-from pydantic import BaseModel, Field, field_validator, ValidationError, model_validator, RootModel
+from pydantic import BaseModel, Field, field_validator, ValidationError, model_validator, RootModel, SecretStr
 from typing import Dict, Optional, List, Union, Any, Literal
 import datetime
 from enum import Enum
@@ -15,6 +15,7 @@ class EmbeddingProviders(str, Enum):
     GOOGLE = "google"
     COHERE = "cohere"
     VOYAGE = "voyage"
+    VLLM = "vllm"
 
 EMBEDDING_CONFIGS = {
     "all-MiniLM-L6-v2": {
@@ -43,6 +44,7 @@ def prepare_huggingface_model(model_name: str):
 class LlmEmbeddingModel(BaseModel):
     provider: EmbeddingProviders
     name: str
+    api_key: Optional[SecretStr] | None = None
     url: Optional[str] = Field(default_factory=lambda: "")
     dimension: Optional[int] = 1024 #qwel2-deepseek 3584, llama3.2 3072
 
@@ -54,7 +56,7 @@ class LlmEmbeddingModel(BaseModel):
 
 class EmbeddingModel(BaseModel):
     embedding_provider: str
-    embedding_key: str
+    embedding_key: Optional[SecretStr]| None = None
     embedding_model: str
     embedding_host: Optional[str] = Field(default=None)
     embedding_dimension: Optional[int] = None
@@ -63,7 +65,7 @@ class EmbeddingModel(BaseModel):
 class Engine(BaseModel):
     name: str = Field(default="pinecone")
     type: Optional[str] = Field(default="serverless")
-    apikey: str
+    apikey: Optional[SecretStr]| None = None
     vector_size: int = Field(default=1536)
     index_name: str = Field(default="tilellm")
     text_key: Optional[str] = Field(default="text")
@@ -132,7 +134,7 @@ class ItemSingle(BaseModel):
     content: str | None = None
     hybrid: Optional[bool] = Field(default=False)
     sparse_encoder: Optional[str] = Field(default="splade") # spade|bge-m3
-    gptkey: str | None = None
+    gptkey: SecretStr | None = None
     scrape_type: int = Field(default_factory=lambda: 0)
     embedding: Union[str, LlmEmbeddingModel] = Field(default="text-embedding-ada-002")
     #model: Optional[LlmEmbeddingModel] | None = None
@@ -194,7 +196,7 @@ class QuestionAnswer(BaseModel):
     question: str
     namespace: str
     llm: Optional[str] = Field(default="openai")
-    gptkey: str
+    gptkey: SecretStr
     model: Union[str, LlmEmbeddingModel] = Field(default="gpt-3.5-turbo")
     sparse_encoder: Optional[str] = Field(default="splade") #bge-m3
     temperature: float = Field(default=0.0)
@@ -254,7 +256,7 @@ class AWSAuthentication(BaseModel):
 
 class QuestionToLLM(BaseModel):
     question: str
-    llm_key: Union[str, AWSAuthentication]
+    llm_key: Union[SecretStr, AWSAuthentication]
     llm: str
     model: Union[str, LlmEmbeddingModel] = Field(default="gpt-3.5-turbo")
     temperature: float = Field(default=0.0)
@@ -303,7 +305,7 @@ class ToolOptions(RootModel[Dict[str, Any]]):
 
 class QuestionToAgent(BaseModel):
     question: str
-    llm_key: Union[str, AWSAuthentication]
+    llm_key: Union[SecretStr, AWSAuthentication]
     llm: str
     model: str = Field(default="gpt-3.5-turbo")
     tools: Optional[List[Dict[str, ToolOptions]]] = Field(default_factory=dict)
