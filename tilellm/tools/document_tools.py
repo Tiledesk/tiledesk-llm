@@ -1,23 +1,23 @@
 import time
 import uuid
+import logging
+import asyncio
 from datetime import datetime
 
 import requests
-import logging
-import asyncio
 
+from langchain_community.document_loaders import (
+    UnstructuredURLLoader,
+    AsyncChromiumLoader,
+    PyPDFLoader,
+    Docx2txtLoader,
+    TextLoader
+)
 
-from langchain_community.document_loaders import UnstructuredURLLoader
-from langchain_community.document_loaders import AsyncChromiumLoader
-
-
-from playwright.async_api import async_playwright
-
-from langchain_community.document_transformers import BeautifulSoupTransformer
+from langchain_community.document_transformers import BeautifulSoupTransformer, Html2TextTransformer
 from langchain_core.documents import Document
-from playwright.sync_api import sync_playwright
-
-from tilellm.models.item_model import MetadataItem
+from nltk.help import brown_tagset
+from playwright.async_api import async_playwright
 
 logger = logging.getLogger(__name__)
 
@@ -35,68 +35,152 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
     :param scrape_type: 0|1|2!3!4
     :return: list[Document]
     """
+    urls = [url]
+    params_type_4 = kwargs.get("parameters_scrape_type_4")
+
     try:
-        urls = [url]
         if scrape_type == 0:
-            loader = UnstructuredURLLoader(
-                urls=urls, mode="elements", strategy="fast", continue_on_failure=False,
-                headers={'user-agent': 'Mozilla/5.0'}
+            return await handle_unstructured_loader(
+                urls,
+                mode="elements",
+                strategy="fast"
             )
-            docs = await loader.aload()
 
         elif scrape_type == 1:
-            loader = UnstructuredURLLoader(
-                urls=urls, mode="single", continue_on_failure=False,
-                headers={'user-agent': 'Mozilla/5.0'}
+            return await handle_unstructured_loader(
+                urls,
+                mode="single"
             )
-            docs = await loader.aload()
         elif scrape_type == 2:
-
-
-            params_type_4 = kwargs.get("parameters_scrape_type_4")
-            docs= await scrape_page(url, params_type_4)
-            #loop = asyncio.new_event_loop()
-            #queue = Queue()
-            #scraping_thread = threading.Thread(target=run_scraping_in_thread, args=(loop, queue, url, params_type_4))
-            ##scraping_thread.start()
-            #scraping_thread.join()  # This will wait for the thread to finish
-            #if not queue.empty():
-            #    docs = queue.get()
-            #else:
-            #    docs =[]
+            return await handle_playwright_scrape(url, params_type_4)
 
         elif scrape_type == 3:
-            loader = AsyncChromiumLoader(urls=urls, user_agent='Mozilla/5.0')
-            docs = await loader.aload()
-            from langchain_community.document_transformers import Html2TextTransformer
-            html2text = Html2TextTransformer()
-            docs_transformed = html2text.transform_documents(docs)
-            docs = docs_transformed
+            return await handle_chromium_loader(
+                urls,
+                transformer=Html2TextTransformer(),
+                params=params_type_4
+            )
+        elif scrape_type == 5:
+            return await robust_fallback(url, scrape_type, params_type_4)
         else:
-            params_type_4 = kwargs.get("parameters_scrape_type_4")
-            loader = AsyncChromiumLoader(urls=urls, user_agent='Mozilla/5.0')
-            docs = await loader.aload()
-
-            bs_transformer = BeautifulSoupTransformer()
-            docs_transformed = bs_transformer.transform_documents(docs,
-                                                                  tags_to_extract=params_type_4.tags_to_extract,
-                                                                  unwanted_tags=params_type_4.unwanted_tags,
-                                                                  unwanted_classnames=params_type_4.unwanted_classnames,
-                                                                  remove_lines=params_type_4.remove_lines,
-                                                                  remove_comments=params_type_4.remove_comments
-                                                                  )
-            docs = docs_transformed
-            # print(f"=== DOCS BS4 {docs}")
-
-        for doc in docs:
-            doc.metadata = clean_metadata(doc.metadata)
-
-        # from pprint import pprint
-        # pprint(docs)
-
-        return docs
+            return await handle_chromium_loader(
+                urls,
+                transformer=BeautifulSoupTransformer(),
+                params=params_type_4,
+                transform_kwargs={
+                    "tags_to_extract": params_type_4.tags_to_extract,
+                    "unwanted_tags": params_type_4.unwanted_tags,
+                    "unwanted_classnames": params_type_4.unwanted_classnames,
+                    "remove_lines": params_type_4.remove_lines,
+                    "remove_comments": params_type_4.remove_comments
+                }
+            )
     except Exception as ex:
-        raise ex
+        logger.error(f"Errore nel metodo principale ({scrape_type}): {str(e)}")
+        return await robust_fallback(url, scrape_type, params_type_4)
+
+
+async def handle_unstructured_loader(urls: list, mode: str, strategy: str = None) -> list[Document]:
+    """Gestisce il caricamento con UnstructuredURLLoader"""
+    loader_args = {
+        "urls": urls,
+        "continue_on_failure": False,
+        "headers": {'user-agent': 'Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36'}
+    }
+
+    if strategy:
+        loader_args["strategy"] = strategy
+        loader_args["mode"] = mode
+    else:
+        loader_args["mode"] = mode
+
+    loader = UnstructuredURLLoader(**loader_args)
+    docs = await loader.aload()
+    return clean_documents_metadata(docs)
+
+async def handle_playwright_scrape(url: str, params: object) -> list[Document]:
+    """Gestisce lo scraping con Playwright"""
+    docs = await scrape_page(url, params)
+    return clean_documents_metadata(docs)
+
+
+async def handle_chromium_loader(
+        urls: list,
+        transformer: object = None,
+        params: object = None,
+        transform_kwargs: dict = None
+) -> list[Document]:
+    """Gestisce AsyncChromiumLoader con trasformazione opzionale"""
+    loader = AsyncChromiumLoader(
+        urls=urls,
+        user_agent='Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36'
+    )
+    docs = await loader.aload()
+
+    # Controllo del contenuto minimo
+    if not docs or any(len(doc.page_content.strip()) < 50 for doc in docs):
+        raise ValueError("Contenuto insufficiente o vuoto")
+
+    if transformer and transform_kwargs:
+        docs = transformer.transform_documents(docs, **transform_kwargs)
+    elif transformer:
+        docs = transformer.transform_documents(docs)
+
+    return clean_documents_metadata(docs)
+
+
+async def robust_fallback(url: str, scrape_type: int, params: object) -> list[Document]:
+    """Meccanismo di fallback a più livelli"""
+    logger.warning(f"Attivazione fallback per URL: {url}")
+
+    try:
+        # Primo fallback: metodo alternativo sincrono
+        logger.info("Tentativo fallback 1: scrape asincrono")
+        return clean_documents_metadata([Document(
+            page_content=await fallback_scrape(url),
+            metadata={"source": url}
+        )])
+    except Exception as e:
+        logger.error(f"Fallback 1 fallito: {str(e)}")
+
+    try:
+        # Secondo fallback: Playwright diretto
+        logger.info("Tentativo fallback 2: Playwright")
+        return await handle_playwright_scrape(url, params)
+    except Exception as e:
+        logger.error(f"Fallback 2 fallito: {str(e)}")
+
+    try:
+        # Terzo fallback: Chromium con timeout aumentato
+        logger.info("Tentativo fallback 3: Chromium rinforzato")
+        loader = AsyncChromiumLoader(
+            urls=[url],
+            user_agent='Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36',
+            headless=True,
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage"
+            ]
+        )
+        docs = await loader.aload()
+        return clean_documents_metadata(docs)
+    except Exception as e:
+        logger.error(f"Fallback 3 fallito: {str(e)}")
+
+    # Fallback finale: documento vuoto
+    logger.error("Tutti i fallback falliti, restituisco documento vuoto")
+    return clean_documents_metadata([Document(
+        page_content="",
+        metadata={"source": url}
+    )])
+
+
+def clean_documents_metadata(docs: list[Document]) -> list[Document]:
+    """Pulisce i metadati per tutti i documenti"""
+    for doc in docs:
+        doc.metadata = clean_metadata(doc.metadata)
+    return docs
 
 def run_scraping_in_thread(loop, queue, *args, **kwargs):
     asyncio.set_event_loop(loop)
@@ -105,39 +189,56 @@ def run_scraping_in_thread(loop, queue, *args, **kwargs):
 
 async def scrape_page(url, params_type_4, time_sleep=2):
     logger.info("Starting scraping...")
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        page = await browser.new_page(user_agent="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
-                                      java_script_enabled=True)
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True,
+                                              args=[
+                                                  "--disable-blink-features=AutomationControlled",
+                                                  "--no-sandbox"
+                                              ]
+                                              )
+            page = await browser.new_page(user_agent="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
+                                          java_script_enabled=True)
 
-        await page.goto(url=url)
+            await page.goto(url=url, wait_until="networkidle", timeout=120000)
+            await page.wait_for_load_state("networkidle")
 
-        await page.wait_for_load_state()
-        time.sleep(params_type_4.time_sleep)
-        results = await page.content()
-        await browser.close()
+            # Aspetta dinamico se necessario
+            #if params_type_4.time_sleep:
+            #    await page.wait_for_selector(
+            #        params_type_4.time_sleep,
+            #        timeout=30000
+            #    )
 
-        metadata = {"source": url}
-        doc = Document(page_content=results, metadata=metadata)
-        docs = [doc]
-        #logger.info(docs)
-        bs_transformer = BeautifulSoupTransformer()
-        docs_transformed = bs_transformer.transform_documents(
-            docs,
-            tags_to_extract=params_type_4.tags_to_extract,
-            unwanted_tags=params_type_4.unwanted_tags,
-            unwanted_classnames=params_type_4.unwanted_classnames,
-            remove_lines=params_type_4.remove_lines,
-            remove_comments=params_type_4.remove_comments
-        )
-        docs = docs_transformed
-        #for doc in docs:
-        #    doc.metadata = clean_metadata(doc.metadata)
-        return docs
+            #await page.goto(url=url)
+
+            #await page.wait_for_load_state()
+            time.sleep(params_type_4.time_sleep)
+
+            results = await page.content()
+            await browser.close()
+
+            metadata = {"source": url}
+            doc = Document(page_content=results, metadata=metadata)
+            docs = [doc]
+
+            bs_transformer = BeautifulSoupTransformer()
+            return bs_transformer.transform_documents(
+                docs,
+                tags_to_extract=params_type_4.tags_to_extract,
+                unwanted_tags=params_type_4.unwanted_tags,
+                unwanted_classnames=params_type_4.unwanted_classnames,
+                remove_lines=params_type_4.remove_lines,
+                remove_comments=params_type_4.remove_comments
+            )
+
+    except Exception as e:
+        logger.error(f"Playwright scrape failed: {str(e)}")
+        raise
 
 def scrape_page_new(url, params_type_4):
     logger.info("Starting scraping...")
-    with sync_playwright() as p:
+    with async_playwright() as p:
         browser = p.chromium.launch(headless=True)
         page = browser.new_page(user_agent="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
                                       java_script_enabled=True)
@@ -165,16 +266,50 @@ def scrape_page_new(url, params_type_4):
         return docs
 
 
+async def fallback_scrape(url: str) -> str | None:
+    from requests_html import AsyncHTMLSession
+    from requests.exceptions import RequestException
+    # Pyppeteer può lanciare un suo TimeoutError, è bene gestirlo
+    from pyppeteer.errors import TimeoutError as PyppeteerTimeoutError
+
+    """
+    Esegue lo scraping di un URL renderizzando il JavaScript.
+    Gestisce correttamente la sessione, la chiusura delle risorse e gli errori.
+
+    Args:
+        url: L'URL della pagina da analizzare.
+
+    Returns:
+        Il testo HTML renderizzato della pagina, o None in caso di errore.
+    """
+    logger.info(f"Avvio fallback scrape per l'URL: {url}")
+    session = AsyncHTMLSession()
+    try:
+        # 1. 'await' è necessario per eseguire la richiesta asincrona
+        response = await session.get(url, timeout=30)
+
+        # 2. Controlla se la richiesta ha avuto successo (status code 2xx)
+        response.raise_for_status()
+
+        # 'arender' esegue il browser headless (Chromium)
+        await response.html.arender(timeout=60)
+
+        return response.html.text
+
+    except (RequestException, PyppeteerTimeoutError) as e:
+        logger.error(f"Errore durante lo scraping di {url}: {e}")
+        return None  # Restituisce None in caso di fallimento
+
+    finally:
+        # 3. È fondamentale chiudere la sessione per terminare il processo del browser
+        await session.close()
 
 def load_document(url: str, type_source: str):
     # import os
     # name, extension = os.path.splitext(file)
 
     if type_source == 'pdf':
-        from langchain_community.document_loaders import (PyPDFLoader ,
-                                                          #UnstructuredPDFLoader,
-                                                          #OnlinePDFLoader
-                                                          )
+
         logger.info(f'Loading {url}')
         """
         import requests
@@ -195,11 +330,9 @@ def load_document(url: str, type_source: str):
         """
         loader = PyPDFLoader(url)
     elif type_source == 'docx':
-        from langchain_community.document_loaders import Docx2txtLoader
         logger.info(f'Loading {url}')
         loader = Docx2txtLoader(url)
     elif type_source == 'txt':
-        from langchain_community.document_loaders import TextLoader
         logger.info(f'Loading {url}')
         loader = TextLoader(url)
     else:

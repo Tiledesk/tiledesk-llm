@@ -67,6 +67,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
         # default text-embedding-ada-002 1536, text-embedding-3-large 3072, text-embedding-3-small 1536
         oai_embeddings = embedding_obj # OpenAIEmbeddings(api_key=gpt_key, model=embedding)
         vector_store = await self.create_index(engine=engine, embeddings=oai_embeddings, emb_dimension=emb_dimension)
+
         # print(f"=========== POD {type(vector_store)}")
         chunks = []
         total_tokens = 0
@@ -107,19 +108,20 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                                                            )
                                   )
 
+
                 # from pprint import pprint
                 # pprint(documents)
                 logger.debug(documents)
-
                 a = await vector_store.aadd_documents(chunks,
                                                       namespace=namespace
                                                       )
 
                 total_tokens, cost = self.calc_embedding_cost(chunks, embedding)
+                from pprint import pprint
+                pprint(chunks)
                 logger.info(f"chunks: {len(chunks)}, total_tokens: {total_tokens}, cost: {cost: .6f}")
 
-                # from pprint import pprint
-                # pprint(documents)
+
             elif type_source == 'urlbs':
                 doc_array = get_content_by_url_with_bs(source)
                 chunks = list()
@@ -149,7 +151,8 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 a = await vector_store.aadd_documents(chunks,
                                                       namespace=namespace
                                                       )
-
+            async with vector_store.async_index as index:
+                await index.close()
             pinecone_result = IndexingResult(id=metadata_id, chunks=len(chunks), total_tokens=total_tokens,
                                              cost=f"{cost:.6f}")
         except Exception as ex:

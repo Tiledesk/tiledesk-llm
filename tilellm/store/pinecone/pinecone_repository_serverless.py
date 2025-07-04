@@ -192,6 +192,9 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
             logger.debug(returned_ids)
 
+            async with vector_store.async_index as index:
+                await index.close()
+
             return IndexingResult(id=item.id,
                                   chunks=len(chunks),
                                   total_tokens=total_tokens,
@@ -271,7 +274,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             total_tokens, cost = self.calc_embedding_cost(chunks, item.embedding)
 
             sparse_encoder = TiledeskSparseEncoders(item.sparse_encoder)
-            doc_sparse_vectors = sparse_encoder.encode_documents(contents)
+
+            doc_sparse_vectors = sparse_encoder.encode_documents(contents, batch_size=item.hybrid_batch_size)
 
             #indice = vector_store.async_index #index #get_pinecone_index(item.engine.index_name, pinecone_api_key=item.engine.apikey)
             async with vector_store.async_index as indice:
@@ -284,6 +288,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                                                       embeddings=embedding_obj,
                                                       sparse_vectors=doc_sparse_vectors)
 
+
             return IndexingResult(id=item.id, chunks=len(chunks), total_tokens=total_tokens,
                                   cost=f"{cost:.6f}")
 
@@ -291,6 +296,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             import traceback
             traceback.print_exc()
             logger.error(repr(ex))
+            async with vector_store.async_index as indice:
+                await indice.close()
             return IndexingResult(id=item.id, chunks=len(chunks), total_tokens=total_tokens,
                                              status=400,
                                              cost=f"{cost:.6f}")

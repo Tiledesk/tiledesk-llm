@@ -50,11 +50,11 @@ class TimedCache:
             cache.move_to_end(key)  # Sposta alla fine (più recente)
             cache[key] = (obj, now)
             logger.debug(f"Oggetto {object_type}/{key} recuperato dalla cache")
-            print(f"Oggetto {object_type}/{key} recuperato dalla cache")
+            #print(f"Oggetto {object_type}/{key} recuperato dalla cache")
             return obj
 
         # Altrimenti crea un nuovo oggetto
-        print(f"Creazione nuovo oggetto {object_type}/{key}")
+        #print(f"Creazione nuovo oggetto {object_type}/{key}")
         logger.info(f"Creazione nuovo oggetto {object_type}/{key}")
         obj = constructor(*args, **kwargs)
         cache[key] = (obj, now)

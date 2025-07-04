@@ -289,7 +289,7 @@ class QdrantRepository(VectorStoreRepository):
 
             sparse_encoder = TiledeskSparseEncoders(item.sparse_encoder)
 
-            doc_sparse_vectors = sparse_encoder.encode_documents(contents)
+            doc_sparse_vectors = sparse_encoder.encode_documents(contents, batch_size=item.hybrid_batch_size)
 
 
             #async with vector_store.async_index as indice:

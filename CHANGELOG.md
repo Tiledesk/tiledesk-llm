@@ -5,6 +5,14 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2025-07-04]
+### 0.4.7-rc1
+- add: hybrid batch size  
+
+## [2025-06-20]
+### 0.4.6-rc1
+- add: timed cache for embedding, vector store and chat 
+
 ## [2025-06-20]
 ### 0.4.5-rc2
 - add: timed cache for embedding, vector store and chat 

@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "tilellm"
-version = "0.4.6-rc1"
+version = "0.4.7-rc1"
 description = "tiledesk for RAG"
 authors = ["Gianluca Lorenzo <gianluca.lorenzo@gmail.com>"]
 repository = "https://github.com/Tiledesk/tiledesk-llm"
@@ -50,6 +50,8 @@ beautifulsoup4 = "4.13.4" #"4.12.3"
 #uvicorn = "^0.28"
 unstructured= "0.17.2" #"0.15.12" #"0.15.0"
 playwright = "1.52.0" #"1.47.0" #"1.45.1"
+requests-html = "0.10.0"
+lxml_html_clean =  "0.4.2"
 pypdf= "5.4.0" #"4.3.1"
 docx2txt= "0.9" #"0.8"
 wikipedia= "1.4.0"
