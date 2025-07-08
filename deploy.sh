@@ -1,5 +1,5 @@
 # npm version patch
-version="0.1.20"
+version=$(grep '^version *= *' pyproject.toml | head -1 | sed -E 's/version *= *"([^"]+)"/\1/')
 echo "version $version"
 
 # Get curent branch name
