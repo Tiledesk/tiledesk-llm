@@ -10,6 +10,9 @@
 - add: mcp support  
 
 ## [2025-07-04]
+### 0.4.7
+
+## [2025-07-04]
 ### 0.4.7-rc1
 - add: hybrid batch size  
 
