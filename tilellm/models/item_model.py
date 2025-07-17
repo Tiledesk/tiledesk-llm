@@ -1,5 +1,6 @@
 from huggingface_hub import snapshot_download
 from langchain_core.documents import Document
+from langchain_mcp_adapters.client import MultiServerMCPClient
 from pydantic import BaseModel, Field, field_validator, ValidationError, model_validator, RootModel, SecretStr
 from typing import Dict, Optional, List, Union, Any, Literal
 import datetime
@@ -153,7 +154,7 @@ class ItemSingle(BaseModel):
         scrape_type = values.scrape_type
         parameters_scrape_type_4 = values.parameters_scrape_type_4
 
-        if scrape_type == 4 or scrape_type == 2:
+        if scrape_type in (2,4,5):# == 4 or scrape_type == 2:
             if parameters_scrape_type_4 is None:
                 raise ValueError('parameters_scrape_type_4 must be provided when scrape_type is 4')
         else:
@@ -251,6 +252,31 @@ class AWSAuthentication(BaseModel):
     region_name: str
 
 
+
+class ServerConfig(BaseModel):
+    """Modello per la configurazione di un server MCP"""
+    transport: str
+    url: Optional[str] = None
+    command: Optional[str] = None
+    args: Optional[List[str]] = None
+    api_key: Optional[str] = None
+    parameters: Optional[dict] = Field(default_factory=dict)
+
+    @model_validator(mode='after')
+    def validate_transport_specific_fields(self):
+        # Validazione per trasporto SSE
+        if self.transport == "sse":
+            if not self.url:
+                raise ValueError("URL è obbligatorio per il trasporto SSE")
+
+        # Validazione per trasporto stdio
+        elif self.transport == "stdio":
+            if not self.command or not self.args:
+                raise ValueError("Command e args sono obbligatori per il trasporto stdio")
+
+        return self
+
+
 #thinking: Optional[Dict[str, Any]] = Field(default=None)
 #    """Parameters for Claude reasoning,
 #    e.g., ``{"type": "enabled", "budget_tokens": 10_000}
@@ -269,6 +295,7 @@ class QuestionToLLM(BaseModel):
     system_context: str = Field(default="You are a helpful AI bot. Always reply in the same language of the question.")
     chat_history_dict: Optional[Dict[str, ChatEntry]] = None
     n_messages: int = Field(default_factory=lambda: None)
+    servers: Optional[Dict[str, ServerConfig]] = Field(default_factory=dict)
 
     @field_validator("temperature")
     def temperature_range(cls, v):
@@ -297,6 +324,14 @@ class QuestionToLLM(BaseModel):
         if not 0.0 <= v <= 1.0:
             raise ValueError("Temperature must be between 0.0 and 1.0.")
         return v
+
+    def create_mcp_client(self):
+        """Crea un'istanza di MultiServerMCPClient dalla configurazione"""
+        config_dict = {
+            name: server_config.model_dump(exclude_unset=True)
+            for name, server_config in self.servers.items()
+        }
+        return MultiServerMCPClient(config_dict)
 
 
 class ToolOptions(RootModel[Dict[str, Any]]):

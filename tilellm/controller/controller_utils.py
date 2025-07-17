@@ -9,6 +9,7 @@ from typing import List
 import fastapi
 
 from langchain_core.documents import Document
+from langchain_core.messages import ToolMessage
 
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
 from starlette.responses import JSONResponse
@@ -495,3 +496,30 @@ def extract_citations(testo: str) -> List[Citation]:
 def _create_event(event_type: str, data: dict) -> str:
     import json
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+
+
+def extract_conversation_flow(messages: list) -> str:
+    conversation = []
+
+    for msg in messages:
+        if isinstance(msg, AIMessage):
+            # Estrae il primo contenuto testuale (potrebbe avere multiple parti)
+            main_text = ""
+            if isinstance(msg.content, list):
+                for part in msg.content:
+                    if isinstance(part, dict) and part.get('type') == 'text':
+                        main_text = part.get('text', '')
+                        break
+            else:
+                main_text = str(msg.content)
+
+            # Pulisci e formatta
+            cleaned_text = main_text.replace('\n', ' ').strip()
+            if cleaned_text:
+                conversation.append(f"ai message: {cleaned_text}")
+
+        elif isinstance(msg, ToolMessage):
+            conversation.append(f"tool: {msg.content}")
+
+    return '\n'.join(conversation)

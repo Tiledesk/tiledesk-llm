@@ -117,8 +117,8 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                                                       )
 
                 total_tokens, cost = self.calc_embedding_cost(chunks, embedding)
-                from pprint import pprint
-                pprint(chunks)
+                # from pprint import pprint
+                # pprint(chunks)
                 logger.info(f"chunks: {len(chunks)}, total_tokens: {total_tokens}, cost: {cost: .6f}")
 
 

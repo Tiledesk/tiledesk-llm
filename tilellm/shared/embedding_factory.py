@@ -159,7 +159,7 @@ class EmbeddingFactory:
 
         return HuggingFaceEmbeddings(
             model_name=config["model_name"],
-            model_kwargs={"device": device},
+            model_kwargs={"device": device, "trust_remote_code":True},
             encode_kwargs={"normalize_embeddings": config.get("normalize", True)}
         ), config.get("dimension", 768)
 
@@ -237,58 +237,6 @@ class EmbeddingCreationError(Exception):
         self.message = message
         self.original_error = original_error
         super().__init__(f"{message} - Original error: {str(original_error)}" if original_error else message)
-
-
-def inject_embedding_old(factory: Optional[EmbeddingFactory] = None):
-    """Decoratore per l'iniezione degli embedding"""
-
-    def decorator(func: Callable):
-        @wraps(func)
-        async def wrapper(self, item, *args, **kwargs):
-            nonlocal factory
-            factory = factory or EmbeddingFactory()
-
-            try:
-
-                # Costruisci la configurazione
-                if item.model:
-                    config = {
-                        "provider": item.model.provider,
-                        "model_name": item.model.name,
-                        "api_key": item.gptkey,
-                        "dimension": item.model.dimension,
-                        "base_url": item.model.url
-                    }
-                else:
-                    config = {
-                        "legacy_mode": True,
-                        "model_name": item.embedding,
-                        "api_key": item.gptkey
-                    }
-
-                # Crea gli embedding
-                result = factory.create(config)
-                # Gestione del tipo di ritorno
-                if isinstance(result, tuple):
-                    embedding_obj, dimension = result
-                else:
-                    embedding_obj = result
-                    dimension = 1536  # Default
-
-                # Inietta nei kwargs
-                kwargs["embedding_obj"] = embedding_obj
-                kwargs["embedding_dimension"] = dimension
-
-                return await func(self, item, *args, **kwargs)
-
-            except ValidationError as ve:
-                raise EmbeddingCreationError("Validazione fallita", ve)
-            except Exception as e:
-                raise EmbeddingCreationError("Errore generico", e)
-
-        return wrapper
-
-    return decorator
 
 
 def inject_embedding(factory: Optional[EmbeddingFactory] = None):

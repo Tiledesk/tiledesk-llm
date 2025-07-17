@@ -5,6 +5,10 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2025-07-16]
+### 0.4.8-rc1
+- add: mcp support  
+
 ## [2025-07-04]
 ### 0.4.7-rc1
 - add: hybrid batch size  

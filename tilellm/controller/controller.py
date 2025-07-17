@@ -16,11 +16,12 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_community.callbacks.openai_info import OpenAICallbackHandler
 #from starlette.responses import StreamingResponse
 from fastapi.responses import StreamingResponse
+from langgraph.prebuilt import create_react_agent
 
 from tilellm.controller.controller_utils import preprocess_chat_history, \
     fetch_question_vectors, retrieve_documents, create_chains, get_or_create_session_history, \
     generate_answer_with_history, format_result, handle_exception, initialize_retrievers, create_chains_deepseek, \
-    _create_event
+    _create_event, extract_conversation_flow
 from tilellm.models.item_model import (RetrievalResult,
                                        ChatEntry,
                                        IndexingResult,
@@ -329,6 +330,25 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None) :
         result_to_return = SimpleAnswer(answer=repr(e),
                                         chat_history_dict={})
         raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
+
+
+@inject_llm
+async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model=None):
+    mcp_client = question.create_mcp_client()
+
+    try:
+        tools = await mcp_client.get_tools()
+
+        agent = create_react_agent(chat_model, tools)
+        response = await agent.ainvoke({"messages": question.question})
+        logger.info(response)
+        result = extract_conversation_flow(response['messages'])
+        logger.info(result)
+        return JSONResponse(
+            content=SimpleAnswer(answer=result, chat_history_dict={}).model_dump())
+
+    except Exception as e:
+        return handle_exception(e, "Exception in MCP dialog")
 
 
 @inject_repo

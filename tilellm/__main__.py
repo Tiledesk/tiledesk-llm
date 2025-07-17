@@ -43,7 +43,7 @@ from tilellm.controller.controller import (ask_with_memory,
                                            get_sources_namespace,
                                            ask_to_llm,
                                            ask_to_agent,
-                                           ask_reason_llm)
+                                           ask_reason_llm, ask_mcp_agent_llm)
 
 import logging
 
@@ -433,8 +433,10 @@ async def post_ask_to_llm_main(question: QuestionToLLM):
     :return: RetrievalResult
     """
     logger.info(question)
-
-    return await ask_to_llm(question=question)
+    if not question.servers:
+        return await ask_to_llm(question=question)
+    else:
+        return await ask_mcp_agent_llm(question=question)
 
 
 @app.post("/api/thinking", response_model=SimpleAnswer)
@@ -619,8 +621,6 @@ async def list_namespace_items_main(token: str, namespace: str):
         raise HTTPException(status_code=400, detail=repr(ex))
 
 
-
-
 @app.get("/api/items", response_model=RepositoryItems)#?source={source}&namespace={namespace}&token={token}
 async def get_items_source_namespace_main(source: str, namespace: str, token: str):
     """
@@ -714,11 +714,6 @@ async def delete_item_id_namespace_main(token: str, metadata_id: str, namespace:
     except Exception as ex:
         logger.error(ex)
         raise HTTPException(status_code=400, detail=repr(ex))
-
-
-
-
-
 
 
 @app.get("/")

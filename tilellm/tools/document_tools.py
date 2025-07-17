@@ -3,8 +3,10 @@ import uuid
 import logging
 import asyncio
 from datetime import datetime
+from typing import List
 
 import requests
+from bs4 import BeautifulSoup, Comment
 
 from langchain_community.document_loaders import (
     UnstructuredURLLoader,
@@ -15,8 +17,8 @@ from langchain_community.document_loaders import (
 )
 
 from langchain_community.document_transformers import BeautifulSoupTransformer, Html2TextTransformer
+from langchain_community.document_transformers.beautiful_soup_transformer import get_navigable_strings
 from langchain_core.documents import Document
-from nltk.help import brown_tagset
 from playwright.async_api import async_playwright
 
 logger = logging.getLogger(__name__)
@@ -28,9 +30,10 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
     Get content by url! parse html page and extract content.
     If scrape_type=0 Unstructured analyze the page and extract some useful information about page, like UL, Title etc.
     If scrape_type=1, extract all the content.
-    If scape_type=2 is used playwright.
+    If scape_type=2 is used playwright and BS4 in order to select the html element to extract.
     If scape_type=3 is used AsyncChromiumLoader and the html is transformed in text
     If scape_type=4 is used AsyncChromiumLoader and BS4 in order to select the html element to extract
+    If scape_type=5 is used playwright and BS4 in order to select the html element to extract and class.
     :param url: str representing url
     :param scrape_type: 0|1|2!3!4
     :return: list[Document]
@@ -53,15 +56,15 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
             )
         elif scrape_type == 2:
             return await handle_playwright_scrape(url, params_type_4)
-
+        elif scrape_type == 5:
+            logger.info("%555555555555555")
+            return await handle_playwright_scrape_complex(url, params_type_4)
         elif scrape_type == 3:
             return await handle_chromium_loader(
                 urls,
                 transformer=Html2TextTransformer(),
                 params=params_type_4
             )
-        elif scrape_type == 5:
-            return await robust_fallback(url, scrape_type, params_type_4)
         else:
             return await handle_chromium_loader(
                 urls,
@@ -76,8 +79,8 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
                 }
             )
     except Exception as ex:
-        logger.error(f"Errore nel metodo principale ({scrape_type}): {str(e)}")
-        return await robust_fallback(url, scrape_type, params_type_4)
+        logger.error(f"Errore nel metodo principale ({scrape_type}): {str(ex)}")
+        return await robust_fallback(url, params_type_4)
 
 
 async def handle_unstructured_loader(urls: list, mode: str, strategy: str = None) -> list[Document]:
@@ -103,6 +106,11 @@ async def handle_playwright_scrape(url: str, params: object) -> list[Document]:
     docs = await scrape_page(url, params)
     return clean_documents_metadata(docs)
 
+async def handle_playwright_scrape_complex(url: str, params: object) -> list[Document]:
+    """Gestisce lo scraping con Playwright"""
+    docs = await scrape_page_complex(url, params)
+    return clean_documents_metadata(docs)
+
 
 async def handle_chromium_loader(
         urls: list,
@@ -122,6 +130,7 @@ async def handle_chromium_loader(
         raise ValueError("Contenuto insufficiente o vuoto")
 
     if transformer and transform_kwargs:
+
         docs = transformer.transform_documents(docs, **transform_kwargs)
     elif transformer:
         docs = transformer.transform_documents(docs)
@@ -129,17 +138,65 @@ async def handle_chromium_loader(
     return clean_documents_metadata(docs)
 
 
-async def robust_fallback(url: str, scrape_type: int, params: object) -> list[Document]:
+async def scrape_page_fallback_selectors(url):
+    """Fallback con selettori più permissivi"""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True,
+                                          args=[
+                                              "--disable-blink-features=AutomationControlled",
+                                              "--no-sandbox"
+                                          ])
+        page = await browser.new_page(user_agent="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
+                                      java_script_enabled=True)
+
+        await page.goto(url=url, wait_until="networkidle", timeout=60000)
+        time.sleep(2)  # Tempo ridotto per fallback
+
+        results = await page.content()
+        await browser.close()
+
+        # Selettori di fallback più permissivi
+        fallback_selectors = get_fallback_selectors()
+
+        transformed_content = custom_html_transform(
+            results,
+            selectors_to_extract=fallback_selectors,
+            unwanted_tags=["script", "style", "nav", "header", "footer", "aside"],
+            unwanted_classnames=["advertisement", "ads", "sidebar", "popup"],
+            remove_lines=True,
+            remove_comments=True
+        )
+
+        metadata = {"source": url, "scraping_method": "playwright_fallback"}
+        doc = Document(page_content=transformed_content, metadata=metadata)
+        return [doc]
+
+def get_fallback_selectors():
+    """Restituisce selettori di fallback più permissivi"""
+    return [
+        # Contenuto principale
+        "main", "article", "[role='main']",
+        # Div con classi comuni per contenuto
+        "div.content", "div.main", "div.post", "div.article",
+        "div.entry-content", "div.post-content", "div.article-content",
+        # Sezioni generiche
+        "section",
+        # Paragrafi e testi
+        "p", "h1", "h2", "h3", "h4", "h5", "h6",
+        # Lista e elementi di testo
+        "ul", "ol", "li", "blockquote",
+        # Fallback finale - quasi tutto tranne elementi indesiderati
+        "div:not(.sidebar):not(.advertisement):not(.ads):not(.popup)"
+    ]
+
+async def robust_fallback(url: str, params: object = None) -> list[Document]:
     """Meccanismo di fallback a più livelli"""
     logger.warning(f"Attivazione fallback per URL: {url}")
 
     try:
         # Primo fallback: metodo alternativo sincrono
         logger.info("Tentativo fallback 1: scrape asincrono")
-        return clean_documents_metadata([Document(
-            page_content=await fallback_scrape(url),
-            metadata={"source": url}
-        )])
+        return clean_documents_metadata(await scrape_page_fallback_selectors(url))
     except Exception as e:
         logger.error(f"Fallback 1 fallito: {str(e)}")
 
@@ -156,12 +213,7 @@ async def robust_fallback(url: str, scrape_type: int, params: object) -> list[Do
         loader = AsyncChromiumLoader(
             urls=[url],
             user_agent='Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36',
-            headless=True,
-            args=[
-                "--disable-blink-features=AutomationControlled",
-                "--no-sandbox",
-                "--disable-dev-shm-usage"
-            ]
+            headless=True
         )
         docs = await loader.aload()
         return clean_documents_metadata(docs)
@@ -182,11 +234,6 @@ def clean_documents_metadata(docs: list[Document]) -> list[Document]:
         doc.metadata = clean_metadata(doc.metadata)
     return docs
 
-def run_scraping_in_thread(loop, queue, *args, **kwargs):
-    asyncio.set_event_loop(loop)
-    docs = loop.run_until_complete(scrape_page(*args, **kwargs))
-    queue.put(docs)
-
 async def scrape_page(url, params_type_4, time_sleep=2):
     logger.info("Starting scraping...")
     try:
@@ -201,18 +248,11 @@ async def scrape_page(url, params_type_4, time_sleep=2):
                                           java_script_enabled=True)
 
             await page.goto(url=url, wait_until="networkidle", timeout=120000)
+
             await page.wait_for_load_state("networkidle")
-
-            # Aspetta dinamico se necessario
-            #if params_type_4.time_sleep:
-            #    await page.wait_for_selector(
-            #        params_type_4.time_sleep,
-            #        timeout=30000
-            #    )
-
             #await page.goto(url=url)
-
             #await page.wait_for_load_state()
+
             time.sleep(params_type_4.time_sleep)
 
             results = await page.content()
@@ -236,34 +276,152 @@ async def scrape_page(url, params_type_4, time_sleep=2):
         logger.error(f"Playwright scrape failed: {str(e)}")
         raise
 
-def scrape_page_new(url, params_type_4):
+
+async def scrape_page_complex(url, params_type_4, time_sleep=2):
     logger.info("Starting scraping...")
-    with async_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page(user_agent="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
-                                      java_script_enabled=True)
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True,
+                                              args=[
+                                                  "--disable-blink-features=AutomationControlled",
+                                                  "--no-sandbox"
+                                              ]
+                                              )
+            page = await browser.new_page(user_agent="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
+                                          java_script_enabled=True)
 
-        page.goto(url=url, wait_until="load")
-        results = page.content()
-        browser.close()
+            await page.goto(url=url)
+            await page.wait_for_load_state()
 
-        metadata = {"source": url}
-        doc = Document(page_content=results, metadata=metadata)
-        docs = [doc]
+            time.sleep(params_type_4.time_sleep)
 
-        bs_transformer = BeautifulSoupTransformer()
-        docs_transformed = bs_transformer.transform_documents(
-            docs,
-            tags_to_extract=params_type_4.tags_to_extract,
-            unwanted_tags=params_type_4.unwanted_tags,
-            unwanted_classnames=params_type_4.unwanted_classnames,
-            remove_lines=params_type_4.remove_lines,
-            remove_comments=params_type_4.remove_comments
+            results = await page.content()
+            await browser.close()
+
+            # Processamento personalizzato con BeautifulSoup
+            transformed_content = custom_html_transform(
+                results,
+                selectors_to_extract=params_type_4.tags_to_extract,
+                unwanted_tags=getattr(params_type_4, 'unwanted_tags', []),
+                unwanted_classnames=getattr(params_type_4, 'unwanted_classnames', []),
+                remove_lines=getattr(params_type_4, 'remove_lines', True),
+                remove_comments=getattr(params_type_4, 'remove_comments', True)
+            )
+
+            metadata = {"source": url}
+            doc = Document(page_content=transformed_content, metadata=metadata)
+            return [doc]
+
+    except Exception as e:
+        logger.error(f"Playwright scrape failed: {str(e)}")
+        raise
+
+
+def custom_html_transform(html_content, selectors_to_extract=None, unwanted_tags=None,
+                          unwanted_classnames=None, remove_lines=True, remove_comments=True):
+    """
+    Trasforma il contenuto HTML usando selettori CSS personalizzati
+
+    Args:
+        html_content (str): Contenuto HTML da processare
+        selectors_to_extract (list): Lista di selettori CSS (es. ["div.class", "p#id", "section"])
+        unwanted_tags (list): Tag da rimuovere
+        unwanted_classnames (list): Classi da rimuovere
+        remove_lines (bool): Se rimuovere linee vuote
+        remove_comments (bool): Se rimuovere commenti HTML
+    """
+    import re
+    if not selectors_to_extract:
+        selectors_to_extract = ["*"]  # Seleziona tutto se non specificato
+
+    soup = BeautifulSoup(html_content, 'html.parser')
+
+    # Rimuovi commenti HTML se richiesto
+    if remove_comments:
+        for comment in soup.find_all(string=lambda text: isinstance(text, Comment)):
+            comment.extract()
+
+    # Rimuovi tag indesiderati
+    if unwanted_tags:
+        for tag in unwanted_tags:
+            for element in soup.find_all(tag):
+                #element.extract()
+                element.decompose()
+
+    # Rimuovi elementi con classi indesiderate
+    if unwanted_classnames:
+        for class_name in unwanted_classnames:
+            for element in soup.find_all(class_=class_name):
+                element.decompose()
+
+    # Estrai elementi basandosi sui selettori CSS
+    extracted_elements = []
+
+    text_parts: List[str] = []
+
+    # Raccogli tutti gli elementi che corrispondono ai selettori
+    elements_to_process = []
+
+    for selector in selectors_to_extract:
+        try:
+            # Usa select() per selettori CSS (supporta sia tag semplici che complessi)
+            elements = soup.select(selector)
+            elements_to_process.extend(elements)
+        except Exception as e:
+            # Se il selettore CSS fallisce, prova come tag semplice (fallback)
+            try:
+                elements = soup.find_all(selector)
+                elements_to_process.extend(elements)
+            except Exception:
+                # Se anche questo fallisce, continua con il prossimo selettore
+                continue
+
+    # Rimuovi duplicati mantenendo l'ordine di apparizione nel DOM
+    seen = set()
+    unique_elements = []
+    for element in elements_to_process:
+        # Usa id dell'oggetto per identificare univocamente l'elemento
+        element_id = id(element)
+        if element_id not in seen:
+            seen.add(element_id)
+            unique_elements.append(element)
+
+    # Ordina gli elementi in base alla loro posizione nel DOM
+    # per mantenere l'ordine naturale del documento
+    def get_element_position(element):
+        """Calcola la posizione di un elemento nel DOM"""
+        position = 0
+        for sibling in element.parent.children if element.parent else []:
+            if sibling == element:
+                break
+            position += 1
+        return position
+
+    # Ordina per posizione nel DOM se hanno lo stesso genitore
+    # altrimenti mantieni l'ordine di scoperta
+    unique_elements.sort(key=lambda x: (
+        str(x.parent) if x.parent else "",
+        get_element_position(x)
+    ))
+
+    # Estrai il testo da tutti gli elementi
+    for element in unique_elements:
+        # Extract all navigable strings recursively from this element.
+        text_parts += get_navigable_strings(
+            element, remove_comments=remove_comments
         )
-        docs = docs_transformed
-        for doc in docs:
-            doc.metadata = clean_metadata(doc.metadata)
-        return docs
+
+        # To avoid duplicate text, remove all descendants from the soup.
+        element.decompose()
+
+    result = " ".join(text_parts)
+
+    # Rimuovi linee vuote se richiesto
+    if remove_lines:
+        result = re.sub(r'\n\s*\n', '\n', result)
+        result = result.strip()
+
+    return result
 
 
 async def fallback_scrape(url: str) -> str | None:
