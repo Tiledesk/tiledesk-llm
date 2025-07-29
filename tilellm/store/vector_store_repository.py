@@ -2,9 +2,14 @@ import logging
 from abc import ABC, abstractmethod
 
 from langchain_core.vectorstores import VectorStore
-
-from tilellm.models.item_model import RepositoryNamespace, Engine, RepositoryItems, RepositoryNamespaceResult, \
-    RepositoryDescNamespaceResult, QuestionAnswer
+from tilellm.models.schemas import (RepositoryNamespace,
+                                    RepositoryItems,
+                                    RepositoryNamespaceResult,
+                                    RepositoryDescNamespaceResult
+                                    )
+from tilellm.models import (Engine,
+                            QuestionAnswer
+                            )
 from tilellm.tools.document_tools import get_content_by_url, load_document
 
 

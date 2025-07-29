@@ -7,13 +7,14 @@ from typing import Dict, Any
 from langchain_community.callbacks.openai_info import OpenAICallbackHandler
 from langchain_community.embeddings import CohereEmbeddings  # , GooglePalmEmbeddings
 from langchain_deepseek import ChatDeepSeek
+from langchain_mistralai import ChatMistralAI
 
 from langchain_ollama import ChatOllama
 from langchain_voyageai import VoyageAIEmbeddings
 from langchain_openai import OpenAIEmbeddings
 from pydantic import SecretStr
 
-from tilellm.models.item_model import EmbeddingModel
+from tilellm.models import EmbeddingModel
 from tilellm.shared import const
 
 from langchain_openai.chat_models import ChatOpenAI
@@ -216,6 +217,14 @@ def inject_llm(func):
                                         top_p=question.top_p
                                         )
 
+                elif question.llm == "mistralai":
+                    return ChatMistralAI(api_key=question.llm_key,
+                                         model_name=question.model,
+                                         temperature=question.temperature,
+                                         max_tokens=question.max_tokens,
+                                         top_p=question.top_p
+                                         )
+
 
                 else:
                     return ChatOpenAI(api_key=question.llm_key,
@@ -284,6 +293,11 @@ def inject_llm_chat(func):
                     return ChatGoogleGenerativeAI(google_api_key=question.gptkey, model=question.model,
                                                   temperature=question.temperature, max_tokens=question.max_tokens,
                                                   top_p=question.top_p, convert_system_message_to_human=True)
+                elif question.llm == "mistralai":
+                    return ChatMistralAI(api_key=question.gptkey,model_name=question.model,
+                                         temperature=question.temperature,max_tokens=question.max_tokens,
+                                         top_p=question.top_p)
+
                 elif question.llm == "vllm":
                     return ChatOpenAI(api_key=SecretStr(question.gptkey), model=question.model.name,
                                       base_url=question.model.url, temperature=question.temperature,

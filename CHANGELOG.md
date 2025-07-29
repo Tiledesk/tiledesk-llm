@@ -5,9 +5,21 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2025-07-21]
+### 0.4.10-rc1
+- add: cache to re-ranking  
+
+## [2025-07-14]
+### 0.4.9-rc1
+- add: re-ranking  
+
+## [2025-07-21]
+### 0.4.8-rc1
+- add: mistralai support  
+
 ## [2025-07-16]
 ### 0.4.8-rc1
-- add: mcp support  
+- add: simple mcp support  
 
 ## [2025-07-04]
 ### 0.4.7

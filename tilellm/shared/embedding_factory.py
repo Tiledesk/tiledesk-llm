@@ -12,7 +12,7 @@ import logging
 
 from langchain_huggingface import HuggingFaceEmbeddings
 
-from tilellm.models.item_model import EmbeddingModel, LlmEmbeddingModel
+from tilellm.models import EmbeddingModel, LlmEmbeddingModel
 from tilellm.shared.timed_cache import TimedCache
 
 

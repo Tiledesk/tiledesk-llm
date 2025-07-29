@@ -21,19 +21,21 @@ from langgraph.prebuilt import create_react_agent
 from tilellm.controller.controller_utils import preprocess_chat_history, \
     fetch_question_vectors, retrieve_documents, create_chains, get_or_create_session_history, \
     generate_answer_with_history, format_result, handle_exception, initialize_retrievers, create_chains_deepseek, \
-    _create_event, extract_conversation_flow
-from tilellm.models.item_model import (RetrievalResult,
-                                       ChatEntry,
-                                       IndexingResult,
+    _create_event, extract_conversation_flow, create_contextualize_query
+from tilellm.models.schemas import (RetrievalResult,
+                                    IndexingResult,
                                        RepositoryNamespaceResult,
                                        RepositoryDescNamespaceResult,
                                        RepositoryItems,
                                        SimpleAnswer,
                                        RepositoryItem,
                                        RepositoryNamespace,
-                                       RepositoryEngine,
-                                       QuestionToAgent,
-                                       QuestionToLLM, ReasoningAnswer, QuestionAnswer, RetrievalChunksResult)
+                                       RepositoryEngine,ReasoningAnswer, RetrievalChunksResult)
+from tilellm.models import (ChatEntry,
+                            QuestionToAgent,
+                            QuestionToLLM,
+                            QuestionAnswer
+                            )
 
 from tilellm.shared.utility import inject_repo, inject_llm, inject_llm_chat, inject_reason_llm
 
@@ -55,6 +57,8 @@ from langchain.schema import(
 
 import logging
 
+from tilellm.tools.reranker import RerankedRetriever, TileReranker
+
 logger = logging.getLogger(__name__)
 
 @inject_repo
@@ -70,10 +74,28 @@ async def ask_hybrid_with_memory(question_answer, repo=None, llm=None, callback_
                                                                                           llm_embeddings)
         # Fetch vectors for the given question
         dense_vector, sparse_vector = await fetch_question_vectors(question_answer, sparse_encoder, llm_embeddings)
+        ### Modifiche
+        # Perform hybrid search - modifica per recuperare più documenti se necessario
+        search_top_k = question_answer.top_k * question_answer.reranking_multiplier if question_answer.reranking else question_answer.top_k
+
+        # Temporaneamente modifica top_k per la ricerca
+        original_top_k = question_answer.top_k
+        question_answer.top_k = search_top_k
+
         # Perform hybrid search
         results = await repo.perform_hybrid_search(question_answer, index, dense_vector, sparse_vector)
+
+        # Ripristina il valore originale
+        question_answer.top_k = original_top_k
+
+        ### Fine modifiche ORIG: results = await repo.perform_hybrid_search(question_answer, index, dense_vector, sparse_vector)
         # Retrieve documents based on search results
-        retriever = retrieve_documents(question_answer, results)
+        if question_answer.reranking:
+            contextualize_query = create_contextualize_query(llm,question_answer)
+        else:
+            contextualize_query= question_answer.question
+
+        retriever = retrieve_documents(question_answer, results,contextualize_query)
 
         # Create chains for contextualization and Q&A
         history_aware_retriever, question_answer_chain, qa_prompt = await create_chains(llm, question_answer, retriever)
@@ -370,8 +392,27 @@ async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler
         # Preprocess chat history
         chat_history_list, question_answer_list = preprocess_chat_history(question_answer)
 
-        # Initialize embeddings and retrievers
-        retriever = await initialize_retrievers(question_answer, repo, llm_embeddings)
+        # Modifiche
+        # Initialize embeddings and retrievers (con supporto per re-ranking)
+
+
+        base_retriever = await initialize_retrievers(question_answer, repo, llm_embeddings)
+
+        # Wrap con RerankedRetriever se il re-ranking è abilitato
+        if question_answer.reranking:
+            contextualize_query = create_contextualize_query(llm,question_answer)
+
+            reranker = TileReranker(model_name=question_answer.reranker_model)
+            retriever = RerankedRetriever(base_retriever=base_retriever,
+                                          reranker=reranker,
+                                          top_k=question_answer.top_k,
+                                          use_reranking=question_answer.reranking,
+                                          contextualize_query=contextualize_query)
+
+        else:
+            retriever = base_retriever
+        # Fine modifiche ORIG: retriever = await initialize_retrievers(question_answer, repo, llm_embeddings)
+
 
         # Create chains for contextualization and Q&A
         history_aware_retriever, question_answer_chain, qa_prompt = await create_chains(llm, question_answer, retriever)

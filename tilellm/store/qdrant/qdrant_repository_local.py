@@ -5,17 +5,20 @@ from langchain_core.documents import Document
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import models, AsyncQdrantClient, QdrantClient
 
-
-from tilellm.models.item_model import (MetadataItem,
-                                       RepositoryQueryResult,
-                                       RepositoryItems,
-                                       IndexingResult,
-                                       RepositoryNamespaceResult,
-                                       RepositoryItemNamespaceResult,
-                                       RepositoryIdSummaryResult,
-                                       RepositoryDescNamespaceResult, Engine, RepositoryNamespace, ItemSingle,
-                                       QuestionAnswer, RetrievalChunksResult
-                                       )
+from tilellm.models.schemas import (RepositoryQueryResult,
+                                    RepositoryItems,
+                                    IndexingResult,
+                                    RepositoryNamespaceResult,
+                                    RepositoryItemNamespaceResult,
+                                    RepositoryIdSummaryResult,
+                                    RepositoryDescNamespaceResult,
+                                    RepositoryNamespace,RetrievalChunksResult
+                                    )
+from tilellm.models import (MetadataItem,
+                            Engine,
+                            ItemSingle,
+                            QuestionAnswer
+                            )
 
 from typing import Dict
 
@@ -141,6 +144,12 @@ class QdrantRepository(VectorStoreRepository):
                     field_name="metadata.namespace",
                     field_schema="keyword"  # 'keyword' è buono per ID di tenant
                 )
+
+                qdrant_client.create_payload_index(
+                    collection_name=item.engine.index_name,
+                    field_name="metadata.id",
+                    field_schema="keyword"  # 'keyword' è buono per ID di tenant
+                )
                 print(f"Payload index created on 'tenant_id' for collection '{item.engine.index_name}'.")
             except Exception as e:
                 if "already exists" in str(e).lower() or "already present" in str(e).lower():  # Adatta il controllo dell'errore
@@ -244,6 +253,12 @@ class QdrantRepository(VectorStoreRepository):
                 qdrant_client.create_payload_index(
                     collection_name=item.engine.index_name,
                     field_name="metadata.namespace",
+                    field_schema="keyword"  # 'keyword' è buono per ID di tenant
+                )
+
+                qdrant_client.create_payload_index(
+                    collection_name=item.engine.index_name,
+                    field_name="metadata.id",
                     field_schema="keyword"  # 'keyword' è buono per ID di tenant
                 )
                 print(f"Payload index created on 'tenant_id' for collection '{item.engine.index_name}'.")
@@ -414,7 +429,7 @@ class QdrantRepository(VectorStoreRepository):
             if engine.deployment == "local":
                 qdrant_client = AsyncQdrantClient(host=engine.host, port=engine.port)
             else:
-                qdrant_client = AsyncQdrantClient(api_key=engine.apikey)
+                qdrant_client = AsyncQdrantClient(url=engine.host+":"+str(engine.port),api_key=engine.apikey.get_secret_value())
 
             collection_name = engine.index_name
 
@@ -459,7 +474,7 @@ class QdrantRepository(VectorStoreRepository):
         if namespace_to_delete.engine.deployment == "local":
             qdrant_client = AsyncQdrantClient(host=namespace_to_delete.engine.host, port=namespace_to_delete.engine.port)
         else:
-            qdrant_client = AsyncQdrantClient(api_key=namespace_to_delete.engine.apikey)
+            qdrant_client = AsyncQdrantClient(url=namespace_to_delete.engine.host+":"+str(namespace_to_delete.engine.port),api_key=namespace_to_delete.engine.apikey.get_secret_value())
 
         collection_name = namespace_to_delete.engine.index_name
 
@@ -503,7 +518,7 @@ class QdrantRepository(VectorStoreRepository):
             if engine.deployment == "local":
                 qdrant_client = AsyncQdrantClient(host=engine.host, port=engine.port)
             else:
-                qdrant_client = AsyncQdrantClient(api_key=engine.apikey)
+                qdrant_client = AsyncQdrantClient(url=engine.host+":"+str(engine.port),api_key=engine.apikey.get_secret_value())
 
             collection_name = engine.index_name
 
@@ -546,7 +561,7 @@ class QdrantRepository(VectorStoreRepository):
             if engine.deployment == "local":
                 client = AsyncQdrantClient(host=engine.host, port=engine.port)
             else:
-                client = AsyncQdrantClient(api_key=engine.apikey)
+                client = AsyncQdrantClient(url=engine.host+":"+str(engine.port),api_key=engine.apikey.get_secret_value())
 
             result = []
             all_object_filter = models.Filter(
@@ -624,7 +639,7 @@ class QdrantRepository(VectorStoreRepository):
             if engine.deployment== "local":
                 client = AsyncQdrantClient(host=engine.host, port=engine.port)
             else:
-                client = AsyncQdrantClient(api_key=engine.apikey)
+                client = AsyncQdrantClient(url=engine.host+":"+str(engine.port),api_key=engine.apikey.get_secret_value())
 
             result = []
             all_object_filter = models.Filter(
@@ -710,7 +725,7 @@ class QdrantRepository(VectorStoreRepository):
             if engine.deployment == "local":
                 client = AsyncQdrantClient(host=engine.host, port=engine.port)
             else:
-                client = AsyncQdrantClient(api_key=engine.apikey)
+                client = AsyncQdrantClient(url=engine.host+":"+str(engine.port),api_key=engine.apikey.get_secret_value())
 
             result = []
             all_object_filter = models.Filter(
@@ -790,7 +805,7 @@ class QdrantRepository(VectorStoreRepository):
             if engine.deployment == "local":
                 client = AsyncQdrantClient(host=engine.host, port=engine.port)
             else:
-                client = AsyncQdrantClient(api_key=engine.apikey)
+                client = AsyncQdrantClient(url=engine.host+":"+str(engine.port),api_key=engine.apikey.get_secret_value())
 
             result = []
             all_object_filter = models.Filter(
@@ -861,7 +876,7 @@ class QdrantRepository(VectorStoreRepository):
             if engine.deployment== "local":
                 client = AsyncQdrantClient(host=engine.host, port=engine.port)
             else:
-                client = AsyncQdrantClient(api_key=engine.apikey)
+                client = AsyncQdrantClient(url=engine.host+":"+str(engine.port),api_key=engine.apikey.get_secret_value())
 
 
 
@@ -891,7 +906,7 @@ class QdrantRepository(VectorStoreRepository):
             if engine.deployment== "local":
                 client = AsyncQdrantClient(host=engine.host, port=engine.port)
             else:
-                client = AsyncQdrantClient(api_key=engine.apikey)
+                client = AsyncQdrantClient(url=engine.host+":"+str(engine.port),api_key=engine.apikey.get_secret_value())
 
             qdrant_collections = await client.get_collections()
 
@@ -925,7 +940,7 @@ class QdrantRepository(VectorStoreRepository):
         if engine.deployment== "local":
             client = QdrantClient(host=engine.host, port=engine.port)
         else:
-            client = QdrantClient(api_key=engine.apikey)
+            client = QdrantClient(url=engine.host+":"+str(engine.port), api_key=engine.apikey.get_secret_value())
 
         collection_name = engine.index_name
         metric_distance = models.Distance[engine.metric.upper()]
@@ -1111,7 +1126,7 @@ class QdrantRepository(VectorStoreRepository):
     @staticmethod
     async def upsert_vector_store_hybrid(vector_store: QdrantVectorStore, contents, chunks, metadata_id, engine, namespace, embeddings,
                                          sparse_vectors):
-        embedding_chunk_size = 1000
+        embedding_chunk_size = 100
         batch_size: int = 32
 
         ids = [f"{uuid.uuid4().hex}" for _ in range(len(chunks))]

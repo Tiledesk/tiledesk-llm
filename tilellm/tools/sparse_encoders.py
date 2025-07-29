@@ -1,3 +1,5 @@
+from threading import Lock
+
 import torch
 from pinecone_text.sparse import SpladeEncoder
 from FlagEmbedding import BGEM3FlagModel
@@ -91,6 +93,7 @@ class TiledeskSparseEncoders:
     _encoder_cache = OrderedDict()
     _max_cache_size = 2
     _logger = logging.getLogger(__name__)
+    _cache_lock = Lock()
 
     def __init__(self, model_name: str):
         self.model_name = model_name.lower()
@@ -99,32 +102,33 @@ class TiledeskSparseEncoders:
 
     @classmethod
     def _get_cached_encoder(cls, model_name: str) -> Union[TiledeskSpladeEncoder, TiledeskBGEM3]:
-        # Verifica se il modello è già in cache
-        if model_name in cls._encoder_cache:
-            cls._logger.info(f"Reusing cached instance of: {model_name}")
-            # Sposta in fondo (più recente)
-            encoder = cls._encoder_cache.pop(model_name)
+        with cls._cache_lock:
+            # Verifica se il modello è già in cache
+            if model_name in cls._encoder_cache:
+                cls._logger.info(f"Reusing cached instance of: {model_name}")
+                # Sposta in fondo (più recente)
+                encoder = cls._encoder_cache.pop(model_name)
+                cls._encoder_cache[model_name] = encoder
+                return encoder
+
+            # Crea nuovo encoder se non in cache
+            if model_name == "splade":
+                cls._logger.info(f"Creating new SpladeEncoder instance")
+                encoder = TiledeskSpladeEncoder()
+            elif model_name == "bge-m3":
+                cls._logger.info(f"Creating new BGEM3 instance")
+                encoder = TiledeskBGEM3()
+            else:
+                raise ValueError(f"Unsupported model: {model_name}. Use 'splade' or 'bge-m3'.")
+
+            # Gestione LRU Cache
+            if len(cls._encoder_cache) >= cls._max_cache_size:
+                # Rimuovi il meno recente
+                oldest = next(iter(cls._encoder_cache))
+                cls._logger.info(f"Removing oldest model from cache: {oldest}")
+                cls._encoder_cache.pop(oldest)
+
             cls._encoder_cache[model_name] = encoder
-            return encoder
-
-        # Crea nuovo encoder se non in cache
-        if model_name == "splade":
-            cls._logger.info(f"Creating new SpladeEncoder instance")
-            encoder = TiledeskSpladeEncoder()
-        elif model_name == "bge-m3":
-            cls._logger.info(f"Creating new BGEM3 instance")
-            encoder = TiledeskBGEM3()
-        else:
-            raise ValueError(f"Unsupported model: {model_name}. Use 'splade' or 'bge-m3'.")
-
-        # Gestione LRU Cache
-        if len(cls._encoder_cache) >= cls._max_cache_size:
-            # Rimuovi il meno recente
-            oldest = next(iter(cls._encoder_cache))
-            cls._logger.info(f"Removing oldest model from cache: {oldest}")
-            cls._encoder_cache.pop(oldest)
-
-        cls._encoder_cache[model_name] = encoder
         return encoder
 
     def encode_documents(self, contents: List[str], batch_size: Optional[int] = 10) -> List[Dict[str, List]]:

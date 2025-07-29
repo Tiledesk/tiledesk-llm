@@ -1,11 +1,14 @@
 import datetime
 import uuid
 
-from pinecone.core.openapi.db_data.model.query_response import QueryResponse
-
-from tilellm.models.item_model import (MetadataItem,
-                                       IndexingResult, Engine, ItemSingle, QuestionAnswer, RetrievalChunksResult
-                                       )
+from tilellm.models.schemas import (IndexingResult,
+                                    RetrievalChunksResult
+                                    )
+from tilellm.models import (MetadataItem,
+                            Engine,
+                            ItemSingle,
+                            QuestionAnswer
+                            )
 from tilellm.shared.sparse_util import hybrid_score_norm
 
 from tilellm.tools.document_tools import (get_content_by_url,

@@ -16,15 +16,18 @@ from dotenv import load_dotenv
 
 from tilellm.shared.const import populate_constant
 from tilellm.shared.utility import decode_jwt
-from tilellm.models.item_model import (ItemSingle,
-                                       QuestionAnswer,
-                                       RepositoryItem,
-                                       RepositoryNamespace,
-                                       ScrapeStatusReq,
-                                       ScrapeStatusResponse,
-                                       IndexingResult, RetrievalResult, RepositoryNamespaceResult,
-                                       RepositoryDescNamespaceResult, RepositoryItems, QuestionToLLM, SimpleAnswer,
-                                       QuestionToAgent, Engine, RepositoryEngine, RetrievalChunksResult)
+from tilellm.models import (ItemSingle,
+                            QuestionToAgent,
+                            Engine,
+                            QuestionToLLM,
+                            QuestionAnswer)
+from tilellm.models.schemas import (RepositoryItem,
+                                    RepositoryNamespace,
+                                    ScrapeStatusReq,
+                                    ScrapeStatusResponse,
+                                    IndexingResult, RetrievalResult, RepositoryNamespaceResult,
+                                    RepositoryDescNamespaceResult, RepositoryItems, SimpleAnswer,
+                                    RepositoryEngine, RetrievalChunksResult)
 
 from tilellm.store.redis_repository import redis_xgroup_create
 from tilellm.controller.controller import (ask_with_memory,

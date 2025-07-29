@@ -87,13 +87,9 @@ class Engine(BaseModel):
             if not self.deployment:
                 raise ValueError("Deployment is required for Qdrant (local/cloud)")
 
-            if self.deployment == "local":
+            if self.deployment == "local" or self.deployment == "cloud":
                 if not (self.host and self.port):
                     raise ValueError("Host and port are required for local Qdrant")
-
-            elif self.deployment == "cloud":
-                if self.host or self.port:
-                    raise ValueError("Host/port not allowed for cloud Qdrant")
 
         else:
             raise ValueError(f"Unsupported engine: {self.name}")
@@ -199,7 +195,7 @@ class QuestionAnswer(BaseModel):
     namespace: str
     llm: Optional[str] = Field(default="openai")
     gptkey: SecretStr
-    model: Union[str, LlmEmbeddingModel] = Field(default="gpt-3.5-turbo")
+    model: Union[str, LlmEmbeddingModel] = Field(default="gpt-4o")
     sparse_encoder: Optional[str] = Field(default="splade") #bge-m3
     temperature: float = Field(default=0.0)
     top_k: int = Field(default=5)
@@ -285,7 +281,7 @@ class QuestionToLLM(BaseModel):
     question: str
     llm_key: Union[SecretStr, AWSAuthentication]
     llm: str
-    model: Union[str, LlmEmbeddingModel] = Field(default="gpt-3.5-turbo")
+    model: Union[str, LlmEmbeddingModel] = Field(default="gpt-4o")
     temperature: float = Field(default=0.0)
     max_tokens: int = Field(default=128),
     top_p: Optional[float] = Field(default=1.0)

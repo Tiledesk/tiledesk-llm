@@ -5,17 +5,20 @@ import time
 from langchain_pinecone import PineconeVectorStore
 from pydantic import SecretStr
 
-from tilellm.models.item_model import (MetadataItem,
-                                       RepositoryQueryResult,
-                                       RepositoryItems,
-                                       IndexingResult,
-                                       RepositoryNamespaceResult,
-                                       RepositoryItemNamespaceResult,
-                                       RepositoryIdSummaryResult,
-                                       RepositoryDescNamespaceResult, Engine, RepositoryNamespace, QuestionAnswer,
-                                       RetrievalChunksResult
-
-                                       )
+from tilellm.models.schemas import (RepositoryQueryResult,
+                                    RepositoryItems,
+                                    IndexingResult,
+                                    RepositoryNamespaceResult,
+                                    RepositoryItemNamespaceResult,
+                                    RepositoryIdSummaryResult,
+                                    RepositoryDescNamespaceResult,
+                                    RepositoryNamespace,
+                                    RetrievalChunksResult
+                                    )
+from tilellm.models import (MetadataItem,
+                            Engine,
+                            QuestionAnswer
+                            )
 
 
 from typing import List, Dict

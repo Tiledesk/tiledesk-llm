@@ -2,9 +2,13 @@ import datetime
 
 from fastapi import HTTPException
 
-from tilellm.models.item_model import (MetadataItem,
-                                       IndexingResult, Engine, QuestionAnswer, RetrievalChunksResult
-                                       )
+from tilellm.models.schemas import (IndexingResult,
+                                    RetrievalChunksResult
+                                    )
+from tilellm.models import (MetadataItem,
+                            Engine,
+                            QuestionAnswer
+                            )
 
 from tilellm.shared.embedding_factory import inject_embedding, inject_embedding_qa
 from tilellm.tools.document_tools import (get_content_by_url,
