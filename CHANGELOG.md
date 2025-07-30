@@ -5,6 +5,10 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2025-07-30]
+### 0.4.10-rc1
+- add: parameter browser_headers for scrape  
+
 ## [2025-07-21]
 ### 0.4.10-rc1
 - add: cache to re-ranking  

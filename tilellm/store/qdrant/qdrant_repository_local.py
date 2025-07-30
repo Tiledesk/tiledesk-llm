@@ -162,7 +162,8 @@ class QdrantRepository(VectorStoreRepository):
                 documents = await fetch_documents(type_source=item.type,
                                                   source=item.source,
                                                   scrape_type=item.scrape_type,
-                                                  parameters_scrape_type_4=item.parameters_scrape_type_4)
+                                                  parameters_scrape_type_4=item.parameters_scrape_type_4,
+                                                  browser_headers=item.browser_headers)
 
                 chunks = await self.chunk_documents(item=item,
                                                     documents=documents,
@@ -273,7 +274,8 @@ class QdrantRepository(VectorStoreRepository):
                 documents = await self.fetch_documents(type_source=item.type,
                                                        source=item.source,
                                                        scrape_type=item.scrape_type,
-                                                       parameters_scrape_type_4=item.parameters_scrape_type_4)
+                                                       parameters_scrape_type_4=item.parameters_scrape_type_4,
+                                                       browser_headers=item.browser_headers)
 
 
 

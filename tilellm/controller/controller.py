@@ -14,7 +14,6 @@ from langchain_core.prompts import PromptTemplate #, SystemMessagePromptTemplate
 from langchain_openai import ChatOpenAI
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.callbacks.openai_info import OpenAICallbackHandler
-#from starlette.responses import StreamingResponse
 from fastapi.responses import StreamingResponse
 from langgraph.prebuilt import create_react_agent
 
@@ -400,7 +399,7 @@ async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler
 
         # Wrap con RerankedRetriever se il re-ranking è abilitato
         if question_answer.reranking:
-            contextualize_query = create_contextualize_query(llm,question_answer)
+            contextualize_query = await create_contextualize_query(llm,question_answer)
 
             reranker = TileReranker(model_name=question_answer.reranker_model)
             retriever = RerankedRetriever(base_retriever=base_retriever,
@@ -411,8 +410,6 @@ async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler
 
         else:
             retriever = base_retriever
-        # Fine modifiche ORIG: retriever = await initialize_retrievers(question_answer, repo, llm_embeddings)
-
 
         # Create chains for contextualization and Q&A
         history_aware_retriever, question_answer_chain, qa_prompt = await create_chains(llm, question_answer, retriever)
@@ -425,16 +422,16 @@ async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler
                                                                                question_answer.chat_history_dict)
 
         # Generate the final answer, with or without citations
-        result_to_return = await generate_answer_with_history(llm=llm, #result, citations, success
-                                                                        question_answer=question_answer,
-                                                                        rag_chain=rag_chain,
-                                                                        retriever=retriever,
-                                                                        get_session_history=get_session_history,
-                                                                        qa_prompt=qa_prompt,
-                                                                        callback_handler=callback_handler,
-                                                                        question_answer_list=question_answer_list)
+        result_to_return = await generate_answer_with_history(llm=llm,
+                                                              question_answer=question_answer,
+                                                              rag_chain=rag_chain,
+                                                              retriever=retriever,
+                                                              get_session_history=get_session_history,
+                                                              qa_prompt=qa_prompt,
+                                                              callback_handler=callback_handler,
+                                                              question_answer_list=question_answer_list
+                                                              )
 
-        #llm_embeddings = None
         return result_to_return
     except Exception as e:
         return handle_exception(e, question_answer)

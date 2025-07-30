@@ -40,30 +40,34 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
     """
     urls = [url]
     params_type_4 = kwargs.get("parameters_scrape_type_4")
+    browser_headers = kwargs.get("browser_headers")
+
 
     try:
         if scrape_type == 0:
             return await handle_unstructured_loader(
                 urls,
                 mode="elements",
-                strategy="fast"
+                strategy="fast",
+                browser_headers = browser_headers
             )
 
         elif scrape_type == 1:
             return await handle_unstructured_loader(
                 urls,
-                mode="single"
+                mode="single",
+                browser_headers = browser_headers
             )
         elif scrape_type == 2:
-            return await handle_playwright_scrape(url, params_type_4)
+            return await handle_playwright_scrape(url, params_type_4, browser_headers = browser_headers)
         elif scrape_type == 5:
-            logger.info("%555555555555555")
-            return await handle_playwright_scrape_complex(url, params_type_4)
+            return await handle_playwright_scrape_complex(url, params_type_4, browser_headers = browser_headers)
         elif scrape_type == 3:
             return await handle_chromium_loader(
                 urls,
                 transformer=Html2TextTransformer(),
-                params=params_type_4
+                params=params_type_4,
+                browser_headers=browser_headers
             )
         else:
             return await handle_chromium_loader(
@@ -80,15 +84,15 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
             )
     except Exception as ex:
         logger.error(f"Errore nel metodo principale ({scrape_type}): {str(ex)}")
-        return await robust_fallback(url, params_type_4)
+        return await robust_fallback(url, params_type_4, browser_headers=browser_headers)
 
 
-async def handle_unstructured_loader(urls: list, mode: str, strategy: str = None) -> list[Document]:
+async def handle_unstructured_loader(urls: list, mode: str, strategy: str = None, browser_headers = dict) -> list[Document]:
     """Gestisce il caricamento con UnstructuredURLLoader"""
     loader_args = {
         "urls": urls,
         "continue_on_failure": False,
-        "headers": {'user-agent': 'Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36'}
+        "headers": browser_headers
     }
 
     if strategy:
@@ -96,19 +100,19 @@ async def handle_unstructured_loader(urls: list, mode: str, strategy: str = None
         loader_args["mode"] = mode
     else:
         loader_args["mode"] = mode
-
+    logger.info(f"loader args for UnstructuredLoader {loader_args}")
     loader = UnstructuredURLLoader(**loader_args)
     docs = await loader.aload()
     return clean_documents_metadata(docs)
 
-async def handle_playwright_scrape(url: str, params: object) -> list[Document]:
+async def handle_playwright_scrape(url: str, params: object, browser_headers: dict) -> list[Document]:
     """Gestisce lo scraping con Playwright"""
-    docs = await scrape_page(url, params)
+    docs = await scrape_page(url, params, browser_headers = browser_headers)
     return clean_documents_metadata(docs)
 
-async def handle_playwright_scrape_complex(url: str, params: object) -> list[Document]:
+async def handle_playwright_scrape_complex(url: str, params: object,browser_headers: dict) -> list[Document]:
     """Gestisce lo scraping con Playwright"""
-    docs = await scrape_page_complex(url, params)
+    docs = await scrape_page_complex(url, params, browser_headers = browser_headers)
     return clean_documents_metadata(docs)
 
 
@@ -116,12 +120,13 @@ async def handle_chromium_loader(
         urls: list,
         transformer: object = None,
         params: object = None,
-        transform_kwargs: dict = None
+        transform_kwargs: dict = None,
+        browser_headers :dict= None
 ) -> list[Document]:
     """Gestisce AsyncChromiumLoader con trasformazione opzionale"""
     loader = AsyncChromiumLoader(
         urls=urls,
-        user_agent='Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36'
+        user_agent=browser_headers["user-agent"]
     )
     docs = await loader.aload()
 
@@ -138,7 +143,7 @@ async def handle_chromium_loader(
     return clean_documents_metadata(docs)
 
 
-async def scrape_page_fallback_selectors(url):
+async def scrape_page_fallback_selectors(url, browser_headers:dict=None):
     """Fallback con selettori più permissivi"""
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True,
@@ -146,7 +151,7 @@ async def scrape_page_fallback_selectors(url):
                                               "--disable-blink-features=AutomationControlled",
                                               "--no-sandbox"
                                           ])
-        page = await browser.new_page(user_agent="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
+        page = await browser.new_page(extra_http_headers=browser_headers,
                                       java_script_enabled=True)
 
         await page.goto(url=url, wait_until="networkidle", timeout=60000)
@@ -189,21 +194,21 @@ def get_fallback_selectors():
         "div:not(.sidebar):not(.advertisement):not(.ads):not(.popup)"
     ]
 
-async def robust_fallback(url: str, params: object = None) -> list[Document]:
+async def robust_fallback(url: str, params: object = None, browser_headers:dict=None) -> list[Document]:
     """Meccanismo di fallback a più livelli"""
     logger.warning(f"Attivazione fallback per URL: {url}")
 
     try:
         # Primo fallback: metodo alternativo sincrono
         logger.info("Tentativo fallback 1: scrape asincrono")
-        return clean_documents_metadata(await scrape_page_fallback_selectors(url))
+        return clean_documents_metadata(await scrape_page_fallback_selectors(url, browser_headers=browser_headers))
     except Exception as e:
         logger.error(f"Fallback 1 fallito: {str(e)}")
 
     try:
         # Secondo fallback: Playwright diretto
         logger.info("Tentativo fallback 2: Playwright")
-        return await handle_playwright_scrape(url, params)
+        return await handle_playwright_scrape(url, params, browser_headers=browser_headers)
     except Exception as e:
         logger.error(f"Fallback 2 fallito: {str(e)}")
 
@@ -212,7 +217,7 @@ async def robust_fallback(url: str, params: object = None) -> list[Document]:
         logger.info("Tentativo fallback 3: Chromium rinforzato")
         loader = AsyncChromiumLoader(
             urls=[url],
-            user_agent='Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36',
+            user_agent=browser_headers["user-agent"],
             headless=True
         )
         docs = await loader.aload()
@@ -234,7 +239,7 @@ def clean_documents_metadata(docs: list[Document]) -> list[Document]:
         doc.metadata = clean_metadata(doc.metadata)
     return docs
 
-async def scrape_page(url, params_type_4, time_sleep=2):
+async def scrape_page(url, params_type_4, browser_headers:dict, time_sleep=2):
     logger.info("Starting scraping...")
     try:
         async with async_playwright() as p:
@@ -244,14 +249,16 @@ async def scrape_page(url, params_type_4, time_sleep=2):
                                                   "--no-sandbox"
                                               ]
                                               )
-            page = await browser.new_page(user_agent="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
+            page = await browser.new_page(extra_http_headers=browser_headers, #user_agent="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
                                           java_script_enabled=True)
+
+            # Registra un listener per l'evento 'request'
+            #page.on("request", handle_request)
+
 
             await page.goto(url=url, wait_until="networkidle", timeout=120000)
 
             await page.wait_for_load_state("networkidle")
-            #await page.goto(url=url)
-            #await page.wait_for_load_state()
 
             time.sleep(params_type_4.time_sleep)
 
@@ -277,7 +284,7 @@ async def scrape_page(url, params_type_4, time_sleep=2):
         raise
 
 
-async def scrape_page_complex(url, params_type_4, time_sleep=2):
+async def scrape_page_complex(url, params_type_4, browser_headers:dict, time_sleep=2):
     logger.info("Starting scraping...")
     try:
         async with async_playwright() as p:
@@ -287,9 +294,10 @@ async def scrape_page_complex(url, params_type_4, time_sleep=2):
                                                   "--no-sandbox"
                                               ]
                                               )
-            page = await browser.new_page(user_agent="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
+            page = await browser.new_page(extra_http_headers=browser_headers, #user_agent="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
                                           java_script_enabled=True)
 
+            page.on("request", handle_request)
             await page.goto(url=url)
             await page.wait_for_load_state()
 
@@ -423,45 +431,6 @@ def custom_html_transform(html_content, selectors_to_extract=None, unwanted_tags
 
     return result
 
-
-async def fallback_scrape(url: str) -> str | None:
-    from requests_html import AsyncHTMLSession
-    from requests.exceptions import RequestException
-    # Pyppeteer può lanciare un suo TimeoutError, è bene gestirlo
-    from pyppeteer.errors import TimeoutError as PyppeteerTimeoutError
-
-    """
-    Esegue lo scraping di un URL renderizzando il JavaScript.
-    Gestisce correttamente la sessione, la chiusura delle risorse e gli errori.
-
-    Args:
-        url: L'URL della pagina da analizzare.
-
-    Returns:
-        Il testo HTML renderizzato della pagina, o None in caso di errore.
-    """
-    logger.info(f"Avvio fallback scrape per l'URL: {url}")
-    session = AsyncHTMLSession()
-    try:
-        # 1. 'await' è necessario per eseguire la richiesta asincrona
-        response = await session.get(url, timeout=30)
-
-        # 2. Controlla se la richiesta ha avuto successo (status code 2xx)
-        response.raise_for_status()
-
-        # 'arender' esegue il browser headless (Chromium)
-        await response.html.arender(timeout=60)
-
-        return response.html.text
-
-    except (RequestException, PyppeteerTimeoutError) as e:
-        logger.error(f"Errore durante lo scraping di {url}: {e}")
-        return None  # Restituisce None in caso di fallimento
-
-    finally:
-        # 3. È fondamentale chiudere la sessione per terminare il processo del browser
-        await session.close()
-
 def load_document(url: str, type_source: str):
     # import os
     # name, extension = os.path.splitext(file)
@@ -568,11 +537,12 @@ def clean_metadata(dictionary):
     return {k: v for k, v in dictionary.items() if is_valid_value(v)}
 
 
-async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4):
+async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers):
     if type_source in ['url', 'txt']:
         return await get_content_by_url(source,
                                         scrape_type,
-                                        parameters_scrape_type_4=parameters_scrape_type_4)
+                                        parameters_scrape_type_4=parameters_scrape_type_4,
+                                        browser_headers=browser_headers)
     return load_document(source, type_source)
 
 
@@ -603,3 +573,13 @@ def calc_embedding_cost(texts, embedding):
 
     logger.info(f'Embedding cost $: {cost:.6f}')
     return total_tokens, cost
+
+
+async def handle_request(request):
+    """Callback function to handle network requests asynchronously."""
+    if request.is_navigation_request() and request.resource_type == "document":
+        logger.info(f"URL della richiesta principale: {request.url}")
+        logger.info("Header inviati:")
+        headers = await request.all_headers()
+        for name, value in headers.items():
+            logger.info(f"  {name}: {value}")

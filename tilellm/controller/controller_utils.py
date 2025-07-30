@@ -153,6 +153,7 @@ def retrieve_documents(question_answer, results, contextualized_query=None):
 # Function to create chains for contextualization and Q&A
 async def create_chains(llm, question_answer, retriever):
     # Contextualize question
+
     contextualize_q_system_prompt = const.contextualize_q_system_prompt
     contextualize_q_prompt = ChatPromptTemplate.from_messages(
         [
@@ -161,9 +162,12 @@ async def create_chains(llm, question_answer, retriever):
             ("human", "{input}"),
         ]
     )
+
+
     history_aware_retriever = create_history_aware_retriever(
         llm, retriever, contextualize_q_prompt
     )
+
     qa_system_prompt = question_answer.system_context if question_answer.system_context else const.qa_system_prompt
 
     qa_prompt = ChatPromptTemplate.from_messages(
@@ -177,8 +181,8 @@ async def create_chains(llm, question_answer, retriever):
     return history_aware_retriever, question_answer_chain, qa_prompt
 
 
-def create_contextualize_query(llm, question_answer):
-    contextualize_q_system_prompt = const.contextualize_q_system_prompt
+async def create_contextualize_query(llm, question_answer):
+    contextualize_q_system_prompt = const.contextualize_q_system_prompt #posso usare rephrase
     contextualize_q_prompt = ChatPromptTemplate.from_messages(
         [
             ("system", contextualize_q_system_prompt),
@@ -190,18 +194,17 @@ def create_contextualize_query(llm, question_answer):
     if question_answer.chat_history_dict:
         c_h, _ = preprocess_chat_history(question_answer)
         # Se c'è history, contestualizza la query
-        contextualized_query = llm.invoke(
+        contextualized_query =  (await llm.ainvoke(
             contextualize_q_prompt.format_messages(
                 chat_history=c_h,
                 input=question_answer.question
             )
-        ).content
+        )).content
     else:
         # Se non c'è history, usa la query originale
         contextualized_query = question_answer.question
 
-
-    logger.debug(f" {type(contextualized_query)} {contextualized_query}")
+    logger.info(f" Contextualized query {contextualized_query}")
 
     return contextualized_query
 

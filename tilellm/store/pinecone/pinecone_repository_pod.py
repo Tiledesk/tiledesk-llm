@@ -87,7 +87,8 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 if type_source == 'url' or type_source == 'txt':
                     documents = await get_content_by_url(source,
                                                          scrape_type,
-                                                         parameters_scrape_type_4=parameters_scrape_type_4)
+                                                         parameters_scrape_type_4=parameters_scrape_type_4,
+                                                         browser_headers=item.browser_headers)
                 else:  # type_source == 'pdf' or 'docx' or 'txt':
                     documents = load_document(source, type_source)
 

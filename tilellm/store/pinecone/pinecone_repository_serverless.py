@@ -155,9 +155,11 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
             if item.type in ['url', 'pdf', 'docx', 'txt']:
                 documents = await self.fetch_documents(type_source=item.type,
-                                                  source=item.source,
-                                                  scrape_type=item.scrape_type,
-                                                  parameters_scrape_type_4=item.parameters_scrape_type_4)
+                                                       source=item.source,
+                                                       scrape_type=item.scrape_type,
+                                                       parameters_scrape_type_4=item.parameters_scrape_type_4,
+                                                       browser_headers=item.browser_headers
+                                                       )
 
                 chunks = await self.chunk_documents(item=item,
                                               documents=documents,
@@ -215,7 +217,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
 
     @inject_embedding()
-    async def add_item_hybrid(self, item, embedding_obj=None, embedding_dimension=None):
+    async def add_item_hybrid(self, item:ItemSingle, embedding_obj=None, embedding_dimension=None):
         """
         Add item for hybrid search
         :param item:
@@ -247,9 +249,10 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
         try:
             if item.type in ['url', 'pdf', 'docx', 'txt']:
                 documents = await self.fetch_documents(type_source = item.type,
-                                                  source=item.source,
-                                                  scrape_type=item.scrape_type,
-                                                  parameters_scrape_type_4=item.parameters_scrape_type_4)
+                                                       source=item.source,
+                                                       scrape_type=item.scrape_type,
+                                                       parameters_scrape_type_4=item.parameters_scrape_type_4,
+                                                       browser_headers=item.browser_headers)
 
                 chunks = await self.chunk_documents(item=item,
                                               documents=documents,
@@ -346,11 +349,12 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
         return await self.create_index(engine=engine, embeddings=embedding_obj, emb_dimension=embedding_dimension)
 
     @staticmethod
-    async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4):
+    async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers):
         if type_source in ['url', 'txt']:
             return await get_content_by_url(source,
                                             scrape_type,
-                                            parameters_scrape_type_4=parameters_scrape_type_4)
+                                            parameters_scrape_type_4=parameters_scrape_type_4,
+                                            browser_headers=browser_headers)
         return load_document(source, type_source)
 
     @staticmethod

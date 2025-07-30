@@ -10,6 +10,16 @@ PINECONE_TEXT_KEY = None
 VOYAGEAI_API_KEY = None
 JWT_SECRET_KEY = None
 
+
+rephrase_qa_prompt ="""
+Given the following conversation and a follow up question, rephrase the follow up question to be a standalone question.
+
+Chat History:
+{chat_history}
+Follow Up Input: {input}
+Standalone Question:
+"""
+
 contextualize_q_system_prompt = """Given a chat history and the latest user question \
                         which might reference context in the chat history, formulate a standalone question \
                         which can be understood without the chat history. Do NOT answer the question, \

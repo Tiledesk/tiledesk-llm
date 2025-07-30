@@ -21,7 +21,9 @@ class ItemSingle(BaseModel):
     gptkey: SecretStr | None = None
     scrape_type: int = Field(default_factory=lambda: 0)
     embedding: Union[str, LlmEmbeddingModel] = Field(default="text-embedding-ada-002")
-    #model: Optional[LlmEmbeddingModel] | None = None
+    browser_headers: Dict[str, str] = Field(
+        default_factory=lambda: {'user-agent': 'Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36'}
+    )
     namespace: str | None = None
     webhook: str = Field(default_factory=lambda: "")
     semantic_chunk: Optional[bool] = Field(default=False)
@@ -30,6 +32,12 @@ class ItemSingle(BaseModel):
     chunk_overlap: int = Field(default_factory=lambda: 400)
     parameters_scrape_type_4: Optional[Any] = None # Will be importing ParametersScrapeType4
     engine: Engine
+
+    @model_validator(mode='after')
+    def validate_browser_headers(self):
+        if 'user-agent' not in self.browser_headers:
+            self.browser_headers['user-agent'] = 'Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36'
+        return self
 
     @model_validator(mode='after')
     def check_scrape_type(cls, values):
@@ -80,7 +88,7 @@ class QuestionAnswer(BaseModel):
     chunks_only: Optional[bool] = Field(default_factory=lambda: False)
     reranking : Optional[bool] = Field(default_factory=lambda: False)
     reranking_multiplier: int = 3  # moltiplicatore per top_k
-    reranker_model: str = "BAAI/bge-reranker-large"
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     engine: Engine
     chat_history_dict: Optional[Dict[str, ChatEntry]] = None
 
