@@ -5,8 +5,12 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2025-08-01]
+### 0.4.11-rc1
+- update: cache managed with ttl and max_size   
+
 ## [2025-07-30]
-### 0.4.10-rc1
+### 0.4.10-rc2
 - add: parameter browser_headers for scrape  
 
 ## [2025-07-21]

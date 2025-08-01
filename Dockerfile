@@ -21,6 +21,7 @@ RUN playwright install chromium
 RUN playwright install-deps chromium
 # RUN python -c "from transformers import AutoModelForSequenceClassification; model = AutoModelForSequenceClassification.from_pretrained('BAAI/bge-m3');"
 RUN python -c "from transformers import AutoModelForSequenceClassification; model = AutoModelForSequenceClassification.from_pretrained('naver/splade-cocondenser-ensembledistil');"
+RUN python -c "from sentence_transformers import CrossEncoder; model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2');"
 # Aggiustare redis
 ENV REDIS_HOST=redis
 ENV REDIS_URL=redis://redis:6379/0
