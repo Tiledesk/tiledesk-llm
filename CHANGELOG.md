@@ -5,6 +5,10 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2025-08-06]
+### 0.4.11-rc2
+- fix: async re-ranking function   
+
 ## [2025-08-01]
 ### 0.4.11-rc1
 - update: cache managed with ttl and max_size   

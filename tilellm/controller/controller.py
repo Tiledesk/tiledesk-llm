@@ -90,7 +90,7 @@ async def ask_hybrid_with_memory(question_answer, repo=None, llm=None, callback_
         ### Fine modifiche ORIG: results = await repo.perform_hybrid_search(question_answer, index, dense_vector, sparse_vector)
         # Retrieve documents based on search results
         if question_answer.reranking:
-            contextualize_query = create_contextualize_query(llm,question_answer)
+            contextualize_query = await create_contextualize_query(llm,question_answer)
         else:
             contextualize_query= question_answer.question
 
