@@ -92,12 +92,30 @@ class QuestionAnswer(BaseModel):
     engine: Engine
     chat_history_dict: Optional[Dict[str, ChatEntry]] = None
 
-    @field_validator("temperature")
-    def temperature_range(cls, v):
-        """Ensures temperature is within valid range (usually 0.0 to 1.0)."""
-        if not 0.0 <= v <= 1.0:
-            raise ValueError("Temperature must be between 0.0 and 1.0.")
-        return v
+    #@field_validator("temperature")
+    #def temperature_range(cls, v):
+    #    """Ensures temperature is within valid range (usually 0.0 to 1.0)."""
+    #    if not 0.0 <= v <= 1.0:
+    #        raise ValueError("Temperature must be between 0.0 and 1.0.")
+    #    return v
+
+    @model_validator(mode="after")
+    def adjust_temperature_and_validate(self):
+        # Ricava il nome del modello come stringa
+        model_name: Optional[str] = None
+        if isinstance(self.model, str):
+            model_name = self.model
+        elif isinstance(self.model, LlmEmbeddingModel):
+            model_name = self.model.name
+
+        # Se è gpt-5 o gpt-5-*, forza temperature a 1.0
+        if model_name and model_name.startswith("gpt-5"):
+            self.temperature = 1.0
+        else:
+            # Altrimenti valida il range della temperatura
+            if not 0.0 <= self.temperature <= 1.0:
+                raise ValueError("Temperature must be between 0.0 and 1.0.")
+        return self
 
     @field_validator("top_p")
     def top_p_range(cls, v):
