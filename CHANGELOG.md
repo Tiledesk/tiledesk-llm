@@ -5,6 +5,11 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+
+## [2025-08-29]
+### 0.4.12-rc3
+- update: playwright 1.55.0  
+
 ## [2025-08-06]
 ### 0.4.11-rc2
 - fix: async re-ranking function   
