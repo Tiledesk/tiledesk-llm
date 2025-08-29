@@ -5,6 +5,7 @@ from typing import Union
 from fastapi import (FastAPI,
                      Depends,
                      HTTPException)
+# from fastapi_cprofile.profiler import CProfileMiddleware
 from fastapi.responses import JSONResponse
 
 import asyncio
@@ -223,6 +224,7 @@ async def redis_consumer(app: FastAPI):
 populate_constant()
 app = FastAPI(lifespan=redis_consumer)
 
+# app.add_middleware(CProfileMiddleware, enable=True, print_each_request=True)
 
 
 

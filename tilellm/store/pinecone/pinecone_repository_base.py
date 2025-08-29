@@ -2,6 +2,7 @@ import datetime
 from abc import abstractmethod
 
 import time
+import asyncio
 from langchain_pinecone import PineconeVectorStore
 from pydantic import SecretStr
 
@@ -453,7 +454,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
                                                       )
                                 )
             while not pc.describe_index(engine.index_name).status["ready"]:
-                time.sleep(1)
+                await asyncio.sleep(1)
 
             host = pc.describe_index(engine.index_name).host
             index = pc.IndexAsyncio(name=engine.index_name, host=host)

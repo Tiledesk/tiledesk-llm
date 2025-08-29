@@ -428,7 +428,7 @@ async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler
                                                               retriever=retriever,
                                                               get_session_history=get_session_history,
                                                               qa_prompt=qa_prompt,
-                                                              callback_handler=callback_handler,
+                                                              callback_handler=callback_handler, ######## TODO provarte ad eliminare l'handler per le performance
                                                               question_answer_list=question_answer_list
                                                               )
 

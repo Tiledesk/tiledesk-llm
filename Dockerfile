@@ -7,8 +7,9 @@ WORKDIR /tiledesk-llm
 COPY log_conf.json /tiledesk-llm/log_conf.json
 COPY pyproject.toml /tiledesk-llm/pyproject.toml
 COPY ./tilellm /tiledesk-llm/tilellm
-
-
+# RUN pip install pytest-playwright
+# RUN playwright install chromium
+# RUN playwright install-deps chromium
 
 RUN pip install .
 RUN pip install "uvicorn[standard]" gunicorn
