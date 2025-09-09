@@ -92,15 +92,18 @@ async def initialize_retrievers(question_answer, repo, llm_embeddings):
         search_kwargs=search_kwargs
     )
 
-    redundant_filter = EmbeddingsRedundantFilter(
-        embeddings=llm_embeddings,
-        similarity_threshold=question_answer.similarity_threshold
-    )
+    if question_answer.similarity_threshold<1.0:
+        redundant_filter = EmbeddingsRedundantFilter(
+            embeddings=llm_embeddings,
+            similarity_threshold=question_answer.similarity_threshold
+        )
 
-    pipeline_compressor = DocumentCompressorPipeline(transformers=[redundant_filter])
-    retriever = ContextualCompressionRetriever(
-        base_compressor=pipeline_compressor, base_retriever=vs_retriever
-    )
+        pipeline_compressor = DocumentCompressorPipeline(transformers=[redundant_filter])
+        retriever = ContextualCompressionRetriever(
+            base_compressor=pipeline_compressor, base_retriever=vs_retriever
+        )
+    else:
+        retriever=vs_retriever
 
     return retriever
 

@@ -7,6 +7,11 @@
 
 
 ## [2025-09-09]
+### 0.5.0-rc2
+- fix: disable filter if _similarity_threshold_ is 1.0 
+
+
+## [2025-09-09]
 ### 0.5.0-rc1
 - add: global cache
 - improved: performance on /api/qa
