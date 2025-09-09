@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, SecretStr, model_validator, field_validator
+from pydantic import BaseModel, Field, SecretStr, model_validator, field_validator, validator
 from typing import Optional, Union
 from huggingface_hub import snapshot_download # Potrebbe andare in utils/huggingface_utils.py
 
@@ -39,11 +39,19 @@ class LlmEmbeddingModel(BaseModel):
     url: Optional[str] = Field(default_factory=lambda: "")
     dimension: Optional[int] = 1024 #qwel2-deepseek 3584, llama3.2 3072
 
-    @field_validator('name') #@validator('name')
-    def validate_model_name(cls, v, values):
-        if values.get('provider') == EmbeddingProviders.HUGGINGFACE:
-            prepare_huggingface_model(v)  # Scarica il modello all'validazione
-        return v
+    @model_validator(mode='after')
+    def validate_model(self):
+        print(f"Validazione dopo l'inizializzazione del modello: {self.name} con provider {self.provider}")
+        if self.provider == EmbeddingProviders.HUGGINGFACE:
+            prepare_huggingface_model(self.name)
+        return self
+
+    #@validator('name')
+    #def validate_model_name(cls, v, values):
+    #    print(f"{v} ===== {values}")
+    #    if values.get('provider') == EmbeddingProviders.HUGGINGFACE:
+    #        prepare_huggingface_model(v)  # Scarica il modello alla validazione
+    #    return v
 
 class EmbeddingModel(BaseModel):
     embedding_provider: str

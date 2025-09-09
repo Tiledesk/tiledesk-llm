@@ -92,7 +92,7 @@ async def initialize_retrievers(question_answer, repo, llm_embeddings):
         search_kwargs=search_kwargs
     )
 
-    if question_answer.similarity_threshold<1.0:
+    if float(question_answer.similarity_threshold) != 1.0:
         redundant_filter = EmbeddingsRedundantFilter(
             embeddings=llm_embeddings,
             similarity_threshold=question_answer.similarity_threshold

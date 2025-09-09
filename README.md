@@ -13,7 +13,8 @@ pip install -e .
 
 ```commandline
 export JWT_SECRET_KEY="yourkey-256-bit"
-export TOKENIZERS_PARALLELISM=false
+expo
+rt TOKENIZERS_PARALLELISM=false
 export WORKERS=INT number of workers 2*CPU+1
 export TIMEOUT=INT seconds of timeout default=180
 export MAXREQUESTS=INT The maximum number of requests a worker will process before restarting. deafult=1200
@@ -44,6 +45,13 @@ sudo docker run -d -p 8000:8000 \
  
 ```
 
+## Qdrant docker
+```bash
+docker run -p 6333:6333 -p 6334:6334 \
+    --name qdrant \
+    -v "$(pwd)/sviluppo/qdrant_storage:/qdrant/storage:z" \
+    qdrant/qdrant
+```
 test-redis is a redis containar 
 
 # Pinecone index type

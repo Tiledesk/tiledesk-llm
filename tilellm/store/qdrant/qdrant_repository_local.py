@@ -1,8 +1,10 @@
+import asyncio
 import datetime
+import time
 import uuid
 
 from langchain_core.documents import Document
-from langchain_qdrant import QdrantVectorStore
+from langchain_qdrant import  QdrantVectorStore
 from qdrant_client import models, AsyncQdrantClient, QdrantClient
 
 from tilellm.models.schemas import (RepositoryQueryResult,
@@ -25,12 +27,159 @@ from typing import Dict
 import logging
 
 from tilellm.shared.embedding_factory import inject_embedding, inject_embedding_qa
+from tilellm.shared.embeddings.embedding_client_manager import inject_embedding_async_optimized, \
+    inject_embedding_qa_async_optimized
 from tilellm.shared.sparse_util import hybrid_score_norm
+from tilellm.shared.timed_cache import TimedCache
 from tilellm.store.vector_store_repository import VectorStoreRepository
 from tilellm.tools.document_tools import fetch_documents, get_content_by_url_with_bs, calc_embedding_cost
 from tilellm.tools.sparse_encoders import TiledeskSparseEncoders
 
 logger = logging.getLogger(__name__)
+
+
+class CachedVectorStore:
+    """
+    Una classe wrapper per gestire in modo asincrono e con caching
+    un client Qdrant e la relativa VectorStore di LangChain.
+    """
+
+    def __init__(self, engine, embeddings, emb_dimension):
+        self.engine = engine
+        self.embeddings = embeddings
+        self.emb_dimension = emb_dimension
+
+        # Sostituzione di _pc_client con _qdrant_client
+        self._qdrant_client: QdrantClient | None = None
+        self._lock = asyncio.Lock()
+        self._loop = None
+
+        # Logica di throttling per i test di connessione (invariata)
+        self._last_check = 0.0
+        self._check_every_sec = 60
+
+    async def _ensure_client(self):
+        """
+        Assicura che il client Qdrant sia inizializzato, sia in esecuzione
+        sull'event loop corretto e che la collection esista.
+        """
+        cur_loop = asyncio.get_running_loop()
+        async with self._lock:
+            # Se il client non esiste o l'event loop è cambiato, lo ricreiamo
+            if self._qdrant_client is None or self._loop is not cur_loop:
+                if self._qdrant_client:
+                    try:
+                        await self._qdrant_client.close()
+                    except Exception as e:
+                        logger.warning(f"Errore durante la chiusura del vecchio client Qdrant: {e}")
+
+                logger.info(f"Creazione di un nuovo client AsyncQdrantClient per l'host: {self.engine.host}")
+                if self.engine.deployment == "local":
+                    self._qdrant_client = QdrantClient(host=self.engine.host, port=self.engine.port)
+                else:
+                    url = f"{self.engine.host}:{self.engine.port}" if self.engine.port else self.engine.host
+                    self._qdrant_client = QdrantClient(
+                        url=url,
+                        api_key=self.engine.apikey.get_secret_value()
+                    )
+                self._loop = cur_loop
+
+            # Assicura che la collection esista, altrimenti la crea
+            await self._create_collection_if_not_exists()
+
+    async def get_vector_store(self) -> QdrantVectorStore:
+        """
+        Restituisce un'istanza di QdrantVectorStore (da LangChain) pronta all'uso.
+        """
+        await self._ensure_client()
+        return QdrantVectorStore(
+            client=self._qdrant_client,
+            collection_name=self.engine.index_name,
+            embedding=self.embeddings,
+            vector_name="text-dense",
+            sparse_vector_name="text-sparse"
+        )
+
+    async def get_client(self) -> QdrantClient:
+        """
+        Restituisce il client Qdrant asincrono.
+        """
+        await self._ensure_client()
+        return self._qdrant_client
+
+    async def test_connection(self) -> bool:
+        """
+        Verifica la connessione con il servizio Qdrant, con throttling per evitare controlli eccessivi.
+        Include una logica di recovery per riconnettersi in caso di fallimento.
+        """
+        now = time.time()
+        if now - self._last_check < self._check_every_sec:
+            return True
+
+        try:
+            client = await self.get_client()
+            # Un modo semplice per testare la connessione è ottenere info sulla collection
+            await client.get_collection(collection_name=self.engine.index_name)
+            self._last_check = now
+            return True
+        except Exception as e:
+            logger.warning(f"Test di connessione a Qdrant fallito: {e}. Tento il ripristino.")
+            # Logica di recovery: resetta il client per forzare una nuova creazione
+            async with self._lock:
+                if self._qdrant_client:
+                    try:
+                        self._qdrant_client.close()
+                    except:
+                        pass
+                self._qdrant_client = None
+
+            # Singolo tentativo di retry
+            try:
+                logger.info("Nuovo tentativo di connessione dopo il fallimento...")
+                client = await self.get_client()
+                await client.get_collection(collection_name=self.engine.index_name)
+                self._last_check = time.time()
+                logger.info("Connessione a Qdrant ripristinata con successo.")
+                return True
+            except Exception as retry_e:
+                logger.error(f"Il tentativo di ripristino della connessione è fallito: {retry_e}")
+                return False
+
+    async def _create_collection_if_not_exists(self):
+        """Crea la collection Qdrant se non esiste."""
+        collection_name = self.engine.index_name
+        try:
+            self._qdrant_client.get_collection(collection_name=collection_name)
+        except Exception:
+            logger.info(f"La collection '{collection_name}' non esiste. Inizio la creazione...")
+            metric_distance = models.Distance[self.engine.metric.upper()]
+
+            self._qdrant_client.create_collection(
+                collection_name=collection_name,
+                vectors_config={"text-dense": models.VectorParams(
+                    size=self.emb_dimension,
+                    distance=metric_distance
+                )},
+                sparse_vectors_config={
+                    "text-sparse": models.SparseVectorParams(
+                        index=models.SparseIndexParams(
+                            on_disk=True,
+                        )
+                    )
+                }
+            )
+            logger.info(f"Collection '{collection_name}' creata con successo.")
+
+    async def close(self):
+        """Chiude la connessione del client Qdrant."""
+        if self._qdrant_client:
+            try:
+                self._qdrant_client.close()
+                logger.info("Client Qdrant chiuso correttamente.")
+            finally:
+                self._qdrant_client = None
+                self._loop = None
+
 
 
 class QdrantRepository(VectorStoreRepository):
@@ -100,14 +249,14 @@ class QdrantRepository(VectorStoreRepository):
         return results
 
     async def initialize_embeddings_and_index(self, question_answer, llm_embeddings):
-        emb_dimension = self.get_embeddings_dimension(question_answer.embedding)
+        emb_dimension = await self.get_embeddings_dimension(question_answer.embedding)
         sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
         vector_store = await self.create_index(question_answer.engine, llm_embeddings, emb_dimension)
         index = vector_store.client
 
         return emb_dimension, sparse_encoder, index
 
-    @inject_embedding()
+    @inject_embedding_async_optimized()
     async def add_item(self, item: ItemSingle, embedding_obj=None, embedding_dimension=None):
         """
         Add items to name
@@ -219,7 +368,7 @@ class QdrantRepository(VectorStoreRepository):
                                   status=400,
                                   cost=f"{cost:.6f}")
 
-    @inject_embedding()
+    @inject_embedding_async_optimized()
     async def add_item_hybrid(self, item, embedding_obj=None, embedding_dimension=None):
         """
                 Add item for hybrid search
@@ -330,7 +479,7 @@ class QdrantRepository(VectorStoreRepository):
                                   status=400,
                                   cost=f"{cost:.6f}")
 
-    @inject_embedding_qa()
+    @inject_embedding_qa_async_optimized()
     async def get_chunks_from_repo(self, question_answer:QuestionAnswer, embedding_obj=None, embedding_dimension=None):
         """
 
@@ -358,7 +507,7 @@ class QdrantRepository(VectorStoreRepository):
             start_time = datetime.datetime.now() if question_answer.debug else 0
 
             if question_answer.search_type == 'hybrid':
-                emb_dimension = self.get_embeddings_dimension(question_answer.embedding)
+                emb_dimension = await self.get_embeddings_dimension(question_answer.embedding)
                 sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
                 index = vector_store.client
                 sparse_vector = sparse_encoder.encode_queries(question_answer.question)
@@ -927,9 +1076,41 @@ class QdrantRepository(VectorStoreRepository):
             logger.error(f"No Collections available '{ex}' does not exist. Creating it ...")
             raise ex
 
+    @staticmethod
+    async def create_index_cache_wrapper(engine, embeddings, emb_dimension) -> CachedVectorStore:
+        """
+        Ottiene un'istanza di CachedVectorStore dalla cache o ne crea una nuova.
+        La chiave della cache è basata sui parametri di connessione di Qdrant.
+        """
+        cache_key = (
+            engine.host,
+            engine.port,
+            engine.index_name,
+            str(engine.apikey)[:20] if engine.apikey else ""
+        )
+
+        async def _wrapper_creator():
+            return await _create_vector_store_instance(engine, embeddings, emb_dimension)
+
+        wrapper = await TimedCache.async_get(
+            object_type="qdrant_vector_store_wrapper",
+            key=cache_key,
+            constructor=_wrapper_creator
+        )
+        return wrapper
+
+    async def create_index(self, engine, embeddings, emb_dimension) -> QdrantVectorStore:
+        """
+        Metodo principale per ottenere la VectorStore finale.
+        Utilizza il wrapper cachato per gestire la connessione.
+        """
+        cached_vs_wrapper = await self.create_index_cache_wrapper(
+            engine, embeddings, emb_dimension
+        )
+        return await cached_vs_wrapper.get_vector_store()
 
     @staticmethod
-    async def create_index(engine, embeddings, emb_dimension) ->  QdrantVectorStore :
+    async def create_index_old(engine, embeddings, emb_dimension) ->  QdrantVectorStore :
         """
         Create or return existing Qdrant collection and return a Qdrant vector store instance.
         :param engine: Configuration object containing host, port.
@@ -992,7 +1173,7 @@ class QdrantRepository(VectorStoreRepository):
 
 
     @staticmethod
-    def get_embeddings_dimension(embedding):
+    async def get_embeddings_dimension(embedding):
         """
         Get embedding dimension for OpenAI embedding model
         :param embedding:
@@ -1159,3 +1340,11 @@ class QdrantRepository(VectorStoreRepository):
                                                         zip(chunk_ids, embedding_values, chunk_metadatas, sparse_values, chunk_texts)])
             logger.info(f"response upsert: {resp}")
 
+
+async def _create_vector_store_instance(engine, embeddings, emb_dimension) -> CachedVectorStore:
+    """Crea una nuova istanza del wrapper CachedVectorStore per Qdrant."""
+    logger.info(f"Creazione del wrapper cached vector store per la collection: {engine.index_name}")
+    cached_vs = CachedVectorStore(engine, embeddings, emb_dimension)
+    # Esegue un warm-up per creare il client e la collection se necessario
+    await cached_vs._ensure_client()
+    return cached_vs

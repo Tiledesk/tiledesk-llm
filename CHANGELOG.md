@@ -5,11 +5,13 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2025-09-09]
+### 0.5.0-rc3
+- fix: minor fix 
 
 ## [2025-09-09]
 ### 0.5.0-rc2
 - fix: disable filter if _similarity_threshold_ is 1.0 
-
 
 ## [2025-09-09]
 ### 0.5.0-rc1
