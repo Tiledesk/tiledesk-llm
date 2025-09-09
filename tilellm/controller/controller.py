@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import List, AsyncGenerator
+from typing import List
 
 import fastapi
 import asyncio
@@ -36,7 +36,8 @@ from tilellm.models import (ChatEntry,
                             QuestionAnswer
                             )
 
-from tilellm.shared.utility import inject_repo, inject_llm, inject_llm_chat, inject_reason_llm
+from tilellm.shared.utility import inject_repo, inject_llm, inject_llm_chat, inject_reason_llm, inject_repo_async, \
+    inject_llm_chat_async, inject_llm_async, inject_reason_llm_async
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
@@ -60,8 +61,8 @@ from tilellm.tools.reranker import RerankedRetriever, TileReranker
 
 logger = logging.getLogger(__name__)
 
-@inject_repo
-@inject_llm_chat
+@inject_repo_async
+@inject_llm_chat_async
 async def ask_hybrid_with_memory(question_answer, repo=None, llm=None, callback_handler=None, llm_embeddings=None):
     try:
         logger.info(question_answer)
@@ -116,14 +117,15 @@ async def ask_hybrid_with_memory(question_answer, repo=None, llm=None, callback_
                                                               question_answer_list=question_answer_list
                                                               )
 
+        #await index.close()
 
-        llm_embeddings=None
+
         return result_to_return
     except Exception as e:
         return handle_exception(e, question_answer)
 
 
-@inject_reason_llm
+@inject_reason_llm_async
 async def ask_reason_llm(question, chat_model=None):
     try:
         logger.info(question)
@@ -242,7 +244,7 @@ async def ask_reason_llm(question, chat_model=None):
         raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
 
 
-@inject_llm
+@inject_llm_async
 async def ask_to_llm(question: QuestionToLLM, chat_model=None) :
     try:
         logger.info(question)
@@ -353,7 +355,7 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None) :
         raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
 
 
-@inject_llm
+@inject_llm_async
 async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model=None):
     mcp_client = question.create_mcp_client()
 
@@ -372,8 +374,8 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model=None):
         return handle_exception(e, "Exception in MCP dialog")
 
 
-@inject_repo
-@inject_llm_chat
+@inject_repo_async
+@inject_llm_chat_async
 async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler=None, llm_embeddings=None) -> RetrievalResult:
     """
     Ask to LLM your questions
@@ -428,7 +430,7 @@ async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler
                                                               retriever=retriever,
                                                               get_session_history=get_session_history,
                                                               qa_prompt=qa_prompt,
-                                                              callback_handler=callback_handler, ######## TODO provarte ad eliminare l'handler per le performance
+                                                              callback_handler=callback_handler,
                                                               question_answer_list=question_answer_list
                                                               )
 
@@ -436,7 +438,7 @@ async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler
     except Exception as e:
         return handle_exception(e, question_answer)
 
-@inject_repo
+@inject_repo_async
 async def ask_for_chunks(question_answer:QuestionAnswer, repo=None) -> RetrievalChunksResult:
     """
     Ask to LLM your questions
@@ -456,7 +458,7 @@ async def ask_for_chunks(question_answer:QuestionAnswer, repo=None) -> Retrieval
     except Exception as e:
         return handle_exception(e, question_answer)
 
-@inject_llm
+@inject_llm_async
 async def ask_to_agent(question_to_agent: QuestionToAgent, chat_model=None):
     try:
         logger.info(question_to_agent)
@@ -525,7 +527,7 @@ async def ask_to_agent(question_to_agent: QuestionToAgent, chat_model=None):
         raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
 
 
-@inject_repo
+@inject_repo_async
 async def ask_with_sequence(question_answer, repo=None) -> RetrievalResult:
     try:
         logger.info(question_answer)
@@ -644,7 +646,7 @@ async def ask_with_sequence(question_answer, repo=None) -> RetrievalResult:
         raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
 
 
-@inject_repo
+@inject_repo_async
 async def add_item(item, repo=None) -> IndexingResult:
     """
     Add items to namespace
@@ -657,7 +659,7 @@ async def add_item(item, repo=None) -> IndexingResult:
     return await repo.add_item(item)
 
 
-@inject_repo
+@inject_repo_async
 async def add_item_hybrid(item, repo=None) -> IndexingResult:
     """
 
@@ -666,7 +668,7 @@ async def add_item_hybrid(item, repo=None) -> IndexingResult:
     return await repo.add_item_hybrid(item)
 
 
-@inject_repo
+@inject_repo_async
 async def delete_namespace(namespace_to_delete: RepositoryNamespace, repo=None):
     """
     Delete Namespace from index
@@ -681,7 +683,7 @@ async def delete_namespace(namespace_to_delete: RepositoryNamespace, repo=None):
         raise ex
 
 
-@inject_repo
+@inject_repo_async
 async def delete_id_from_namespace(item_to_delete: RepositoryItem, metadata_id: str, namespace: str, repo=None):
     """
     Delete items from namespace
@@ -699,7 +701,7 @@ async def delete_id_from_namespace(item_to_delete: RepositoryItem, metadata_id: 
         logger.error(ex)
         raise ex
 
-@inject_repo
+@inject_repo_async
 async def delete_chunk_id_from_namespace(repository_engine: RepositoryEngine, chunk_id:str, namespace: str, repo=None):
     """
     Delete chunk by id from namespace
@@ -718,7 +720,7 @@ async def delete_chunk_id_from_namespace(repository_engine: RepositoryEngine, ch
         raise ex
 
 
-@inject_repo
+@inject_repo_async
 async def get_list_namespace(repository_engine: RepositoryEngine, repo=None) -> RepositoryNamespaceResult:
     """
     Get list namespaces with namespace id and vector count
@@ -733,7 +735,7 @@ async def get_list_namespace(repository_engine: RepositoryEngine, repo=None) -> 
         raise ex
 
 
-@inject_repo
+@inject_repo_async
 async def get_ids_namespace(repository_engine: RepositoryEngine, metadata_id: str, namespace: str, repo=None) -> RepositoryItems:
     """
     Get all items from namespace given id
@@ -750,7 +752,7 @@ async def get_ids_namespace(repository_engine: RepositoryEngine, metadata_id: st
         raise ex
 
 
-@inject_repo
+@inject_repo_async
 async def get_listitems_namespace(repository_engine: RepositoryEngine, namespace: str, repo=None) -> RepositoryItems:
     """
     Get all items from given namespace
@@ -766,7 +768,7 @@ async def get_listitems_namespace(repository_engine: RepositoryEngine, namespace
         raise ex
 
 
-@inject_repo
+@inject_repo_async
 async def get_desc_namespace(repository_engine: RepositoryEngine, namespace: str, repo=None) -> RepositoryDescNamespaceResult:
     """
     Desc of Namespace
@@ -781,7 +783,7 @@ async def get_desc_namespace(repository_engine: RepositoryEngine, namespace: str
         raise ex
 
 
-@inject_repo
+@inject_repo_async
 async def get_sources_namespace(repository_engine: RepositoryEngine, source: str, namespace: str, repo=None) -> RepositoryItems:
     """
     Get all item from namespace given source

@@ -6,7 +6,7 @@ from typing import Dict, Optional, List, Union, Any, Literal
 import datetime
 from enum import Enum
 
-from pydantic.v1 import validator
+#from pydantic.v1 import validator
 
 
 class EmbeddingProviders(str, Enum):
@@ -49,7 +49,7 @@ class LlmEmbeddingModel(BaseModel):
     url: Optional[str] = Field(default_factory=lambda: "")
     dimension: Optional[int] = 1024 #qwel2-deepseek 3584, llama3.2 3072
 
-    @validator('name')
+    @field_validator('name')
     def validate_model_name(cls, v, values):
         if values.get('provider') == EmbeddingProviders.HUGGINGFACE:
             prepare_huggingface_model(v)  # Scarica il modello all'validazione

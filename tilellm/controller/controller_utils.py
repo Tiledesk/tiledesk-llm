@@ -1,6 +1,8 @@
 import json
 from datetime import datetime
 import asyncio
+
+from fastapi import HTTPException, Depends
 from fastapi.responses import StreamingResponse
 import traceback
 import uuid
@@ -12,6 +14,7 @@ from langchain_core.documents import Document
 from langchain_core.messages import ToolMessage
 
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
+from langchain_pinecone.vectorstores import PineconeVectorStore
 from starlette.responses import JSONResponse
 from tilellm.models.schemas import (RetrievalResult,
                                     QuotedAnswer,
@@ -72,7 +75,7 @@ def preprocess_chat_history(question_answer):
 # Function to initialize embeddings and retrievers
 async def initialize_retrievers(question_answer, repo, llm_embeddings):
 
-    emb_dimension = repo.get_embeddings_dimension(question_answer.embedding)
+    emb_dimension = await repo.get_embeddings_dimension(question_answer.embedding)
     vector_store = await repo.create_index(question_answer.engine, llm_embeddings, emb_dimension)
 
     # Aggiunto e modificato il codice per avere invece che top_k il retrieval_k###
@@ -100,6 +103,8 @@ async def initialize_retrievers(question_answer, repo, llm_embeddings):
     )
 
     return retriever
+
+
 
 
 # Function to fetch vectors for the given question
@@ -360,7 +365,10 @@ def format_result(result, citations, question_answer, callback_handler, question
     source = format_sources(citations, sources, question_answer.citations)
     metadata_id = ids[0]
 
-    prompt_token_size = callback_handler.total_tokens
+    if callback_handler:
+        prompt_token_size = callback_handler.total_tokens
+    else:
+        prompt_token_size = 0
 
 
     logger.info(f"input: {result['input']}")

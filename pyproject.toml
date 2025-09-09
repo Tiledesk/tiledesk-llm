@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "tilellm"
-version = "0.4.12-rc3"
+version = "0.5.0-rc1"
 description = "tiledesk for RAG"
 authors = ["Gianluca Lorenzo <gianluca.lorenzo@gmail.com>"]
 repository = "https://github.com/Tiledesk/tiledesk-llm"
@@ -21,7 +21,7 @@ langchain = "0.3.27" #"0.3.26"
 jq =  "1.10.0" #"1.9.1"
 langchain-openai = "0.3.28" #"0.3.27"
 langchain-voyageai = "0.1.7" #"0.1.6"
-langchain-anthropic = "0.3.18" #"0.3.17"
+langchain-anthropic = "0.3.19" #"0.3.18"
 langchain-cohere= "0.4.5" #"0.4.4"
 langchain-google-genai= "2.1.9" #"2.1.7"
 langchain-groq = "0.3.7" #"0.3.6"
@@ -31,7 +31,7 @@ pinecone-plugin-interface=  "0.0.7"
 python-dotenv = "1.1.1"
 langchain-community = "0.3.27"
 langchain-experimental = "0.3.4"
-langchain-pinecone =  "0.2.8"
+langchain-pinecone =  "0.2.12" #"0.2.11"
 langchain-huggingface= "0.3.1" #"0.3.0"
 langchain-ollama= "0.3.6" #"0.3.4" #"0.3.2"
 langchain_xai= "0.2.4"
@@ -40,7 +40,7 @@ langchain-mistralai = "0.2.11"
 langchain-mcp-adapters = "0.1.9"
 langgraph = "0.6.4" #"0.5.3"
 
-openai = "1.99.3" #"1.95.0" #"1.77.0"
+openai = "1.107.0" #"1.99.3" #"1.95.0" #"1.77.0"
 cohere = "5.16.2" #"5.15.0"
 
 qdrant-client= "1.15.1" #"1.14.3" #"1.14.2"
@@ -63,12 +63,13 @@ FlagEmbedding= "1.3.5"
 
 simsimd = "6.5.0"
 
+
 #[tool.poetry.dependencies.pinecone-text]
 #version = "0.10.0"
 #extras = ["splade"]
-#pinecone = {extras = ["async"], version = "^6.0.2"}
+
 pinecone = {extras = ["async"], version = "7.3.0"}
-pinecone-text = "0.10.0"
+pinecone-text = "0.11.0" #"0.10.0"
 
 
 [tool.poetry.dependencies.uvicorn]

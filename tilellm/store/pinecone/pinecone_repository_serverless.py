@@ -9,6 +9,7 @@ from tilellm.models import (MetadataItem,
                             ItemSingle,
                             QuestionAnswer
                             )
+from tilellm.shared.embeddings.embedding_client_manager import inject_embedding_qa_async_optimized
 from tilellm.shared.sparse_util import hybrid_score_norm
 
 from tilellm.tools.document_tools import (get_content_by_url,
@@ -18,7 +19,7 @@ from tilellm.tools.document_tools import (get_content_by_url,
 
 from tilellm.store.pinecone.pinecone_repository_base import PineconeRepositoryBase
 
-from tilellm.shared.embedding_factory import inject_embedding, inject_embedding_qa
+from tilellm.shared.embedding_factory import inject_embedding, inject_embedding_qa_async
 
 from langchain_core.documents import Document
 
@@ -35,26 +36,28 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
     async def perform_hybrid_search(self, question_answer, index, dense_vector, sparse_vector):
         dense, sparse = hybrid_score_norm(dense_vector, sparse_vector, alpha=question_answer.alpha)
-        async with index as index:
-            results = await index.query(
-                top_k=question_answer.top_k,
-                vector=dense,
-                sparse_vector=sparse,
-                namespace=question_answer.namespace,
-                include_metadata=True
-            )
+
+        results = await index.query(
+            top_k=question_answer.top_k,
+            vector=dense,
+            sparse_vector=sparse,
+            namespace=question_answer.namespace,
+            include_metadata=True
+        )
+        await index.close()
+
         return results
 
 
     async def initialize_embeddings_and_index(self, question_answer, llm_embeddings):
-        emb_dimension = self.get_embeddings_dimension(question_answer.embedding)
+        emb_dimension = await self.get_embeddings_dimension(question_answer.embedding)
         sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
         vector_store = await self.create_index(question_answer.engine, llm_embeddings, emb_dimension)
-        index = vector_store.async_index
+        index = await vector_store.async_index
 
         return emb_dimension, sparse_encoder, index
 
-    @inject_embedding_qa()
+    @inject_embedding_qa_async_optimized()
     async def get_chunks_from_repo(self, question_answer: QuestionAnswer, embedding_obj=None, embedding_dimension=None):
         """
 
@@ -71,16 +74,16 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             start_time = datetime.datetime.now() if question_answer.debug else 0
 
             if question_answer.search_type == 'hybrid':
-                emb_dimension = self.get_embeddings_dimension(question_answer.embedding)
+                emb_dimension = await self.get_embeddings_dimension(question_answer.embedding)
                 sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
-                index = vector_store.async_index
+                index = await vector_store.async_index
                 sparse_vector = sparse_encoder.encode_queries(question_answer.question)
                 dense_vector = await embedding_obj.aembed_query(question_answer.question)
                 results = []
-                async with index as index:
+                #async with index as index:
                     # Perform hybrid search
 
-                    query_response = await self.perform_hybrid_search(question_answer, index, dense_vector, sparse_vector)
+                query_response = await self.perform_hybrid_search(question_answer, index, dense_vector, sparse_vector)
 
                 for doc in query_response.matches:
                     doc_id = doc['id']
@@ -197,8 +200,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
             logger.debug(returned_ids)
 
-            async with vector_store.async_index as index:
-                await index.close()
+            #async with vector_store.async_index as index:
+            #    await index.close()
 
             return IndexingResult(id=item.id,
                                   chunks=len(chunks),
@@ -284,17 +287,17 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             doc_sparse_vectors = sparse_encoder.encode_documents(contents, batch_size=item.hybrid_batch_size)
 
             #indice = vector_store.async_index #index #get_pinecone_index(item.engine.index_name, pinecone_api_key=item.engine.apikey)
-            async with vector_store.async_index as indice:
-                await self.upsert_vector_store_hybrid(indice,
-                                                      contents,
-                                                      chunks,
-                                                      item.id,
-                                                      namespace = item.namespace,
-                                                      engine=item.engine,
-                                                      embeddings=embedding_obj,
-                                                      sparse_vectors=doc_sparse_vectors)
+            idx = await vector_store.async_index
+            await self.upsert_vector_store_hybrid(idx,
+                                                  contents,
+                                                  chunks,
+                                                  item.id,
+                                                  namespace = item.namespace,
+                                                  engine=item.engine,
+                                                  embeddings=embedding_obj,
+                                                  sparse_vectors=doc_sparse_vectors)
 
-
+            await idx.close()
             return IndexingResult(id=item.id, chunks=len(chunks), total_tokens=total_tokens,
                                   cost=f"{cost:.6f}")
 
@@ -302,8 +305,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             import traceback
             traceback.print_exc()
             logger.error(repr(ex))
-            async with vector_store.async_index as indice:
-                await indice.close()
+            idx = await vector_store.async_index
+            await idx.close()
             return IndexingResult(id=item.id, chunks=len(chunks), total_tokens=total_tokens,
                                              status=400,
                                              cost=f"{cost:.6f}")

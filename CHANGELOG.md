@@ -6,6 +6,11 @@
 ### **Copyrigth**: *Tiledesk SRL*
 
 
+## [2025-09-09]
+### 0.5.0-rc1
+- add: global cache
+- improved: performance on /api/qa
+
 ## [2025-08-29]
 ### 0.4.12-rc3
 - update: playwright 1.55.0  

@@ -141,9 +141,6 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
-
-post.json
-qa.json
 .idea/misc.xml
 .idea/modules.xml
 .idea/tiledesk-llm.iml
@@ -152,3 +149,4 @@ qa.json
 
 
 /worker/node_modules
+/tests/contatti.csv

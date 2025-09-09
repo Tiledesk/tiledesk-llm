@@ -5,7 +5,7 @@ from typing import Union
 from fastapi import (FastAPI,
                      Depends,
                      HTTPException)
-# from fastapi_cprofile.profiler import CProfileMiddleware
+from fastapi_cprofile.profiler import CProfileMiddleware
 from fastapi.responses import JSONResponse
 
 import asyncio
@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 
 
 from tilellm.shared.const import populate_constant
+from tilellm.shared.timed_cache import TimedCache
 from tilellm.shared.utility import decode_jwt
 from tilellm.models import (ItemSingle,
                             QuestionToAgent,
@@ -29,6 +30,7 @@ from tilellm.models.schemas import (RepositoryItem,
                                     IndexingResult, RetrievalResult, RepositoryNamespaceResult,
                                     RepositoryDescNamespaceResult, RepositoryItems, SimpleAnswer,
                                     RepositoryEngine, RetrievalChunksResult)
+
 
 from tilellm.store.redis_repository import redis_xgroup_create
 from tilellm.controller.controller import (ask_with_memory,
@@ -218,13 +220,16 @@ async def redis_consumer(app: FastAPI):
  
     yield 
     
-    await redis_client.close()   
+    await redis_client.close()
+    await TimedCache.async_clear_cache("vector_store_wrapper")
+
 
 
 populate_constant()
 app = FastAPI(lifespan=redis_consumer)
 
-# app.add_middleware(CProfileMiddleware, enable=True, print_each_request=True)
+#app.add_middleware(CProfileMiddleware, enable=True, print_each_request=True)
+
 
 
 

@@ -11,6 +11,7 @@ from tilellm.models import (MetadataItem,
                             )
 
 from tilellm.shared.embedding_factory import inject_embedding, inject_embedding_qa
+from tilellm.shared.embeddings.embedding_client_manager import inject_embedding_qa_async_optimized
 from tilellm.tools.document_tools import (get_content_by_url,
                                           get_content_by_url_with_bs,
                                           load_document,
@@ -156,8 +157,9 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 a = await vector_store.aadd_documents(chunks,
                                                       namespace=namespace
                                                       )
-            async with vector_store.async_index as index:
-                await index.close()
+
+            #async with vector_store.async_index as index:
+            #    await index.close()
             pinecone_result = IndexingResult(id=metadata_id, chunks=len(chunks), total_tokens=total_tokens,
                                              cost=f"{cost:.6f}")
         except Exception as ex:
@@ -174,7 +176,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
     async def initialize_embeddings_and_index(self, question_answer, llm_embeddings):
         pass
 
-    @inject_embedding_qa()
+    @inject_embedding_qa_async_optimized()
     async def get_chunks_from_repo(self, question_answer: QuestionAnswer, embedding_obj=None, embedding_dimension=None):
         """
 
@@ -236,22 +238,23 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 api_key=engine.apikey.get_secret_value() # const.PINECONE_API_KEY
             )
 
-            host = pc.describe_index(engine.index_name).host  # const.PINECONE_INDEX).host
-            index = pc.Index(name=engine.index_name, host=host)  # const.PINECONE_INDEX, host=host)
-            describe = index.describe_index_stats()
-            logger.debug(describe)
-            namespaces = describe.get("namespaces", {})
-            total_vectors = 1
+            host = pc.describe_index(engine.index_name).host
+            index = pc.IndexAsyncio(name=engine.index_name, host=host)
+            async with index as index:
+                describe = await index.describe_index_stats()
+                logger.debug(describe)
+                namespaces = describe.get("namespaces", {})
+                total_vectors = 1
 
-            if namespaces:
-                if namespace in namespaces.keys():
-                    total_vectors = namespaces.get(namespace).get('vector_count')
+                if namespaces:
+                    if namespace in namespaces.keys():
+                        total_vectors = namespaces.get(namespace).get('vector_count')
 
-            logger.debug(total_vectors)
+                logger.debug(total_vectors)
 
-            index.delete(
-                filter={"id": {"$eq": metadata_id}},
-                namespace=namespace)
+                await index.delete(
+                    filter={"id": {"$eq": metadata_id}},
+                    namespace=namespace)
 
         except Exception as ex:
             # logger.error(ex)

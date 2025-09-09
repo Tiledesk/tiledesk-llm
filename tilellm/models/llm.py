@@ -155,12 +155,18 @@ class QuestionToLLM(BaseModel):
     n_messages: int = Field(default_factory=lambda: None)
     servers: Optional[Dict[str, ServerConfig]] = Field(default_factory=dict)
 
-    @field_validator("temperature")
-    def temperature_range(cls, v):
-        """Ensures temperature is within valid range (usually 0.0 to 1.0)."""
-        if not 0.0 <= v <= 1.0:
-            raise ValueError("Temperature must be between 0.0 and 1.0.")
-        return v
+    @model_validator(mode="after")
+    def adjust_temperature_and_validate(self):
+        # Ricava il nome del modello come stringa
+
+        # Se è gpt-5 o gpt-5-*, forza temperature a 1.0
+        if self.model and self.model.startswith("gpt-5"):
+            self.temperature = 1.0
+        else:
+            # Altrimenti valida il range della temperatura
+            if not 0.0 <= self.temperature <= 1.0:
+                raise ValueError("Temperature must be between 0.0 and 1.0.")
+        return self
 
     @field_validator("n_messages")
     def n_messages_range(cls, v):
