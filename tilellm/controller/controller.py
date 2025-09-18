@@ -35,6 +35,7 @@ from tilellm.models import (ChatEntry,
                             QuestionToLLM,
                             QuestionAnswer
                             )
+from tilellm.models.schemas.general_schemas import PromptTokenInfo
 
 from tilellm.shared.utility import inject_repo, inject_llm, inject_llm_chat, inject_reason_llm, inject_repo_async, \
     inject_llm_chat_async, inject_llm_async, inject_reason_llm_async
@@ -311,6 +312,10 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None) :
                num_question = len(question.chat_history_dict.keys())
                question.chat_history_dict[str(num_question)] = {"question": question.question, "answer": full_response}
 
+               #prompt_token_info = PromptTokenInfo(input_tokens=result.usage_metadata.get("input_tokens", 0),
+               #                                    output_tokens=result.usage_metadata.get("output_tokens", 0),
+               #                                    total_tokens=result.usage_metadata.get("total_tokens", 0), )
+
                simple_answer = SimpleAnswer(answer=full_response, chat_history_dict=question.chat_history_dict)
                yield _create_event("metadata", {
                    "message_id": message_id,
@@ -340,10 +345,16 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None) :
                 question.chat_history_dict = {}
 
             num = len(question.chat_history_dict.keys())
+
             question.chat_history_dict[str(num)] = {"question": question.question, "answer": result.content}
+            prompt_token_info = PromptTokenInfo(input_tokens=result.usage_metadata.get("input_tokens",0),
+                                                output_tokens=result.usage_metadata.get("output_tokens",0),
+                                                total_tokens=result.usage_metadata.get("total_tokens",0),)
 
-
-            return JSONResponse(content=SimpleAnswer(answer=result.content, chat_history_dict=question.chat_history_dict).model_dump())
+            return JSONResponse(content=SimpleAnswer(answer=result.content,
+                                                     chat_history_dict=question.chat_history_dict,
+                                                     prompt_token_info=prompt_token_info).model_dump()
+                                )
 
 
     except Exception as e:
@@ -351,7 +362,8 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None) :
         traceback.print_exc()
 
         result_to_return = SimpleAnswer(answer=repr(e),
-                                        chat_history_dict={})
+                                        chat_history_dict={},
+                                        prompt_token_info=None)
         raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
 
 

@@ -19,7 +19,7 @@ from langchain_community.document_loaders import (
 from langchain_community.document_transformers import BeautifulSoupTransformer, Html2TextTransformer
 from langchain_community.document_transformers.beautiful_soup_transformer import get_navigable_strings
 from langchain_core.documents import Document
-from playwright.async_api import async_playwright
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +89,7 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
 
 async def handle_unstructured_loader(urls: list, mode: str, strategy: str = None, browser_headers = dict) -> list[Document]:
     """Gestisce il caricamento con UnstructuredURLLoader"""
+    #print(urls)
     loader_args = {
         "urls": urls,
         "continue_on_failure": False,
@@ -250,26 +251,50 @@ async def scrape_page(url, params_type_4, browser_headers:dict, time_sleep=2):
                                               ]
                                               )
             page = await browser.new_page(extra_http_headers=browser_headers, #user_agent="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
-                                          java_script_enabled=True)
+                                    java_script_enabled=True)
 
-            # Registra un listener per l'evento 'request'
-            #page.on("request", handle_request)
+            try:
+                # 1. Navigazione iniziale. 'load' è un buon punto di partenza.
+                logger.debug("Navigating to page and waiting for 'load' state...")
+                await page.goto(url=url, wait_until="load", timeout=60000)
 
+                # 2. CICLO DI ATTESA DINAMICA (sostituisce il time.sleep)
+                logger.debug("Waiting for DOM to stabilize...")
+                previous_html_size = 0
+                # Eseguiamo il controllo per un massimo di 5 volte (es. 5 * 2 secondi = 10 secondi max)
+                # per evitare loop infiniti su pagine che cambiano sempre (es. con un timer).
+                for _ in range(5):
+                    await page.wait_for_timeout(2000)  # Attendi 2 secondi tra un controllo e l'altro
 
-            await page.goto(url=url, wait_until="networkidle", timeout=120000)
+                    current_html_size = len(await page.content())
 
-            await page.wait_for_load_state("networkidle")
+                    # Se la dimensione non è cambiata, la pagina è stabile.
+                    if current_html_size == previous_html_size:
+                        logger.debug("DOM is stable. Proceeding.")
+                        break
 
-            time.sleep(params_type_4.time_sleep)
+                    # Altrimenti, aggiorna la dimensione e continua a controllare.
+                    previous_html_size = current_html_size
+                    logger.debug(f"DOM is still changing... current size: {current_html_size}")
+                else:  # Questo `else` si attiva solo se il `for` loop finisce senza `break`
+                    logger.warning("DOM did not stabilize after several checks. Proceeding anyway.")
+
+            except PlaywrightTimeoutError:
+                logger.warning(f"Timeout reached while loading {url}. Proceeding with captured content.")
+
+            #time.sleep(params_type_4.time_sleep)
 
             results = await page.content()
+
             await browser.close()
 
             metadata = {"source": url}
             doc = Document(page_content=results, metadata=metadata)
+
             docs = [doc]
 
             bs_transformer = BeautifulSoupTransformer()
+
             return bs_transformer.transform_documents(
                 docs,
                 tags_to_extract=params_type_4.tags_to_extract,

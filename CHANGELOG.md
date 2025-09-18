@@ -5,9 +5,13 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2025-09-19]
+### 0.5.1-rc1
+- fix: scrape networkidle
+
 ## [2025-09-09]
 ### 0.5.0-rc3
-- fix: minor fix 
+- fix: qdrant with cache 
 
 ## [2025-09-09]
 ### 0.5.0-rc2

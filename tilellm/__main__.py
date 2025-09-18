@@ -228,7 +228,17 @@ async def redis_consumer(app: FastAPI):
 populate_constant()
 app = FastAPI(lifespan=redis_consumer)
 
-#app.add_middleware(CProfileMiddleware, enable=True, print_each_request=True)
+
+# Leggi la variabile d'ambiente per la profilazione
+ENABLE_PROFILER = os.getenv("ENABLE_PROFILER", "False").lower() == "true"
+
+if ENABLE_PROFILER:
+    app.add_middleware(CProfileMiddleware, enable=True, print_each_request=True)
+
+# Leggi la variabile d'ambiente per il livello di log
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+logging.getLogger().setLevel(LOG_LEVEL)
 
 
 

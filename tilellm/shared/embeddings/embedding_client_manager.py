@@ -196,7 +196,7 @@ class EmbeddingSessionManager:
             model=self.config["model_name"],
             base_url=self.config.get("base_url", "http://localhost:8001"),
             api_key=SecretStr("a"),
-            http_client=http_client
+            http_async_client=http_client
         )
 
         embedding_client._http_client = http_client
@@ -361,7 +361,7 @@ class EmbeddingWrapper(Embeddings):
                 loop = asyncio.get_event_loop()
                 return await loop.run_in_executor(None, self.embedding_client.embed_documents, texts)
         except Exception as e:
-            self.logger.warning(f"Error in aembed_documents, attempting reconnection: {e}")
+            logger.warning(f"Error in aembed_documents, attempting reconnection: {e}")
             # Ricrea il client e riprova
             await self.session_manager.force_close()
             self.embedding_client = await self.session_manager.get_embedding_client()
@@ -382,7 +382,7 @@ class EmbeddingWrapper(Embeddings):
                 loop = asyncio.get_event_loop()
                 return await loop.run_in_executor(None, self.embedding_client.embed_query, text)
         except Exception as e:
-            self.logger.warning(f"Error in aembed_query, attempting reconnection: {e}")
+            logger.warning(f"Error in aembed_query, attempting reconnection: {e}")
             # Ricrea il client e riprova
             await self.session_manager.force_close()
             self.embedding_client = await self.session_manager.get_embedding_client()

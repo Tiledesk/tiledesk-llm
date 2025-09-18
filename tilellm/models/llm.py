@@ -158,14 +158,18 @@ class QuestionToLLM(BaseModel):
     @model_validator(mode="after")
     def adjust_temperature_and_validate(self):
         # Ricava il nome del modello come stringa
-
         # Se è gpt-5 o gpt-5-*, forza temperature a 1.0
-        if self.model and self.model.startswith("gpt-5"):
-            self.temperature = 1.0
-        else:
-            # Altrimenti valida il range della temperatura
-            if not 0.0 <= self.temperature <= 1.0:
-                raise ValueError("Temperature must be between 0.0 and 1.0.")
+        if isinstance(self.model, str):
+            if self.model and self.model.startswith("gpt-5"):
+                self.temperature = 1.0
+        else:  # self.model è di tipo LlmEmbeddingModel
+            if self.model.name and self.model.name.startswith("gpt-5"):
+                self.temperature = 1.0
+
+
+            # Validazione del range di temperatura
+        if not 0.0 <= self.temperature <= 1.0:
+            raise ValueError("Temperature must be between 0.0 and 1.0.")
         return self
 
     @field_validator("n_messages")
