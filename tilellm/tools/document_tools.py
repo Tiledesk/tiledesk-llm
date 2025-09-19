@@ -187,7 +187,7 @@ def run_scraping_in_thread(loop, queue, *args, **kwargs):
     docs = loop.run_until_complete(scrape_page(*args, **kwargs))
     queue.put(docs)
 
-async def scrape_page(url, params_type_4, browser_headers:dict, time_sleep=2):
+async def scrape_page(url, params_type_4, time_sleep=2):
     logger.info("Starting scraping...")
     try:
         async with async_playwright() as p:
@@ -197,7 +197,7 @@ async def scrape_page(url, params_type_4, browser_headers:dict, time_sleep=2):
                                                   "--no-sandbox"
                                               ]
                                               )
-            page = await browser.new_page(extra_http_headers=browser_headers, #user_agent="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
+            page = await browser.new_page(user_agent="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
                                     java_script_enabled=True)
 
             try:
