@@ -2,7 +2,7 @@ import time
 from collections import OrderedDict
 from functools import wraps
 import logging
-import torch
+
 from typing import Any, Dict, Optional, Tuple, Callable, Type
 import asyncio
 
@@ -328,6 +328,7 @@ class TimedCache:
 
     @classmethod
     def clear_cache(cls, object_type: Optional[str] = None):
+        import torch
         if object_type:
             if object_type in cls._caches:
                 cache = cls._caches[object_type]
@@ -354,6 +355,7 @@ class TimedCache:
 
     @classmethod
     async def async_clear_cache(cls, object_type: Optional[str] = None):
+        import torch
         if object_type:
             if object_type in cls._caches:
                 cache = cls._caches[object_type]

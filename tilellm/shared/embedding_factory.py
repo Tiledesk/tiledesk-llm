@@ -1,6 +1,7 @@
 import asyncio
 from functools import wraps
 from typing import Any, Callable, Dict, Optional, Tuple, Type, Union
+import hashlib
 
 from huggingface_hub import snapshot_download
 from langchain_community.embeddings import CohereEmbeddings
@@ -16,6 +17,14 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from tilellm.models import EmbeddingModel, LlmEmbeddingModel
 from tilellm.shared.embeddings.resilient_embeddings import ResilientEmbeddings
 from tilellm.shared.timed_cache import TimedCache
+
+
+def _hash_api_key(api_key: str) -> str:
+    """
+    Crea un hash SHA256 della chiave API per utilizzarlo nella cache
+    senza esporre la chiave completa nei log.
+    """
+    return hashlib.sha256(api_key.encode('utf-8')).hexdigest()[:16]
 
 
 class EmbeddingFactory:
@@ -43,11 +52,12 @@ class EmbeddingFactory:
         key_parts.append(config.get("provider"))
         key_parts.append(config.get("model_name"))
 
-        # L'API key è fondamentale per l'univocità
+        # L'API key è fondamentale per l'univocità - usa hash per sicurezza
         api_key = config.get("api_key")
         if api_key:
-            # Gestisce sia stringhe che SecretStr
-            key_parts.append(str(api_key))
+            # Gestisce sia stringhe che SecretStr e crea hash
+            key_str = str(api_key.get_secret_value()) if hasattr(api_key, 'get_secret_value') else str(api_key)
+            key_parts.append(_hash_api_key(key_str))
 
         # Parametri specifici che alterano l'oggetto creato
         if config.get("provider") == "huggingface":
@@ -274,9 +284,8 @@ class EmbeddingFactory:
 
     @staticmethod
     def _prepare_huggingface_model(model_name: str):
-        return snapshot_download(
-            repo_id=model_name,
-            local_dir=f"./models/{model_name.replace('/', '_')}"
+        return snapshot_download(repo_id=model_name,
+                                 #local_dir=f"./models/{model_name.replace('/', '_')}"
         )
 
 
@@ -426,11 +435,12 @@ class AsyncEmbeddingFactory:
         key_parts.append(config.get("provider"))
         key_parts.append(config.get("model_name"))
 
-        # L'API key è fondamentale per l'univocità
+        # L'API key è fondamentale per l'univocità - usa hash per sicurezza
         api_key = config.get("api_key")
         if api_key:
-            # Gestisce sia stringhe che SecretStr
-            key_parts.append(str(api_key))
+            # Gestisce sia stringhe che SecretStr e crea hash
+            key_str = str(api_key.get_secret_value()) if hasattr(api_key, 'get_secret_value') else str(api_key)
+            key_parts.append(_hash_api_key(key_str))
 
         # Parametri specifici che alterano l'oggetto creato
         if config.get("provider") == "huggingface":
@@ -731,12 +741,12 @@ class AsyncEmbeddingFactory:
 
     @staticmethod
     async def _prepare_huggingface_model_async(model_name: str):
+
         """Prepara il modello HuggingFace in modo asincrono"""
 
         def _download():
-            return snapshot_download(
-                repo_id=model_name,
-                local_dir=f"./models/{model_name.replace('/', '_')}"
+            return snapshot_download(repo_id=model_name,
+                                     #local_dir=f"./models/{model_name.replace('/', '_')}"
             )
 
         loop = asyncio.get_event_loop()

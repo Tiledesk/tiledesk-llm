@@ -1,6 +1,8 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional, Union, Dict
-from tilellm.models.chat import ChatEntry
+from typing import List, Optional, Union, Dict, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from tilellm.models.chat import ChatEntry
 
 
 class Citation(BaseModel):
@@ -58,7 +60,7 @@ class RetrievalResult(BaseModel):
     prompt_token_size: int = Field(default=0)
     error_message: Optional[str] | None = None
     duration: Optional[float]= Field(default=0)
-    chat_history_dict: Optional[Dict[str, ChatEntry]]
+    chat_history_dict: Optional[Dict[str, "ChatEntry"]] = None
 
 class RetrievalChunksResult(BaseModel):
     success: bool = Field(default=False)
@@ -67,3 +69,8 @@ class RetrievalChunksResult(BaseModel):
     metadata: Optional[List[dict]] | None = None
     error_message: Optional[str] | None = None
     duration: Optional[float]= Field(default=0)
+
+# Risolvi forward references dopo che ChatEntry è caricato
+def rebuild_retrieval_models():
+    from tilellm.models.chat import ChatEntry
+    RetrievalResult.model_rebuild()

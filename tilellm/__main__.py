@@ -1,6 +1,8 @@
+import base64
 import os
+from binascii import Error
 from contextlib import asynccontextmanager
-from typing import Union
+from typing import Union, List
 
 from fastapi import (FastAPI,
                      Depends,
@@ -14,7 +16,8 @@ import aiohttp
 import json
 from dotenv import load_dotenv
 
-
+from tilellm.controller.conversion_controller import process_xlsx_to_csv, process_pdf_to_text
+from tilellm.models.convertion import ConvertedFile, ConversionRequest, ConversionType
 from tilellm.shared.const import populate_constant
 from tilellm.shared.timed_cache import TimedCache
 from tilellm.shared.utility import decode_jwt
@@ -243,7 +246,7 @@ logging.getLogger().setLevel(LOG_LEVEL)
 
 
 
-@app.post("/api/scrape/enqueue")
+@app.post("/api/scrape/enqueue" , tags=["Scrape"])
 async def enqueue_scrape_item_main(item: ItemSingle, redis_client: Redis = Depends(get_redis_client)):
     """
     enqueue item to redis. Consumer read message and add it to namespace
@@ -266,7 +269,7 @@ async def enqueue_scrape_item_main(item: ItemSingle, redis_client: Redis = Depen
     return {"message": f"Item {item.id} created successfully, more {res}"}
 
 
-@app.post("/api/scrape/single", response_model=IndexingResult)
+@app.post("/api/scrape/single", response_model=IndexingResult, tags=["Scrape"])
 async def create_scrape_item_single(item: ItemSingle, redis_client: Redis = Depends(get_redis_client)):
     """
     Add item to namespace
@@ -347,7 +350,7 @@ async def create_scrape_item_single(item: ItemSingle, redis_client: Redis = Depe
         logger.error(e)
         raise HTTPException(status_code=400, detail=repr(e))
 
-@app.post("/api/scrape/hybrid", response_model=IndexingResult)
+@app.post("/api/scrape/hybrid", response_model=IndexingResult, tags=["Scrape"])
 async def create_scrape_item_hybrid(item: ItemSingle, redis_client: Redis = Depends(get_redis_client)):
     """
     Add item to namespace
@@ -407,7 +410,7 @@ async def create_scrape_item_hybrid(item: ItemSingle, redis_client: Redis = Depe
         raise HTTPException(status_code=400, detail=repr(e))
 
 
-@app.post("/api/qa", response_model=Union[RetrievalResult, RetrievalChunksResult])
+@app.post("/api/qa", response_model=Union[RetrievalResult, RetrievalChunksResult], tags=["Question & Answer"])
 async def post_ask_with_memory_main(question_answer: QuestionAnswer):
     """
     Query and Aswer with chat history
@@ -428,7 +431,7 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
     return result
 
 
-@app.post("/api/agent", response_model=SimpleAnswer)
+@app.post("/api/agent", response_model=SimpleAnswer, tags=["Question & Answer"])
 async def post_ask_to_agent_main(question_to_agent: QuestionToAgent):
     """
     Query and Aswer with chat history
@@ -445,7 +448,7 @@ async def post_ask_to_agent_main(question_to_agent: QuestionToAgent):
 
 
 
-@app.post("/api/ask", response_model=SimpleAnswer)
+@app.post("/api/ask", response_model=SimpleAnswer, tags=["Question & Answer"])
 async def post_ask_to_llm_main(question: QuestionToLLM):
     """
     Query and Answer with a LLM
@@ -459,7 +462,7 @@ async def post_ask_to_llm_main(question: QuestionToLLM):
         return await ask_mcp_agent_llm(question=question)
 
 
-@app.post("/api/thinking", response_model=SimpleAnswer)
+@app.post("/api/thinking", response_model=SimpleAnswer, tags=["Question & Answer"])
 async def post_ask_to_llm_reason_main(question: QuestionToLLM):
     """
     Query and Answer with a LLM
@@ -471,9 +474,8 @@ async def post_ask_to_llm_reason_main(question: QuestionToLLM):
     return await ask_reason_llm(question=question)
 
 
-@app.post("/api/qachain", response_model=RetrievalResult)
+@app.post("/api/qachain", response_model=RetrievalResult, tags=["Question & Answer"])
 async def post_ask_with_memory_chain_main(question_answer: QuestionAnswer):
-    print(question_answer)
     logger.debug(question_answer)
     result = await ask_with_sequence(question_answer)
     logger.debug(result)
@@ -481,8 +483,33 @@ async def post_ask_with_memory_chain_main(question_answer: QuestionAnswer):
     # return result
 
 
+@app.post("/api/convert", response_model=List[ConvertedFile], tags=["Conversion"])
+async def convert_file(request: ConversionRequest):
+    """
+    Converte un file fornito come stringa Base64.
+
+    - **xlsx_to_csv**: Converte ogni foglio di un file XLSX in un file CSV separato.
+    - **pdf_to_text**: Estrae il contenuto testuale da un file PDF.
+    """
+    try:
+        # Decodifica la stringa Base64 per ottenere i byte del file
+        file_bytes = base64.b64decode(request.file_content)
+    except (Error, ValueError):
+        raise HTTPException(status_code=400, detail="Contenuto del file non valido: la stringa Base64 non è corretta.")
+
+    if request.conversion_type == ConversionType.XLSX_TO_CSV:
+        return process_xlsx_to_csv(request.file_name, file_bytes)
+
+    elif request.conversion_type == ConversionType.PDF_TO_TEXT:
+        return process_pdf_to_text(request.file_name, file_bytes)
+
+    # Questo non dovrebbe mai accadere grazie alla validazione Pydantic, ma è una sicurezza in più.
+    raise HTTPException(status_code=400, detail="Tipo di conversione non supportato.")
+
+
+
 @app.post("/api/scrape/status", response_model=
-          ScrapeStatusResponse)
+          ScrapeStatusResponse, tags=["Scrape"])
 async def scrape_status_main(scrape_status_req: ScrapeStatusReq,
                              redis_client: Redis = Depends(get_redis_client)):
     """
@@ -526,7 +553,7 @@ async def scrape_status_main(scrape_status_req: ScrapeStatusReq,
 
 @app.post("/api/delete/id", deprecated=True,
           description="This endpoint is deprecated and  is no longer supported. "
-                      "Use method DELETE /api/id/{id}/namespace/{namespace}")
+                      "Use method DELETE /api/id/{id}/namespace/{namespace}", tags=["Namespace"])
 async def delete_item_id_namespace_post(item_to_delete: RepositoryItem):
     """
     Delete items from namespace given document id via POST.
@@ -546,7 +573,7 @@ async def delete_item_id_namespace_post(item_to_delete: RepositoryItem):
         # raise HTTPException(status_code=400, detail=repr(ex))
 
 
-@app.post("/api/delete/namespace")
+@app.post("/api/delete/namespace", tags=["Namespace"])
 async def delete_namespace_main(namespace_to_delete: RepositoryNamespace):
     """
     Delete Pinecone namespace by namespace_id
@@ -561,7 +588,7 @@ async def delete_namespace_main(namespace_to_delete: RepositoryNamespace):
         #raise HTTPException(status_code=400, detail={"success": "false", "message": repr(ex)})
 
 
-@app.get("/api/list/namespace/{token}", response_model=RepositoryNamespaceResult)
+@app.get("/api/list/namespace/{token}", response_model=RepositoryNamespaceResult, tags=["Namespace"])
 async def list_namespace_main(token: str):
     """
     Get all namespaces with id and vector count
@@ -579,7 +606,7 @@ async def list_namespace_main(token: str):
         raise HTTPException(status_code=400, detail=repr(ex))
 
 
-@app.get("/api/id/{metadata_id}/namespace/{namespace}/{token}", response_model=RepositoryItems)
+@app.get("/api/id/{metadata_id}/namespace/{namespace}/{token}", response_model=RepositoryItems, tags=["Namespace"])
 async def get_items_id_namespace_main(token: str, metadata_id: str, namespace: str):
     """
     Get all items from namespace given id of document
@@ -600,7 +627,7 @@ async def get_items_id_namespace_main(token: str, metadata_id: str, namespace: s
         raise HTTPException(status_code=400, detail=repr(ex))
 
 
-@app.get("/api/desc/namespace/{namespace}/{token}", response_model=RepositoryDescNamespaceResult)
+@app.get("/api/desc/namespace/{namespace}/{token}", response_model=RepositoryDescNamespaceResult, tags=["Namespace"])
 async def list_namespace_items_main(token: str, namespace: str):
     """
     Get description for given namespace
@@ -621,7 +648,7 @@ async def list_namespace_items_main(token: str, namespace: str):
         raise HTTPException(status_code=400, detail=repr(ex))
 
 
-@app.get("/api/listitems/namespace/{namespace}/{token}", response_model=RepositoryItems)
+@app.get("/api/listitems/namespace/{namespace}/{token}", response_model=RepositoryItems, tags=["Namespace"])
 async def list_namespace_items_main(token: str, namespace: str):
     """
     Get all item with given namespace
@@ -641,7 +668,7 @@ async def list_namespace_items_main(token: str, namespace: str):
         raise HTTPException(status_code=400, detail=repr(ex))
 
 
-@app.get("/api/items", response_model=RepositoryItems)#?source={source}&namespace={namespace}&token={token}
+@app.get("/api/items", response_model=RepositoryItems, tags=["Namespace"])#?source={source}&namespace={namespace}&token={token}
 async def get_items_source_namespace_main(source: str, namespace: str, token: str):
     """
     Get all item given the source and namespace
@@ -664,7 +691,7 @@ async def get_items_source_namespace_main(source: str, namespace: str, token: st
         raise HTTPException(status_code=400, detail=repr(ex) )
 
 
-@app.delete("/api/namespace/{namespace}/{token}")
+@app.delete("/api/namespace/{namespace}/{token}", tags=["Namespace"])
 async def delete_namespace_main(token: str, namespace: str):
     """
     Delete namespace from index
@@ -686,7 +713,7 @@ async def delete_namespace_main(token: str, namespace: str):
         #raise HTTPException(status_code=400, detail=repr(ex))
 
 
-@app.delete("/api/chunk/{chunk_id}/namespace/{namespace}/{token}")
+@app.delete("/api/chunk/{chunk_id}/namespace/{namespace}/{token}", tags=["Namespace"])
 async def delete_item_chunk_id_namespace_main(token: str, chunk_id: str, namespace: str):
     """
     Delete items from namespace identified by id and namespace
@@ -710,7 +737,7 @@ async def delete_item_chunk_id_namespace_main(token: str, chunk_id: str, namespa
         raise HTTPException(status_code=400, detail=repr(ex))
 
 
-@app.delete("/api/id/{metadata_id}/namespace/{namespace}/{token}")
+@app.delete("/api/id/{metadata_id}/namespace/{namespace}/{token}", tags=["Namespace"])
 async def delete_item_id_namespace_main(token: str, metadata_id: str, namespace: str):
     """
     Delete items from namespace identified by id and namespace

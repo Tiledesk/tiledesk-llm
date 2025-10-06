@@ -1,5 +1,4 @@
-from .general_schemas import (SimpleAnswer,
-                              ReasoningAnswer)
+from .general_schemas import ReasoningAnswer, SimpleAnswer, PromptTokenInfo
 from .retrieval_schemas import (Citation,
                                 QuotedAnswer,
                                 PartialQuotedAnswer,
@@ -19,3 +18,5 @@ from .repository_schemas import (RepositoryQueryResult,
                                  RepositoryNamespaceResult,
                                  RepositoryDescNamespaceResult,
                                  MyDocument)
+
+from .multimodal_content import (TextContent,ImageContent,DocumentContent)

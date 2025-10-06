@@ -7,6 +7,11 @@
 
 ## [2025-09-19]
 ### 0.5.1-rc1
+- add: /api/convert
+- add: /api/ask support base64 file upload
+
+## [2025-09-19]
+### 0.5.1-rc1
 - fix: scrape networkidle
 
 ## [2025-09-09]

@@ -153,7 +153,6 @@ class CachedVectorStore:
         except Exception:
             logger.info(f"La collection '{collection_name}' non esiste. Inizio la creazione...")
             metric_distance = models.Distance[self.engine.metric.upper()]
-
             self._qdrant_client.create_collection(
                 collection_name=collection_name,
                 vectors_config={"text-dense": models.VectorParams(

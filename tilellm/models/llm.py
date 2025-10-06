@@ -1,13 +1,16 @@
 import datetime
-from typing import Dict, Optional, List, Union, Any, Literal
+from typing import Dict, Optional, List, Union, Any, Literal, TYPE_CHECKING
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, RootModel, model_validator
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from tilellm.models.base import AWSAuthentication, ServerConfig
 from tilellm.models.embedding import LlmEmbeddingModel, EmbeddingModel
+from tilellm.models.schemas.multimodal_content import MultimodalContent, ImageContent
 from tilellm.models.vector_store import Engine
-from tilellm.models.chat import ChatEntry
+
+if TYPE_CHECKING:
+    from tilellm.models.chat import ChatEntry
 
 
 class ItemSingle(BaseModel):
@@ -90,7 +93,7 @@ class QuestionAnswer(BaseModel):
     reranking_multiplier: int = 3  # moltiplicatore per top_k
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     engine: Engine
-    chat_history_dict: Optional[Dict[str, ChatEntry]] = None
+    chat_history_dict: Optional[Dict[str, "ChatEntry"]] = None
 
     #@field_validator("temperature")
     #def temperature_range(cls, v):
@@ -111,10 +114,40 @@ class QuestionAnswer(BaseModel):
         # Se è gpt-5 o gpt-5-*, forza temperature a 1.0
         if model_name and model_name.startswith("gpt-5"):
             self.temperature = 1.0
-        else:
-            # Altrimenti valida il range della temperatura
-            if not 0.0 <= self.temperature <= 1.0:
-                raise ValueError("Temperature must be between 0.0 and 1.0.")
+            self.top_p = None
+            return self
+
+        # Se entrambi sono None, imposta default temperature
+        if self.temperature is None and self.top_p is None:
+            self.temperature = 0.0
+
+        # Se entrambi sono specificati, gestisci in base al provider
+        elif self.temperature is not None and self.top_p is not None:
+            # Provider che richiedono temperature (non può essere None)
+            if self.llm in ["google"]:
+                # Mantieni temperature, rimuovi top_p
+                self.top_p = None
+            # Provider che richiedono top_p
+            elif self.llm in []:  # Aggiungi qui provider che richiedono top_p
+                self.temperature = None
+            # Provider che accettano entrambi
+            elif self.llm in ["openai", "anthropic", "vllm", "groq", "deepseek", "mistralai", "ollama"]:
+                # Mantieni entrambi
+                pass
+            # Provider che non supportano top_p
+            elif self.llm in ["cohere"]:
+                self.top_p = None
+            else:
+                # Default: priorità a temperature
+                self.top_p = None
+
+        # Valida i range
+        if self.temperature is not None and not 0.0 <= self.temperature <= 1.0:
+            raise ValueError("Temperature must be between 0.0 and 1.0.")
+
+        if self.top_p is not None and not 0.0 <= self.top_p <= 1.0:
+            raise ValueError("top_p must be between 0.0 and 1.0.")
+
         return self
 
     @field_validator("top_p")
@@ -140,7 +173,7 @@ class QuestionAnswer(BaseModel):
 
 
 class QuestionToLLM(BaseModel):
-    question: str
+    question: Union[str, List[MultimodalContent]]
     llm_key: Union[SecretStr, AWSAuthentication]
     llm: str
     model: Union[str, LlmEmbeddingModel] = Field(default="gpt-3.5-turbo")
@@ -151,25 +184,56 @@ class QuestionToLLM(BaseModel):
     debug: bool = Field(default_factory=lambda: False)
     thinking: Optional[Dict[str, Any]] = Field(default=None)
     system_context: str = Field(default="You are a helpful AI bot. Always reply in the same language of the question.")
-    chat_history_dict: Optional[Dict[str, ChatEntry]] = None
+    chat_history_dict: Optional[Dict[str, "ChatEntry"]] = None
     n_messages: int = Field(default_factory=lambda: None)
     servers: Optional[Dict[str, ServerConfig]] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def adjust_temperature_and_validate(self):
         # Ricava il nome del modello come stringa
-        # Se è gpt-5 o gpt-5-*, forza temperature a 1.0
+        model_name: Optional[str] = None
         if isinstance(self.model, str):
-            if self.model and self.model.startswith("gpt-5"):
-                self.temperature = 1.0
-        else:  # self.model è di tipo LlmEmbeddingModel
-            if self.model.name and self.model.name.startswith("gpt-5"):
-                self.temperature = 1.0
+            model_name = self.model
+        elif isinstance(self.model, LlmEmbeddingModel):
+            model_name = self.model.name
 
+        # Se è gpt-5 o gpt-5-*, forza temperature a 1.0
+        if model_name and model_name.startswith("gpt-5"):
+            self.temperature = 1.0
+            self.top_p = None
+            return self
 
-            # Validazione del range di temperatura
-        if not 0.0 <= self.temperature <= 1.0:
+        # Se entrambi sono None, imposta default temperature
+        if self.temperature is None and self.top_p is None:
+            self.temperature = 0.0
+
+        # Se entrambi sono specificati, gestisci in base al provider
+        elif self.temperature is not None and self.top_p is not None:
+            # Provider che richiedono temperature (non può essere None)
+            if self.llm in ["google"]:
+                # Mantieni temperature, rimuovi top_p
+                self.top_p = None
+            # Provider che richiedono top_p
+            elif self.llm in []:  # Aggiungi qui provider che richiedono top_p
+                self.temperature = None
+            # Provider che accettano entrambi
+            elif self.llm in ["openai", "anthropic", "vllm", "groq", "deepseek", "mistralai", "ollama"]:
+                # Mantieni entrambi
+                pass
+            # Provider che non supportano top_p
+            elif self.llm in ["cohere"]:
+                self.top_p = None
+            else:
+                # Default: priorità a temperature
+                self.top_p = None
+
+        # Valida i range
+        if self.temperature is not None and not 0.0 <= self.temperature <= 1.0:
             raise ValueError("Temperature must be between 0.0 and 1.0.")
+
+        if self.top_p is not None and not 0.0 <= self.top_p <= 1.0:
+            raise ValueError("top_p must be between 0.0 and 1.0.")
+
         return self
 
     @field_validator("n_messages")
@@ -204,6 +268,29 @@ class QuestionToLLM(BaseModel):
         return MultiServerMCPClient(config_dict)
 
 
+    def get_question_content(self) -> Union[str, List[Dict[str, Any]]]:
+        """
+        Prepara il contenuto della domanda nel formato corretto per LangChain.
+        - Se la domanda è una stringa, la restituisce.
+        - Se è una lista multimodale, la formatta come richiesto.
+        """
+        if isinstance(self.question, str):
+            # Caso semplice: solo testo
+            return self.question
+
+        if isinstance(self.question, list):
+            # Caso multimodale: costruisce la lista di dizionari
+            formatted_content = []
+            for item in self.question:
+                # Grazie al polimorfismo, ogni oggetto (TextContent, ImageContent)
+                # sa come formattarsi correttamente.
+                formatted_content.append(item.to_langchain_format())
+            return formatted_content
+
+        # Fallback nel caso di un tipo non previsto
+        raise TypeError("Il tipo di 'question' non è supportato.")
+
+
 class ToolOptions(RootModel[Dict[str, Any]]):
     pass
 
@@ -217,7 +304,7 @@ class QuestionToAgent(BaseModel):
     system_context: str = Field(default="You are a helpful AI bot. Always reply in the same language of the question.")
     temperature: float = Field(default=0.0)
     max_tokens: int = Field(default=128)
-    chat_history_dict: Optional[Dict[str, ChatEntry]] = None
+    chat_history_dict: Optional[Dict[str, "ChatEntry"]] = None
     n_messages: int = Field(default_factory=lambda: None)
 
     @field_validator("n_messages")
@@ -226,3 +313,10 @@ class QuestionToAgent(BaseModel):
         if v is not None and not v > 0: # Aggiungi la verifica per None
             raise ValueError("n_messages must be greater than 0")
         return v
+
+# Risolvi forward references dopo che ChatEntry è caricato
+def rebuild_llm_models():
+    from tilellm.models.chat import ChatEntry
+    QuestionAnswer.model_rebuild()
+    QuestionToLLM.model_rebuild()
+    QuestionToAgent.model_rebuild()

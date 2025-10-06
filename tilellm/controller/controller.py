@@ -1,4 +1,7 @@
+import base64
 import uuid
+import json
+import ast
 from datetime import datetime
 from typing import List
 
@@ -26,16 +29,16 @@ from tilellm.models.schemas import (RetrievalResult,
                                        RepositoryNamespaceResult,
                                        RepositoryDescNamespaceResult,
                                        RepositoryItems,
-                                       SimpleAnswer,
                                        RepositoryItem,
                                        RepositoryNamespace,
                                        RepositoryEngine,ReasoningAnswer, RetrievalChunksResult)
 from tilellm.models import (ChatEntry,
                             QuestionToAgent,
                             QuestionToLLM,
-                            QuestionAnswer
+                            QuestionAnswer,
+                            SimpleAnswer,
+                            PromptTokenInfo
                             )
-from tilellm.models.schemas.general_schemas import PromptTokenInfo
 
 from tilellm.shared.utility import inject_repo, inject_llm, inject_llm_chat, inject_reason_llm, inject_repo_async, \
     inject_llm_chat_async, inject_llm_async, inject_reason_llm_async
@@ -245,24 +248,169 @@ async def ask_reason_llm(question, chat_model=None):
         raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
 
 
+# Import necessari
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+
+
 @inject_llm_async
-async def ask_to_llm(question: QuestionToLLM, chat_model=None) :
+async def ask_to_llm(question: QuestionToLLM, chat_model=None):
+    """
+    Gestisce una richiesta a un LLM, supportando contenuti multimodali,
+    cronologia della chat e risposte in streaming.
+    Utilizza la costruzione manuale dei messaggi per evitare errori di tokenizzazione
+    con input di immagini base64.
+    """
+    try:
+        # --- 1. Gestione della Cronologia ---
+        # Per questo esempio, creiamo uno store e un session_id temporanei.
+
+        temp_store = {}
+        session_id = uuid.uuid4().hex  # Usa un ID di sessione reale se disponibile
+
+        get_session_history = lambda sid: get_or_create_session_history(
+            temp_store, sid, question.chat_history_dict
+        )
+        history = get_session_history(session_id)
+
+        # --- 2. Costruzione Manuale della Lista di Messaggi ---
+        # Questo è il passaggio chiave per risolvere il problema dei token.
+        final_messages = [SystemMessage(content=question.system_context)]
+        final_messages.extend(history.messages)
+
+        # Prepara il contenuto della domanda (testo o lista multimodale)
+        question_content = question.get_question_content()
+        new_human_message = HumanMessage(content=question_content)
+        final_messages.append(new_human_message)
+
+        # --- 3. Logica per lo Streaming e la Risposta ---
+        if question.stream:
+            async def get_stream_llm():
+                full_response_content = ""
+                message_id = str(uuid.uuid4())
+                start_time = datetime.now()
+
+                # Yield del metadato di avvio
+                yield _create_event("metadata", {
+                    "message_id": message_id,
+                    "status": "started",
+                    "timestamp": start_time.isoformat()
+                })
+
+                # Chiamata in streaming DIRETTA al modello
+                final_response_message = None
+                async for chunk in chat_model.astream(final_messages):
+                    if hasattr(chunk, 'content'):
+                        full_response_content += chunk.content
+                        yield _create_event("chunk", {"content": chunk.content, "message_id": message_id})
+                        await asyncio.sleep(0.01)  # Opzionale, per un flusso più fluido
+
+                # Costruisci il messaggio di risposta completo per la history e i metadati
+                final_response_message = AIMessage(content=full_response_content)
+                end_time = datetime.now()
+
+                # Aggiorna la cronologia con la domanda e la risposta completa
+                #history.add_messages([new_human_message, final_response_message])
+                #question.chat_history_dict = {str(i): entry for i, entry in
+                #                              enumerate(history.messages)}  # Ricostruisci il dizionario
+
+                if not question.chat_history_dict:
+                    question.chat_history_dict = {}
+
+                num_question = len(question.chat_history_dict.keys())
+                question.chat_history_dict[str(num_question)] = ChatEntry(question=question.question,
+                                                                          # Salva l'originale (str o List[MultimodalContent])
+                                                                          answer=full_response_content
+                                                                          )
+                # Ottieni i metadati sull'utilizzo (se disponibili post-streaming)
+                # Nota: `usage_metadata` potrebbe non essere sempre disponibile nello streaming.
+                # In tal caso, i token saranno 0.
+                usage_meta = final_response_message.usage_metadata or {}
+                prompt_token_info = PromptTokenInfo(
+                    input_tokens=usage_meta.get("input_tokens", 0),
+                    output_tokens=usage_meta.get("output_tokens", 0),
+                    total_tokens=usage_meta.get("total_tokens", 0),
+                )
+
+                simple_answer = SimpleAnswer(
+                    answer=full_response_content,
+                    chat_history_dict=question.chat_history_dict,
+                    prompt_token_info=prompt_token_info
+                )
+
+                # Yield del metadato di completamento
+                yield _create_event("metadata", {
+                    "message_id": message_id,
+                    "status": "completed",
+                    "timestamp": end_time.isoformat(),
+                    "duration": (end_time - start_time).total_seconds(),
+                    "full_response": full_response_content,
+                    "model_used": simple_answer.model_dump()
+                })
+
+            return StreamingResponse(
+                get_stream_llm(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache"}
+            )
+
+        else:  # Logica per la risposta non in streaming
+            # Chiamata DIRETTA al modello
+            result_message = await chat_model.ainvoke(final_messages)
+
+            # Aggiorna la cronologia
+            #history.add_messages(ChatEntry(question=new_human_message.content, answer=result_message))
+            #question.chat_history_dict = {str(i): entry for i, entry in enumerate(history.messages)}
+
+            if not question.chat_history_dict:
+                question.chat_history_dict = {}
+
+            num = len(question.chat_history_dict.keys())
+            question.chat_history_dict[str(num)] = ChatEntry(question=question.question,
+                                                             answer=result_message.content
+                                                             )
+
+            prompt_token_info = PromptTokenInfo(
+                input_tokens=result_message.usage_metadata.get("input_tokens", 0),
+                output_tokens=result_message.usage_metadata.get("output_tokens", 0),
+                total_tokens=result_message.usage_metadata.get("total_tokens", 0),
+            )
+
+            return JSONResponse(content=SimpleAnswer(
+                answer=result_message.content,
+                chat_history_dict=question.chat_history_dict,
+                prompt_token_info=prompt_token_info
+            ).model_dump())
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        result_to_return = SimpleAnswer(answer=repr(e), chat_history_dict={}, prompt_token_info=None)
+        raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
+
+
+
+
+@inject_llm_async
+async def ask_to_llm_1(question: QuestionToLLM, chat_model=None) :
     try:
         logger.info(question)
         chat_history_list = []
 
         if question.chat_history_dict is not None:
             for key, entry in question.chat_history_dict.items():
-                chat_history_list.append(HumanMessage(content=entry.question))  # ('human', entry.question))
+                human_content = entry.question if isinstance(entry.question, str) else entry.question
+                chat_history_list.append(HumanMessage(content=human_content))  # ('human', entry.question))
                 chat_history_list.append(AIMessage(content=entry.answer))
 
+        # Prepara il contenuto della domanda
+        question_content = question.get_question_content()
 
 
         qa_prompt = ChatPromptTemplate.from_messages(
             [
                 ("system", question.system_context),
                 MessagesPlaceholder("chat_history", n_messages=question.n_messages),
-                ("human", "{input}"),
+                ("human", "{input}")
             ]
         )
 
@@ -296,7 +444,7 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None) :
                    "timestamp": start_time.isoformat()
                })
 
-               async for chunk in runnable_with_history.astream({"input": question.question},
+               async for chunk in runnable_with_history.astream({"input": question_content},
                                                                 config={
                                                                     "configurable": {"session_id": uuid.uuid4().hex}}):
                    if hasattr(chunk, 'content'):
@@ -310,7 +458,12 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None) :
                    question.chat_history_dict = {}
 
                num_question = len(question.chat_history_dict.keys())
-               question.chat_history_dict[str(num_question)] = {"question": question.question, "answer": full_response}
+               question.chat_history_dict[str(num_question)] =  ChatEntry(question=question.question, # Salva l'originale (str o List[MultimodalContent])
+                                                                          answer=full_response
+                                                                          )
+
+
+                   #{"question": question.question, "answer": full_response}
 
                #prompt_token_info = PromptTokenInfo(input_tokens=result.usage_metadata.get("input_tokens", 0),
                #                                    output_tokens=result.usage_metadata.get("output_tokens", 0),
@@ -334,10 +487,11 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None) :
 
 
         else:
+
             result = await runnable_with_history.ainvoke(
-                {"input": question.question}, # 'chat_history_a': chat_history_list,
+                {"input": question_content},# 'chat_history_a': chat_history_list,
                 config={"configurable": {"session_id": uuid.uuid4().hex}
-                        },
+                        }
             )
             # logger.info(result)
 
@@ -345,8 +499,11 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None) :
                 question.chat_history_dict = {}
 
             num = len(question.chat_history_dict.keys())
+            question.chat_history_dict[str(num)] =  ChatEntry(question=question.question,
+                                                              answer=result.content
+                                                              )
 
-            question.chat_history_dict[str(num)] = {"question": question.question, "answer": result.content}
+                #{"question": question.question, "answer": result.content}
             prompt_token_info = PromptTokenInfo(input_tokens=result.usage_metadata.get("input_tokens",0),
                                                 output_tokens=result.usage_metadata.get("output_tokens",0),
                                                 total_tokens=result.usage_metadata.get("total_tokens",0),)
@@ -374,6 +531,154 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model=None):
     try:
         tools = await mcp_client.get_tools()
 
+        # Log dei tool disponibili per debug
+        logger.info(f"Available MCP tools: {[tool.name for tool in tools]}")
+
+        message_content = []
+
+        # Gestione del parsing della question
+        question_list = []
+        if isinstance(question.question, str):
+            # Prova a parsare se è una stringa JSON/rappresentazione Python
+            try:
+                # Prova prima con json.loads
+                parsed = json.loads(question.question)
+                question_list = parsed if isinstance(parsed, list) else [{"type": "text", "text": question.question}]
+            except (json.JSONDecodeError, ValueError):
+                try:
+                    # Prova con ast.literal_eval per gestire stringhe Python-like
+                    parsed = ast.literal_eval(question.question)
+                    question_list = parsed if isinstance(parsed, list) else [{"type": "text", "text": question.question}]
+                except (ValueError, SyntaxError):
+                    # Se non è parsabile, trattala come testo semplice
+                    question_list = [{"type": "text", "text": question.question}]
+        elif isinstance(question.question, list):
+            question_list = question.question
+        else:
+            # Fallback: converti in stringa
+            question_list = [{"type": "text", "text": str(question.question)}]
+
+        # Processa ogni elemento della lista
+        for content in question_list:
+            # Se è un dizionario (già parsato da OpenAI format)
+            if isinstance(content, dict):
+                content_type = content.get("type", "text")
+
+                if content_type == "text":
+                    message_content.append({"type": "text", "text": content.get("text", "")})
+
+                elif content_type == "image_url":
+                    # Formato OpenAI: {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,...'}}
+                    image_url = content.get("image_url", {}).get("url", "")
+                    # Estrai il base64 dall'URL data
+                    if image_url.startswith("data:"):
+                        # Formato: data:image/jpeg;base64,<base64_data>
+                        parts = image_url.split(",", 1)
+                        if len(parts) == 2:
+                            mime_part = parts[0].split(";")[0].replace("data:", "")
+                            base64_data = parts[1]
+                            message_content.append({
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": mime_part,
+                                    "data": base64_data
+                                }
+                            })
+                            logger.info(f"Image detected and included from OpenAI format: {mime_part}")
+                    else:
+                        # URL normale
+                        message_content.append({"type": "image_url", "image_url": {"url": image_url}})
+
+                elif content_type == "document":
+                    # Formato documento diretto
+                    message_content.append(content)
+                    logger.info(f"Document detected and included")
+
+                elif content_type == "image":
+                    # Formato immagine già corretto
+                    message_content.append(content)
+                    logger.info(f"Image detected and included")
+
+            # Se è un oggetto Pydantic (TextContent, ImageContent, DocumentContent)
+            elif hasattr(content, 'type'):
+                if content.type == "document":
+                    # Include il documento direttamente nel messaggio in formato base64
+                    doc_base64 = content.source if isinstance(content.source, str) else base64.b64encode(content.source).decode('utf-8')
+                    message_content.append({
+                        "type": "document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": content.mime_type,
+                            "data": doc_base64
+                        }
+                    })
+                    logger.info(f"Document detected and included: {content.mime_type}")
+                elif content.type == "image":
+                    # Include l'immagine in formato base64 diretto
+                    img_base64 = content.source if isinstance(content.source, str) else base64.b64encode(content.source).decode('utf-8')
+                    message_content.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": content.mime_type,
+                            "data": img_base64
+                        }
+                    })
+                    logger.info(f"Image detected and included: {content.mime_type}")
+                else:
+                    # Per testo, usa il formato standard
+                    message_content.append(content.to_langchain_format())
+
+        # Crea un prompt di sistema che include istruzioni per gestire i documenti
+        system_prompt = question.system_context
+
+        # Aggiungi istruzioni specifiche per documenti base64
+        has_documents = any(item.get("type") == "document" for item in message_content)
+        has_images = any(item.get("type") == "image" for item in message_content)
+
+        if has_documents or has_images:
+            system_prompt += "\n\nIMPORTANT INSTRUCTIONS FOR TOOLS:"
+            if has_documents:
+                system_prompt += "\n- When calling tools that require document data (like pdf_base64 parameter), you MUST pass the original base64-encoded string from the document source, NOT the extracted text content."
+                system_prompt += "\n- Look for documents in the message content with type='document' and extract the base64 data from 'source' field."
+            if has_images:
+                system_prompt += "\n- When calling tools that require image data, you MUST pass the original base64-encoded string from the image source, NOT a description of the image."
+                system_prompt += "\n- Look for images in the message content with type='image' and extract the base64 data from 'source' field."
+
+        agent_executor = create_react_agent(chat_model, tools=tools, prompt=system_prompt)
+
+        # Estraiamo il solo testo per la chiave "input" principale
+        text_prompt = " ".join([
+            item["text"] for item in message_content if item["type"] == "text"
+        ]).strip()
+
+        response = await agent_executor.ainvoke({
+            "input": text_prompt,
+            "messages": [HumanMessage(content=message_content)]
+        })
+
+        logger.info(response)
+
+        # La risposta di un agent executor è solitamente in response['output']
+        result = response.get('output', 'Nessuna risposta dall\'agent.')
+
+        logger.info(result)
+        return JSONResponse(
+            content=SimpleAnswer(answer=result, chat_history_dict={}).model_dump()
+        )
+
+    except Exception as e:
+        return handle_exception(e, "Exception in MCP dialog")
+
+
+@inject_llm_async
+async def ask_mcp_agent_llm_1(question: QuestionToLLM, chat_model=None):
+    mcp_client = question.create_mcp_client()
+
+    try:
+        tools = await mcp_client.get_tools()
+
         agent = create_react_agent(chat_model, tools)
         response = await agent.ainvoke({"messages": question.question})
         logger.info(response)
@@ -384,7 +689,6 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model=None):
 
     except Exception as e:
         return handle_exception(e, "Exception in MCP dialog")
-
 
 @inject_repo_async
 @inject_llm_chat_async
