@@ -181,6 +181,7 @@ class EmbeddingFactory:
             },
             "huggingface": {
                 "BAAI/bge-m3": 1024,  # Aggiunto esplicitamente per bge-m3
+
                 # Aggiungi altri modelli HuggingFace con le loro dimensioni
             },
             "ollama": 4096,
@@ -223,6 +224,7 @@ class EmbeddingFactory:
         ), config.get("dimension", 768)
 
     def _create_ollama(self, config: Dict) -> Tuple[Embeddings, int]:
+
         from langchain_ollama import OllamaEmbeddings
         return OllamaEmbeddings(
             model=config["model_name"],
