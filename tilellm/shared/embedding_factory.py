@@ -311,18 +311,19 @@ def inject_embedding(factory: Optional[EmbeddingFactory] = None):
             try:
                 # Gestione del tipo Union: stringa o modello
                 if isinstance(item.embedding, str):
+
                     # Modalità legacy: usa la stringa come model_name
                     config = {
                         "legacy_mode": True,
                         "model_name": item.embedding,
-                        "api_key": item.gptkey
+                        "api_key": item.gptkey.get_secret_value()
                     }
                 elif isinstance(item.embedding, LlmEmbeddingModel):
                     # Nuova modalità: usa l'oggetto LlmEmbeddingModel
                     config = {
                         "provider": item.embedding.provider,
                         "model_name": item.embedding.name,
-                        "api_key": item.embedding.api_key,
+                        "api_key": item.embedding.api_key.get_secret_value(),
                         "dimension": item.embedding.dimension,
                         "base_url": item.embedding.url
                     }

@@ -5,6 +5,15 @@
     *Andrea Sponziello* 
 ### **Copyrigth**: *Tiledesk SRL*
 
+## [2025-10-08]
+### 0.5.2-rc3
+- minor fix: openai cache key
+
+## [2025-10-07]
+### 0.5.2-rc2
+- fix: cache key
+
+
 ## [2025-09-19]
 ### 0.5.1-rc1
 - add: /api/convert
