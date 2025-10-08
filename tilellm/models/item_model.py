@@ -116,12 +116,10 @@ class ParametersScrapeType4(BaseModel):
     time_sleep: Optional[float] = Field(default=2)
 
     @model_validator(mode='after')
-    def check_booleans(cls, values):
-        remove_lines = values.remove_lines
-        remove_comments = values.remove_comments
-        if remove_lines is None or remove_comments is None:
+    def check_booleans(self):
+        if self.remove_lines is None or self.remove_comments is None:
             raise ValueError('remove_lines and remove_comments must be provided in ParametersScrapeType4')
-        return values
+        return self
 
 
 class ItemSingle(BaseModel):
@@ -146,16 +144,13 @@ class ItemSingle(BaseModel):
     engine: Engine
 
     @model_validator(mode='after')
-    def check_scrape_type(cls, values):
-        scrape_type = values.scrape_type
-        parameters_scrape_type_4 = values.parameters_scrape_type_4
-
-        if scrape_type in (2,4,5):# == 4 or scrape_type == 2:
-            if parameters_scrape_type_4 is None:
-                raise ValueError('parameters_scrape_type_4 must be provided when scrape_type is 4')
+    def check_scrape_type(self):
+        if self.scrape_type in (2, 4, 5):
+            if self.parameters_scrape_type_4 is None:
+                raise ValueError('parameters_scrape_type_4 must be provided when scrape_type is 2, 4 or 5')
         else:
-            values.parameters_scrape_type_4 = None
-        return values
+            self.parameters_scrape_type_4 = None
+        return self
 
 
 class MetadataItem(BaseModel):
@@ -235,11 +230,11 @@ class QuestionAnswer(BaseModel):
         return v
 
     @model_validator(mode='after')
-    def check_citations_max_tokens(cls, values):
+    def check_citations_max_tokens(self):
         """Sets max_tokens to at least 1024 if citations=True."""
-        if values.citations and values.max_tokens < 1024:
-            values.max_tokens = 1024
-        return values
+        if self.citations and self.max_tokens < 1024:
+            self.max_tokens = 1024
+        return self
 
 
 class AWSAuthentication(BaseModel):

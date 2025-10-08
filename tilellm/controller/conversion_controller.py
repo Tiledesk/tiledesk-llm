@@ -41,6 +41,7 @@ def process_xlsx_to_csv(file_name: str, file_bytes: bytes) -> List[ConvertedFile
                     FileExt="csv",
                     FileSize=len(csv_bytes),
                     File=base64_encoded_csv,
+                    FileContent=csv_output,
                 )
             )
         return sheets_data
@@ -79,6 +80,7 @@ def process_pdf_to_text(file_name: str, file_bytes: bytes) -> List[ConvertedFile
                 FileExt="txt",
                 FileSize=len(text_bytes),
                 File=base64_encoded_text,
+                FileContent=full_text,
             )
         ]
     except Exception as e:

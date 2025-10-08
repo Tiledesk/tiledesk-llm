@@ -486,16 +486,31 @@ async def post_ask_with_memory_chain_main(question_answer: QuestionAnswer):
 @app.post("/api/convert", response_model=List[ConvertedFile], tags=["Conversion"])
 async def convert_file(request: ConversionRequest):
     """
-    Converte un file fornito come stringa Base64.
+    Converte un file fornito come stringa Base64 o URL.
 
     - **xlsx_to_csv**: Converte ogni foglio di un file XLSX in un file CSV separato.
     - **pdf_to_text**: Estrae il contenuto testuale da un file PDF.
     """
-    try:
-        # Decodifica la stringa Base64 per ottenere i byte del file
-        file_bytes = base64.b64decode(request.file_content)
-    except (Error, ValueError):
-        raise HTTPException(status_code=400, detail="Contenuto del file non valido: la stringa Base64 non è corretta.")
+    # Verifica se file_content è una URL o base64
+    if request.is_url():
+        try:
+            # Scarica il file dalla URL
+            async with aiohttp.ClientSession() as session:
+                async with session.get(request.file_content) as response:
+                    if response.status != 200:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Impossibile scaricare il file dalla URL. Status: {response.status}"
+                        )
+                    file_bytes = await response.read()
+        except aiohttp.ClientError as e:
+            raise HTTPException(status_code=400, detail=f"Errore durante il download del file: {str(e)}")
+    else:
+        try:
+            # Decodifica la stringa Base64 per ottenere i byte del file
+            file_bytes = base64.b64decode(request.file_content)
+        except (Error, ValueError):
+            raise HTTPException(status_code=400, detail="Contenuto del file non valido: la stringa Base64 non è corretta.")
 
     if request.conversion_type == ConversionType.XLSX_TO_CSV:
         return process_xlsx_to_csv(request.file_name, file_bytes)

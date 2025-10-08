@@ -43,21 +43,19 @@ class ItemSingle(BaseModel):
         return self
 
     @model_validator(mode='after')
-    def check_scrape_type(cls, values):
+    def check_scrape_type(self):
         # Questo import va qui per evitare dipendenze circolari
         from tilellm.models.scraping import ParametersScrapeType4
-        scrape_type = values.scrape_type
-        parameters_scrape_type_4 = values.parameters_scrape_type_4
 
-        if scrape_type in (2, 4, 5):
-            if parameters_scrape_type_4 is None:
+        if self.scrape_type in (2, 4, 5):
+            if self.parameters_scrape_type_4 is None:
                 raise ValueError('parameters_scrape_type_4 must be provided when scrape_type is 2, 4 or 5')
             # Valida il dizionario in ParametersScrapeType4
-            if isinstance(parameters_scrape_type_4, dict):
-                values.parameters_scrape_type_4 = ParametersScrapeType4(**parameters_scrape_type_4)
+            if isinstance(self.parameters_scrape_type_4, dict):
+                self.parameters_scrape_type_4 = ParametersScrapeType4(**self.parameters_scrape_type_4)
         else:
-            values.parameters_scrape_type_4 = None
-        return values
+            self.parameters_scrape_type_4 = None
+        return self
 
 
 class MetadataItem(BaseModel):
@@ -165,11 +163,11 @@ class QuestionAnswer(BaseModel):
         return v
 
     @model_validator(mode='after')
-    def check_citations_max_tokens(cls, values):
+    def check_citations_max_tokens(self):
         """Sets max_tokens to at least 1024 if citations=True."""
-        if values.citations and values.max_tokens < 1024:
-            values.max_tokens = 1024
-        return values
+        if self.citations and self.max_tokens < 1024:
+            self.max_tokens = 1024
+        return self
 
 
 class QuestionToLLM(BaseModel):

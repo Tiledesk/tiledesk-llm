@@ -12,9 +12,7 @@ class ParametersScrapeType4(BaseModel):
     time_sleep: Optional[float] = Field(default=2)
 
     @model_validator(mode='after')
-    def check_booleans(cls, values):
-        remove_lines = values.remove_lines
-        remove_comments = values.remove_comments
-        if remove_lines is None or remove_comments is None:
+    def check_booleans(self):
+        if self.remove_lines is None or self.remove_comments is None:
             raise ValueError('remove_lines and remove_comments must be provided in ParametersScrapeType4')
-        return values
+        return self
