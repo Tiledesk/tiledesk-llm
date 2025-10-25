@@ -1,8 +1,6 @@
-import base64
 import os
-from binascii import Error
 from contextlib import asynccontextmanager
-from typing import Union, List
+from typing import Union
 
 from fastapi import (FastAPI,
                      Depends,
@@ -16,8 +14,6 @@ import aiohttp
 import json
 from dotenv import load_dotenv
 
-from tilellm.controller.conversion_controller import process_xlsx_to_csv, process_pdf_to_text
-from tilellm.models.convertion import ConvertedFile, ConversionRequest, ConversionType
 from tilellm.shared.const import populate_constant
 from tilellm.shared.timed_cache import TimedCache
 from tilellm.shared.utility import decode_jwt
@@ -52,9 +48,26 @@ from tilellm.controller.controller import (ask_with_memory,
                                            get_sources_namespace,
                                            ask_to_llm,
                                            ask_to_agent,
-                                           ask_reason_llm, ask_mcp_agent_llm)
+                                           ask_reason_llm, ask_mcp_agent_llm, ask_mcp_agent_llm_simple)
 
 import logging
+
+import sys
+from pathlib import Path
+
+# --- AGGIUNGI QUESTO BLOCCO ALL'INIZIO DEL FILE ---
+# 1. Trova il percorso del file corrente (__main__.py)
+current_file_path = Path(__file__).resolve()
+
+# 2. Risali alla cartella root del progetto.
+#    In questo caso, siccome il file è in 'tilellm/', dobbiamo salire di un livello ('.parent')
+#    per arrivare alla cartella che contiene sia 'tilellm' che 'modules'.
+project_root = current_file_path
+
+#    Se __main__.py fosse nella root, basterebbe .parent
+
+# 3. Aggiungi la root del progetto al percorso di ricerca di Python
+sys.path.append(str(project_root))
 
 
 ENVIRONMENTS = {
@@ -451,15 +464,46 @@ async def post_ask_to_agent_main(question_to_agent: QuestionToAgent):
 @app.post("/api/ask", response_model=SimpleAnswer, tags=["Question & Answer"])
 async def post_ask_to_llm_main(question: QuestionToLLM):
     """
-    Query and Answer with a LLM
+    Query and Answer with a LLM.
+
+    Routing logic:
+    - Se non ci sono MCP servers -> usa ask_to_llm (semplice)
+    - Se ci sono MCP servers:
+      - Se question è una stringa semplice -> usa ask_mcp_agent_llm_simple
+      - Se question è complessa (lista/multimodale) -> usa ask_mcp_agent_llm (complesso)
+
     :param question:
-    :return: RetrievalResult
+    :return: SimpleAnswer
     """
     logger.info(question)
-    if not question.servers:
+
+    if not (question.servers or question.tools):
+        # Nessun MCP server -> usa l'LLM semplice
         return await ask_to_llm(question=question)
     else:
-        return await ask_mcp_agent_llm(question=question)
+        # Ci sono MCP servers -> verifica la complessità
+        is_simple_string = isinstance(question.question, str)
+
+        # Se è una stringa, prova a verificare se è un JSON/lista
+        if is_simple_string:
+            try:
+                parsed = json.loads(question.question)
+                # Se il parsing riesce ed è una lista, è complesso
+                if isinstance(parsed, list):
+                    is_simple_string = False
+            except (json.JSONDecodeError, ValueError):
+                # Non è JSON, rimane stringa semplice
+                pass
+
+        if is_simple_string:
+            # Stringa semplice -> usa la versione semplice MCP
+            logger.info("Using ask_mcp_agent_llm_simple (simple string input)")
+            # Per ora usa la versione complessa
+            return await ask_mcp_agent_llm_simple(question=question)
+        else:
+            # Input complesso (lista o multimodale) -> usa la versione complessa MCP
+            logger.info("Using ask_mcp_agent_llm (complex/multimodal input)")
+            return await ask_mcp_agent_llm(question=question)
 
 
 @app.post("/api/thinking", response_model=SimpleAnswer, tags=["Question & Answer"])
@@ -481,46 +525,6 @@ async def post_ask_with_memory_chain_main(question_answer: QuestionAnswer):
     logger.debug(result)
     return JSONResponse(content=result.model_dump())
     # return result
-
-
-@app.post("/api/convert", response_model=List[ConvertedFile], tags=["Conversion"])
-async def convert_file(request: ConversionRequest):
-    """
-    Converte un file fornito come stringa Base64 o URL.
-
-    - **xlsx_to_csv**: Converte ogni foglio di un file XLSX in un file CSV separato.
-    - **pdf_to_text**: Estrae il contenuto testuale da un file PDF.
-    """
-    # Verifica se file_content è una URL o base64
-    if request.is_url():
-        try:
-            # Scarica il file dalla URL
-            async with aiohttp.ClientSession() as session:
-                async with session.get(request.file_content) as response:
-                    if response.status != 200:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Impossibile scaricare il file dalla URL. Status: {response.status}"
-                        )
-                    file_bytes = await response.read()
-        except aiohttp.ClientError as e:
-            raise HTTPException(status_code=400, detail=f"Errore durante il download del file: {str(e)}")
-    else:
-        try:
-            # Decodifica la stringa Base64 per ottenere i byte del file
-            file_bytes = base64.b64decode(request.file_content)
-        except (Error, ValueError):
-            raise HTTPException(status_code=400, detail="Contenuto del file non valido: la stringa Base64 non è corretta.")
-
-    if request.conversion_type == ConversionType.XLSX_TO_CSV:
-        return process_xlsx_to_csv(request.file_name, file_bytes)
-
-    elif request.conversion_type == ConversionType.PDF_TO_TEXT:
-        return process_pdf_to_text(request.file_name, file_bytes)
-
-    # Questo non dovrebbe mai accadere grazie alla validazione Pydantic, ma è una sicurezza in più.
-    raise HTTPException(status_code=400, detail="Tipo di conversione non supportato.")
-
 
 
 @app.post("/api/scrape/status", response_model=
@@ -781,6 +785,57 @@ async def delete_item_id_namespace_main(token: str, metadata_id: str, namespace:
 @app.get("/")
 async def get_root_endpoint():
     return "Hello from Tiledesk LLM python server!!"
+
+
+def register_feature_routers(_app: FastAPI, base_package_dir: str):
+    """
+    Scansiona una directory per trovare e registrare i router delle funzionalità.
+    Se la directory non esiste, continua senza errori.
+    """
+    import importlib
+    from fastapi import APIRouter
+
+    base_path = Path(base_package_dir)
+
+    # --- MODIFICA CHIAVE ---
+    # Controlla se la directory dei moduli esiste.
+    if not base_path.is_dir():
+        # Se non esiste, stampa un messaggio informativo e termina la funzione.
+        print(f"ℹ️  Directory dei moduli '{base_package_dir}' non trovata. Nessun router dinamico sarà caricato.")
+        return
+    # -----------------------
+
+    #package_name = base_path.name
+    package_name = str(base_path).replace(os.path.sep, '.')
+
+    print(f"🔍 Sto cercando i servizi nella directory: '{base_path}'...")
+
+    found_routers = False
+    for service_dir in base_path.iterdir():
+        if service_dir.is_dir():
+            controller_file = service_dir / "controllers.py"
+
+            if controller_file.exists():
+                module_path = f"{package_name}.{service_dir.name}.controllers"
+
+                try:
+                    module = importlib.import_module(module_path)
+
+                    if hasattr(module, "router") and isinstance(module.router, APIRouter):
+                        print(f"✅ Trovato e registrato il router da: '{module_path}'")
+                        _app.include_router(module.router)
+                        found_routers = True
+                    else:
+                        print(f"⚠️  Nel modulo '{module_path}' non è stato trovato un APIRouter chiamato 'router'.")
+
+                except Exception as e:
+                    print(f"❌ Errore durante il caricamento di '{module_path}': {e}")
+
+    if not found_routers:
+        print("ℹ️  Nessun router valido trovato nei moduli.")
+
+
+register_feature_routers(app, "tilellm/modules")
 
 
 def main():

@@ -14,7 +14,7 @@ from tilellm.models.schemas import (RepositoryQueryResult,
                                     RepositoryItemNamespaceResult,
                                     RepositoryIdSummaryResult,
                                     RepositoryDescNamespaceResult,
-                                    RepositoryNamespace,RetrievalChunksResult
+                                    RepositoryNamespace, RetrievalChunksResult
                                     )
 from tilellm.models import (MetadataItem,
                             Engine,
@@ -26,7 +26,6 @@ from typing import Dict
 
 import logging
 
-from tilellm.shared.embedding_factory import inject_embedding, inject_embedding_qa
 from tilellm.shared.embeddings.embedding_client_manager import inject_embedding_async_optimized, \
     inject_embedding_qa_async_optimized
 from tilellm.shared.sparse_util import hybrid_score_norm

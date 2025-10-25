@@ -1,31 +1,26 @@
-import datetime
 from abc import abstractmethod
 
 import time
 import asyncio
 
 import pinecone
-from fastapi import HTTPException
 from langchain_pinecone.vectorstores import PineconeVectorStore
 
 
 from tilellm.models.schemas import (RepositoryQueryResult,
                                     RepositoryItems,
-                                    IndexingResult,
                                     RepositoryNamespaceResult,
                                     RepositoryItemNamespaceResult,
                                     RepositoryIdSummaryResult,
                                     RepositoryDescNamespaceResult,
-                                    RepositoryNamespace,
-                                    RetrievalChunksResult
+                                    RepositoryNamespace
                                     )
-from tilellm.models import (MetadataItem,
-                            Engine,
+from tilellm.models import (Engine,
                             QuestionAnswer
                             )
 
 
-from typing import List, Dict, Optional
+from typing import Dict
 
 import logging
 

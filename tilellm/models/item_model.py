@@ -287,6 +287,7 @@ class QuestionToLLM(BaseModel):
     chat_history_dict: Optional[Dict[str, ChatEntry]] = None
     n_messages: int = Field(default_factory=lambda: None)
     servers: Optional[Dict[str, ServerConfig]] = Field(default_factory=dict)
+    tools: Optional[List[str]] = Field(default=None, description="Lista di nomi di tool interni da tool_registry")
 
     @field_validator("temperature")
     def temperature_range(cls, v):

@@ -7,6 +7,17 @@
 
 ---
 
+## [2025-10-25]
+### 0.6.0-rc1
+- Added: MCP support with multimodal LLM.
+- Added: Internal tools for pdf->text and xlsx->csv file conversion.
+- Added: Parameter tools:[] to /api/ask to support internal tools.
+- Added: /api/tools API for internal tool discovery.
+- Minor Fixed: General improvements and fixes.
+
+---
+
+
 ## [2025-10-08]
 ### 0.5.3-rc1
 - Updated: Conversion functionality.

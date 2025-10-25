@@ -284,8 +284,8 @@ def inject_llm(func):
                     #                                     temperature=question.temperature, max_tokens=question.max_tokens,
                     #                                     top_p=question.top_p, convert_system_message_to_human=True)
                     # ai_msg.usage_metadata per controllare i token
-                    return ChatGoogleGenerativeAI(google_api_key=question.llm_key, model=question.model,
-                                                  convert_system_message_to_human=True, **llm_params)
+                    # convert_system_message_to_human è deprecato, LangChain gestisce automaticamente i system message
+                    return ChatGoogleGenerativeAI(google_api_key=question.llm_key, model=question.model, **llm_params)
 
                 elif question.llm == "ollama":
                     # OLD: return ChatOllama(model=question.model.name, temperature=question.temperature,
@@ -438,9 +438,10 @@ def inject_llm_chat(func):
                     return ChatCohere(cohere_api_key=question.gptkey, model=question.model,
                                       temperature=question.temperature, max_tokens=question.max_tokens)
                 elif question.llm == "google":
+                    # convert_system_message_to_human è deprecato, LangChain gestisce automaticamente i system message
                     return ChatGoogleGenerativeAI(google_api_key=question.gptkey, model=question.model,
                                                   temperature=question.temperature, max_tokens=question.max_tokens,
-                                                  top_p=question.top_p, convert_system_message_to_human=True)
+                                                  top_p=question.top_p)
                 elif question.llm == "mistralai":
                     return ChatMistralAI(api_key=question.gptkey,model_name=question.model,
                                          temperature=question.temperature,max_tokens=question.max_tokens,
@@ -667,8 +668,8 @@ async def _create_llm_instance(question):
             # OLD: return ChatGoogleGenerativeAI(google_api_key=question.gptkey, model=question.model,
             #                                     temperature=question.temperature, max_tokens=question.max_tokens,
             #                                     top_p=question.top_p, convert_system_message_to_human=True)
-            return ChatGoogleGenerativeAI(google_api_key=question.gptkey, model=question.model,
-                                          convert_system_message_to_human=True, **llm_params)
+            # convert_system_message_to_human è deprecato, LangChain gestisce automaticamente i system message
+            return ChatGoogleGenerativeAI(google_api_key=question.gptkey, model=question.model, **llm_params)
 
         elif question.llm == "mistralai":
             from langchain_mistralai import ChatMistralAI
@@ -743,8 +744,8 @@ async def _create_standard_llm_instance(question) -> Any:
             # OLD: return ChatGoogleGenerativeAI(google_api_key=question.llm_key, model=question.model,
             #                                     temperature=question.temperature, max_tokens=question.max_tokens,
             #                                     top_p=question.top_p, convert_system_message_to_human=True)
-            return ChatGoogleGenerativeAI(google_api_key=question.llm_key, model=question.model,
-                                          convert_system_message_to_human=True, **llm_params)
+            # convert_system_message_to_human è deprecato, LangChain gestisce automaticamente i system message
+            return ChatGoogleGenerativeAI(google_api_key=question.llm_key, model=question.model, **llm_params)
 
         elif question.llm == "ollama":
             # OLD: return ChatOllama(model=question.model.name, temperature=question.temperature,

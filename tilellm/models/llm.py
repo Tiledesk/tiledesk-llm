@@ -115,6 +115,11 @@ class QuestionAnswer(BaseModel):
             self.top_p = None
             return self
 
+        # Se è claude-4 o claude-sonnet-4-*, rimuovi top_p se presente
+        if model_name and ("claude-4" in model_name or "claude-sonnet-4" in model_name):
+            if self.temperature is not None and self.top_p is not None:
+                self.top_p = None
+
         # Se entrambi sono None, imposta default temperature
         if self.temperature is None and self.top_p is None:
             self.temperature = 0.0
@@ -129,9 +134,13 @@ class QuestionAnswer(BaseModel):
             elif self.llm in []:  # Aggiungi qui provider che richiedono top_p
                 self.temperature = None
             # Provider che accettano entrambi
-            elif self.llm in ["openai", "anthropic", "vllm", "groq", "deepseek", "mistralai", "ollama"]:
+            elif self.llm in ["openai", "vllm", "groq", "deepseek", "mistralai", "ollama"]:
                 # Mantieni entrambi
                 pass
+            # Anthropic: gestione speciale per claude-4
+            elif self.llm in ["anthropic"]:
+                # claude-4 non supporta entrambi, mantieni solo temperature
+                self.top_p = None
             # Provider che non supportano top_p
             elif self.llm in ["cohere"]:
                 self.top_p = None
@@ -176,7 +185,7 @@ class QuestionToLLM(BaseModel):
     llm: str
     model: Union[str, LlmEmbeddingModel] = Field(default="gpt-3.5-turbo")
     temperature: float = Field(default=0.0)
-    max_tokens: int = Field(default=128),
+    max_tokens: int = Field(default=128)
     top_p: Optional[float] = Field(default=1.0)
     stream: Optional[bool] = Field(default_factory=lambda: False)
     debug: bool = Field(default_factory=lambda: False)
@@ -185,6 +194,7 @@ class QuestionToLLM(BaseModel):
     chat_history_dict: Optional[Dict[str, "ChatEntry"]] = None
     n_messages: int = Field(default_factory=lambda: None)
     servers: Optional[Dict[str, ServerConfig]] = Field(default_factory=dict)
+    tools: Optional[List[str]] = Field(default=None, description="Lista di nomi di tool interni da tool_registry")
 
     @model_validator(mode="after")
     def adjust_temperature_and_validate(self):
@@ -201,6 +211,11 @@ class QuestionToLLM(BaseModel):
             self.top_p = None
             return self
 
+        # Se è claude-4 o claude-sonnet-4-*, rimuovi top_p se presente
+        if model_name and ("claude-4" in model_name or "claude-sonnet-4" in model_name):
+            if self.temperature is not None and self.top_p is not None:
+                self.top_p = None
+
         # Se entrambi sono None, imposta default temperature
         if self.temperature is None and self.top_p is None:
             self.temperature = 0.0
@@ -215,9 +230,13 @@ class QuestionToLLM(BaseModel):
             elif self.llm in []:  # Aggiungi qui provider che richiedono top_p
                 self.temperature = None
             # Provider che accettano entrambi
-            elif self.llm in ["openai", "anthropic", "vllm", "groq", "deepseek", "mistralai", "ollama"]:
+            elif self.llm in ["openai", "vllm", "groq", "deepseek", "mistralai", "ollama"]:
                 # Mantieni entrambi
                 pass
+            # Anthropic: gestione speciale per claude-4
+            elif self.llm in ["anthropic"]:
+                # claude-4 non supporta entrambi, mantieni solo temperature
+                self.top_p = None
             # Provider che non supportano top_p
             elif self.llm in ["cohere"]:
                 self.top_p = None
@@ -244,8 +263,7 @@ class QuestionToLLM(BaseModel):
     @field_validator("max_tokens")
     def max_tokens_range(cls, v):
         """Ensures max_tokens is a positive integer."""
-        if isinstance(v, tuple): # Gestisce il caso in cui max_tokens è un tuple (default (128,))
-            v = v[0]
+
         if not 50 <= v <= 132000:
             raise ValueError("max_tokens must be between 50 and 132000.")
         return v

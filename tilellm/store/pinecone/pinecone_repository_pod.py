@@ -10,12 +10,11 @@ from tilellm.models import (MetadataItem,
                             QuestionAnswer
                             )
 
-from tilellm.shared.embedding_factory import inject_embedding, inject_embedding_qa
+from tilellm.shared.embedding_factory import inject_embedding
 from tilellm.shared.embeddings.embedding_client_manager import inject_embedding_qa_async_optimized
 from tilellm.tools.document_tools import (get_content_by_url,
                                           get_content_by_url_with_bs,
-                                          load_document,
-                                          load_from_wikipedia
+                                          load_document
                                           )
 
 from tilellm.store.pinecone.pinecone_repository_base import PineconeRepositoryBase

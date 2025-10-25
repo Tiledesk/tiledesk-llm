@@ -1,9 +1,11 @@
 import base64
 import uuid
 import json
-import ast
 from datetime import datetime
-from typing import List
+from typing import List, Any
+
+import re
+from langchain_core.messages import ToolMessage
 
 import fastapi
 import asyncio
@@ -22,8 +24,8 @@ from langgraph.prebuilt import create_react_agent
 
 from tilellm.controller.controller_utils import preprocess_chat_history, \
     fetch_question_vectors, retrieve_documents, create_chains, get_or_create_session_history, \
-    generate_answer_with_history, format_result, handle_exception, initialize_retrievers, create_chains_deepseek, \
-    _create_event, extract_conversation_flow, create_contextualize_query
+    generate_answer_with_history, handle_exception, initialize_retrievers, _create_event, extract_conversation_flow, create_contextualize_query
+from tilellm.controller.helpers import _get_question_list
 from tilellm.models.schemas import (RetrievalResult,
                                     IndexingResult,
                                        RepositoryNamespaceResult,
@@ -40,7 +42,7 @@ from tilellm.models import (ChatEntry,
                             PromptTokenInfo
                             )
 
-from tilellm.shared.utility import inject_repo, inject_llm, inject_llm_chat, inject_reason_llm, inject_repo_async, \
+from tilellm.shared.utility import inject_repo_async, \
     inject_llm_chat_async, inject_llm_async, inject_reason_llm_async
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -51,13 +53,6 @@ from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.chat_history import BaseChatMessageHistory
 
 from tilellm.agents.shopify_agent import lookup as shopify_lookup_agent
-
-from langchain.schema import(
-    AIMessage,
-    HumanMessage,
-    SystemMessage
-
-)
 
 import logging
 
@@ -525,42 +520,36 @@ async def ask_to_llm_1(question: QuestionToLLM, chat_model=None) :
 
 
 @inject_llm_async
-async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model=None):
+async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
+    """
+    Invoca un agent MCP gestendo input multimodali (testo, immagini, documenti).
+
+    Strategia di pulizia:
+    1. Normalizza l'input in una lista di contenuti
+    2. Estrae e memorizza documenti/immagini base64 in storage separato
+    3. Sostituisce base64 con riferimenti testuali nei messaggi
+    4. Il pre_model_hook pulisce ulteriormente i messaggi prima di ogni chiamata LLM
+    5. Il tool multimodale interno accede allo storage quando necessario
+    """
     mcp_client = question.create_mcp_client()
 
     try:
         tools = await mcp_client.get_tools()
-
-        # Log dei tool disponibili per debug
         logger.info(f"Available MCP tools: {[tool.name for tool in tools]}")
+
+        # Storage condiviso per contenuti base64
+        base64_storage = {}
+        base64_counter = 0
+
+        # --- STEP 1: Normalizzazione dell'Input ---
+        # Converte question.question (str, json-str, list) in lista unificata
+        question_list = _get_question_list(question.question)
 
         message_content = []
 
-        # Gestione del parsing della question
-        question_list = []
-        if isinstance(question.question, str):
-            # Prova a parsare se è una stringa JSON/rappresentazione Python
-            try:
-                # Prova prima con json.loads
-                parsed = json.loads(question.question)
-                question_list = parsed if isinstance(parsed, list) else [{"type": "text", "text": question.question}]
-            except (json.JSONDecodeError, ValueError):
-                try:
-                    # Prova con ast.literal_eval per gestire stringhe Python-like
-                    parsed = ast.literal_eval(question.question)
-                    question_list = parsed if isinstance(parsed, list) else [{"type": "text", "text": question.question}]
-                except (ValueError, SyntaxError):
-                    # Se non è parsabile, trattala come testo semplice
-                    question_list = [{"type": "text", "text": question.question}]
-        elif isinstance(question.question, list):
-            question_list = question.question
-        else:
-            # Fallback: converti in stringa
-            question_list = [{"type": "text", "text": str(question.question)}]
-
-        # Processa ogni elemento della lista
+        # --- STEP 2: Conversione in Formato Normalizzato ---
+        # Converte tutti i formati possibili in una lista unificata di dict
         for content in question_list:
-            # Se è un dizionario (già parsato da OpenAI format)
             if isinstance(content, dict):
                 content_type = content.get("type", "text")
 
@@ -568,102 +557,493 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model=None):
                     message_content.append({"type": "text", "text": content.get("text", "")})
 
                 elif content_type == "image_url":
-                    # Formato OpenAI: {'type': 'image_url', 'image_url': {'url': 'data:image/jpeg;base64,...'}}
+                    # Converte data URI in formato base64 normalizzato
                     image_url = content.get("image_url", {}).get("url", "")
-                    # Estrai il base64 dall'URL data
                     if image_url.startswith("data:"):
-                        # Formato: data:image/jpeg;base64,<base64_data>
-                        parts = image_url.split(",", 1)
-                        if len(parts) == 2:
+                        try:
+                            parts = image_url.split(",", 1)
                             mime_part = parts[0].split(";")[0].replace("data:", "")
                             base64_data = parts[1]
                             message_content.append({
                                 "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": mime_part,
-                                    "data": base64_data
-                                }
+                                "source": {"type": "base64", "media_type": mime_part, "data": base64_data}
                             })
-                            logger.info(f"Image detected and included from OpenAI format: {mime_part}")
+                        except Exception as e:
+                            logger.warning(f"Failed to parse image data URI: {e}")
                     else:
-                        # URL normale
                         message_content.append({"type": "image_url", "image_url": {"url": image_url}})
 
+                elif content_type == "document_url":
+                    # Converte data URI in formato base64 normalizzato
+                    doc_url = content.get("document_url", {}).get("url", "")
+                    if doc_url.startswith("data:"):
+                        try:
+                            parts = doc_url.split(",", 1)
+                            mime_part = parts[0].split(";")[0].replace("data:", "")
+                            base64_data = parts[1]
+                            message_content.append({
+                                "type": "document",
+                                "source": {"type": "base64", "media_type": mime_part, "data": base64_data}
+                            })
+                        except Exception as e:
+                            logger.warning(f"Failed to parse document data URI: {e}")
+                    else:
+                        # URL http: aggiunto come riferimento testuale
+                        message_content.append({"type": "text", "text": f"[Document URL: {doc_url}]"})
+
                 elif content_type == "document":
-                    # Formato documento diretto
-                    message_content.append(content)
-                    logger.info(f"Document detected and included")
+                    # IMPORTANTE: Normalizza il formato del document
+                    # source può essere: stringa URL, stringa base64, o dict
+                    doc_source = content.get("source")
+                    doc_mime = content.get("mime_type", "application/pdf")
+
+                    # Normalizza sempre in formato standard
+                    if isinstance(doc_source, str):
+                        # La stringa può essere URL o base64, lo STEP 3 la distinguerà
+                        message_content.append({
+                            "type": "document",
+                            "source": doc_source,  # Mantieni stringa così com'è
+                            "mime_type": doc_mime
+                        })
+                    elif isinstance(doc_source, dict):
+                        # Già in formato dict, mantieni
+                        message_content.append({
+                            "type": "document",
+                            "source": doc_source,
+                            "mime_type": doc_mime
+                        })
+                    else:
+                        logger.warning(f"Unknown document source type: {type(doc_source)}")
 
                 elif content_type == "image":
-                    # Formato immagine già corretto
-                    message_content.append(content)
-                    logger.info(f"Image detected and included")
+                    # IMPORTANTE: Normalizza il formato dell'image
+                    # source può essere: stringa URL, stringa base64, o dict
+                    img_source = content.get("source")
+                    img_mime = content.get("mime_type", "image/png")
 
-            # Se è un oggetto Pydantic (TextContent, ImageContent, DocumentContent)
+                    # Normalizza sempre in formato standard
+                    if isinstance(img_source, str):
+                        # La stringa può essere URL o base64
+                        message_content.append({
+                            "type": "image",
+                            "source": img_source,
+                            "mime_type": img_mime
+                        })
+                    elif isinstance(img_source, dict):
+                        # Già in formato dict, mantieni
+                        message_content.append({
+                            "type": "image",
+                            "source": img_source,
+                            "mime_type": img_mime
+                        })
+                    else:
+                        logger.warning(f"Unknown image source type: {type(img_source)}")
+
             elif hasattr(content, 'type'):
-                if content.type == "document":
-                    # Include il documento direttamente nel messaggio in formato base64
-                    doc_base64 = content.source if isinstance(content.source, str) else base64.b64encode(content.source).decode('utf-8')
+                # Oggetto Pydantic (TextContent, ImageContent, DocumentContent)
+                if content.type in ["document", "image"]:
+                    # Normalizza sempre source come stringa (URL o base64)
+                    source_data = content.source if isinstance(content.source, str) else base64.b64encode(
+                        content.source).decode('utf-8')
                     message_content.append({
-                        "type": "document",
-                        "source": {
-                            "type": "base64",
-                            "media_type": content.mime_type,
-                            "data": doc_base64
-                        }
+                        "type": content.type,
+                        "source": source_data,  # Stringa (URL o base64)
+                        "mime_type": content.mime_type
                     })
-                    logger.info(f"Document detected and included: {content.mime_type}")
-                elif content.type == "image":
-                    # Include l'immagine in formato base64 diretto
-                    img_base64 = content.source if isinstance(content.source, str) else base64.b64encode(content.source).decode('utf-8')
-                    message_content.append({
-                        "type": "image",
-                        "source": {
-                            "type": "base64",
-                            "media_type": content.mime_type,
-                            "data": img_base64
-                        }
-                    })
-                    logger.info(f"Image detected and included: {content.mime_type}")
                 else:
-                    # Per testo, usa il formato standard
                     message_content.append(content.to_langchain_format())
 
-        # Crea un prompt di sistema che include istruzioni per gestire i documenti
-        system_prompt = question.system_context
 
-        # Aggiungi istruzioni specifiche per documenti base64
-        has_documents = any(item.get("type") == "document" for item in message_content)
-        has_images = any(item.get("type") == "image" for item in message_content)
 
-        if has_documents or has_images:
-            system_prompt += "\n\nIMPORTANT INSTRUCTIONS FOR TOOLS:"
-            if has_documents:
-                system_prompt += "\n- When calling tools that require document data (like pdf_base64 parameter), you MUST pass the original base64-encoded string from the document source, NOT the extracted text content."
-                system_prompt += "\n- Look for documents in the message content with type='document' and extract the base64 data from 'source' field."
-            if has_images:
-                system_prompt += "\n- When calling tools that require image data, you MUST pass the original base64-encoded string from the image source, NOT a description of the image."
-                system_prompt += "\n- Look for images in the message content with type='image' and extract the base64 data from 'source' field."
+        logger.info(f"Content types BEFORE extraction: {[item.get('type') for item in message_content]}")
 
-        agent_executor = create_react_agent(chat_model, tools=tools, prompt=system_prompt)
+        # --- STEP 3: Estrazione Documenti e Immagini Base64 ---
+        # Estrae documenti/immagini e li sostituisce con riferimenti testuali
+        document_metadata = []
+        cleaned_content = []
 
-        # Estraiamo il solo testo per la chiave "input" principale
+        for item in message_content:
+            item_type = item.get("type")
+
+            if item_type == "document":
+                # Estrai documento e crea riferimento testuale
+                base64_counter += 1
+                doc_id = f"doc_{base64_counter}"
+
+                doc_source = item.get("source", {})
+                doc_mime = item.get("mime_type", "application/pdf")
+
+                # IMPORTANTE: Distingui tra URL e base64
+                is_url = False
+                url = None
+                base64_data = None
+
+                # Caso 1: source è una stringa
+                if isinstance(doc_source, str):
+
+                    # Controlla se è un URL http/https
+                    if doc_source.startswith(("http://", "https://")):
+                        is_url = True
+                        url = doc_source
+                        logger.info(f"Document is URL: {url}")
+                    else:
+                        # È base64 diretto (stringa lunga)
+                        base64_data = doc_source
+                        logger.info(f"Document is base64 string: {len(base64_data)} bytes")
+
+                # Caso 2: source è un dict con formato {type: "base64", data: "..."}
+                elif isinstance(doc_source, dict) and doc_source.get("type") == "base64":
+                    base64_data = doc_source.get("data", "")
+                    doc_mime = doc_source.get("media_type", doc_mime)
+                    logger.info(f"Document is base64 dict: {len(base64_data)} bytes")
+
+                else:
+                    logger.warning(f"Unknown document source format: {type(doc_source)}")
+                    continue
+
+                # Salva in storage con indicazione del tipo
+                if is_url:
+                    base64_storage[doc_id] = {
+                        "url": url,
+                        "type": "document",
+                        "source_type": "url",  # ← NUOVO: indica che è una URL
+                        "media_type": doc_mime
+                    }
+                    # Aggiungi riferimento testuale con URL
+                    cleaned_content.append({
+                        "type": "text",
+                        "text": f"[DOCUMENT_{doc_id}: {doc_mime}, URL={url}]"
+                    })
+                    document_metadata.append({"id": doc_id, "mime_type": doc_mime, "source_type": "url", "url": url})
+                    logger.info(f"Extracted document {doc_id}: {doc_mime}, URL={url}")
+                else:
+                    base64_storage[doc_id] = {
+                        "data": base64_data,
+                        "type": "document",
+                        "source_type": "base64",  # ← NUOVO: indica che è base64
+                        "media_type": doc_mime
+                    }
+                    # Aggiungi riferimento testuale con dimensione
+                    cleaned_content.append({
+                        "type": "text",
+                        "text": f"[DOCUMENT_{doc_id}: {doc_mime}, {len(base64_data)} bytes]"
+                    })
+                    document_metadata.append({"id": doc_id, "mime_type": doc_mime, "source_type": "base64"})
+                    logger.info(f"Extracted document {doc_id}: {doc_mime}, {len(base64_data)} bytes")
+
+            elif item_type == "image":
+                # Converti immagine base64 in image_url (formato compatibile con LLM)
+                source = item.get("source", {})
+                if isinstance(source, dict) and source.get("type") == "base64":
+                    media_type = source.get("media_type", "image/png")
+                    base64_data = source.get("data", "")
+
+                    # Crea data URI per l'LLM (alcuni LLM supportano questo formato)
+                    data_uri = f"data:{media_type};base64,{base64_data}"
+                    cleaned_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": data_uri}
+                    })
+                    logger.info(f"Converted image to data URI format")
+                else:
+                    cleaned_content.append(item)
+
+            elif item_type in ["text", "image_url"]:
+                # Tipi supportati → mantieni
+                cleaned_content.append(item)
+
+            else:
+                logger.warning(f"Unsupported content type '{item_type}'")
+                cleaned_content.append({"type": "text", "text": f"[Unsupported: {item_type}]"})
+
+        message_content = cleaned_content
+        logger.info(f"Content types AFTER extraction: {[item.get('type') for item in message_content]}")
+        logger.info(f"Documents extracted: {len(document_metadata)}")
+
+
+        # --- STEP 4: Creazione System Prompt Dinamico ---
+        system_prompt = question.system_context or "You are a helpful assistant."
+
+        has_documents = len(document_metadata) > 0
+        has_tools = len(tools) > 0
+
+        # Aggiungi istruzioni SOLO se ci sono documenti E tool
+        if has_documents and has_tools:
+            system_prompt += "\n\n=== DOCUMENT PROCESSING INSTRUCTIONS ===\n"
+            system_prompt += f"\nYou have {len(document_metadata)} document(s) attached and {len(tools)} tool(s) available.\n"
+
+            system_prompt += "\nDOCUMENTS PROVIDED:\n"
+            for doc_info in document_metadata:
+                doc_id = doc_info["id"]
+                mime_type = doc_info["mime_type"]
+                source_type = doc_info.get("source_type", "base64")
+                storage_entry = base64_storage.get(doc_id, {})
+
+                if source_type == "url":
+
+                    url = doc_info.get("url", storage_entry.get("url", ""))
+                    system_prompt += f"  • {doc_id}: {mime_type}\n"
+                    system_prompt += f"    Type: URL\n"
+                    system_prompt += f"    URL: {url}\n"
+                    system_prompt += f"    Referenced in message as: [DOCUMENT_{doc_id}]\n"
+                else:
+                    size = len(storage_entry.get("data", ""))
+                    system_prompt += f"  • {doc_id}: {mime_type}\n"
+                    system_prompt += f"    Type: BASE64\n"
+                    system_prompt += f"    Size: {size} bytes\n"
+                    system_prompt += f"    Referenced in message as: [DOCUMENT_{doc_id}]\n"
+
+            system_prompt += "\nHOW TO PROCESS DOCUMENTS:\n"
+            system_prompt += "1. You will see document references like:\n"
+            system_prompt += "   - [DOCUMENT_doc_1: application/pdf, URL=https://example.com/file.pdf] (URL type)\n"
+            system_prompt += "   - [DOCUMENT_doc_2: application/pdf, 52341 bytes] (BASE64 type)\n"
+            system_prompt += "\n2. Check the MCP tool's parameters to understand what it accepts:\n"
+            system_prompt += "   - If tool has 'url' parameter → use it for URL documents\n"
+            system_prompt += "   - If tool has 'pdf_base64' or 'file_data' → use it for BASE64 documents\n"
+            system_prompt += "\n3. CRITICAL - How to retrieve and pass document data:\n"
+            system_prompt += "   a) Look up the document ID in the 'DOCUMENTS PROVIDED' section above\n"
+            system_prompt += "   b) Check if it's Type: URL or Type: BASE64\n"
+            system_prompt += "   c) For URL documents:\n"
+            system_prompt += "      - Find the URL listed in 'DOCUMENTS PROVIDED'\n"
+            system_prompt += "      - Pass it directly to the tool's 'url' parameter (e.g., url='https://...')\n"
+            system_prompt += "      - DO NOT try to download or convert it - the tool handles this!\n"
+            system_prompt += "   d) For BASE64 documents:\n"
+            system_prompt += "      - The base64 data is in storage (you don't see it to avoid context overflow)\n"
+            system_prompt += "      - Pass the document ID reference to the tool (the system resolves it automatically)\n"
+            system_prompt += "      - Or use placeholder like 'pdf_base64=<base64_data_from_storage>'\n"
+            system_prompt += "\nEXAMPLES:\n"
+            system_prompt += "  Example 1 - URL Document:\n"
+            system_prompt += "    User: 'Convert the PDF to images'\n"
+            system_prompt += "    You see: [DOCUMENT_doc_1: application/pdf, URL=https://pdfobject.com/pdf/sample.pdf]\n"
+            system_prompt += "    Tool param: 'url' (accepts URL)\n"
+            system_prompt += "    ✓ CORRECT: convert_pdf_to_images(url='https://pdfobject.com/pdf/sample.pdf')\n"
+            system_prompt += "    ✗ WRONG: convert_pdf_to_images(pdf_base64='...')  ← Don't download it yourself!\n"
+            system_prompt += "\n  Example 2 - BASE64 Document:\n"
+            system_prompt += "    User: 'Extract text from PDF'\n"
+            system_prompt += "    You see: [DOCUMENT_doc_2: application/pdf, 52341 bytes]\n"
+            system_prompt += "    Tool param: 'pdf_base64' (accepts base64)\n"
+            system_prompt += "    ✓ CORRECT: extract_text(pdf_base64='<base64_data_from_storage>')\n"
+            system_prompt += "\nNote: The system automatically manages base64 data to avoid context overflow.\n"
+
+        # --- STEP 5: Setup Tool Multimodale Interno + Registry Tools ---
+        from tilellm.tools.multimodal_llm_tool import create_multimodal_llm_tool
+        from tilellm.modules.tools_registry.services.tool_registry import resolve_tools
+
+        # Crea sempre il tool multimodale con accesso allo storage base64
+        multimodal_tool = create_multimodal_llm_tool(chat_model, base64_storage)
+
+        # Risolvi i tool dal registry se specificati
+        registry_tools = []
+        if question.tools:
+            logger.info(f"Resolving {len(question.tools)} tools from registry: {question.tools}")
+            registry_tools = resolve_tools(
+                question.tools,
+                chat_model=chat_model,
+                base64_storage=base64_storage
+            )
+            logger.info(f"Resolved {len(registry_tools)} tools from registry")
+
+        # Combina tutti i tool: MCP + multimodal interno + registry
+        all_tools = tools + [multimodal_tool] + registry_tools
+
+        logger.info(f"Total tools available: {len(all_tools)} ({len(tools)} MCP + 1 internal multimodal + {len(registry_tools)} registry)")
+
+        # Aggiungi istruzioni per il tool interno (solo se necessario)
+        if has_documents:
+            system_prompt += "\n\nINTERNAL TOOL AVAILABLE:\n"
+            system_prompt += "  • invoke_multimodal_llm: Analyzes images/documents with vision capabilities\n"
+            system_prompt += "  Use this after converting documents to images for visual analysis.\n"
+            # --- AGGIORNA IL SYSTEM PROMPT ---
+            system_prompt += f"""
+                                           IMPORTANT: Base64 Content Management
+
+                                           Large base64-encoded images are automatically extracted and replaced with references
+                                           to avoid context overflow. You will see references like:
+                                           - [IMAGE_REF:base64_ref_1:length=52341]
+
+                                           When you need to analyze image content:
+                                           1. Use the invoke_multimodal_llm tool
+                                           2. Pass the reference: images_base64=["<base64_ref_1>"]
+                                           3. The tool will automatically resolve and analyze it
+
+                                           Currently available: {len(base64_storage)} references
+                                           """
+
+        # --- STEP 6: Funzioni di Pulizia Messaggi ---
+        def clean_message_content(content: str) -> tuple[str, bool]:
+            """Pulisce contenuto stringa estraendo base64 pesanti."""
+            nonlocal base64_counter
+
+            if len(content) < 1000:
+                return content, False
+
+            # Prova a parsare come JSON (risposta tipica dei tool MCP)
+            try:
+                data = json.loads(content)
+                if isinstance(data, dict):
+                    was_cleaned = False
+                    for key in ['images_base64', 'documents_base64', 'file_content']:
+                        if key in data:
+                            # Gestisci liste
+                            if isinstance(data[key], list):
+                                cleaned_list = []
+                                for item in data[key]:
+                                    if isinstance(item, str) and len(item) > 1000:
+                                        base64_counter += 1
+                                        ref_id = f"base64_ref_{base64_counter}"
+                                        base64_storage[ref_id] = {
+                                            'data': re.sub(r'[\n\r]', '', item),
+                                            'type': 'image' if key == 'images_base64' else 'document',
+                                            'media_type': 'image/png'
+                                        }
+                                        cleaned_list.append(f"<{ref_id}>")
+                                        was_cleaned = True
+                                    else:
+                                        cleaned_list.append(item)
+                                data[key] = cleaned_list
+                            # Gestisci stringhe singole
+                            elif isinstance(data[key], str) and len(data[key]) > 1000:
+                                base64_counter += 1
+                                ref_id = f"base64_ref_{base64_counter}"
+                                base64_storage[ref_id] = {
+                                    'data': re.sub(r'[\n\r]', '', data[key]),
+                                    'type': 'image' if key == 'images_base64' else 'document',
+                                    'media_type': 'image/png'
+                                }
+                                data[key] = f"<{ref_id}>"
+                                was_cleaned = True
+
+                    if was_cleaned:
+                        return json.dumps(data), True
+            except json.JSONDecodeError:
+                pass
+
+            # Fallback: stringa non-JSON base64 raw
+            sample = (content[:500] + content[-500:]).strip()
+            if re.fullmatch(r'[A-Za-z0-9+/=]+', re.sub(r'\s+', '', sample)):
+                base64_counter += 1
+                ref_id = f"base64_ref_{base64_counter}"
+                base64_storage[ref_id] = {
+                    'data': re.sub(r'[\n\r]', '', content),
+                    'type': 'binary',
+                    'media_type': 'application/octet-stream'
+                }
+                return f"[BINARY_REF:{ref_id}:length={len(content)}]", True
+
+            return content, False
+
+        def pre_model_cleaning_hook(state):
+            """Hook chiamato prima di ogni invocazione LLM per pulire i messaggi."""
+            messages = state.get("messages", [])
+            cleaned_messages = []
+
+            for msg in messages:
+                if not hasattr(msg, 'content'):
+                    cleaned_messages.append(msg)
+                    continue
+
+                content = msg.content
+
+                # Pulisci solo contenuto stringa
+                if isinstance(content, str):
+                    cleaned_content, was_cleaned = clean_message_content(content)
+
+                    if was_cleaned:
+                        # Ricostruisci messaggio con content pulito
+                        if msg.type == 'tool':
+                            cleaned_messages.append(ToolMessage(
+                                content=cleaned_content,
+                                tool_call_id=msg.tool_call_id,
+                                name=getattr(msg, 'name', None),
+                                id=getattr(msg, 'id', None)
+                            ))
+                        elif msg.type == 'ai':
+                            cleaned_messages.append(AIMessage(
+                                content=cleaned_content,
+                                tool_calls=getattr(msg, 'tool_calls', None),
+                                id=getattr(msg, 'id', None)
+                            ))
+                        elif msg.type == 'human':
+                            cleaned_messages.append(HumanMessage(content=cleaned_content))
+                        elif msg.type == 'system':
+                            cleaned_messages.append(SystemMessage(content=cleaned_content))
+                        else:
+                            cleaned_messages.append(msg)
+                    else:
+                        cleaned_messages.append(msg)
+                else:
+                    # Content non stringa → mantieni originale
+                    cleaned_messages.append(msg)
+
+            return {"llm_input_messages": cleaned_messages}
+
+        # --- STEP 7: Creazione Agent con Pre-Model Hook ---
+        agent_executor = create_react_agent(
+            model=chat_model,
+            tools=all_tools,
+            prompt=system_prompt,
+            pre_model_hook=pre_model_cleaning_hook,
+            version="v2"
+        )
+
+        # --- STEP 8: Invocazione Agent ---
+        # Estrai testo per il campo 'input'
         text_prompt = " ".join([
             item["text"] for item in message_content if item["type"] == "text"
         ]).strip()
+
+        logger.info(f"Invoking agent with {len(message_content)} content items")
 
         response = await agent_executor.ainvoke({
             "input": text_prompt,
             "messages": [HumanMessage(content=message_content)]
         })
 
-        logger.info(response)
+        # PULIZIA FINALE: Pulisci i messaggi nella risposta per rimuovere base64 lunghi
+        if "messages" in response:
+            logger.info(f"Final cleaning of {len(response['messages'])} messages")
+            cleaned_messages = []
+            for msg in response['messages']:
+                if not hasattr(msg, 'content'):
+                    cleaned_messages.append(msg)
+                    continue
 
-        # La risposta di un agent executor è solitamente in response['output']
-        result = response.get('output', 'Nessuna risposta dall\'agent.')
+                content = msg.content
+                if isinstance(content, str):
+                    cleaned_content, was_cleaned = clean_message_content(content)
+                    if was_cleaned:
+                        # Ricostruisci messaggio con content pulito
+                        if msg.type == 'tool':
+                            cleaned_messages.append(ToolMessage(
+                                content=cleaned_content,
+                                tool_call_id=msg.tool_call_id,
+                                name=getattr(msg, 'name', None),
+                                id=getattr(msg, 'id', None)
+                            ))
+                        elif msg.type == 'ai':
+                            cleaned_messages.append(AIMessage(
+                                content=cleaned_content,
+                                tool_calls=getattr(msg, 'tool_calls', None),
+                                id=getattr(msg, 'id', None)
+                            ))
+                        elif msg.type == 'human':
+                            cleaned_messages.append(HumanMessage(content=cleaned_content))
+                        elif msg.type == 'system':
+                            cleaned_messages.append(SystemMessage(content=cleaned_content))
+                        else:
+                            cleaned_messages.append(msg)
+                    else:
+                        cleaned_messages.append(msg)
+                else:
+                    cleaned_messages.append(msg)
+            response['messages'] = cleaned_messages
 
-        logger.info(result)
+        # Estrae TUTTI i ToolMessage e AIMessage per avere la risposta completa
+        result = extract_conversation_flow(response['messages'])
+        logger.info(f"============== \n{response} \n====================")
+        logger.info(f"Extracted conversation flow:\n{result}")
+        logger.info(f"Agent completed successfully")
+
         return JSONResponse(
             content=SimpleAnswer(answer=result, chat_history_dict={}).model_dump()
         )
@@ -672,18 +1052,484 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model=None):
         return handle_exception(e, "Exception in MCP dialog")
 
 
+
 @inject_llm_async
-async def ask_mcp_agent_llm_1(question: QuestionToLLM, chat_model=None):
+async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
+    """
+    Versione ottimizzata che risolve il problema del context overflow.
+
+    PROBLEMA: Quando i tool MCP restituiscono immagini in base64, queste vengono
+    incluse nei messaggi dell'agent causando l'overflow del contesto (671K tokens).
+
+    SOLUZIONE:
+    1. Estrai e memorizza i contenuti base64 in uno storage separato
+    2. Sostituisci il base64 nei messaggi con riferimenti testuali
+    3. Il tool multimodale interno accede allo storage quando invocato
+    4. I messaggi dell'agent rimangono leggeri (solo testo + riferimenti)
+    """
     mcp_client = question.create_mcp_client()
 
     try:
         tools = await mcp_client.get_tools()
 
-        agent = create_react_agent(chat_model, tools)
-        response = await agent.ainvoke({"messages": question.question})
-        logger.info(response)
+        # Crea il tool multimodale interno con accesso allo storage
+        from tilellm.tools.multimodal_llm_tool import create_multimodal_llm_tool
+        from tilellm.modules.tools_registry.services.tool_registry import resolve_tools
+
+        # Storage condiviso per contenuti base64
+        # Sarà popolato durante il preprocessing dei messaggi
+        base64_storage = {}
+
+        # Crea sempre il tool multimodale interno
+        multimodal_tool = create_multimodal_llm_tool(chat_model, base64_storage)
+
+        # Risolvi i tool dal registry se specificati
+        registry_tools = []
+        if question.tools:
+            logger.info(f"Resolving {len(question.tools)} tools from registry: {question.tools}")
+            registry_tools = resolve_tools(
+                question.tools,
+                chat_model=chat_model,
+                base64_storage=base64_storage
+            )
+            logger.info(f"Resolved {len(registry_tools)} tools from registry")
+
+        # Combina tutti i tool: MCP + multimodal interno + registry
+        all_tools = tools + [multimodal_tool] + registry_tools
+
+        logger.info(f"Simple mode optimized: Total tools: {len(all_tools)} ({len(tools)} MCP + 1 internal multimodal + {len(registry_tools)} registry)")
+
+        # Converti question.question in lista se è stringa
+        if isinstance(question.question, str):
+            messages = [question.question]
+        else:
+            messages = question.question
+
+        # Analizza i messaggi e estrai base64
+        processed_messages = []
+        base64_counter = 0
+
+        for msg in messages:
+            # Se è una stringa semplice, mantienila
+            if isinstance(msg, str):
+                processed_messages.append(msg)
+                continue
+
+            # Se è un oggetto con content che contiene base64
+            if hasattr(msg, 'content'):
+                content = msg.content
+
+                # Se content è una lista (multimodale)
+                if isinstance(content, list):
+                    new_content = []
+                    for item in content:
+                        # Controlla se è un dizionario
+                        if isinstance(item, dict):
+                            item_type = item.get('type', '')
+
+                            # Se è un'immagine con base64
+                            if item_type == 'image':
+                                base64_counter += 1
+                                ref_id = f"base64_ref_{base64_counter}"
+
+                                # Estrai il base64
+                                source = item.get('source', {})
+                                if isinstance(source, dict) and source.get('type') == 'base64':
+                                    base64_data = source.get('data', '')
+                                    media_type = source.get('media_type', 'image/png')
+
+                                    # Salva nello storage
+                                    base64_storage[ref_id] = {
+                                        'data': base64_data,
+                                        'type': 'image',
+                                        'media_type': media_type
+                                    }
+
+                                    # Sostituisci con riferimento testuale
+                                    new_content.append({
+                                        'type': 'text',
+                                        'text': f"[IMAGE_REF:{ref_id}:length={len(base64_data)}:type={media_type}]"
+                                    })
+                                    logger.info(f"Extracted {ref_id}: {media_type}, length: {len(base64_data)}")
+                                    continue
+
+                            # Se è un'immagine con image_url
+                            elif item_type == 'image_url':
+                                image_url = item.get('image_url', {}).get('url', '')
+
+                                # Se è un data URI con base64
+                                if image_url.startswith('data:'):
+                                    base64_counter += 1
+                                    ref_id = f"base64_ref_{base64_counter}"
+
+                                    # Estrai mime type e base64
+                                    try:
+                                        parts = image_url.split(',', 1)
+                                        if len(parts) == 2:
+                                            mime_part = parts[0].split(';')[0].replace('data:', '')
+                                            base64_data = parts[1]
+
+                                            # Salva nello storage
+                                            base64_storage[ref_id] = {
+                                                'data': base64_data,
+                                                'type': 'image',
+                                                'media_type': mime_part
+                                            }
+
+                                            # Sostituisci con riferimento testuale
+                                            new_content.append({
+                                                'type': 'text',
+                                                'text': f"[IMAGE_REF:{ref_id}:length={len(base64_data)}:type={mime_part}]"
+                                            })
+                                            logger.info(f"Extracted {ref_id} from data URI: {mime_part}, length: {len(base64_data)}")
+                                            continue
+                                    except Exception as e:
+                                        logger.warning(f"Failed to parse data URI: {e}")
+
+                            # Se è un documento con base64
+                            elif item_type == 'document':
+                                base64_counter += 1
+                                ref_id = f"base64_ref_{base64_counter}"
+
+                                source = item.get('source', {})
+                                mime_type = item.get('mime_type', 'application/pdf')
+
+                                if isinstance(source, dict) and source.get('type') == 'base64':
+                                    base64_data = source.get('data', '')
+
+                                    # Salva nello storage
+                                    base64_storage[ref_id] = {
+                                        'data': base64_data,
+                                        'type': 'document',
+                                        'media_type': mime_type
+                                    }
+
+                                    # Sostituisci con riferimento testuale
+                                    new_content.append({
+                                        'type': 'text',
+                                        'text': f"[DOCUMENT_REF:{ref_id}:length={len(base64_data)}:type={mime_type}]"
+                                    })
+                                    logger.info(f"Extracted {ref_id}: {mime_type}, length: {len(base64_data)}")
+                                    continue
+
+                        # Se non è base64, mantieni l'item originale
+                        new_content.append(item)
+
+                    # Crea nuovo messaggio con contenuto processato
+                    from langchain.schema import HumanMessage, AIMessage, SystemMessage
+
+                    if hasattr(msg, 'type'):
+                        if msg.type == 'human':
+                            processed_messages.append(HumanMessage(content=new_content))
+                        elif msg.type == 'ai':
+                            processed_messages.append(AIMessage(content=new_content))
+                        elif msg.type == 'system':
+                            processed_messages.append(SystemMessage(content=new_content))
+                        else:
+                            processed_messages.append(msg)
+                    else:
+                        processed_messages.append(HumanMessage(content=new_content))
+                else:
+                    # Content non è lista, mantieni il messaggio originale
+                    processed_messages.append(msg)
+            else:
+                # Non ha content, mantieni originale
+                processed_messages.append(msg)
+
+        logger.info(f"Preprocessing completed: extracted {len(base64_storage)} base64 items")
+        logger.info(f"Storage keys: {list(base64_storage.keys())}")
+
+        def process_messages_state_modifier(state):
+            """
+            State modifier che rimuove il base64 da TUTTI i messaggi ad ogni step.
+            Intercetta sia gli input che gli output dei tool (ToolMessage).
+            """
+            messages = state.get("messages", [])
+            cleaned_messages = []
+
+            nonlocal base64_counter  # Usa il contatore globale
+
+            for msg in messages:
+                # 1. Controlla se il messaggio ha contenuto
+                if not hasattr(msg, 'content'):
+                    cleaned_messages.append(msg)
+                    continue
+
+                content = msg.content
+                was_cleaned = False  # Flag per tracciare se il 'content' è stato modificato
+
+                # 2. Pulisci gli argomenti dei tool_calls (SEMPRE, se presenti)
+                # (Questa logica gestisce i base64 inviati *dall'LLM al tool*)
+                tool_calls_were_cleaned = False
+                final_tool_calls = None
+
+                if hasattr(msg, 'tool_calls') and msg.tool_calls:
+
+                    final_tool_calls = []
+                    for tc in msg.tool_calls:
+                        # ... (logica di pulizia args) ...
+                        # if args_were_cleaned:
+                        #    tool_calls_were_cleaned = True
+                        final_tool_calls.append(tc)  # Aggiungi il tool_call pulito o originale
+
+                # 3. Pulisco il 'content' del messaggio
+
+                # --- CASO A: CONTENT È UNA STRINGA (es. ToolMessage o testo semplice) ---
+                if isinstance(content, str):
+                    cleaned_content = content
+
+                    if len(content) > 10000:  # Controlla solo stringhe lunghe
+
+                        # --- A.1: Prova a parsarla come JSON (LA NUOVA LOGICA) ---
+                        try:
+                            # Il content è JSON, come: '{"images_base64": ["iVBOR..."]}'
+                            data = json.loads(content)
+                            keys_to_clean = ['images_base64', 'documents_base64', 'file_content']
+
+                            if isinstance(data, dict):
+                                for key in keys_to_clean:
+                                    # Pulisci liste di base64
+                                    if key in data and isinstance(data[key], list):
+                                        cleaned_list = []
+                                        for item in data[key]:
+                                            if isinstance(item, str) and len(item) > 10000:
+                                                base64_counter += 1
+                                                ref_id = f"base64_ref_{base64_counter}"
+
+                                                storage_type = 'image' if key == 'images_base64' else 'document'
+                                                base64_storage[ref_id] = {
+                                                    'data': re.sub(r'[\n\r]', '', item),  # Pulisci \n e salva
+                                                    'type': storage_type,
+                                                    'media_type': 'image/jpeg'  # Assunzione, migliora se possibile
+                                                }
+
+                                                cleaned_list.append(f"<{ref_id}>")
+                                                was_cleaned = True
+                                                logger.info(
+                                                    f"[STATE_MODIFIER] Extracted {ref_id} from JSON key '{key}'")
+                                            else:
+                                                cleaned_list.append(item)
+                                        data[key] = cleaned_list
+
+                                    # Pulisci stringhe singole di base64
+                                    elif key in data and isinstance(data[key], str) and len(data[key]) > 10000:
+                                        base64_counter += 1
+                                        ref_id = f"base64_ref_{base64_counter}"
+                                        storage_type = 'image' if key == 'images_base64' else 'document'
+
+                                        base64_storage[ref_id] = {
+                                            'data': re.sub(r'[\n\r]', '', data[key]),  # Pulisci \n e salva
+                                            'type': storage_type,
+                                            'media_type': 'image/jpeg'
+                                        }
+
+                                        data[key] = f"<{ref_id}>"
+                                        was_cleaned = True
+                                        logger.info(
+                                            f"[STATE_MODIFIER] Extracted {ref_id} from JSON key '{key}' (string)")
+
+                                if was_cleaned:
+                                    # Riconverti il dizionario PULITO in una stringa JSON
+                                    cleaned_content = json.dumps(data)
+
+                        except json.JSONDecodeError:
+                            # --- A.2: Non era JSON, prova l'euristica Base64 Raw ---
+                            logger.warning(
+                                f"[STATE_MODIFIER] Content (len {len(content)}) is not JSON. Trying RAW Base64 heuristic...")
+
+                            sample_raw = (content[:500] + content[-500:]).strip()
+                            sample_cleaned = re.sub(r'\s+', '', sample_raw)  # Pulisci \n, \r, spazi
+
+                            if re.fullmatch(r'[A-Za-z0-9+/=]+', sample_cleaned):
+                                logger.warning(f"[STATE_MODIFIER] Detected large RAW string. Storing as ref.")
+
+                                base64_counter += 1
+                                ref_id = f"base64_ref_{base64_counter}"
+
+                                full_cleaned_data = re.sub(r'[\n\r]', '', content)  # Pulisci l'intera stringa
+
+                                base64_storage[ref_id] = {
+                                    'data': full_cleaned_data,
+                                    'type': 'binary',
+                                    'media_type': 'application/octet-stream'
+                                }
+
+                                cleaned_content = f"[BINARY_REF:{ref_id}:length={len(full_cleaned_data)}]"
+                                was_cleaned = True
+                            else:
+                                logger.debug(
+                                    f"[STATE_MODIFIER] Large string FAILED heuristic. Cleaned sample: '{sample_cleaned[:100]}...'")
+
+                    # --- A.3: Ricostruisci il messaggio se 'content' è cambiato ---
+                    if was_cleaned or tool_calls_were_cleaned:
+                        logger.info(
+                            f"[STATE_MODIFIER] Rebuilding message (type: {msg.type}) due to content/tool_call cleaning.")
+                        tool_calls_to_use = final_tool_calls if final_tool_calls is not None else (
+                            msg.tool_calls if hasattr(msg, 'tool_calls') else None)
+
+                        if msg.type == 'tool':
+                            cleaned_messages.append(ToolMessage(
+                                content=cleaned_content,
+                                tool_call_id=msg.tool_call_id,
+                                name=msg.name if hasattr(msg, 'name') else None,
+                                id=msg.id if hasattr(msg, 'id') else None,
+                                additional_kwargs=msg.additional_kwargs if hasattr(msg, 'additional_kwargs') else {}
+                            ))
+                        elif msg.type == 'ai':
+                            cleaned_messages.append(AIMessage(
+                                content=cleaned_content,
+                                tool_calls=tool_calls_to_use,
+                                id=msg.id if hasattr(msg, 'id') else None,
+                                additional_kwargs=msg.additional_kwargs if hasattr(msg, 'additional_kwargs') else {}
+                            ))
+                        elif msg.type == 'system':
+                            cleaned_messages.append(SystemMessage(content=cleaned_content))
+                        elif msg.type == 'human':
+                            cleaned_messages.append(HumanMessage(content=cleaned_content))
+                        else:
+                            logger.warning(
+                                f"[STATE_MODIFIER] Unhandled message type '{msg.type}' with string content, appending original.")
+                            cleaned_messages.append(msg)
+                    else:
+                        cleaned_messages.append(msg)  # Invariato
+
+                # --- CASO B: CONTENT È UNA LISTA (Multimodale) ---
+                elif isinstance(content, list):
+                    # ... (La tua logica esistente per pulire le liste multimodali va qui) ...
+                    # ... (Sembrava corretta per gli input) ...
+                    cleaned_messages.append(msg)  # Sostituisci con la tua logica di pulizia liste
+
+                # --- CASO C: ALTRO ---
+                else:
+                    # Contenuto non stringa/lista, o messaggio senza 'content'
+                    cleaned_messages.append(msg)
+
+            # Ritorna lo stato modificato
+            return {"messages": cleaned_messages}
+
+        # --- AGGIORNA IL SYSTEM PROMPT ---
+        system_instructions = f"""
+                                IMPORTANT: Base64 Content Management
+                                
+                                Large base64-encoded images are automatically extracted and replaced with references
+                                to avoid context overflow. You will see references like:
+                                - [IMAGE_REF:base64_ref_1:length=52341]
+                                
+                                When you need to analyze image content:
+                                1. Use the invoke_multimodal_llm tool
+                                2. Pass the reference: images_base64=["<base64_ref_1>"]
+                                3. The tool will automatically resolve and analyze it
+                                
+                                Currently available: {len(base64_storage)} references
+                                """
+
+        def pre_model_cleaning_hook(state):
+            """
+            Pre-model hook che pulisce i messaggi prima di ogni chiamata LLM.
+            Questo viene chiamato automaticamente da LangGraph prima del nodo "agent".
+
+            Deve ritornare un dict con:
+            - "messages": per AGGIORNARE i messaggi nello stato
+            - "llm_input_messages": per usare messaggi diversi come input all'LLM
+            """
+            current_messages = state.get("messages", [])
+
+            logger.debug(f"[PRE_MODEL_HOOK] ========== CALLED ==========")
+            logger.debug(f"[PRE_MODEL_HOOK] Processing {len(current_messages)} messages")
+
+            # DEBUG: Analizza messaggi PRIMA della pulizia
+            total_size_before = 0
+            for idx, msg in enumerate(current_messages):
+                if hasattr(msg, 'content'):
+                    content = msg.content
+                    if isinstance(content, str):
+                        total_size_before += len(content)
+                        if len(content) > 10000:
+                            has_base64 = 'base64' in content or 'data:image' in content
+                            logger.debug(f"[PRE_MODEL_HOOK] ⚠️ Message {idx} ({msg.type}): LARGE STRING content, length={len(content)}, has_base64={has_base64}")
+                            if has_base64:
+                                # Mostra un piccolo sample
+                                sample_start = content[:100]
+                                logger.debug(f"[PRE_MODEL_HOOK] Sample start: {sample_start}...")
+                    elif isinstance(content, list):
+                        for item in content:
+                            if isinstance(item, dict):
+                                if item.get('type') == 'image_url':
+                                    url = item.get('image_url', {}).get('url', '')
+                                    total_size_before += len(url)
+                                    if len(url) > 10000:
+                                        logger.debug(f"[PRE_MODEL_HOOK] ⚠️ Message {idx} has LARGE image_url: {len(url)} chars")
+
+            logger.debug(f"[PRE_MODEL_HOOK] Total content size BEFORE: {total_size_before} chars (~{total_size_before//4} tokens)")
+
+            # Pulisci i messaggi
+            cleaned_state = process_messages_state_modifier({"messages": current_messages})
+            cleaned_messages = cleaned_state["messages"]
+
+            # DEBUG: Verifica messaggi DOPO la pulizia
+            total_size_after = 0
+            for idx, msg in enumerate(cleaned_messages):
+                if hasattr(msg, 'content'):
+                    content = msg.content
+                    if isinstance(content, str):
+                        total_size_after += len(content)
+                        if len(content) > 10000:
+                            logger.debug(f"[PRE_MODEL_HOOK] ❌ STILL LARGE AFTER! Message {idx}, length={len(content)}")
+
+            logger.debug(f"[PRE_MODEL_HOOK] Total content size AFTER: {total_size_after} chars (~{total_size_after//4} tokens)")
+            logger.debug(f"[PRE_MODEL_HOOK] Reduction: {total_size_before - total_size_after} chars")
+
+            # Conta quanti base64 sono stati estratti in questo step
+            extracted_count = len(base64_storage)
+            logger.debug(f"[PRE_MODEL_HOOK] Total refs in storage: {extracted_count}")
+
+            # DEBUG FINALE: Verifica tool_calls negli AIMessage puliti
+            for idx, cleaned_msg in enumerate(cleaned_messages):
+                if hasattr(cleaned_msg, 'tool_calls') and cleaned_msg.tool_calls:
+                    logger.debug(f"[PRE_MODEL_HOOK] Message {idx} (AIMessage) has {len(cleaned_msg.tool_calls)} tool_calls")
+                    for tc_idx, tc in enumerate(cleaned_msg.tool_calls):
+                        args = tc.get('args', {})
+                        if 'images_base64' in args:
+                            imgs = args['images_base64']
+                            if isinstance(imgs, list) and len(imgs) > 0:
+                                first_img = imgs[0] if len(imgs) > 0 else ''
+                                is_ref = first_img.startswith('<base64_ref_')
+                                logger.debug(f"[PRE_MODEL_HOOK] ⭐ tool_call {tc_idx} has images_base64: {len(imgs)} items, first={'REFERENCE' if is_ref else 'RAW BASE64'}, sample={first_img[:50]}")
+
+            # Ritorna i messaggi puliti che saranno usati come input all'LLM
+            return {
+                "llm_input_messages": cleaned_messages,
+            }
+
+        # Pulisci i messaggi iniziali
+        cleaned_input = process_messages_state_modifier({"messages": processed_messages})
+        agent_input = {"messages": cleaned_input["messages"]}
+
+        logger.info(f"Starting agent with {len(agent_input['messages'])} initial cleaned messages")
+
+        # Crea agent con pre_model_hook (disponibile in LangGraph v2)
+        base_agent = create_react_agent(
+            model=chat_model,
+            tools=all_tools,
+            prompt=system_instructions,
+            pre_model_hook=pre_model_cleaning_hook,  # ← CHIAVE! Pulisce ad ogni step
+            version="v2"  # Usa la versione v2 che supporta pre_model_hook
+        )
+
+        # Invoca l'agent
+        logger.info("Invoking agent...")
+        response = await base_agent.ainvoke(agent_input)
+
+        # PULIZIA FINALE: Pulisci i messaggi nella risposta (per sicurezza)
+        if "messages" in response:
+            logger.info(f"Final cleaning of {len(response['messages'])} messages")
+            final_cleaned = process_messages_state_modifier({"messages": response["messages"]})
+            response["messages"] = final_cleaned["messages"]
+
+        logger.info(f"Agent response received")
         result = extract_conversation_flow(response['messages'])
-        logger.info(result)
+        logger.debug(result)
+
         return JSONResponse(
             content=SimpleAnswer(answer=result, chat_history_dict={}).model_dump())
 

@@ -1,7 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
 
-from langchain_core.vectorstores import VectorStore
 from tilellm.models.schemas import (RepositoryNamespace,
                                     RepositoryItems,
                                     RepositoryNamespaceResult,

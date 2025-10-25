@@ -569,11 +569,20 @@ def _create_event(event_type: str, data: dict) -> str:
 
 
 def extract_conversation_flow(messages: list) -> str:
+    """
+    Estrae tutti i ToolMessage e AIMessage dalla conversazione.
+    Preserva la formattazione originale (newline, ecc.)
+
+    Formato output:
+    tool: <contenuto tool 1>
+    tool: <contenuto tool 2>
+    ai message: <risposta AI>
+    """
     conversation = []
 
     for msg in messages:
         if isinstance(msg, AIMessage):
-            # Estrae il primo contenuto testuale (potrebbe avere multiple parti)
+            # Estrae il contenuto testuale (potrebbe avere multiple parti)
             main_text = ""
             if isinstance(msg.content, list):
                 for part in msg.content:
@@ -583,12 +592,15 @@ def extract_conversation_flow(messages: list) -> str:
             else:
                 main_text = str(msg.content)
 
-            # Pulisci e formatta
-            cleaned_text = main_text.replace('\n', ' ').strip()
+            # Preserva la formattazione originale (NON rimuovere newline!)
+            cleaned_text = main_text.strip()
             if cleaned_text:
                 conversation.append(f"ai message: {cleaned_text}")
 
         elif isinstance(msg, ToolMessage):
-            conversation.append(f"tool: {msg.content}")
+            # Preserva il contenuto del tool completo
+            tool_content = str(msg.content).strip()
+            if tool_content:
+                conversation.append(f"tool: {tool_content}")
 
     return '\n'.join(conversation)

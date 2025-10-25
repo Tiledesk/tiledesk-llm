@@ -19,7 +19,7 @@ from tilellm.tools.document_tools import (get_content_by_url,
 
 from tilellm.store.pinecone.pinecone_repository_base import PineconeRepositoryBase
 
-from tilellm.shared.embedding_factory import inject_embedding, inject_embedding_qa_async
+from tilellm.shared.embedding_factory import inject_embedding
 
 from langchain_core.documents import Document
 
