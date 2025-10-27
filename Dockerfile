@@ -1,6 +1,10 @@
 # STAGE 1: LLM
 FROM python:3.12
 
+RUN apt update && apt dist-upgrade -y
+RUN apt install -y poppler-utils exiftool
+
+
 ARG IMAGICLE=false
 
 WORKDIR /tiledesk-llm

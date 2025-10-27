@@ -8,6 +8,7 @@ class ConversionType(str, Enum):
     """
     XLSX_TO_CSV = "xlsx_to_csv"
     PDF_TO_TEXT = "pdf_to_text"
+    PDF_TO_IMAGES= "pdf_to_images"
 
 class ConversionRequest(BaseModel):
     """

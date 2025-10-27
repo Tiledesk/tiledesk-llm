@@ -2,7 +2,11 @@
 from typing import Dict, Any, Callable, List
 from langchain_core.tools import BaseTool
 
-from tilellm.modules.conversion.services.conversion_service import convert_pdf_to_text_tool, convert_xlsx_to_csv_tool
+from tilellm.modules.conversion.services.conversion_service import (
+    convert_pdf_to_text_tool,
+    convert_xlsx_to_csv_tool,
+    convert_pdf_to_images_tool
+)
 from tilellm.tools.multimodal_llm_tool import create_multimodal_llm_tool
 
 # Tipo per chiarezza: una factory è una funzione che restituisce un BaseTool
@@ -21,6 +25,12 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
     "convert_xlsx_to_csv": {
         "description": "Converts Excel (XLSX) files to CSV format. Accepts URLs, base64, or data URIs.",
         "implementation": convert_xlsx_to_csv_tool,
+        "is_factory": False  # È già un tool decorato con @tool
+    },
+
+    "convert_pdf_to_images": {
+        "description": "Converts PDF files to PNG images (one per page). Accepts URLs, base64, or data URIs. Useful for visual analysis and OCR.",
+        "implementation": convert_pdf_to_images_tool,
         "is_factory": False  # È già un tool decorato con @tool
     },
 

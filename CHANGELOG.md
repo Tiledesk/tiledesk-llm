@@ -7,6 +7,12 @@
 
 ---
 
+## [2025-10-27]
+### 0.6.1-rc1
+- Added: Internal tools for pdf->images file conversion.
+- Added: /api/convert API for pdf->images file conversion.
+---
+
 ## [2025-10-25]
 ### 0.6.0-rc1
 - Added: MCP support with multimodal LLM.

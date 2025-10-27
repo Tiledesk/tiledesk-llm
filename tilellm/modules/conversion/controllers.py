@@ -7,7 +7,11 @@ import aiohttp
 from fastapi import APIRouter, HTTPException
 
 from tilellm.modules.conversion.models.convertion import ConvertedFile, ConversionRequest, ConversionType
-from tilellm.modules.conversion.services.conversion_service import process_xlsx_to_csv, process_pdf_to_text
+from tilellm.modules.conversion.services.conversion_service import (
+    process_xlsx_to_csv,
+    process_pdf_to_text,
+    process_pdf_to_images
+)
 
 # 1. Crea il router per questo modulo
 router = APIRouter(
@@ -23,6 +27,7 @@ async def convert_file(request: ConversionRequest):
 
     - **xlsx_to_csv**: Converte ogni foglio di un file XLSX in un file CSV separato.
     - **pdf_to_text**: Estrae il contenuto testuale da un file PDF.
+    - **pdf_to_images**: Estrae dal pdf le pagine come immagini png
     """
     # Verifica se file_content è una URL o base64
     if request.is_url():
@@ -50,6 +55,9 @@ async def convert_file(request: ConversionRequest):
 
     elif request.conversion_type == ConversionType.PDF_TO_TEXT:
         return process_pdf_to_text(request.file_name, file_bytes)
+
+    elif request.conversion_type == ConversionType.PDF_TO_IMAGES:
+        return await process_pdf_to_images(request.file_name, file_bytes)
 
     # Questo non dovrebbe mai accadere grazie alla validazione Pydantic, ma è una sicurezza in più.
     raise HTTPException(status_code=400, detail="Tipo di conversione non supportato.")
