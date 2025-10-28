@@ -7,6 +7,11 @@
 
 ---
 
+## [2025-10-28]
+### 0.6.1-rc2
+- Added: tools_log field to /api/ask response JSON.
+---
+
 ## [2025-10-27]
 ### 0.6.1-rc1
 - Added: Internal tools for pdf->images file conversion.
