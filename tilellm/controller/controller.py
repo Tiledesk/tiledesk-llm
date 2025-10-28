@@ -1044,8 +1044,15 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
         logger.info(f"Extracted conversation flow:\n{result}")
         logger.info(f"Agent completed successfully")
 
+        response_data = SimpleAnswer(
+            answer=result.get("ai_message", "No answer"),  # Assegna 'ai_message' ad 'answer'
+            tools_log=result.get("tools"),  # Assegna 'tools' a 'tools_log'
+            chat_history_dict={}  # Come prima
+        )
+
+
         return JSONResponse(
-            content=SimpleAnswer(answer=result, chat_history_dict={}).model_dump()
+            content=response_data.model_dump()
         )
 
     except Exception as e:
@@ -1530,8 +1537,15 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
         result = extract_conversation_flow(response['messages'])
         logger.debug(result)
 
+        response_data = SimpleAnswer(
+            answer=result.get("ai_message", "No answer"),  # Assegna 'ai_message' ad 'answer'
+            tools_log=result.get("tools"),  # Assegna 'tools' a 'tools_log'
+            chat_history_dict={}  # Come prima
+        )
+
         return JSONResponse(
-            content=SimpleAnswer(answer=result, chat_history_dict={}).model_dump())
+            content=response_data.model_dump()
+        )
 
     except Exception as e:
         return handle_exception(e, "Exception in MCP dialog")

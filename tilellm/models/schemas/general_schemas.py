@@ -11,6 +11,7 @@ class PromptTokenInfo(BaseModel):
 
 class SimpleAnswer(BaseModel):
     answer: Union[str, Dict[str, Any], list] = Field(default="No answer")
+    tools_log: Optional[list] = None
     chat_history_dict: Optional[Dict[str, "ChatEntry"]] = None
     prompt_token_info: Optional[PromptTokenInfo] = None
 
