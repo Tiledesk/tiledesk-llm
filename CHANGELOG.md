@@ -7,6 +7,9 @@
 
 ---
 
+## [2025-11-11]
+### 0.6.1
+
 ## [2025-10-28]
 ### 0.6.1-rc2
 - Added: tools_log field to /api/ask response JSON.
