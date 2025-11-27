@@ -26,21 +26,23 @@ from tilellm.controller.controller_utils import preprocess_chat_history, \
     fetch_question_vectors, retrieve_documents, create_chains, get_or_create_session_history, \
     generate_answer_with_history, handle_exception, initialize_retrievers, _create_event, extract_conversation_flow, create_contextualize_query
 from tilellm.controller.helpers import _get_question_list
-from tilellm.models.schemas import (RetrievalResult,
-                                    IndexingResult,
-                                       RepositoryNamespaceResult,
-                                       RepositoryDescNamespaceResult,
-                                       RepositoryItems,
-                                       RepositoryItem,
-                                       RepositoryNamespace,
-                                       RepositoryEngine,ReasoningAnswer, RetrievalChunksResult)
-from tilellm.models import (ChatEntry,
-                            QuestionToAgent,
-                            QuestionToLLM,
-                            QuestionAnswer,
-                            SimpleAnswer,
-                            PromptTokenInfo
-                            )
+from tilellm.models.schemas import (
+    RetrievalResult,
+    IndexingResult,
+       RepositoryNamespaceResult,
+       RepositoryDescNamespaceResult,
+       RepositoryItems,
+       RepositoryItem,
+       RepositoryNamespace,
+       RepositoryEngine,ReasoningAnswer, RetrievalChunksResult)
+from tilellm.models import (
+    ChatEntry,
+    QuestionToAgent,
+    QuestionToLLM,
+    QuestionAnswer,
+    SimpleAnswer,
+    PromptTokenInfo
+    )
 
 from tilellm.shared.utility import inject_repo_async, \
     inject_llm_chat_async, inject_llm_async, inject_reason_llm_async
@@ -62,7 +64,7 @@ logger = logging.getLogger(__name__)
 
 @inject_repo_async
 @inject_llm_chat_async
-async def ask_hybrid_with_memory(question_answer, repo=None, llm=None, callback_handler=None, llm_embeddings=None):
+async def ask_hybrid_with_memory(question_answer, repo=None, llm=None, callback_handler=None, llm_embeddings=None, emb_dimension=None, embedding_config_key=None):
     try:
         logger.info(question_answer)
 
@@ -70,7 +72,9 @@ async def ask_hybrid_with_memory(question_answer, repo=None, llm=None, callback_
         chat_history_list, question_answer_list = preprocess_chat_history(question_answer)
         # Initialize embeddings and encoders
         emb_dimension, sparse_encoder, index = await repo.initialize_embeddings_and_index(question_answer,
-                                                                                          llm_embeddings)
+                                                                                            llm_embeddings,
+                                                                                            emb_dimension,
+                                                                                            embedding_config_key)
         # Fetch vectors for the given question
         dense_vector, sparse_vector = await fetch_question_vectors(question_answer, sparse_encoder, llm_embeddings)
         ### Modifiche
@@ -171,7 +175,8 @@ async def ask_reason_llm(question, chat_model=None):
 
                 async for chunk in runnable_with_history.astream({"input": question.question},
                                                                  config={
-                                                                     "configurable": {"session_id": uuid.uuid4().hex}}):
+                                                                     "configurable": {"session_id": uuid.uuid4().hex}}
+                                                                 ):
 
                     if hasattr(chunk, 'content'):
 
@@ -441,7 +446,8 @@ async def ask_to_llm_1(question: QuestionToLLM, chat_model=None) :
 
                async for chunk in runnable_with_history.astream({"input": question_content},
                                                                 config={
-                                                                    "configurable": {"session_id": uuid.uuid4().hex}}):
+                                                                    "configurable": {"session_id": uuid.uuid4().hex}}
+                                                                ):
                    if hasattr(chunk, 'content'):
                        full_response += chunk.content
                        yield _create_event("chunk", {"content": chunk.content, "message_id": message_id})
@@ -505,8 +511,7 @@ async def ask_to_llm_1(question: QuestionToLLM, chat_model=None) :
 
             return JSONResponse(content=SimpleAnswer(answer=result.content,
                                                      chat_history_dict=question.chat_history_dict,
-                                                     prompt_token_info=prompt_token_info).model_dump()
-                                )
+                                                     prompt_token_info=prompt_token_info).model_dump())
 
 
     except Exception as e:
@@ -810,7 +815,7 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
             system_prompt += "   d) For BASE64 documents:\n"
             system_prompt += "      - The base64 data is in storage (you don't see it to avoid context overflow)\n"
             system_prompt += "      - Pass the document ID reference to the tool (the system resolves it automatically)\n"
-            system_prompt += "      - Or use placeholder like 'pdf_base64=<base64_data_from_storage>'\n"
+            system_prompt += "      - Or use placeholder like 'pdf_base64=<base64_data_from_storage> '\n"
             system_prompt += "\nEXAMPLES:\n"
             system_prompt += "  Example 1 - URL Document:\n"
             system_prompt += "    User: 'Convert the PDF to images'\n"
@@ -1044,10 +1049,31 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
         logger.info(f"Extracted conversation flow:\n{result}")
         logger.info(f"Agent completed successfully")
 
+        # Estrae i token consumati da tutti i messaggi AIMessage
+        total_input_tokens = 0
+        total_output_tokens = 0
+        total_tokens = 0
+
+        for msg in response.get('messages', []):
+            if hasattr(msg, 'usage_metadata') and msg.usage_metadata:
+                total_input_tokens += msg.usage_metadata.get('input_tokens', 0)
+                total_output_tokens += msg.usage_metadata.get('output_tokens', 0)
+                total_tokens += msg.usage_metadata.get('total_tokens', 0)
+
+        # Crea l'oggetto PromptTokenInfo
+        prompt_token_info = PromptTokenInfo(
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
+            total_tokens=total_tokens
+        )
+
+        logger.info(f"Token usage - Input: {total_input_tokens}, Output: {total_output_tokens}, Total: {total_tokens}")
+
         response_data = SimpleAnswer(
             answer=result.get("ai_message", "No answer"),  # Assegna 'ai_message' ad 'answer'
             tools_log=result.get("tools"),  # Assegna 'tools' a 'tools_log'
-            chat_history_dict={}  # Come prima
+            chat_history_dict={},
+            prompt_token_info=prompt_token_info
         )
 
 
@@ -1140,7 +1166,7 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
                                 ref_id = f"base64_ref_{base64_counter}"
 
                                 # Estrai il base64
-                                source = item.get('source', {})
+                                source = item.get('source', {}) 
                                 if isinstance(source, dict) and source.get('type') == 'base64':
                                     base64_data = source.get('data', '')
                                     media_type = source.get('media_type', 'image/png')
@@ -1198,7 +1224,7 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
                                 base64_counter += 1
                                 ref_id = f"base64_ref_{base64_counter}"
 
-                                source = item.get('source', {})
+                                source = item.get('source', {}) 
                                 mime_type = item.get('mime_type', 'application/pdf')
 
                                 if isinstance(source, dict) and source.get('type') == 'base64':
@@ -1537,10 +1563,31 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
         result = extract_conversation_flow(response['messages'])
         logger.debug(result)
 
+        # Estrae i token consumati da tutti i messaggi AIMessage
+        total_input_tokens = 0
+        total_output_tokens = 0
+        total_tokens = 0
+
+        for msg in response.get('messages', []):
+            if hasattr(msg, 'usage_metadata') and msg.usage_metadata:
+                total_input_tokens += msg.usage_metadata.get('input_tokens', 0)
+                total_output_tokens += msg.usage_metadata.get('output_tokens', 0)
+                total_tokens += msg.usage_metadata.get('total_tokens', 0)
+
+        # Crea l'oggetto PromptTokenInfo
+        prompt_token_info = PromptTokenInfo(
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens,
+            total_tokens=total_tokens
+        )
+
+        logger.info(f"Token usage - Input: {total_input_tokens}, Output: {total_output_tokens}, Total: {total_tokens}")
+
         response_data = SimpleAnswer(
             answer=result.get("ai_message", "No answer"),  # Assegna 'ai_message' ad 'answer'
             tools_log=result.get("tools"),  # Assegna 'tools' a 'tools_log'
-            chat_history_dict={}  # Come prima
+            chat_history_dict={},
+            prompt_token_info=prompt_token_info
         )
 
         return JSONResponse(
@@ -1552,7 +1599,7 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
 
 @inject_repo_async
 @inject_llm_chat_async
-async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler=None, llm_embeddings=None) -> RetrievalResult:
+async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler=None, llm_embeddings=None, embedding_config_key=None) -> RetrievalResult:
     """
     Ask to LLM your questions
     :param question_answer:
@@ -1560,6 +1607,7 @@ async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler
     :param llm:
     :param callback_handler:
     :param llm_embeddings:
+    :param embedding_config_key:
     :return: RetrievalResult
     """
     try:
@@ -1573,7 +1621,7 @@ async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler
         # Initialize embeddings and retrievers (con supporto per re-ranking)
 
 
-        base_retriever = await initialize_retrievers(question_answer, repo, llm_embeddings)
+        base_retriever = await initialize_retrievers(question_answer, repo, llm_embeddings, embedding_config_key)
 
         # Wrap con RerankedRetriever se il re-ranking è abilitato
         if question_answer.reranking:
@@ -1653,7 +1701,7 @@ async def ask_to_agent(question_to_agent: QuestionToAgent, chat_model=None):
             #for key, entry in question_to_agent.chat_history_dict.items():
             #    chat_history_list.append(HumanMessage(content=entry.question))  # ('human', entry.question)
             #    chat_history_list.append(AIMessage(content=entry.answer))
-            # "chat_history": "Human: My name is Bob\\nAI: Hello Bob!",
+            # "chat_history": "Human: My name is Bob\nAI: Hello Bob!",
 
             for i in range(len(question_to_agent.chat_history_dict)):
                 entry = question_to_agent.chat_history_dict[str(i)]
@@ -1739,10 +1787,7 @@ async def ask_with_sequence(question_answer, repo=None) -> RetrievalResult:
 
         if question_answer.system_context is not None and question_answer.system_context:
 
-            sys_template = """{system_context}.
-
-                              {context}
-                           """
+            sys_template = """{system_context}.\n\n                              {context}\n                           """
 
             sys_prompt = PromptTemplate.from_template(sys_template)
 
@@ -1997,7 +2042,6 @@ def verify_answer(s):
         success = True
     return s, success
 
-
 def load_session_history(history) -> BaseChatMessageHistory:
     chat_history = ChatMessageHistory()
     if history is not None:
@@ -2005,7 +2049,6 @@ def load_session_history(history) -> BaseChatMessageHistory:
             chat_history.add_message(HumanMessage(content=entry.question))  # ('human', entry.question))
             chat_history.add_message(AIMessage(content=entry.answer))
     return chat_history
-
 
 def format_docs_with_id(docs: List[Document]) -> str:
     formatted = [
@@ -2051,7 +2094,3 @@ def get_reasoning_content(chunk, llm):
 
     else:
         return False, '', ''
-
-
-
-

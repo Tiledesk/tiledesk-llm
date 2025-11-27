@@ -49,10 +49,10 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
         return results
 
 
-    async def initialize_embeddings_and_index(self, question_answer, llm_embeddings):
+    async def initialize_embeddings_and_index(self, question_answer, llm_embeddings, emb_dimension=None, embedding_config_key=None):
         emb_dimension = await self.get_embeddings_dimension(question_answer.embedding)
         sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
-        vector_store = await self.create_index(question_answer.engine, llm_embeddings, emb_dimension)
+        vector_store = await self.create_index(question_answer.engine, llm_embeddings, emb_dimension, embedding_config_key)
         index = await vector_store.async_index
 
         return emb_dimension, sparse_encoder, index

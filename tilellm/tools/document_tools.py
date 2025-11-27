@@ -309,14 +309,150 @@ async def scrape_page(url, params_type_4, browser_headers:dict, time_sleep=2):
         raise
 
 
-async def scrape_page_complex(url, params_type_4, browser_headers:dict, time_sleep=2):
+
+
+
+async def scrape_page_complex(url, params_type_4, browser_headers: dict, time_sleep=2):
+    logger.info("Starting scraping...")
+    import asyncio
+    from playwright.async_api import async_playwright
+    from playwright_stealth import Stealth, ALL_EVASIONS_DISABLED_KWARGS
+    try:
+        # **1. Configura Stealth con tutte le evasioni attivate**
+        stealth = Stealth(
+            # Disabilita le evasioni problematiche se necessario
+            # **{**ALL_EVASIONS_DISABLED_KWARGS, "navigator_languages": True}
+        )
+
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-web-security",
+                    "--disable-features=IsolateOrigins,site-per-process",
+                    "--disable-setuid-sandbox",
+                    "--disable-accelerated-2d-canvas",
+                    "--disable-gpu",
+                    "--disable-software-rasterizer",
+                    "--disable-extensions",
+                    "--disable-default-apps",
+                    "--disable-background-timer-throttling",
+                    "--disable-backgrounding-occluded-windows",
+                    "--disable-renderer-backgrounding",
+                ]
+            )
+
+            # **2. Context con parametri umani-realistici**
+            context = await browser.new_context(
+                extra_http_headers=browser_headers,
+                viewport={"width": 1920, "height": 1080},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                locale="it-IT",
+                timezone_id="Europe/Rome",
+                permissions=["geolocation"],  # Simula permessi reali
+            )
+
+            # **3. APPLICA STEALTH AL CONTESTO**
+            await stealth.apply_stealth_async(context)
+
+            page = await context.new_page()
+
+            # **4. Intercetta e logga i redirect**
+            async def check_redirect(route, request):
+                if "captcha-delivery.com" in request.url or "geo.captcha-delivery.com" in request.url:
+                    logger.error(f"❌ CAPTCHA DETECTED! Request: {request.url}")
+                    # **Scegli una strategia:**
+                    await route.abort()  # Blocca la richiesta
+                    # Oppure continua per analizzare la risposta:
+                    # await route.continue_()
+                else:
+                    await route.continue_()
+
+            await page.route("**/*", check_redirect)
+
+            # **5. Logga ogni navigazione per debug**
+            def log_navigation(frame):
+                logger.info(f"🌐 Navigated to: {frame.url}")
+                if "captcha-delivery.com" in frame.url:
+                    logger.error("🚫 Siamo stati rediretti al CAPTCHA!")
+
+            page.on("framenavigated", log_navigation)
+
+            # **6. Vai alla pagina con timeout e strategia di attesa**
+            try:
+                await page.goto(
+                    url=url,
+                    wait_until="domcontentloaded",  # Più veloce di "networkidle"
+                    timeout=30000
+                )
+            except Exception as e:
+                logger.error(f"Errore durante la navigazione: {e}")
+                await browser.close()
+                return []
+
+            # **7. Attendi elementi specifici del sito target**
+            try:
+                # **SOSTITUISCI** con un selettore REALE della pagina target
+                # Esempio: await page.wait_for_selector("main, article, .content", timeout=10000)
+                await page.wait_for_selector("body", timeout=5000)  # Fallback generico
+            except Exception as e:
+                logger.warning(f"⚠️ Elementi target non trovati: {e}")
+
+            # **8. CORRETTO: Sleep asincrono**
+            await asyncio.sleep(params_type_4.time_sleep)
+
+            # **9. VERIFICA FINALE della URL e contenuto**
+            current_url = page.url
+            if "captcha-delivery.com" in current_url:
+                logger.error("🚫 Pagina CAPTCHA rilevata, scraping annullato.")
+                await browser.close()
+                return []  # O solleva un'eccezione specifica
+
+            # **10. Ottieni contenuto e chiudi**
+            results = await page.content()
+
+            await browser.close()
+            logger.error(f"Contenuto {results}")
+            # **11. Processa e valida il contenuto**
+            transformed_content = custom_html_transform(
+                results,
+                selectors_to_extract=params_type_4.tags_to_extract,
+                unwanted_tags=getattr(params_type_4, 'unwanted_tags', []),
+                unwanted_classnames=getattr(params_type_4, 'unwanted_classnames', []),
+                remove_lines=getattr(params_type_4, 'remove_lines', True),
+                remove_comments=getattr(params_type_4, 'remove_comments', True)
+            )
+
+            # **12. Doppio check: il contenuto è valido?**
+            if "captcha-delivery.com" in transformed_content or len(transformed_content.strip()) < 500:
+                logger.error("❌ Contenuto bloccato o troppo breve, documento scartato.")
+                return []
+
+            metadata = {"source": url}
+            doc = Document(page_content=transformed_content, metadata=metadata)
+            return [doc]
+
+    except Exception as e:
+        logger.error(f"Playwright scrape failed: {str(e)}")
+        raise
+
+async def scrape_page_complex_old(url, params_type_4, browser_headers:dict, time_sleep=2):
     logger.info("Starting scraping...")
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True,
                                               args=[
                                                   "--disable-blink-features=AutomationControlled",
-                                                  "--no-sandbox"
+                                                  "--no-sandbox",
+                                                  "--disable-dev-shm-usage",
+                                                  "--disable-web-security",
+                                                  "--disable-features=IsolateOrigins,site-per-process",
+                                                  "--disable-setuid-sandbox",
+                                                  "--disable-accelerated-2d-canvas",
+                                                  "--disable-gpu",
                                               ]
                                               )
             page = await browser.new_page(extra_http_headers=browser_headers, #user_agent="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",

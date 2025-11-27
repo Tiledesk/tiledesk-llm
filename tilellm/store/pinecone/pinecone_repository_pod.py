@@ -172,7 +172,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
     async def add_item_hybrid(self, item, embedding_obj=None, embedding_dimension=None):
         pass
 
-    async def initialize_embeddings_and_index(self, question_answer, llm_embeddings):
+    async def initialize_embeddings_and_index(self, question_answer, llm_embeddings, emb_dimension=None, embedding_config_key=None):
         pass
 
     @inject_embedding_qa_async_optimized()

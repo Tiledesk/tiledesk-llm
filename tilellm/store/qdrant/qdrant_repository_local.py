@@ -246,10 +246,10 @@ class QdrantRepository(VectorStoreRepository):
         results = {"matches": documents}
         return results
 
-    async def initialize_embeddings_and_index(self, question_answer, llm_embeddings):
+    async def initialize_embeddings_and_index(self, question_answer, llm_embeddings, emb_dimension=None, embedding_config_key=None):
         emb_dimension = await self.get_embeddings_dimension(question_answer.embedding)
         sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
-        vector_store = await self.create_index(question_answer.engine, llm_embeddings, emb_dimension)
+        vector_store = await self.create_index(question_answer.engine, llm_embeddings, emb_dimension, embedding_config_key)
         index = vector_store.client
 
         return emb_dimension, sparse_encoder, index
@@ -1075,16 +1075,17 @@ class QdrantRepository(VectorStoreRepository):
             raise ex
 
     @staticmethod
-    async def create_index_cache_wrapper(engine, embeddings, emb_dimension) -> CachedVectorStore:
+    async def create_index_cache_wrapper(engine, embeddings, emb_dimension, embedding_config_key=None) -> CachedVectorStore:
         """
         Ottiene un'istanza di CachedVectorStore dalla cache o ne crea una nuova.
-        La chiave della cache è basata sui parametri di connessione di Qdrant.
+        La chiave della cache è basata sui parametri di connessione di Qdrant e sulla configurazione embedding.
         """
         cache_key = (
             engine.host,
             engine.port,
             engine.index_name,
-            str(engine.apikey)[:20] if engine.apikey else ""
+            str(engine.apikey)[:20] if engine.apikey else "",
+            embedding_config_key if embedding_config_key is not None else "default"  # Aggiunto per evitare conflitti cache tra diversi embedding
         )
 
         async def _wrapper_creator():
@@ -1097,13 +1098,13 @@ class QdrantRepository(VectorStoreRepository):
         )
         return wrapper
 
-    async def create_index(self, engine, embeddings, emb_dimension) -> QdrantVectorStore:
+    async def create_index(self, engine, embeddings, emb_dimension, embedding_config_key=None) -> QdrantVectorStore:
         """
         Metodo principale per ottenere la VectorStore finale.
         Utilizza il wrapper cachato per gestire la connessione.
         """
         cached_vs_wrapper = await self.create_index_cache_wrapper(
-            engine, embeddings, emb_dimension
+            engine, embeddings, emb_dimension, embedding_config_key
         )
         return await cached_vs_wrapper.get_vector_store()
 

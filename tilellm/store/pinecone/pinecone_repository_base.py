@@ -973,11 +973,12 @@ class PineconeRepositoryBase(VectorStoreRepository):
         return cached_vector_store
 
     @staticmethod
-    async def create_index_cache_wrapper(engine, embeddings, emb_dimension) -> CachedVectorStore:
+    async def create_index_cache_wrapper(engine, embeddings, emb_dimension, embedding_config_key=None) -> CachedVectorStore:
         cache_key = (
             str(engine.apikey)[:20],
             engine.index_name,
-            engine.type
+            engine.type,
+            embedding_config_key if embedding_config_key is not None else "default"
         )
 
         async def _wrapper_creator():
@@ -991,9 +992,9 @@ class PineconeRepositoryBase(VectorStoreRepository):
 
         return wrapper
 
-    async def create_index(self, engine, embeddings, emb_dimension) -> PineconeVectorStore:
+    async def create_index(self, engine, embeddings, emb_dimension, embedding_config_key=None) -> PineconeVectorStore:
         cached_vs_wrapper = await self.create_index_cache_wrapper(
-            engine, embeddings, emb_dimension
+            engine, embeddings, emb_dimension, embedding_config_key
         )
         return await cached_vs_wrapper.get_vector_store()
 

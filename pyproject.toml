@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "tilellm"
-version = "0.6.1-rc2"
+version = "0.6.2-rc1"
 description = "tiledesk for RAG"
 authors = ["Gianluca Lorenzo <gianluca.lorenzo@gmail.com>"]
 repository = "https://github.com/Tiledesk/tiledesk-llm"
@@ -15,50 +15,51 @@ build-backend = "poetry.core.masonry.api"
 python = ">=3.12,<3.13"
 fastapi = "0.116.1" #"0.115.12"
 fastapi-cprofile = "0.0.2"
-jsonschema= "4.25.0" #"4.24.0"
+jsonschema= "4.25.0"
 redis= "^5.0.7"
-langchain = "0.3.27" #"0.3.26"
-jq =  "1.10.0" #"1.9.1"
-langchain-openai = "0.3.28" #"0.3.27"
-langchain-voyageai = "0.1.7" #"0.1.6"
-langchain-anthropic = "0.3.19" #"0.3.18"
-langchain-cohere= "0.4.5" #"0.4.4"
-langchain-google-genai= "2.1.9" #"2.1.7"
-langchain-groq = "0.3.7" #"0.3.6"
-langchain-aws= "0.2.30" #"0.2.28"
-langchain-deepseek = "0.1.4" #"0.1.3"
+langchain = "0.3.27"
+jq =  "1.10.0"
+langchain-openai = "0.3.28"
+langchain-voyageai = "0.1.7"
+langchain-anthropic = "0.3.19"
+langchain-cohere= "0.4.5"
+langchain-google-genai= "2.1.9"
+langchain-groq = "0.3.7"
+langchain-aws= "0.2.30"
+langchain-deepseek = "0.1.4"
 pinecone-plugin-interface=  "0.0.7"
 python-dotenv = "1.1.1"
 langchain-community = "0.3.27"
 langchain-experimental = "0.3.4"
-langchain-pinecone = "0.2.12" #"0.2.11"
-langchain-huggingface= "0.3.1" #"0.3.0"
-langchain-ollama= "0.3.6" #"0.3.4" #"0.3.2"
+langchain-pinecone = "0.2.13"
+langchain-huggingface= "0.3.1"
+langchain-ollama= "0.3.6"
 langchain_xai= "0.2.4"
 langchain-mistralai = "0.2.11"
 
 langchain-mcp-adapters = "0.1.9"
-langgraph = "0.6.4" #"0.5.3"
+langgraph = "0.6.4"
 
-openai = "1.107.0" #"1.99.3" #"1.95.0" #"1.77.0"
-cohere = "5.16.2" #"5.15.0"
+openai = "1.107.0"
+cohere = "5.16.2"
 
-qdrant-client= "1.15.1" #"1.14.3" #"1.14.2"
+qdrant-client= "1.15.1"
 langchain-qdrant= "0.2.0"
 
-tiktoken ="0.10.0"  #"0.9.0"
+tiktoken ="0.10.0"
 beautifulsoup4 = "4.13.4"
-unstructured= "0.18.11" #"0.18.5"
-playwright ="1.55.0" #"1.54.0"
-pypdf= "5.9.0" #"5.7.0"
+unstructured= "0.18.11"
+playwright ="1.56.0"
+playwright-stealth="2.0.0"
+pypdf= "5.9.0"
 docx2txt= "0.9"
 wikipedia= "1.4.0"
 html2text= "2025.4.15"
 psutil=  "7.0.0"
 httpx= "0.28.1"
-gql= "3.5.3" #"3.5.2"
-PyJWT= "2.10.1" #"2.9.0"
-torch = "2.7.1" #"2.7.0"
+gql= "3.5.3"
+PyJWT= "2.10.1"
+torch = "2.7.1"
 FlagEmbedding= "1.3.5"
 openpyxl="3.2.0b1"
 PyMuPdf ="1.26.4"
@@ -73,20 +74,20 @@ simsimd = "6.5.0"
 
 
 pinecone = {extras = ["async"], version = "7.3.0"}
-pinecone-text = "0.11.0" #"0.10.0"
+pinecone-text = "0.11.0"
 
 neo4j = "^5.26.0"
 
 
 [tool.poetry.dependencies.uvicorn]
-version = "0.35.0"#"0.34.2"
+version = "0.35.0"
 extras = ["standard"]
 
 [tool.poetry.group.dev.dependencies]
 #uvicorn = "^0.28"  # For development server
 
 [tool.poetry.group.dev.dependencies.uvicorn]
-version = "0.35.0" ##"0.34.2"
+version = "0.35.0"
 extras = ["standard"]
 
 [tool.poetry.scripts]

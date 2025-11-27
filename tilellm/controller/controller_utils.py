@@ -73,10 +73,10 @@ def preprocess_chat_history(question_answer):
 
 
 # Function to initialize embeddings and retrievers
-async def initialize_retrievers(question_answer, repo, llm_embeddings):
+async def initialize_retrievers(question_answer, repo, llm_embeddings, embedding_config_key=None):
 
     emb_dimension = await repo.get_embeddings_dimension(question_answer.embedding)
-    vector_store = await repo.create_index(question_answer.engine, llm_embeddings, emb_dimension)
+    vector_store = await repo.create_index(question_answer.engine, llm_embeddings, emb_dimension, embedding_config_key)
 
     # Aggiunto e modificato il codice per avere invece che top_k il retrieval_k###
     retrieval_k = question_answer.top_k * question_answer.reranking_multiplier if question_answer.reranking and question_answer.top_k > 0 else question_answer.top_k

@@ -7,6 +7,12 @@
 
 ---
 
+## [2025-11-27]
+### 0.6.2-rc1
+- Fixed: Issue resolved in the cache key management for vector stores.
+- 
+---
+
 ## [2025-10-28]
 ### 0.6.1-rc2
 - Added: tools_log field to /api/ask response JSON.

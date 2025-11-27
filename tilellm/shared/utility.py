@@ -581,6 +581,7 @@ def inject_llm_chat_async(func: Callable) -> Callable:
             kwargs['llm'] = llm
             kwargs['callback_handler'] = callback_handler
             kwargs['llm_embeddings'] = llm_embeddings
+            kwargs['embedding_config_key'] = embedding_cache_key
 
             logger.debug(f"LLM e Embedding iniettati con successo per {func.__name__}")
             return await func(question, *args, **kwargs)
@@ -617,6 +618,7 @@ async def _build_embedding_cache_key(question) -> tuple:
 
     if isinstance(question.embedding, EmbeddingModel):
         embedding_config = {
+            "embedding_type": "object",
             "provider": question.embedding.embedding_provider,
             "model_name": question.embedding.embedding_model,
             "api_key": _hash_api_key(str(question.embedding.embedding_key.get_secret_value())),  # Hash della chiave
@@ -624,6 +626,7 @@ async def _build_embedding_cache_key(question) -> tuple:
         }
     else:  # Modalità legacy con stringa
         embedding_config = {
+            "embedding_type": "legacy",
             "provider": question.embedding,
             "model_name": question.embedding,
             "api_key": _hash_api_key(str(question.gptkey.get_secret_value())),
@@ -1061,5 +1064,4 @@ def decode_jwt(token:str):
     import jwt
     jwt_secret_key = const.JWT_SECRET_KEY
     return jwt.decode(jwt=token, key=jwt_secret_key, algorithms=['HS256'])
-
 
