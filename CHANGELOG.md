@@ -7,6 +7,11 @@
 
 ---
 
+## [2025-11-28]
+### 0.6.2-rc2
+- Added: doc_batch_size to hybrid scraper to manage embedding generation for large documents
+---
+
 ## [2025-11-27]
 ### 0.6.2-rc1
 - Fixed: Issue resolved in the cache key management for vector stores.

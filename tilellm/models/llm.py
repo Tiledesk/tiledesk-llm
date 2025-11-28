@@ -20,6 +20,7 @@ class ItemSingle(BaseModel):
     content: str | None = None
     hybrid: Optional[bool] = Field(default=False)
     hybrid_batch_size: Optional[int] = Field(default=10)
+    doc_batch_size: Optional[int] = Field(default=100)
     sparse_encoder: Optional[str] = Field(default="splade") # spade|bge-m3
     gptkey: SecretStr | None = None
     scrape_type: int = Field(default_factory=lambda: 0)

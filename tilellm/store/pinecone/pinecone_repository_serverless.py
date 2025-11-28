@@ -295,7 +295,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                                                   namespace = item.namespace,
                                                   engine=item.engine,
                                                   embeddings=embedding_obj,
-                                                  sparse_vectors=doc_sparse_vectors)
+                                                  sparse_vectors=doc_sparse_vectors,
+                                                  doc_batch_size=item.doc_batch_size)
 
             await idx.close()
             return IndexingResult(id=item.id, chunks=len(chunks), total_tokens=total_tokens,
@@ -403,8 +404,9 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
         return [document]
 
     @staticmethod
-    async def upsert_vector_store_hybrid(indice, contents, chunks, metadata_id, engine, namespace, embeddings, sparse_vectors):
-        embedding_chunk_size = 1000
+    async def upsert_vector_store_hybrid(indice, contents, chunks, metadata_id, engine, namespace, embeddings, sparse_vectors, doc_batch_size=100):
+        # Ridotto da 1000 a 100 per evitare il limite di 300000 token per richiesta di OpenAI
+        embedding_chunk_size = doc_batch_size
         batch_size: int = 32
 
         ids = [f"{metadata_id}#{uuid.uuid4().hex}" for _ in range(len(chunks))]

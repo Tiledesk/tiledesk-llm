@@ -73,6 +73,7 @@ Indexes using hybrid search (vector + keyword).
 
 **Hybrid Parameters**:
 - `hybrid_batch_size`: Batch size for hybrid indexing (default: 10)
+- `doc_batch_size`: Batch size for generate embeddings (default: 100)
 - `sparse_encoder`: Encoder type - `"splade"` or `"bge-m3"` (default: `"splade"`)
 
 ---
