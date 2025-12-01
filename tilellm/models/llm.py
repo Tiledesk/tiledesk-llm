@@ -91,6 +91,7 @@ class QuestionAnswer(BaseModel):
     reranking : Optional[bool] = Field(default_factory=lambda: False)
     reranking_multiplier: int = 3  # moltiplicatore per top_k
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    contextualize_prompt: Optional[bool] = Field(default=False, description="Enable/disable contextualize_q_system_prompt usage")
     engine: Engine
     chat_history_dict: Optional[Dict[str, "ChatEntry"]] = None
 
@@ -196,6 +197,7 @@ class QuestionToLLM(BaseModel):
     n_messages: int = Field(default_factory=lambda: None)
     servers: Optional[Dict[str, ServerConfig]] = Field(default_factory=dict)
     tools: Optional[List[str]] = Field(default=None, description="Lista di nomi di tool interni da tool_registry")
+    contextualize_prompt: Optional[bool] = Field(default=False, description="Enable/disable chat history usage in messages")
 
     @model_validator(mode="after")
     def adjust_temperature_and_validate(self):

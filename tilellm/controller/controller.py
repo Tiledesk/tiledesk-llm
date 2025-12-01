@@ -274,8 +274,34 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None):
 
         # --- 2. Costruzione Manuale della Lista di Messaggi ---
         # Questo è il passaggio chiave per risolvere il problema dei token.
-        final_messages = [SystemMessage(content=question.system_context)]
-        final_messages.extend(history.messages)
+
+        # --- INIZIO MODIFICA: gestione condizionale di contextualize_prompt ---
+        if question.contextualize_prompt:
+            # CODICE ORIGINALE: include la history come messaggi separati
+            final_messages = [SystemMessage(content=question.system_context)]
+            final_messages.extend(history.messages)
+        else:
+            # NUOVO: inietta la history come stringa nel system message
+            # Converte la history in stringa formattata
+            if question.chat_history_dict:
+                history_lines = []
+                for key, entry in question.chat_history_dict.items():
+                    # Gestisci question multimodale
+                    q_text = entry.get_question_text()
+                    history_lines.append(f"User: {q_text}")
+                    history_lines.append(f"Assistant: {entry.answer}")
+                chat_history_text = "\n".join(history_lines)
+            else:
+                chat_history_text = "No previous conversation."
+
+            # System context con history iniettata
+            system_with_history = f"""{question.system_context}
+
+Previous conversation:
+{chat_history_text}
+"""
+            final_messages = [SystemMessage(content=system_with_history)]
+        # --- FINE MODIFICA ---
 
         # Prepara il contenuto della domanda (testo o lista multimodale)
         question_content = question.get_question_content()
@@ -405,14 +431,26 @@ async def ask_to_llm_1(question: QuestionToLLM, chat_model=None) :
         # Prepara il contenuto della domanda
         question_content = question.get_question_content()
 
-
-        qa_prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", question.system_context),
-                MessagesPlaceholder("chat_history", n_messages=question.n_messages),
-                ("human", "{input}")
-            ]
-        )
+        # --- INIZIO MODIFICA: gestione condizionale di contextualize_prompt ---
+        # Se contextualize_prompt è True, include la history nel prompt
+        if question.contextualize_prompt:
+            # CODICE ORIGINALE: include MessagesPlaceholder per la history
+            qa_prompt = ChatPromptTemplate.from_messages(
+                [
+                    ("system", question.system_context),
+                    MessagesPlaceholder("chat_history", n_messages=question.n_messages),
+                    ("human", "{input}")
+                ]
+            )
+        else:
+            # NUOVO CODICE: prompt senza history
+            qa_prompt = ChatPromptTemplate.from_messages(
+                [
+                    ("system", question.system_context),
+                    ("human", "{input}")
+                ]
+            )
+        # --- FINE MODIFICA ---
 
         store = {}
         get_session_history = lambda session_id: get_or_create_session_history(store, session_id,

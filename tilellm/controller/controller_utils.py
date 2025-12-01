@@ -28,7 +28,7 @@ from langchain.retrievers import ContextualCompressionRetriever
 
 import tilellm.shared.const as const
 
-from langchain.chains import create_history_aware_retriever
+from langchain.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from langchain.chains.combine_documents import create_stuff_documents_chain
@@ -60,6 +60,35 @@ def preprocess_chat_history(question_answer):
             chat_history_list.append(AIMessage(content=entry.answer))
             question_answer_list.append((entry.question, entry.answer))
     return chat_history_list, question_answer_list
+
+
+# Function to convert chat history to text string
+def chat_history_to_text(question_answer):
+    """
+    Converte la chat history in una stringa formattata.
+    Utile per iniettare la history direttamente nel system prompt come variabile.
+    """
+    if not question_answer.chat_history_dict:
+        return "No previous conversation."
+
+    # Gestisci anche il caso di dict vuoto
+    if len(question_answer.chat_history_dict) == 0:
+        return "No previous conversation."
+
+    history_lines = []
+    try:
+        for key, entry in question_answer.chat_history_dict.items():
+            # Usa il metodo get_question_text() di ChatEntry per gestire correttamente
+            # sia stringhe che contenuti multimodali
+            question_text = entry.get_question_text()
+
+            history_lines.append(f"User: {question_text}")
+            history_lines.append(f"Assistant: {entry.answer}")
+    except Exception as e:
+        logger.error(f"Error converting chat history to text: {e}")
+        return "Error reading previous conversation."
+
+    return "\n".join(history_lines) if history_lines else "No previous conversation."
 
 
 # Function to initialize embeddings and encoders
@@ -162,35 +191,75 @@ def retrieve_documents(question_answer, results, contextualized_query=None):
 async def create_chains(llm, question_answer, retriever):
     # Contextualize question
 
-    contextualize_q_system_prompt = const.contextualize_q_system_prompt
-    contextualize_q_prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", contextualize_q_system_prompt),
-            MessagesPlaceholder("chat_history"),
-            ("human", "{input}"),
-        ]
-    )
+    # --- INIZIO MODIFICA: gestione condizionale di contextualize_prompt ---
+    if question_answer.contextualize_prompt:
+        # CODICE ORIGINALE: usa contextualize_q_system_prompt
+        # Fa una chiamata LLM per contestualizzare la query per il retrieval
+        contextualize_q_system_prompt = const.contextualize_q_system_prompt
+        contextualize_q_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", contextualize_q_system_prompt),
+                MessagesPlaceholder("chat_history"),
+                ("human", "{input}"),
+            ]
+        )
 
+        history_aware_retriever = create_history_aware_retriever(
+            llm, retriever, contextualize_q_prompt
+        )
+    else:
+        # NUOVO CODICE: NON contestualizza la query, usa direttamente il retriever
+        # Nessuna chiamata LLM extra per il retrieval → massimo risparmio token
+        # La query originale viene usata così com'è per cercare nel repository
+        history_aware_retriever = retriever
+    # --- FINE MODIFICA ---
 
-    history_aware_retriever = create_history_aware_retriever(
-        llm, retriever, contextualize_q_prompt
-    )
+    # --- INIZIO MODIFICA: scegli il prompt corretto in base a contextualize_prompt ---
+    if question_answer.contextualize_prompt:
+        # PROMPT CON MessagesPlaceholder (history come messaggi)
+        qa_system_prompt = question_answer.system_context if question_answer.system_context else const.qa_system_prompt
 
-    qa_system_prompt = question_answer.system_context if question_answer.system_context else const.qa_system_prompt
+        qa_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", qa_system_prompt),
+                MessagesPlaceholder("chat_history"),
+                ("human", "{input}"),
+            ]
+        )
+    else:
+        # PROMPT SENZA MessagesPlaceholder
+        # History verrà iniettata direttamente (o nel prompt o nel system context)
+        if question_answer.system_context:
+            # Se c'è un system_context custom, NON usiamo {chat_history_text} come variabile
+            # La history verrà appendata direttamente al system_context in generate_answer_with_history()
+            qa_system_prompt = question_answer.system_context
+        else:
+            # Se NON c'è system_context custom, usa il prompt con {chat_history_text}
+            qa_system_prompt = const.qa_system_prompt_with_history_injected
 
-    qa_prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", qa_system_prompt),
-            MessagesPlaceholder("chat_history"),
-            ("human", "{input}"),
-        ]
-    )
+        # Prompt SENZA MessagesPlaceholder
+        qa_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", qa_system_prompt),
+                ("human", "{input}"),
+            ]
+        )
+    # --- FINE MODIFICA ---
+
     question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
     return history_aware_retriever, question_answer_chain, qa_prompt
 
 
 async def create_contextualize_query(llm, question_answer):
-    contextualize_q_system_prompt = const.contextualize_q_system_prompt #posso usare rephrase
+    # --- INIZIO MODIFICA: gestione condizionale di contextualize_prompt ---
+    if not question_answer.contextualize_prompt:
+        # NUOVO: NON contestualizza la query, restituisce quella originale
+        # Massimo risparmio token per hybrid search
+        logger.info(f"Contextualize disabled - using original query: {question_answer.question}")
+        return question_answer.question
+
+    # CODICE ORIGINALE: contestualizza la query usando l'LLM
+    contextualize_q_system_prompt = const.contextualize_q_system_prompt
     contextualize_q_prompt = ChatPromptTemplate.from_messages(
         [
             ("system", contextualize_q_system_prompt),
@@ -212,7 +281,8 @@ async def create_contextualize_query(llm, question_answer):
         # Se non c'è history, usa la query originale
         contextualized_query = question_answer.question
 
-    logger.info(f" Contextualized query {contextualized_query}")
+    logger.info(f"Contextualized query (FULL): {contextualized_query}")
+    # --- FINE MODIFICA ---
 
     return contextualized_query
 
@@ -266,6 +336,125 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
         # print(input_dict["answer"])
         return {"input": input_dict["input"], "answer": input_dict["answer"]}
 
+    # --- INIZIO MODIFICA: gestione history come stringa quando contextualize_prompt=False ---
+    if not question_answer.contextualize_prompt:
+        # NUOVO FLUSSO: history iniettata come stringa nel system prompt
+        # NON usa RunnableWithMessageHistory, invoca direttamente rag_chain
+        # Questo risparmia token perché non c'è overhead di MessagesPlaceholder
+
+        start_time = datetime.now() if question_answer.debug else 0
+
+        # Converti la history in stringa
+        chat_history_text = chat_history_to_text(question_answer)
+
+        # Determina il system prompt da usare
+        if question_answer.system_context:
+            # CASO 1: system_context custom -> appende la history direttamente
+            logger.info(f"Using custom system_context with appended history (length: {len(chat_history_text)} chars)")
+
+            # Verifica che system_context contenga {context} (necessario per RAG)
+            if "{context}" not in question_answer.system_context:
+                logger.warning("Custom system_context does not contain {context} placeholder - adding it automatically")
+                system_with_context = f"""{question_answer.system_context}
+
+Retrieved context:
+{{context}}
+"""
+            else:
+                system_with_context = question_answer.system_context
+
+            # Appende la history al system prompt
+            system_final = f"""{system_with_context}
+
+<previous_conversation>
+{chat_history_text}
+</previous_conversation>
+"""
+        else:
+            # CASO 2: prompt default già contiene {chat_history_text}
+            logger.info(f"Using default prompt with injected history variable (length: {len(chat_history_text)} chars)")
+            system_final = const.qa_system_prompt_with_history_injected
+
+        # Gestione citazioni
+        if question_answer.citations:
+            # Con citazioni: usa structured output
+            retrieve_docs = (lambda x: x["input"]) | retriever
+
+            qa_prompt_final = ChatPromptTemplate.from_messages([
+                ("system", system_final),
+                ("human", "{input}"),
+            ])
+
+            rag_chain_from_docs = (
+                RunnablePassthrough.assign(context=(lambda x: format_docs_with_id(x["context"])))
+                | qa_prompt_final
+                | llm.with_structured_output(QuotedAnswer)
+            )
+
+            chain_w_citations = (
+                RunnablePassthrough.assign(context=retrieve_docs)
+                .assign(answer=rag_chain_from_docs)
+                .assign(only_answer=lambda text: text["answer"].answer)
+            )
+
+            # Invoca con o senza chat_history_text come variabile
+            if question_answer.system_context:
+                result = await chain_w_citations.ainvoke({"input": question_answer.question})
+            else:
+                result = await chain_w_citations.ainvoke({
+                    "input": question_answer.question,
+                    "chat_history_text": chat_history_text
+                })
+
+            citations = result['answer'].citations
+            result['answer'] = result['answer'].answer
+        else:
+            # Senza citazioni: invocazione diretta
+            qa_prompt_final = ChatPromptTemplate.from_messages([
+                ("system", system_final),
+                ("human", "{input}"),
+            ])
+
+            rag_chain_simple = create_retrieval_chain(retriever,
+                                                      create_stuff_documents_chain(llm, qa_prompt_final))
+
+            # Invoca con o senza chat_history_text come variabile
+            if question_answer.system_context:
+                result = await rag_chain_simple.ainvoke({"input": question_answer.question})
+            else:
+                result = await rag_chain_simple.ainvoke({
+                    "input": question_answer.question,
+                    "chat_history_text": chat_history_text
+                })
+
+            citations = None
+
+        end_time = datetime.now() if question_answer.debug else 0
+        duration = (end_time - start_time).total_seconds() if question_answer.debug else 0.0
+
+        # Processa la risposta
+        result['answer'], success = verify_answer(result['answer'])
+
+        # Aggiungi chat_history al result (mancante quando non usiamo RunnableWithMessageHistory)
+        # Questo è necessario per format_result() che si aspetta questa chiave
+        result['chat_history'] = []  # Non necessaria nel nuovo flusso, ma richiesta da format_result()
+
+        question_answer_list.append((question_answer.question, result['answer']))
+
+        result_to_return = format_result(
+            result=result,
+            citations=citations,
+            question_answer=question_answer,
+            callback_handler=callback_handler,
+            question_answer_list=question_answer_list,
+            success=success,
+            duration=duration
+        )
+
+        return JSONResponse(content=result_to_return.model_dump())
+    # --- FINE MODIFICA ---
+
+    # CODICE ORIGINALE: usa RunnableWithMessageHistory (quando contextualize_prompt=True)
     citation_rag_chain = None
     if question_answer.stream:
         if question_answer.citations:
@@ -421,7 +610,7 @@ def extract_ids_sources(docs, debug):
 
 # Function to format sources based on citations
 def format_sources(citations, sources, with_citations):
-    if with_citations:
+    if with_citations and citations is not None:
         source = " ".join(set([cit.source_name for cit in citations]))
     else:
         source = " ".join(sources)

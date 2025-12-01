@@ -7,6 +7,13 @@
 
 ---
 
+## [2025-12-01]
+### 0.6.2-rc3
+- Fixed: Injected chat history directly into the prompt. 
+- Added: contextualize_prompt field (default=False) to enable/disable chat history system prompt contextualization
+---
+
+
 ## [2025-11-28]
 ### 0.6.2-rc2
 - Added: doc_batch_size to hybrid scraper to manage embedding generation for large documents

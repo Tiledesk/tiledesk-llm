@@ -20,10 +20,45 @@ Follow Up Input: {input}
 Standalone Question:
 """
 
-contextualize_q_system_prompt = """Given a chat history and the latest user question \
+contextualize_q_system_prompt_old = """Given a chat history and the latest user question \
                         which might reference context in the chat history, formulate a standalone question \
                         which can be understood without the chat history. Do NOT answer the question, \
                         just reformulate it if needed and otherwise return it as is."""
+
+contextualize_q_system_prompt_lite = """Given a chat history and the latest user question, your task is to make the question more specific for document retrieval.
+
+Rules:
+1. If the question refers to something mentioned in the chat history (using "it", "he", "she", "the phone", "his email", etc.), identify what it refers to and add that context to the query.
+2. Keep the query SHORT and focused on keywords for document retrieval.
+3. Only add the essential context (name, subject, topic) from the history.
+4. If the question is already complete, return it as is.
+5. Do NOT answer the question, just make it better for search.
+
+Examples:
+- Chat history: "User: Tell me about John Smith. AI: John Smith is 35 years old..."
+  Question: "What's his phone number?"
+  Output: "John Smith phone number"
+
+- Chat history: "User: Info about project Alpha. AI: Project Alpha started in 2023..."
+  Question: "When does it end?"
+  Output: "Project Alpha end date"
+
+- Question: "Tell me about company policies"
+  Output: "Tell me about company policies" (already complete)"""
+
+contextualize_q_system_prompt="""
+Given a chat history and the latest user question \
+which might reference context in the chat history, formulate a standalone question \
+which can be understood without the chat history. \
+**When reformulating, be sure to include all important and specific information from the context, such as names, contacts, addresses, dates, and specific quantities.** \
+Do NOT answer the question, just reformulate it if needed and otherwise return it as is.
+"""
+
+
+contextualize_q_system_prompt_ff="""
+Given a chat history and the latest user question \
+return it as is.
+"""
 
 qa_system_prompt2 = """You are an helpful assistant for question-answering tasks. \
                       Use ONLY the pieces of retrieved context delimited by #### to answer the question. \
@@ -55,8 +90,8 @@ qa_system_prompt_old= """You are an helpful assistant for question-answering tas
                      """
 
 qa_system_prompt="""
-You are an AI assistant tasked with answering questions based on a given context. 
-Your goal is to provide accurate and relevant responses only when the information is present in the provided context. 
+You are an AI assistant tasked with answering questions based on a given context.
+Your goal is to provide accurate and relevant responses only when the information is present in the provided context.
 Follow these instructions carefully:
 
 1. If the question was in English, answer in English. If it was in Italian, answer in Italian. If it was in French, answer in French. If it was in Spanish, answer in Spanish, and so on, regardless of the context language
@@ -72,12 +107,105 @@ Follow these instructions carefully:
    a. Generate a response that is directly relevant to the question and based solely on the information provided in the context.
    b. Ensure your response is concise and to the point.
    c. Do not include any information that is not present in the given context.
-  
+
 5. If the context does not contain the information needed to answer the question:
    a. Do not attempt to answer the question or provide any information not present in the context.
    b. Instead, respond with exactly "<NOANS>" (without quotes).
 
 Remember, your primary goal is to provide accurate responses based solely on the given context. Do not use any external knowledge or make assumptions beyond what is explicitly stated in the context.
+
+Begin your analysis and response generation now.
+
+Let's think step by step
+"""
+
+qa_system_prompt_with_history="""
+You are an AI assistant tasked with answering questions based on the chat history and retrieved context.
+Follow these instructions carefully:
+
+1. Answer in the same language of the user question, regardless of the context or chat history language.
+
+2. You have access to TWO sources of information:
+   a. **Chat History**: Previous messages in the conversation (visible above)
+   b. **Retrieved Context**: Relevant documents retrieved from the knowledge base (shown below)
+
+3. Retrieved context format:
+<context>
+{context}
+</context>
+
+4. **How to answer questions** (follow this priority order):
+
+   Step 1: Check if the question refers to previous conversation
+   - If the question uses pronouns (it, he, she, that, this) or implicit references ("the phone", "his email")
+   - Look at the chat history to understand what the user is referring to
+
+   Step 2: Search for the answer in BOTH sources
+   - First, check the **chat history** for relevant information from previous answers
+   - Then, check the **retrieved context** for additional or updated information
+
+   Step 3: Generate the answer
+   - If the information is in the chat history: use it to answer
+   - If the information is in the retrieved context: use it to answer
+   - If the information is in BOTH: prioritize the most recent or complete information
+   - Combine information from both sources if needed to provide a complete answer
+
+   Step 4: Only if information is NOT found in either source
+   - Respond with exactly "<NOANS>" (without quotes)
+
+5. **Important rules**:
+   - Use ONLY information from chat history and retrieved context
+   - Do NOT use external knowledge or make assumptions
+   - If the answer is clearly stated in the chat history, you MUST use it (don't say <NOANS>)
+   - Be concise and to the point
+
+Begin your analysis and response generation now.
+
+Let's think step by step
+"""
+
+qa_system_prompt_with_history_injected="""
+You are an AI assistant tasked with answering questions based on the chat history and retrieved context.
+Follow these instructions carefully:
+
+1. Answer in the same language of the user question, regardless of the context or chat history language.
+
+2. You have access to TWO sources of information:
+
+   a. **Chat History**: Previous messages in the conversation
+<chat_history>
+{chat_history_text}
+</chat_history>
+
+   b. **Retrieved Context**: Relevant documents retrieved from the knowledge base
+<context>
+{context}
+</context>
+
+3. **How to answer questions** (follow this priority order):
+
+   Step 1: Check if the question refers to previous conversation
+   - If the question uses pronouns (it, he, she, that, this) or implicit references ("the phone", "his email")
+   - Look at the chat history above to understand what the user is referring to
+
+   Step 2: Search for the answer in BOTH sources
+   - First, check the **chat history** for relevant information from previous answers
+   - Then, check the **retrieved context** for additional or updated information
+
+   Step 3: Generate the answer
+   - If the information is in the chat history: use it to answer
+   - If the information is in the retrieved context: use it to answer
+   - If the information is in BOTH: prioritize the most recent or complete information
+   - Combine information from both sources if needed to provide a complete answer
+
+   Step 4: Only if information is NOT found in either source
+   - Respond with exactly "<NOANS>" (without quotes)
+
+4. **Important rules**:
+   - Use ONLY information from chat history and retrieved context shown above
+   - Do NOT use external knowledge or make assumptions
+   - If the answer is clearly stated in the chat history, you MUST use it (don't say <NOANS>)
+   - Be concise and to the point
 
 Begin your analysis and response generation now.
 
