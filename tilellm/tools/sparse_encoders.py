@@ -5,7 +5,6 @@ from pinecone_text.sparse import SpladeEncoder
 from FlagEmbedding import BGEM3FlagModel
 from typing import Dict, Any, Optional, Union, List
 import logging
-import functools
 from collections import OrderedDict
 
 

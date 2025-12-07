@@ -50,7 +50,7 @@ contextualize_q_system_prompt="""
 Given a chat history and the latest user question \
 which might reference context in the chat history, formulate a standalone question \
 which can be understood without the chat history. \
-**When reformulating, be sure to include all important and specific information from the context, such as names, contacts, addresses, dates, and specific quantities.** \
+**When reformulating, be sure to include all important and specific information from the context, such as names, contacts, addresses, dates, etc.** \
 Do NOT answer the question, just reformulate it if needed and otherwise return it as is.
 """
 

@@ -1,12 +1,10 @@
 import asyncio
 from functools import wraps
-from typing import Any, Callable, Dict, Optional, Tuple, Type, Union
+from typing import Any, Callable, Dict, Optional, Tuple
 import hashlib
 
 from huggingface_hub import snapshot_download
-from langchain_community.embeddings import CohereEmbeddings
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-#from openai import api_key
+
 from pydantic import BaseModel, ValidationError, SecretStr
 import torch
 from langchain.embeddings.base import Embeddings

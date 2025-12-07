@@ -7,6 +7,19 @@
 
 ---
 
+## [2025-12-07]
+### 0.7.0-rc1
+- Upgrade: Updated LangChain dependency to version 1.1.0.
+- Changed: Reworked history management to support direct injection or context summarization.
+- Added: New parameters for the /api/ask endpoint:
+  - contextualize_prompt: Toggles injecting history as text vs. structured messages.
+  - max_history_messages: Sets the maximum number of turns to retain.
+  - summarize_old_history: Enables summarization of old history before discarding.
+- Added: New parameter for the /api/qa endpoint:
+  - contextualize_prompt: Toggles contextualize_q_system_prompt usage.
+---
+
+
 ## [2025-12-01]
 ### 0.6.2-rc3
 - Fixed: Injected chat history directly into the prompt. 

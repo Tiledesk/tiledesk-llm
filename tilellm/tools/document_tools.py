@@ -1,8 +1,7 @@
 import time
-import uuid
+
 import logging
-import asyncio
-from datetime import datetime
+
 from typing import List
 
 import requests
@@ -24,7 +23,6 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 logger = logging.getLogger(__name__)
 
 
-# "https://help.tiledesk.com/mychatbots/articles/il-pnrr-per-la-ricerca-e-linnovazione/"
 async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Document]:
     """
     Get content by url! parse html page and extract content.

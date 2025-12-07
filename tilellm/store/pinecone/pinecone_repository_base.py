@@ -706,7 +706,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
         :return:
         """
 
-        from langchain.text_splitter import RecursiveCharacterTextSplitter
+        from langchain_classic.text_splitter import RecursiveCharacterTextSplitter
         text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         chunks = text_splitter.split_documents(data)
         return chunks
@@ -737,7 +737,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
             )
             chunks = text_splitter.split_documents(data)
         else:
-            from langchain.text_splitter import RecursiveCharacterTextSplitter
+            from langchain_classic.text_splitter import RecursiveCharacterTextSplitter
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
             chunks = text_splitter.split_documents(data)
 

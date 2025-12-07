@@ -1,5 +1,3 @@
-import httpx
-import json
 import re
 
 def get_graphql_answer(input, url, api_key):
@@ -44,7 +42,7 @@ def get_graphql_answer(input, url, api_key):
 
 
 
-import re
+
 
 def clean_graphql_query(query):
     # Remove leading and trailing whitespace

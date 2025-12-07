@@ -1,6 +1,5 @@
 from typing import List, Union, Literal, Dict, Any
 
-import httpx
 from pydantic import BaseModel, Field
 import base64
 

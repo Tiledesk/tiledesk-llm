@@ -104,8 +104,9 @@ class PersistentPineconeClient:
                     pod_type = getattr(engine, "pod_type", "p1")
                     pods = getattr(engine, "pods", 1)
                     try:
+                        logger.info("TENTATIVO DI CREAZIONE DI INDICE - Creazione su POD disabilitata")
                         pass
-                        print("TENTATIVO DI CREAZIONE DI INDICE")
+
 
                         #pc.create_index(
                         #    name=engine.index_name,

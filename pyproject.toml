@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "tilellm"
-version = "0.6.2-rc3"
+version = "0.70.0-rc1"
 description = "tiledesk for RAG"
 authors = ["Gianluca Lorenzo <gianluca.lorenzo@gmail.com>"]
 repository = "https://github.com/Tiledesk/tiledesk-llm"
@@ -31,7 +31,7 @@ langchain-deepseek = "1.0.1"#"0.1.4"
 pinecone-plugin-interface=  "0.0.7"
 python-dotenv = "1.1.1"
 langchain-community = "0.4.1"#"0.3.27"
-#langchain-experimental = "0.3.4"
+langchain-experimental = "0.4.0"#"0.3.4"
 langchain-pinecone = "0.2.13"
 langchain-huggingface= "1.1.0"#"0.3.1"
 langchain-ollama= "1.0.0"#"0.3.6"
@@ -42,7 +42,7 @@ minio = "^7.2.0"
 
 langchain-mcp-adapters = "0.1.14"#"0.1.9"
 langgraph = "1.0.4"#"0.6.4"
-langchain-chain
+
 
 openai = "2.8.1"#"1.107.0"
 cohere = "5.20.0"#"5.16.2"
@@ -55,7 +55,7 @@ beautifulsoup4 = "4.13.4"
 unstructured= "0.18.11"
 playwright ="1.56.0"
 playwright-stealth="2.0.0"
-pypdf= "6.4.0"#"5.9.0"
+pypdf= "6.4.1"#"5.9.0"
 docx2txt= "0.9"
 wikipedia= "1.4.0"
 html2text= "2025.4.15"
@@ -66,7 +66,7 @@ PyJWT= "2.10.1"
 torch = "2.9.1"
 FlagEmbedding= "1.3.5"
 openpyxl="3.2.0b1"
-PyMuPdf = "1.26.4"
+PyMuPdf = "1.26.6"
 pdf2image= "1.17.0"
 
 simsimd = "6.5.3"#"6.5.0"
@@ -84,14 +84,16 @@ neo4j = "^5.26.0"
 
 
 [tool.poetry.dependencies.uvicorn]
-version = "0.35.0"
+version = "0.38.0"
 extras = ["standard"]
 
 [tool.poetry.group.dev.dependencies]
 #uvicorn = "^0.28"  # For development server
+pytest = "^9.0.2"
+fakeredis = "^2.32.1"
 
 [tool.poetry.group.dev.dependencies.uvicorn]
-version = "0.35.0"
+version = "0.38.0"
 extras = ["standard"]
 
 [tool.poetry.scripts]

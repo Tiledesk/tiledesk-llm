@@ -202,122 +202,90 @@ async def ask_hybrid_with_memory(question_answer, repo=None, llm=None, callback_
 
 @inject_reason_llm_async
 async def ask_reason_llm(question, chat_model=None):
+    """
+    Gestisce richieste a LLM con supporto per reasoning content (es. DeepSeek, o1).
+    Usa i metodi privati centralizzati per stream e history.
+
+    :param question: QuestionToLLM
+    :param chat_model: Il modello LLM
+    :return: ReasoningAnswer in streaming o JSON
+    """
     try:
         logger.info(question)
-        chat_history_list = []
 
-        if question.chat_history_dict is not None:
-            for key, entry in question.chat_history_dict.items():
-                chat_history_list.append(HumanMessage(content=entry.question))  # ('human', entry.question))
-                chat_history_list.append(AIMessage(content=entry.answer))
+        # Costruisce il prompt template con history
+        qa_prompt = ChatPromptTemplate.from_messages([
+            MessagesPlaceholder("chat_history", n_messages=question.n_messages),
+            ("human", "{input}")
+        ])
 
-        qa_prompt = ChatPromptTemplate.from_messages(
-            [   MessagesPlaceholder("chat_history", n_messages=question.n_messages),
-                ("human", "{input}")
-            ]
+        # Setup session history
+        store = {}
+        get_session_history = lambda session_id: get_or_create_session_history(
+            store, session_id, question.chat_history_dict
         )
 
-        store = {}
-        get_session_history = lambda session_id: get_or_create_session_history(store, session_id,
-                                                                               question.chat_history_dict)
-
+        # Crea il runnable con history
         runnable = qa_prompt | chat_model
-
         runnable_with_history = RunnableWithMessageHistory(
             runnable,
             get_session_history,
             input_messages_key="input",
             history_messages_key="chat_history"
-
         )
 
+        # Configurazione per il runnable
+        config = {"configurable": {"session_id": uuid.uuid4().hex}}
+        input_data = {"input": question.question}
+
+        # --- STREAMING ---
         if question.stream:
-            # return runnable_with_history
-            async def get_stream_llm():
-                full_response = ""
-                full_response_reasoning= ""
-                message_id = str(uuid.uuid4())
-                start_time = datetime.now()
-
-                yield _create_event("metadata", {
-                    "message_id": message_id,
-                    "status": "started",
-                    "timestamp": start_time.isoformat()
-                })
-
-                async for chunk in runnable_with_history.astream({"input": question.question},
-                                                                 config={
-                                                                     "configurable": {"session_id": uuid.uuid4().hex}}
-                                                                 ):
-
-                    if hasattr(chunk, 'content'):
-
-                        is_reasoning_content, content_text, re_content= get_reasoning_content(chunk, question.llm)
-                        full_response += content_text
-                        if is_reasoning_content:
-                           full_response_reasoning += re_content  # chunk.additional_kwargs.reasoning_content
-                           yield _create_event("chunk", {"reasoning_content": re_content,
-                                                          "message_id": message_id})
-                        else:
-                           yield _create_event("chunk", {"content": content_text, "message_id": message_id})
-
-                        await asyncio.sleep(0.02)  # Per un flusso più regolare
-
-
-                end_time = datetime.now()
-
-                if not question.chat_history_dict:
-                    question.chat_history_dict = {}
-
-                num_question = len(question.chat_history_dict.keys())
-                question.chat_history_dict[str(num_question)] = {"question": question.question, "answer": full_response}
-
-                simple_reasoning_answer = ReasoningAnswer(answer=full_response,
-                                                reasoning_content= full_response_reasoning,
-                                                chat_history_dict=question.chat_history_dict)
-                yield _create_event("metadata", {
-                    "message_id": message_id,
-                    "status": "completed",
-                    "timestamp": end_time.isoformat(),
-                    "duration": (end_time - start_time).total_seconds(),
-                    "model_used": simple_reasoning_answer.model_dump()  # Sostituire con calcolo reale dei token
-                })
-
             return StreamingResponse(
-                get_stream_llm(),
+                _stream_generic_response(
+                    runnable_with_history,
+                    input_data,
+                    question,
+                    config=config,
+                    chunk_processor=_reasoning_chunk_processor,
+                    response_class=ReasoningAnswer
+                ),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache"}
             )
-        else:
-            logger.info(question)
 
-            result = await runnable_with_history.ainvoke(
-                {"input": question.question},  # 'chat_history_a': chat_history_list,
-                config={"configurable": {"session_id": uuid.uuid4().hex}
-                        },
-            )
-            # logger.info(result)
+        # --- RISPOSTA SINCRONA ---
+        result = await runnable_with_history.ainvoke(input_data, config=config)
 
-            if not question.chat_history_dict:
-                question.chat_history_dict = {}
+        # Estrai content e reasoning content
+        _, content, reasoning_content = get_reasoning_content(result, question.llm)
 
+        # Aggiorna history usando il metodo centralizzato
+        updated_history = _update_history(
+            question.chat_history_dict,
+            question.question,
+            content
+        )
 
-            _, content, reasoning_content=get_reasoning_content(result, question.llm)
-            num = len(question.chat_history_dict.keys())
-            question.chat_history_dict[str(num)] = {"question": question.question, "answer": content}
-            return JSONResponse(
-                content=ReasoningAnswer(answer=content,
-                                        reasoning_content=reasoning_content,
-                                        chat_history_dict=question.chat_history_dict).model_dump())
-
+        return JSONResponse(
+            content=ReasoningAnswer(
+                answer=content,
+                reasoning_content=reasoning_content,
+                chat_history_dict=updated_history
+            ).model_dump()
+        )
 
     except Exception as e:
         import traceback
         traceback.print_exc()
 
-        result_to_return = SimpleAnswer(answer=repr(e),
-                                        chat_history_dict={})
-        raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
+        result_to_return = SimpleAnswer(
+            answer=repr(e),
+            chat_history_dict={}
+        )
+        raise fastapi.exceptions.HTTPException(
+            status_code=400,
+            detail=result_to_return.model_dump()
+        )
 
 
 @inject_llm_async
@@ -365,7 +333,7 @@ Previous conversation history:
         # --- 4. STREAMING ---
         if question.stream:
             return StreamingResponse(
-                _stream_llm_response(chat_model, messages, question),
+                _stream_generic_response(chat_model, messages, question),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache"}
             )
@@ -522,60 +490,6 @@ def _format_history_as_text(chat_history: dict) -> str:
     return "\n".join(history_lines)
 
 
-async def _stream_llm_response(chat_model, messages, question):
-    """Gestisce lo streaming della risposta"""
-    full_response = ""
-    message_id = str(uuid.uuid4())
-    start_time = datetime.now()
-
-    # Metadati iniziali
-    yield _create_event("metadata", {
-        "message_id": message_id,
-        "status": "started",
-        "timestamp": start_time.isoformat()
-    })
-
-    # Stream dei chunk
-    async for chunk in chat_model.astream(messages):
-        if hasattr(chunk, 'content') and chunk.content:
-            full_response += chunk.content
-            yield _create_event("chunk", {
-                "content": chunk.content,
-                "message_id": message_id
-            })
-            await asyncio.sleep(0.01)
-
-    # Aggiorna history
-    updated_history = _update_history(
-        question.chat_history_dict,
-        question.question,
-        full_response
-    )
-
-    # Token info (può essere 0 nello streaming)
-    prompt_token_info = PromptTokenInfo(
-        input_tokens=0,
-        output_tokens=0,
-        total_tokens=0
-    )
-
-    end_time = datetime.now()
-
-    # Metadati finali
-    yield _create_event("metadata", {
-        "message_id": message_id,
-        "status": "completed",
-        "timestamp": end_time.isoformat(),
-        "duration": (end_time - start_time).total_seconds(),
-        "full_response": full_response,
-        "model_used": SimpleAnswer(
-            answer=full_response,
-            chat_history_dict=updated_history,
-            prompt_token_info=prompt_token_info
-        ).model_dump()
-    })
-
-
 def _update_history(current_history: dict, new_question, new_answer) -> dict:
     """Aggiorna la history con la nuova domanda/risposta"""
     if not current_history:
@@ -607,6 +521,134 @@ def _create_event(event_type: str, data: dict) -> str:
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
+def _reasoning_chunk_processor(chunk, question):
+    """
+    Processor per chunk con reasoning content (es. DeepSeek, o1).
+
+    Returns:
+        dict con chiavi: 'content', 'reasoning_content', 'events'
+    """
+    is_reasoning, content_text, reasoning_text = get_reasoning_content(chunk, question.llm)
+
+    events = []
+    if is_reasoning:
+        events.append({"reasoning_content": reasoning_text})
+    else:
+        events.append({"content": content_text})
+
+    return {
+        'content': content_text,
+        'reasoning_content': reasoning_text,
+        'events': events
+    }
+
+
+async def _stream_generic_response(
+    runnable,
+    input_data,
+    question: QuestionToLLM,
+    config: dict = None,
+    chunk_processor=None,
+    response_class=None
+):
+    """
+    Metodo generico per gestire streaming di qualsiasi runnable.
+
+    Args:
+        runnable: Il runnable da eseguire (chat_model, RunnableWithMessageHistory, agent, etc.)
+        input_data: I dati di input da passare al runnable (dict o list di messaggi)
+        question: L'oggetto QuestionToLLM con i parametri della richiesta
+        config: Configurazione opzionale per il runnable (default: None)
+        chunk_processor: Funzione opzionale che prende (chunk, question) e ritorna dict con chiavi:
+                        - 'content': contenuto principale da accumulare
+                        - 'events': lista di eventi SSE da emettere
+                        Se None, usa il processing standard (solo 'content')
+        response_class: Classe per la risposta finale (default: SimpleAnswer)
+
+    Yields:
+        Eventi SSE formattati
+    """
+    if response_class is None:
+        response_class = SimpleAnswer
+
+    full_response = ""
+    additional_data = {}  # Per dati extra come reasoning_content
+    message_id = str(uuid.uuid4())
+    start_time = datetime.now()
+
+    # Metadati iniziali
+    yield _create_event("metadata", {
+        "message_id": message_id,
+        "status": "started",
+        "timestamp": start_time.isoformat()
+    })
+
+    # Stream dei chunk (con o senza config)
+    if config is not None:
+        stream = runnable.astream(input_data, config=config)
+    else:
+        stream = runnable.astream(input_data)
+
+    async for chunk in stream:
+        if hasattr(chunk, 'content'):
+            if chunk_processor:
+                # Usa il processor custom per casi speciali (es. reasoning)
+                result = chunk_processor(chunk, question)
+                full_response += result.get('content', '')
+
+                # Accumula dati extra
+                for key, value in result.items():
+                    if key not in ['content', 'events']:
+                        if key not in additional_data:
+                            additional_data[key] = ''
+                        additional_data[key] += value
+
+                # Emetti gli eventi custom
+                for event_data in result.get('events', []):
+                    yield _create_event("chunk", {**event_data, "message_id": message_id})
+            else:
+                # Processing standard: solo content
+                full_response += chunk.content
+                yield _create_event("chunk", {
+                    "content": chunk.content,
+                    "message_id": message_id
+                })
+
+            await asyncio.sleep(0.01)
+
+    # Aggiorna history usando il metodo centralizzato
+    updated_history = _update_history(
+        question.chat_history_dict,
+        question.question,
+        full_response
+    )
+
+    # Token info (può essere 0 nello streaming)
+    prompt_token_info = PromptTokenInfo(
+        input_tokens=0,
+        output_tokens=0,
+        total_tokens=0
+    )
+
+    end_time = datetime.now()
+
+    # Costruisci la risposta finale
+    response_data = {
+        'answer': full_response,
+        'chat_history_dict': updated_history,
+        'prompt_token_info': prompt_token_info
+    }
+    response_data.update(additional_data)
+
+    # Metadati finali
+    yield _create_event("metadata", {
+        "message_id": message_id,
+        "status": "completed",
+        "timestamp": end_time.isoformat(),
+        "duration": (end_time - start_time).total_seconds(),
+        "full_response": full_response,
+        "model_used": response_class(**response_data).model_dump()
+    })
 
 
 @inject_llm_async
@@ -1483,7 +1525,7 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
                         new_content.append(item)
 
                     # Crea nuovo messaggio con contenuto processato
-                    from langchain_classic.schema import HumanMessage, AIMessage, SystemMessage
+                    # HumanMessage, AIMessage, SystemMessage già importati all'inizio
 
                     if hasattr(msg, 'type'):
                         if msg.type == 'human':
@@ -1925,20 +1967,9 @@ async def ask_to_agent(question_to_agent: QuestionToAgent, chat_model=None):
         #    tools, chat_model, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=True
         #)
         #result = agent.invoke(question_to_agent.question)
-        result_history = ""
-        if question_to_agent.chat_history_dict is not None:
-            #for key, entry in question_to_agent.chat_history_dict.items():
-            #    chat_history_list.append(HumanMessage(content=entry.question))  # ('human', entry.question)
-            #    chat_history_list.append(AIMessage(content=entry.answer))
-            # "chat_history": "Human: My name is Bob\nAI: Hello Bob!",
-
-            for i in range(len(question_to_agent.chat_history_dict)):
-                entry = question_to_agent.chat_history_dict[str(i)]
-                result_history += f"Human: {entry.question}\n"
-                result_history += f"AI: {entry.answer}\n"
-
-            result_history = result_history.strip()  # Remove trailing newline
-            print(result_history)
+        # Usa il metodo centralizzato per formattare la history
+        result_history = _format_history_as_text(question_to_agent.chat_history_dict)
+        print(result_history)
 
 
         #qa_prompt = ChatPromptTemplate.from_messages(
@@ -1960,14 +1991,14 @@ async def ask_to_agent(question_to_agent: QuestionToAgent, chat_model=None):
         result_shopify = shopify_lookup_agent(question_to_agent=question_to_agent, chat_model=chat_model, chat_history=result_history)
         # print(f"RESULT: {result_shopify.get('output')} type: {type(result_shopify.get('output'))}")
 
+        # Aggiorna history usando il metodo centralizzato
+        updated_history = _update_history(
+            question_to_agent.chat_history_dict,
+            question_to_agent.question,
+            result_shopify.get("output")
+        )
 
-        if not question_to_agent.chat_history_dict:
-            question_to_agent.chat_history_dict = {}
-
-        num = len(question_to_agent.chat_history_dict.keys())
-        question_to_agent.chat_history_dict[str(num)] = dict({"question": question_to_agent.question, "answer": result_shopify.get("output")})
-
-        answer_to_agent = SimpleAnswer(answer=result_shopify.get("output"), chat_history_dict=question_to_agent.chat_history_dict)
+        answer_to_agent = SimpleAnswer(answer=result_shopify.get("output"), chat_history_dict=updated_history)
         # print(answer_to_agent)
         return answer_to_agent
 

@@ -9,13 +9,11 @@ ARG IMAGICLE=false
 
 WORKDIR /tiledesk-llm
 
-# COPY log_conf.yaml /tiledesk-llm/log_conf.yaml
 COPY log_conf.json /tiledesk-llm/log_conf.json
 COPY pyproject.toml /tiledesk-llm/pyproject.toml
 COPY ./tilellm /tiledesk-llm/tilellm
 # RUN pip install pytest-playwright
-# RUN playwright install chromium
-# RUN playwright install-deps chromium
+
 
 RUN echo "Installazione progetto..." && \
     pip install . && \

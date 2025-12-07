@@ -7,39 +7,6 @@ from langchain_core.callbacks import CallbackManagerForRetrieverRun, AsyncCallba
 from langchain_core.documents import Document
 from langchain_core.retrievers import BaseRetriever
 
-"""
-
-
-def build_dict(input_batch):
-  # store a batch of sparse embeddings
-    sparse_emb = []
-    # iterate through input batch
-    for token_ids in input_batch:
-        # convert the input_ids list to a dictionary of key to frequency values
-        d = dict(Counter(token_ids))
-        # remove special tokens and append sparse vectors to sparse_emb list
-        sparse_emb.append({key: d[key] for key in d if key not in [101, 102, 103, 0]})
-    # return sparse_emb list
-    return sparse_emb
-
-def generate_sparse_vectors(context_batch):
-    # create batch of input_ids
-    # load bert tokenizer from huggingface
-    tokenizer = BertTokenizerFast.from_pretrained(
-        'bert-base-uncased'
-    )
-
-    inputs = tokenizer(
-            context_batch, padding=True,
-            truncation=True,
-            max_length=512
-    )['input_ids']
-    # create sparse dictionaries
-    sparse_embeds = build_dict(inputs)
-    return sparse_embeds
-
-"""
-
 def hybrid_score_norm(dense, sparse, alpha: float):
     """Hybrid score using a convex combination
 
