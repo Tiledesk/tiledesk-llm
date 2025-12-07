@@ -47,30 +47,6 @@ class MultimodalLLMInput(BaseModel):
         description="Controls randomness in sampling (0.0 = deterministic, 1.0 = max creativity). Range: 0.0 to 1.0."
     )
 
-class MultimodalLLMInput_old(BaseModel):
-    """Input schema per il tool multimodale LLM"""
-    prompt: str = Field(description="Il prompt testuale da inviare all'LLM")
-    images_base64: Optional[List[str]] = Field(
-        default=None,
-        description="Lista di immagini in formato base64 (senza prefisso data:image/...)"
-    )
-    documents_base64: Optional[List[Dict[str, str]]] = Field(
-        default=None,
-        description="Lista di documenti in formato base64. Ogni elemento deve contenere 'data' (base64) e 'mime_type' (es. application/pdf)"
-    )
-    system_prompt: Optional[str] = Field(
-        default="You are a helpful AI assistant. Analyze the provided content and respond accurately.",
-        description="Prompt di sistema per l'LLM"
-    )
-    max_tokens: Optional[int] = Field(
-        default=2048,
-        description="Numero massimo di token nella risposta"
-    )
-    temperature: Optional[float] = Field(
-        default=0.0,
-        description="Temperature per il sampling (0.0-1.0)"
-    )
-
 
 def create_multimodal_llm_tool(llm_instance: Any, base64_storage: Optional[Dict[str, Dict]] = None):
     """
