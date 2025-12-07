@@ -284,7 +284,7 @@ def create_multimodal_llm_tool(llm_instance: Any, base64_storage: Optional[Dict[
                     logger.debug(f"Added document {idx + 1}/{len(documents_base64)} ({mime_type})")
 
             # Prepara i messaggi per l'LLM
-            from langchain.schema import HumanMessage, SystemMessage
+            from langchain_classic.schema import HumanMessage, SystemMessage
 
             messages = []
 

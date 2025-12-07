@@ -23,19 +23,19 @@ from tilellm.models import ChatEntry
 
 from tilellm.shared.sparse_util import HybridRetriever
 from langchain_community.document_transformers import EmbeddingsRedundantFilter
-from langchain.retrievers.document_compressors import DocumentCompressorPipeline
-from langchain.retrievers import ContextualCompressionRetriever
+from langchain_classic.retrievers.document_compressors import DocumentCompressorPipeline
+from langchain_classic.retrievers import ContextualCompressionRetriever
 
 import tilellm.shared.const as const
 
-from langchain.chains import create_history_aware_retriever, create_retrieval_chain
+from langchain_classic.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, PromptTemplate
 from langchain_core.runnables.history import RunnableWithMessageHistory
-from langchain.chains.combine_documents import create_stuff_documents_chain
+from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.chat_history import BaseChatMessageHistory
 
-from langchain.schema import(
+from langchain_classic.schema import(
     AIMessage,
     HumanMessage,
     SystemMessage

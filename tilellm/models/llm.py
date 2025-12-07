@@ -197,7 +197,26 @@ class QuestionToLLM(BaseModel):
     n_messages: int = Field(default_factory=lambda: None)
     servers: Optional[Dict[str, ServerConfig]] = Field(default_factory=dict)
     tools: Optional[List[str]] = Field(default=None, description="Lista di nomi di tool interni da tool_registry")
-    contextualize_prompt: Optional[bool] = Field(default=False, description="Enable/disable chat history usage in messages")
+
+    # Modalità di gestione history
+    contextualize_prompt: Optional[bool] = Field(
+        default=False,description="Se True, inietta la history come testo nel system prompt. Se False, passa la "
+                                  "history come messaggi strutturati (consigliato per LLM moderni)"
+    )
+
+    # Limitazione history
+    max_history_messages: Optional[int] = Field(
+        default=None,
+        description="Numero massimo di turni (coppie domanda/risposta) da mantenere. "
+                    "None = illimitato. Es: 10 = ultimi 10 turni (20 messaggi)"
+    )
+
+    # Summarization
+    summarize_old_history: bool = Field(
+        default=False,
+        description="Se True e max_history_messages è impostato, riassume automaticamente "
+                    "la history più vecchia invece di scartarla. Richiede una chiamata LLM extra."
+    )
 
     @model_validator(mode="after")
     def adjust_temperature_and_validate(self):

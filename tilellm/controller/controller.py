@@ -2,7 +2,7 @@ import base64
 import uuid
 import json
 from datetime import datetime
-from typing import List, Any
+from typing import List, Any, Optional
 
 import re
 from langchain_core.messages import ToolMessage
@@ -11,7 +11,7 @@ import fastapi
 import asyncio
 from fastapi.responses import JSONResponse
 
-from langchain.chains import ConversationalRetrievalChain, LLMChain  # Deprecata
+from langchain_classic.chains import ConversationalRetrievalChain, LLMChain  # Deprecata
 
 from langchain_core.documents import Document
 from langchain_core.prompts import PromptTemplate #, SystemMessagePromptTemplate
@@ -20,7 +20,11 @@ from langchain_openai import ChatOpenAI
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.callbacks.openai_info import OpenAICallbackHandler
 from fastapi.responses import StreamingResponse
-from langgraph.prebuilt import create_react_agent
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+
+from langchain.agents import create_agent
+from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResponse
+from typing import Callable
 
 from tilellm.controller.controller_utils import preprocess_chat_history, \
     fetch_question_vectors, retrieve_documents, create_chains, get_or_create_session_history, \
@@ -49,7 +53,7 @@ from tilellm.shared.utility import inject_repo_async, \
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
-from langchain.chains import create_retrieval_chain
+from langchain_classic.chains import create_retrieval_chain
 
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.chat_history import BaseChatMessageHistory
@@ -61,6 +65,74 @@ import logging
 from tilellm.tools.reranker import RerankedRetriever, TileReranker
 
 logger = logging.getLogger(__name__)
+
+
+def handle_agent_exception(e: Exception, context: str = "Agent execution") -> JSONResponse:
+    """
+    Gestisce le eccezioni nelle funzioni agent restituendo messaggi user-friendly.
+
+    Args:
+        e: L'eccezione catturata
+        context: Contesto dell'errore per il logging
+
+    Returns:
+        JSONResponse con messaggio di errore chiaro per l'utente
+    """
+    import traceback
+    traceback.print_exc()
+    logger.error(f"Error in {context}: {str(e)}")
+
+    # Determina il tipo di errore e crea un messaggio user-friendly
+    error_message = str(e)
+    user_message = ""
+    status_code = 500
+
+    # Errori di file non trovato
+    if "not found" in error_message.lower() or "does not exist" in error_message.lower():
+        user_message = "Il file richiesto non è stato trovato. Verifica che il file sia stato caricato correttamente."
+        status_code = 404
+
+    # Errori di tool/MCP
+    elif "tool" in error_message.lower() and ("error" in error_message.lower() or "failed" in error_message.lower()):
+        user_message = f"Errore nell'esecuzione del tool: {error_message}"
+        status_code = 400
+
+    # Errori di formato base64
+    elif "base64" in error_message.lower() or "invalid" in error_message.lower():
+        user_message = "Errore nel processare il contenuto multimediale. Verifica che i file siano nel formato corretto."
+        status_code = 400
+
+    # Errori di modello/API
+    elif "model" in error_message.lower() or "api" in error_message.lower() or "rate" in error_message.lower():
+        user_message = f"Errore nella comunicazione con il modello AI: {error_message}"
+        status_code = 503
+
+    # Errori di timeout
+    elif "timeout" in error_message.lower():
+        user_message = "L'operazione ha impiegato troppo tempo. Riprova con una richiesta più semplice."
+        status_code = 504
+
+    # Errore generico
+    else:
+        user_message = f"Si è verificato un errore: {error_message}"
+        status_code = 500
+
+    error_response = SimpleAnswer(
+        answer=user_message,
+        tools_log=[],
+        chat_history_dict={},
+        prompt_token_info=PromptTokenInfo(
+            input_tokens=0,
+            output_tokens=0,
+            total_tokens=0
+        )
+    )
+
+    return JSONResponse(
+        status_code=status_code,
+        content=error_response.model_dump()
+    )
+
 
 @inject_repo_async
 @inject_llm_chat_async
@@ -248,170 +320,291 @@ async def ask_reason_llm(question, chat_model=None):
         raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
 
 
-# Import necessari
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
-
-
 @inject_llm_async
 async def ask_to_llm(question: QuestionToLLM, chat_model=None):
     """
-    Gestisce una richiesta a un LLM, supportando contenuti multimodali,
-    cronologia della chat e risposte in streaming.
-    Utilizza la costruzione manuale dei messaggi per evitare errori di tokenizzazione
-    con input di immagini base64.
+    Gestisce richieste a LLM con supporto multimodale, history e streaming.
+    :param question: QuestionToLLM
+    :param chat_model:
+    :return: SimpleAnswer
     """
     try:
-        # --- 1. Gestione della Cronologia ---
-        # Per questo esempio, creiamo uno store e un session_id temporanei.
+        # --- 1. System message ---
+        messages = []
+        if question.system_context:
+            messages.append(SystemMessage(content=question.system_context))
 
-        temp_store = {}
-        session_id = uuid.uuid4().hex  # Usa un ID di sessione reale se disponibile
+        # --- 2. Gestione HISTORY ---
+        if question.chat_history_dict:
+            if question.contextualize_prompt:
+                # Modalità A: History iniettata come TESTO nel system prompt
+                history_text = _format_history_as_text(question.chat_history_dict)
 
-        get_session_history = lambda sid: get_or_create_session_history(
-            temp_store, sid, question.chat_history_dict
-        )
-        history = get_session_history(session_id)
+                # Modifica il system message per includere la history
+                system_with_history = f"""{question.system_context}
 
-        # --- 2. Costruzione Manuale della Lista di Messaggi ---
-        # Questo è il passaggio chiave per risolvere il problema dei token.
-
-        # --- INIZIO MODIFICA: gestione condizionale di contextualize_prompt ---
-        if question.contextualize_prompt:
-            # CODICE ORIGINALE: include la history come messaggi separati
-            final_messages = [SystemMessage(content=question.system_context)]
-            final_messages.extend(history.messages)
-        else:
-            # NUOVO: inietta la history come stringa nel system message
-            # Converte la history in stringa formattata
-            if question.chat_history_dict:
-                history_lines = []
-                for key, entry in question.chat_history_dict.items():
-                    # Gestisci question multimodale
-                    q_text = entry.get_question_text()
-                    history_lines.append(f"User: {q_text}")
-                    history_lines.append(f"Assistant: {entry.answer}")
-                chat_history_text = "\n".join(history_lines)
-            else:
-                chat_history_text = "No previous conversation."
-
-            # System context con history iniettata
-            system_with_history = f"""{question.system_context}
-
-Previous conversation:
-{chat_history_text}
+Previous conversation history:
+{history_text}
 """
-            final_messages = [SystemMessage(content=system_with_history)]
-        # --- FINE MODIFICA ---
+                messages[0] = SystemMessage(content=system_with_history)
 
-        # Prepara il contenuto della domanda (testo o lista multimodale)
+            else:
+                # Modalità B: History come MESSAGGI strutturati
+                history_messages = await _process_history_messages(
+                    question.chat_history_dict,
+                    question.max_history_messages,
+                    question.summarize_old_history,
+                    chat_model
+                )
+                messages.extend(history_messages)
+
+        # --- 3. Nuova domanda ---
         question_content = question.get_question_content()
-        new_human_message = HumanMessage(content=question_content)
-        final_messages.append(new_human_message)
+        messages.append(HumanMessage(content=question_content))
 
-        # --- 3. Logica per lo Streaming e la Risposta ---
+        # --- 4. STREAMING ---
         if question.stream:
-            async def get_stream_llm():
-                full_response_content = ""
-                message_id = str(uuid.uuid4())
-                start_time = datetime.now()
-
-                # Yield del metadato di avvio
-                yield _create_event("metadata", {
-                    "message_id": message_id,
-                    "status": "started",
-                    "timestamp": start_time.isoformat()
-                })
-
-                # Chiamata in streaming DIRETTA al modello
-                final_response_message = None
-                async for chunk in chat_model.astream(final_messages):
-                    if hasattr(chunk, 'content'):
-                        full_response_content += chunk.content
-                        yield _create_event("chunk", {"content": chunk.content, "message_id": message_id})
-                        await asyncio.sleep(0.01)  # Opzionale, per un flusso più fluido
-
-                # Costruisci il messaggio di risposta completo per la history e i metadati
-                final_response_message = AIMessage(content=full_response_content)
-                end_time = datetime.now()
-
-                # Aggiorna la cronologia con la domanda e la risposta completa
-                #history.add_messages([new_human_message, final_response_message])
-                #question.chat_history_dict = {str(i): entry for i, entry in
-                #                              enumerate(history.messages)}  # Ricostruisci il dizionario
-
-                if not question.chat_history_dict:
-                    question.chat_history_dict = {}
-
-                num_question = len(question.chat_history_dict.keys())
-                question.chat_history_dict[str(num_question)] = ChatEntry(question=question.question,
-                                                                          # Salva l'originale (str o List[MultimodalContent])
-                                                                          answer=full_response_content
-                                                                          )
-                # Ottieni i metadati sull'utilizzo (se disponibili post-streaming)
-                # Nota: `usage_metadata` potrebbe non essere sempre disponibile nello streaming.
-                # In tal caso, i token saranno 0.
-                usage_meta = final_response_message.usage_metadata or {}
-                prompt_token_info = PromptTokenInfo(
-                    input_tokens=usage_meta.get("input_tokens", 0),
-                    output_tokens=usage_meta.get("output_tokens", 0),
-                    total_tokens=usage_meta.get("total_tokens", 0),
-                )
-
-                simple_answer = SimpleAnswer(
-                    answer=full_response_content,
-                    chat_history_dict=question.chat_history_dict,
-                    prompt_token_info=prompt_token_info
-                )
-
-                # Yield del metadato di completamento
-                yield _create_event("metadata", {
-                    "message_id": message_id,
-                    "status": "completed",
-                    "timestamp": end_time.isoformat(),
-                    "duration": (end_time - start_time).total_seconds(),
-                    "full_response": full_response_content,
-                    "model_used": simple_answer.model_dump()
-                })
-
             return StreamingResponse(
-                get_stream_llm(),
+                _stream_llm_response(chat_model, messages, question),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache"}
             )
 
-        else:  # Logica per la risposta non in streaming
-            # Chiamata DIRETTA al modello
-            result_message = await chat_model.ainvoke(final_messages)
+        # --- 5. RISPOSTA SINCRONA ---
+        result_message = await chat_model.ainvoke(messages)
 
-            # Aggiorna la cronologia
-            #history.add_messages(ChatEntry(question=new_human_message.content, answer=result_message))
-            #question.chat_history_dict = {str(i): entry for i, entry in enumerate(history.messages)}
+        # Aggiorna history
+        updated_history = _update_history(
+            question.chat_history_dict,
+            question.question,
+            result_message.content
+        )
 
-            if not question.chat_history_dict:
-                question.chat_history_dict = {}
+        # Estrai token info
+        prompt_token_info = _extract_token_info(result_message)
 
-            num = len(question.chat_history_dict.keys())
-            question.chat_history_dict[str(num)] = ChatEntry(question=question.question,
-                                                             answer=result_message.content
-                                                             )
-
-            prompt_token_info = PromptTokenInfo(
-                input_tokens=result_message.usage_metadata.get("input_tokens", 0),
-                output_tokens=result_message.usage_metadata.get("output_tokens", 0),
-                total_tokens=result_message.usage_metadata.get("total_tokens", 0),
-            )
-
-            return JSONResponse(content=SimpleAnswer(
-                answer=result_message.content,
-                chat_history_dict=question.chat_history_dict,
-                prompt_token_info=prompt_token_info
-            ).model_dump())
+        return JSONResponse(content=SimpleAnswer(
+            answer=result_message.content,
+            chat_history_dict=updated_history,
+            prompt_token_info=prompt_token_info
+        ).model_dump())
 
     except Exception as e:
         import traceback
         traceback.print_exc()
-        result_to_return = SimpleAnswer(answer=repr(e), chat_history_dict={}, prompt_token_info=None)
-        raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
+        result_to_return = SimpleAnswer(
+            answer=repr(e),
+            chat_history_dict={},
+            prompt_token_info=None
+        )
+        raise fastapi.exceptions.HTTPException(
+            status_code=400,
+            detail=result_to_return.model_dump()
+        )
+
+
+async def _process_history_messages(
+        chat_history: dict,
+        max_messages: Optional[int],
+        summarize_old: bool,
+        chat_model
+) -> list:
+    """
+    Processa la history e ritorna lista di messaggi.
+    Gestisce limitazione e summarization.
+    """
+    if not chat_history:
+        return []
+
+    sorted_keys = sorted(chat_history.keys(), key=lambda x: int(x))
+
+    # Nessun limite: ritorna tutto
+    if max_messages is None:
+        return _build_message_list(chat_history, sorted_keys)
+
+    total_turns = len(sorted_keys)
+
+    # La history sta dentro il limite
+    if total_turns <= max_messages:
+        return _build_message_list(chat_history, sorted_keys)
+
+    # Supera il limite
+    recent_keys = sorted_keys[-max_messages:]
+
+    if not summarize_old:
+        # Solo limita: prendi gli ultimi N turni
+        return _build_message_list(chat_history, recent_keys)
+
+    # Summarization attiva: riassumi la parte vecchia
+    old_keys = sorted_keys[:-max_messages]
+    old_history_text = _format_history_as_text(
+        {k: chat_history[k] for k in old_keys}
+    )
+
+    # Crea il riassunto della history vecchia
+    summary = await _summarize_history(old_history_text, chat_model)
+
+    # Costruisci i messaggi: [summary] + [recent messages]
+    messages = [
+        SystemMessage(content=f"Summary of earlier conversation:\n{summary}")
+    ]
+    messages.extend(_build_message_list(chat_history, recent_keys))
+
+    return messages
+
+
+def _build_message_list(chat_history: dict, keys: list) -> list:
+    """Costruisce lista di messaggi Human/AI dalla history"""
+    messages = []
+
+    for key in keys:
+        entry = chat_history[key]
+
+        # Messaggio utente (gestisce multimodale)
+        user_content = (
+            entry.get_question_content()
+            if hasattr(entry, 'get_question_content')
+            else entry.question
+        )
+        messages.append(HumanMessage(content=user_content))
+
+        # Messaggio assistente
+        messages.append(AIMessage(content=entry.answer))
+
+    return messages
+
+
+async def _summarize_history(history_text: str, chat_model) -> str:
+    """
+    Usa l'LLM per creare un riassunto conciso della history vecchia.
+    """
+    summarization_prompt = f"""You are tasked with summarizing a conversation history.
+Create a concise summary that captures:
+- Main topics discussed
+- Key information exchanged
+- Important context for continuing the conversation
+
+Conversation history to summarize:
+{history_text}
+
+Provide a brief summary (max 200 words):"""
+
+    try:
+        summary_msg = await chat_model.ainvoke([
+            HumanMessage(content=summarization_prompt)
+        ])
+        return summary_msg.content.strip()
+    except Exception as e:
+        # Fallback: ritorna una versione troncata
+        return f"Earlier conversation summary (auto-generated): {history_text[:500]}..."
+
+
+def _format_history_as_text(chat_history: dict) -> str:
+    """Formatta la history come testo leggibile"""
+    if not chat_history:
+        return "No previous conversation."
+
+    sorted_keys = sorted(chat_history.keys(), key=lambda x: int(x))
+    history_lines = []
+
+    for key in sorted_keys:
+        entry = chat_history[key]
+
+        # Gestisci question multimodale
+        if hasattr(entry, 'get_question_text'):
+            q_text = entry.get_question_text()
+        else:
+            q_text = str(entry.question)
+
+        history_lines.append(f"User: {q_text}")
+        history_lines.append(f"Assistant: {entry.answer}")
+
+    return "\n".join(history_lines)
+
+
+async def _stream_llm_response(chat_model, messages, question):
+    """Gestisce lo streaming della risposta"""
+    full_response = ""
+    message_id = str(uuid.uuid4())
+    start_time = datetime.now()
+
+    # Metadati iniziali
+    yield _create_event("metadata", {
+        "message_id": message_id,
+        "status": "started",
+        "timestamp": start_time.isoformat()
+    })
+
+    # Stream dei chunk
+    async for chunk in chat_model.astream(messages):
+        if hasattr(chunk, 'content') and chunk.content:
+            full_response += chunk.content
+            yield _create_event("chunk", {
+                "content": chunk.content,
+                "message_id": message_id
+            })
+            await asyncio.sleep(0.01)
+
+    # Aggiorna history
+    updated_history = _update_history(
+        question.chat_history_dict,
+        question.question,
+        full_response
+    )
+
+    # Token info (può essere 0 nello streaming)
+    prompt_token_info = PromptTokenInfo(
+        input_tokens=0,
+        output_tokens=0,
+        total_tokens=0
+    )
+
+    end_time = datetime.now()
+
+    # Metadati finali
+    yield _create_event("metadata", {
+        "message_id": message_id,
+        "status": "completed",
+        "timestamp": end_time.isoformat(),
+        "duration": (end_time - start_time).total_seconds(),
+        "full_response": full_response,
+        "model_used": SimpleAnswer(
+            answer=full_response,
+            chat_history_dict=updated_history,
+            prompt_token_info=prompt_token_info
+        ).model_dump()
+    })
+
+
+def _update_history(current_history: dict, new_question, new_answer) -> dict:
+    """Aggiorna la history con la nuova domanda/risposta"""
+    if not current_history:
+        current_history = {}
+
+    next_key = str(len(current_history))
+    current_history[next_key] = ChatEntry(
+        question=new_question,
+        answer=new_answer
+    )
+
+    return current_history
+
+
+def _extract_token_info(message) -> PromptTokenInfo:
+    """Estrae le informazioni sui token dal messaggio"""
+    usage_meta = getattr(message, 'usage_metadata', None) or {}
+
+    return PromptTokenInfo(
+        input_tokens=usage_meta.get("input_tokens", 0),
+        output_tokens=usage_meta.get("output_tokens", 0),
+        total_tokens=usage_meta.get("total_tokens", 0)
+    )
+
+
+def _create_event(event_type: str, data: dict) -> str:
+    """Crea un evento SSE formattato"""
+    import json
+    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
 
@@ -571,7 +764,7 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
     1. Normalizza l'input in una lista di contenuti
     2. Estrae e memorizza documenti/immagini base64 in storage separato
     3. Sostituisce base64 con riferimenti testuali nei messaggi
-    4. Il pre_model_hook pulisce ulteriormente i messaggi prima di ogni chiamata LLM
+    4. Il middleware pulisce ulteriormente i messaggi prima di ogni chiamata LLM
     5. Il tool multimodale interno accede allo storage quando necessario
     """
     mcp_client = question.create_mcp_client()
@@ -975,9 +1168,13 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
 
             return content, False
 
-        def pre_model_cleaning_hook(state):
-            """Hook chiamato prima di ogni invocazione LLM per pulire i messaggi."""
-            messages = state.get("messages", [])
+        @wrap_model_call
+        async def pre_model_cleaning_middleware(
+            request: ModelRequest,
+            handler: Callable[[ModelRequest], ModelResponse],
+        ) -> ModelResponse:
+            """Middleware chiamato prima di ogni invocazione LLM per pulire i messaggi."""
+            messages = request.messages
             cleaned_messages = []
 
             for msg in messages:
@@ -1018,15 +1215,14 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
                     # Content non stringa → mantieni originale
                     cleaned_messages.append(msg)
 
-            return {"llm_input_messages": cleaned_messages}
+            return await handler(request.override(messages=cleaned_messages))
 
-        # --- STEP 7: Creazione Agent con Pre-Model Hook ---
-        agent_executor = create_react_agent(
+        # --- STEP 7: Creazione Agent con Middleware ---
+        agent_executor = create_agent(
             model=chat_model,
             tools=all_tools,
-            prompt=system_prompt,
-            pre_model_hook=pre_model_cleaning_hook,
-            version="v2"
+            system_prompt=system_prompt,
+            middleware=[pre_model_cleaning_middleware]
         )
 
         # --- STEP 8: Invocazione Agent ---
@@ -1120,7 +1316,7 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
         )
 
     except Exception as e:
-        return handle_exception(e, "Exception in MCP dialog")
+        return handle_agent_exception(e, "ask_mcp_agent_llm")
 
 
 
@@ -1287,7 +1483,7 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
                         new_content.append(item)
 
                     # Crea nuovo messaggio con contenuto processato
-                    from langchain.schema import HumanMessage, AIMessage, SystemMessage
+                    from langchain_classic.schema import HumanMessage, AIMessage, SystemMessage
 
                     if hasattr(msg, 'type'):
                         if msg.type == 'human':
@@ -1494,19 +1690,18 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
                                 Currently available: {len(base64_storage)} references
                                 """
 
-        def pre_model_cleaning_hook(state):
+        @wrap_model_call
+        async def pre_model_cleaning_middleware(
+            request: ModelRequest,
+            handler: Callable[[ModelRequest], ModelResponse],
+        ) -> ModelResponse:
             """
-            Pre-model hook che pulisce i messaggi prima di ogni chiamata LLM.
-            Questo viene chiamato automaticamente da LangGraph prima del nodo "agent".
-
-            Deve ritornare un dict con:
-            - "messages": per AGGIORNARE i messaggi nello stato
-            - "llm_input_messages": per usare messaggi diversi come input all'LLM
+            Middleware che pulisce i messaggi prima di ogni chiamata LLM.
             """
-            current_messages = state.get("messages", [])
+            current_messages = request.messages
 
-            logger.debug(f"[PRE_MODEL_HOOK] ========== CALLED ==========")
-            logger.debug(f"[PRE_MODEL_HOOK] Processing {len(current_messages)} messages")
+            logger.debug(f"[MIDDLEWARE] ========== CALLED ==========")
+            logger.debug(f"[MIDDLEWARE] Processing {len(current_messages)} messages")
 
             # DEBUG: Analizza messaggi PRIMA della pulizia
             total_size_before = 0
@@ -1517,11 +1712,11 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
                         total_size_before += len(content)
                         if len(content) > 10000:
                             has_base64 = 'base64' in content or 'data:image' in content
-                            logger.debug(f"[PRE_MODEL_HOOK] ⚠️ Message {idx} ({msg.type}): LARGE STRING content, length={len(content)}, has_base64={has_base64}")
+                            logger.debug(f"[MIDDLEWARE] ⚠️ Message {idx} ({msg.type}): LARGE STRING content, length={len(content)}, has_base64={has_base64}")
                             if has_base64:
                                 # Mostra un piccolo sample
                                 sample_start = content[:100]
-                                logger.debug(f"[PRE_MODEL_HOOK] Sample start: {sample_start}...")
+                                logger.debug(f"[MIDDLEWARE] Sample start: {sample_start}...")
                     elif isinstance(content, list):
                         for item in content:
                             if isinstance(item, dict):
@@ -1529,9 +1724,9 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
                                     url = item.get('image_url', {}).get('url', '')
                                     total_size_before += len(url)
                                     if len(url) > 10000:
-                                        logger.debug(f"[PRE_MODEL_HOOK] ⚠️ Message {idx} has LARGE image_url: {len(url)} chars")
+                                        logger.debug(f"[MIDDLEWARE] ⚠️ Message {idx} has LARGE image_url: {len(url)} chars")
 
-            logger.debug(f"[PRE_MODEL_HOOK] Total content size BEFORE: {total_size_before} chars (~{total_size_before//4} tokens)")
+            logger.debug(f"[MIDDLEWARE] Total content size BEFORE: {total_size_before} chars (~{total_size_before//4} tokens)")
 
             # Pulisci i messaggi
             cleaned_state = process_messages_state_modifier({"messages": current_messages})
@@ -1545,19 +1740,19 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
                     if isinstance(content, str):
                         total_size_after += len(content)
                         if len(content) > 10000:
-                            logger.debug(f"[PRE_MODEL_HOOK] ❌ STILL LARGE AFTER! Message {idx}, length={len(content)}")
+                            logger.debug(f"[MIDDLEWARE] ❌ STILL LARGE AFTER! Message {idx}, length={len(content)}")
 
-            logger.debug(f"[PRE_MODEL_HOOK] Total content size AFTER: {total_size_after} chars (~{total_size_after//4} tokens)")
-            logger.debug(f"[PRE_MODEL_HOOK] Reduction: {total_size_before - total_size_after} chars")
+            logger.debug(f"[MIDDLEWARE] Total content size AFTER: {total_size_after} chars (~{total_size_after//4} tokens)")
+            logger.debug(f"[MIDDLEWARE] Reduction: {total_size_before - total_size_after} chars")
 
             # Conta quanti base64 sono stati estratti in questo step
             extracted_count = len(base64_storage)
-            logger.debug(f"[PRE_MODEL_HOOK] Total refs in storage: {extracted_count}")
+            logger.debug(f"[MIDDLEWARE] Total refs in storage: {extracted_count}")
 
             # DEBUG FINALE: Verifica tool_calls negli AIMessage puliti
             for idx, cleaned_msg in enumerate(cleaned_messages):
                 if hasattr(cleaned_msg, 'tool_calls') and cleaned_msg.tool_calls:
-                    logger.debug(f"[PRE_MODEL_HOOK] Message {idx} (AIMessage) has {len(cleaned_msg.tool_calls)} tool_calls")
+                    logger.debug(f"[MIDDLEWARE] Message {idx} (AIMessage) has {len(cleaned_msg.tool_calls)} tool_calls")
                     for tc_idx, tc in enumerate(cleaned_msg.tool_calls):
                         args = tc.get('args', {})
                         if 'images_base64' in args:
@@ -1565,12 +1760,9 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
                             if isinstance(imgs, list) and len(imgs) > 0:
                                 first_img = imgs[0] if len(imgs) > 0 else ''
                                 is_ref = first_img.startswith('<base64_ref_')
-                                logger.debug(f"[PRE_MODEL_HOOK] ⭐ tool_call {tc_idx} has images_base64: {len(imgs)} items, first={'REFERENCE' if is_ref else 'RAW BASE64'}, sample={first_img[:50]}")
+                                logger.debug(f"[MIDDLEWARE] ⭐ tool_call {tc_idx} has images_base64: {len(imgs)} items, first={'REFERENCE' if is_ref else 'RAW BASE64'}, sample={first_img[:50]}")
 
-            # Ritorna i messaggi puliti che saranno usati come input all'LLM
-            return {
-                "llm_input_messages": cleaned_messages,
-            }
+            return await handler(request.override(messages=cleaned_messages))
 
         # Pulisci i messaggi iniziali
         cleaned_input = process_messages_state_modifier({"messages": processed_messages})
@@ -1578,13 +1770,12 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
 
         logger.info(f"Starting agent with {len(agent_input['messages'])} initial cleaned messages")
 
-        # Crea agent con pre_model_hook (disponibile in LangGraph v2)
-        base_agent = create_react_agent(
+        # Crea agent con middleware (LangChain 1.1)
+        base_agent = create_agent(
             model=chat_model,
             tools=all_tools,
-            prompt=system_instructions,
-            pre_model_hook=pre_model_cleaning_hook,  # ← CHIAVE! Pulisce ad ogni step
-            version="v2"  # Usa la versione v2 che supporta pre_model_hook
+            system_prompt=system_instructions,
+            middleware=[pre_model_cleaning_middleware]  # ← CHIAVE! Pulisce ad ogni step
         )
 
         # Invoca l'agent
@@ -1633,7 +1824,7 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
         )
 
     except Exception as e:
-        return handle_exception(e, "Exception in MCP dialog")
+        return handle_agent_exception(e, "ask_mcp_agent_llm_simple")
 
 @inject_repo_async
 @inject_llm_chat_async
