@@ -7,6 +7,14 @@
 
 ---
 
+## [2025-12-09]
+### 0.7.1-rc1
+- Added: New parameters for the /api/ask endpoint:
+  - structured_output: Boolean flag indicating if the response should be a structured JSON output.
+  - output_schema: The JSON schema the LLM must conform to in its response.
+---
+
+
 ## [2025-12-07]
 ### 0.7.0-rc1
 - Upgrade: Updated LangChain dependency to version 1.1.0.

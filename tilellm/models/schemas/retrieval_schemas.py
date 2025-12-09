@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional, Union, Dict, TYPE_CHECKING
+from typing import List, Optional, Union, Dict, TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from tilellm.models.chat import ChatEntry
@@ -48,7 +48,7 @@ class QuotedAnswerForStream(PartialQuotedAnswer):
     complete: bool = True
 
 class RetrievalResult(BaseModel):
-    answer: str = Field(default="No answer")
+    answer: Union[str, Dict[str, Any], list] = Field(default="No answer")
     success: bool = Field(default=False)
     namespace: str
     id: str | None = None

@@ -5,6 +5,8 @@ from datetime import datetime
 from typing import List, Any, Optional
 
 import re
+
+from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.messages import ToolMessage
 
 import fastapi
@@ -254,25 +256,55 @@ async def ask_reason_llm(question, chat_model=None):
             )
 
         # --- RISPOSTA SINCRONA ---
-        result = await runnable_with_history.ainvoke(input_data, config=config)
+        if question.structured_output and question.output_schema:
+            structured_llm = chat_model.with_structured_output(question.output_schema)
+            runnable = qa_prompt | structured_llm
+            runnable_with_history = RunnableWithMessageHistory(
+                runnable,
+                get_session_history,
+                input_messages_key="input",
+                history_messages_key="chat_history"
+            )
+            result = await runnable_with_history.ainvoke(input_data, config=config)
 
-        # Estrai content e reasoning content
-        _, content, reasoning_content = get_reasoning_content(result, question.llm)
+            if hasattr(result, 'model_dump'):
+                answer_content = result.model_dump()
+            else:
+                answer_content = result
 
-        # Aggiorna history usando il metodo centralizzato
-        updated_history = _update_history(
-            question.chat_history_dict,
-            question.question,
-            content
-        )
+            updated_history = _update_history(
+                question.chat_history_dict,
+                question.question,
+                json.dumps(answer_content)
+            )
 
-        return JSONResponse(
-            content=ReasoningAnswer(
-                answer=content,
-                reasoning_content=reasoning_content,
-                chat_history_dict=updated_history
-            ).model_dump()
-        )
+            return JSONResponse(
+                content=ReasoningAnswer(
+                    answer=answer_content,
+                    reasoning_content="Structured output does not have reasoning content.",
+                    chat_history_dict=updated_history
+                ).model_dump()
+            )
+        else:
+            result = await runnable_with_history.ainvoke(input_data, config=config)
+
+            # Estrai content e reasoning content
+            _, content, reasoning_content = get_reasoning_content(result, question.llm)
+
+            # Aggiorna history usando il metodo centralizzato
+            updated_history = _update_history(
+                question.chat_history_dict,
+                question.question,
+                content
+            )
+
+            return JSONResponse(
+                content=ReasoningAnswer(
+                    answer=content,
+                    reasoning_content=reasoning_content,
+                    chat_history_dict=updated_history
+                ).model_dump()
+            )
 
     except Exception as e:
         import traceback
@@ -339,23 +371,47 @@ Previous conversation history:
             )
 
         # --- 5. RISPOSTA SINCRONA ---
-        result_message = await chat_model.ainvoke(messages)
+        if question.structured_output and question.output_schema:
+            structured_llm = chat_model.with_structured_output(question.output_schema)
+            result_message = await structured_llm.ainvoke(messages)
+            
+            # The result is a Pydantic model, convert it to a dict
+            if hasattr(result_message, 'model_dump'):
+                answer_content = result_message.model_dump()
+            else:
+                answer_content = result_message
 
-        # Aggiorna history
-        updated_history = _update_history(
-            question.chat_history_dict,
-            question.question,
-            result_message.content
-        )
+            updated_history = _update_history(
+                question.chat_history_dict,
+                question.question,
+                json.dumps(answer_content)  # Store the structured answer as a JSON string
+            )
+            # Token info might not be available in the same way, handle gracefully
+            prompt_token_info = _extract_token_info(result_message)
 
-        # Estrai token info
-        prompt_token_info = _extract_token_info(result_message)
+            return JSONResponse(content=SimpleAnswer(
+                answer=answer_content,
+                chat_history_dict=updated_history,
+                prompt_token_info=prompt_token_info
+            ).model_dump())
+        else:
+            result_message = await chat_model.ainvoke(messages)
 
-        return JSONResponse(content=SimpleAnswer(
-            answer=result_message.content,
-            chat_history_dict=updated_history,
-            prompt_token_info=prompt_token_info
-        ).model_dump())
+            # Aggiorna history
+            updated_history = _update_history(
+                question.chat_history_dict,
+                question.question,
+                result_message.content
+            )
+
+            # Estrai token info
+            prompt_token_info = _extract_token_info(result_message)
+
+            return JSONResponse(content=SimpleAnswer(
+                answer=result_message.content,
+                chat_history_dict=updated_history,
+                prompt_token_info=prompt_token_info
+            ).model_dump())
 
     except Exception as e:
         import traceback

@@ -195,6 +195,8 @@ class QuestionToLLM(BaseModel):
     system_context: str = Field(default="You are a helpful AI bot. Always reply in the same language of the question.")
     chat_history_dict: Optional[Dict[str, "ChatEntry"]] = None
     n_messages: int = Field(default_factory=lambda: None)
+    structured_output: Optional[bool] = Field(default=False)
+    output_schema: Optional[Any] = Field(default=None)
     servers: Optional[Dict[str, ServerConfig]] = Field(default_factory=dict)
     tools: Optional[List[str]] = Field(default=None, description="Lista di nomi di tool interni da tool_registry")
 
