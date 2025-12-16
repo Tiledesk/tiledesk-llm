@@ -7,6 +7,14 @@
 
 ---
 
+## [2025-12-13]
+### 0.70.1-rc2
+- Fixed: Session leak issues in web scraping functions by adding proper try-finally blocks for browser cleanup.
+- Fixed: Improved CAPTCHA error handling to propagate clear error messages to users instead of returning empty results.
+- Fixed: Added proper resource cleanup for UnstructuredURLLoader sessions.
+- Added: Documentation for reasoning models management via `/api/thinking` endpoint, including support for GPT-5, Claude 4/4.5, Gemini 2.5/3.0, and DeepSeek reasoner models.
+---
+
 ## [2025-12-09]
 ### 0.7.1-rc1
 - Added: New parameters for the /api/ask endpoint:

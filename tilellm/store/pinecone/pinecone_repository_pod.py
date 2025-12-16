@@ -10,7 +10,7 @@ from tilellm.models import (MetadataItem,
                             QuestionAnswer
                             )
 
-from tilellm.shared.embedding_factory import inject_embedding
+from tilellm.shared.embedding_factory import inject_embedding, inject_embedding_async
 from tilellm.shared.embeddings.embedding_client_manager import inject_embedding_qa_async_optimized
 from tilellm.tools.document_tools import (get_content_by_url,
                                           get_content_by_url_with_bs,
@@ -52,6 +52,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
         content = item.content
         gpt_key = item.gptkey.get_secret_value()
         embedding = item.embedding
+        embedding_name = embedding if isinstance(embedding, str) else embedding.name
         namespace = item.namespace
         semantic_chunk = item.semantic_chunk
         breakpoint_threshold_type = item.breakpoint_threshold_type
@@ -60,6 +61,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
         chunk_overlap = item.chunk_overlap
         parameters_scrape_type_4 = item.parameters_scrape_type_4
         engine = item.engine
+
         try:
             await self.delete_ids_namespace(engine=engine, metadata_id=metadata_id, namespace=namespace)
         except Exception as ex:
@@ -92,19 +94,19 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 else:  # type_source == 'pdf' or 'docx' or 'txt':
                     documents = load_document(source, type_source)
 
-                for document in documents:
-                    document.metadata["id"] = metadata_id
-                    document.metadata["source"] = source
-                    document.metadata["type"] = type_source
-                    document.metadata["embedding"] = embedding
+                for single_document in documents:
+                    single_document.metadata["id"] = metadata_id
+                    single_document.metadata["source"] = source
+                    single_document.metadata["type"] = type_source
+                    single_document.metadata["embedding"] = embedding_name
 
-                    for key, value in document.metadata.items():
+                    for key, value in single_document.metadata.items():
                         if isinstance(value, list) and all(item is None for item in value):
-                            document.metadata[key] = [""]
+                            single_document.metadata[key] = [""]
                         elif value is None:
-                            document.metadata[key] = ""
+                            single_document.metadata[key] = ""
 
-                    chunks.extend(self.chunk_data_extended(data=[document],
+                    chunks.extend(self.chunk_data_extended(data=[single_document],
                                                            chunk_size=chunk_size,
                                                            chunk_overlap=chunk_overlap,
                                                            semantic=semantic_chunk,
@@ -117,11 +119,17 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 # from pprint import pprint
                 # pprint(documents)
                 logger.debug(documents)
+                if len(chunks) == 0:
+                    return IndexingResult(id=metadata_id,
+                                          chunks=0,
+                                          total_tokens=0,
+                                          cost="0.000000",
+                                          error="No chunks generated from source")
                 a = await vector_store.aadd_documents(chunks,
                                                       namespace=namespace
                                                       )
 
-                total_tokens, cost = self.calc_embedding_cost(chunks, embedding)
+                total_tokens, cost = self.calc_embedding_cost(chunks, embedding_name)
                 # from pprint import pprint
                 # pprint(chunks)
                 logger.info(f"chunks: {len(chunks)}, total_tokens: {total_tokens}, cost: {cost: .6f}")
@@ -131,17 +139,23 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 doc_array = get_content_by_url_with_bs(source)
                 chunks = list()
                 for doc in doc_array:
-                    metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding)
+                    metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding_name)
                     document = Document(page_content=doc, metadata=metadata.model_dump(exclude_none=True))
                     chunks.append(document)
-
-                total_tokens, cost = self.calc_embedding_cost(chunks, embedding)
+ 
+                if len(chunks) == 0:
+                    return IndexingResult(id=metadata_id,
+                                          chunks=0,
+                                          total_tokens=0,
+                                          cost="0.000000",
+                                          error="No chunks generated from source")
+                total_tokens, cost = self.calc_embedding_cost(chunks, embedding_name)
                 a = await vector_store.aadd_documents(chunks,
-                                                      namespace=namespace
-                                                      )
+                                                       namespace=namespace
+                                                       )
 
             else:
-                metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding)
+                metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding_name)
                 document = Document(page_content=content, metadata=metadata.model_dump(exclude_none=True))
 
                 chunks.extend(self.chunk_data_extended(data=[document],
@@ -150,12 +164,20 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                                                        semantic=semantic_chunk,
                                                        embeddings=oai_embeddings,
                                                        breakpoint_threshold_type=breakpoint_threshold_type
-                                                       )
-                              )
-                total_tokens, cost = self.calc_embedding_cost(chunks, embedding)
+                                                        )
+                               )
+                if len(chunks) == 0:
+                    return IndexingResult(id=metadata_id,
+                                          chunks=0,
+                                          total_tokens=0,
+                                          cost="0.000000",
+                                          error="No chunks generated from source")
+                total_tokens, cost = self.calc_embedding_cost(chunks, embedding_name)
+
                 a = await vector_store.aadd_documents(chunks,
-                                                      namespace=namespace
-                                                      )
+                                                       namespace=namespace
+                                                       )
+
 
             #async with vector_store.async_index as index:
             #    await index.close()
@@ -165,7 +187,8 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
             logger.error(repr(ex))
             pinecone_result = IndexingResult(id=metadata_id, chunks=len(chunks), total_tokens=total_tokens,
                                              status=400,
-                                             cost=f"{cost:.6f}")
+                                             cost=f"{cost:.6f}",
+                                             error=repr(ex))
         return pinecone_result
 
     @inject_embedding()

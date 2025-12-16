@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, SecretStr, model_validator, field_validator, validator
-from typing import Optional, Union
+from typing import Optional, Union, Dict, Any
 from huggingface_hub import snapshot_download # Potrebbe andare in utils/huggingface_utils.py
 
 #from pydantic.v1 import validator
@@ -38,6 +38,7 @@ class LlmEmbeddingModel(BaseModel):
     api_key: Optional[SecretStr] | None = None
     url: Optional[str] = Field(default_factory=lambda: "")
     dimension: Optional[int] = 1024 #qwel2-deepseek 3584, llama3.2 3072
+    custom_headers: Optional[Dict[str, Any]] = None
 
     @model_validator(mode='after')
     def validate_model(self):
@@ -59,3 +60,4 @@ class EmbeddingModel(BaseModel):
     embedding_model: str
     embedding_host: Optional[str] = Field(default=None)
     embedding_dimension: Optional[int] = None
+    embedding_custom_headers: Optional[Dict[str, Any]] = None

@@ -214,19 +214,116 @@ Direct LLM query with optional MCP servers and tools support.
 ---
 
 ### POST `/api/thinking`
-LLM query with advanced reasoning for complex problems.
+LLM query with advanced reasoning for complex problems. Supports GPT-5, Claude 4/4.5, Gemini 2.5/3.0, and DeepSeek.
 
-**Request Body**: Same as `/api/ask` with optional `thinking` parameter:
+**Request Body**: Same as `/api/ask` with `thinking` configuration object (`ReasoningConfig`):
+
+**Common Parameters**:
+- `show_thinking_stream` (boolean, default: `true`): Show thinking content in stream. If `false`, thinking is included only in final response.
+
+**Provider-Specific Parameters**:
+
+**OpenAI GPT-5**:
 ```json
 {
+  "question": "Your question",
+  "llm": "openai",
+  "model": "gpt-5-nano",
+  "llm_key": "sk-...",
+  "stream": true,
   "thinking": {
+    "show_thinking_stream": true,
+    "reasoning_effort": "high",
+    "reasoning_summary": "auto"
+  }
+}
+```
+- `reasoning_effort`: `"low"` | `"medium"` | `"high"`
+- `reasoning_summary`: `"auto"` | `"always"` | `"never"`
+
+**Anthropic Claude 4/4.5**:
+```json
+{
+  "question": "Your question",
+  "llm": "anthropic",
+  "model": "claude-sonnet-4.5-20250514",
+  "llm_key": "sk-ant-...",
+  "stream": true,
+  "thinking": {
+    "show_thinking_stream": true,
     "type": "enabled",
     "budget_tokens": 10000
   }
 }
 ```
+- `type`: `"enabled"` | `"disabled"`
+- `budget_tokens`: 0-100000
 
-**Response**: Same as `/api/ask`
+**Google Gemini 2.5 Pro**:
+```json
+{
+  "question": "Your question",
+  "llm": "google",
+  "model": "gemini-2.5-pro",
+  "llm_key": "...",
+  "stream": true,
+  "thinking": {
+    "show_thinking_stream": true,
+    "thinkingBudget": -1
+  }
+}
+```
+- `thinkingBudget`: `-1` (dynamic), `0` (disabled), or positive number ≤ 32000
+
+**Google Gemini 3.0 Pro**:
+```json
+{
+  "question": "Your question",
+  "llm": "google",
+  "model": "gemini-3.0-pro",
+  "llm_key": "...",
+  "stream": true,
+  "thinking": {
+    "show_thinking_stream": true,
+    "thinkingLevel": "high"
+  }
+}
+```
+- `thinkingLevel`: `"low"` | `"medium"` | `"high"`
+
+**DeepSeek Reasoner**:
+```json
+{
+  "question": "Your question",
+  "llm": "deepseek",
+  "model": "deepseek-reasoner",
+  "llm_key": "...",
+  "stream": true,
+  "thinking": {
+    "show_thinking_stream": true
+  }
+}
+```
+No specific parameters needed - reasoning is automatic.
+
+**Response** (`ReasoningAnswer`):
+```json
+{
+  "answer": "The final answer",
+  "reasoning_content": "Complete reasoning process",
+  "chat_history_dict": {...},
+  "prompt_token_info": {
+    "input_tokens": 100,
+    "output_tokens": 500,
+    "total_tokens": 600
+  }
+}
+```
+
+**Streaming Response** (SSE):
+- `event: metadata` - Start/end metadata
+- `event: chunk` - Content chunks with `reasoning_content` or `content`
+- `event: done` - Final complete response
 
 ---
 ## Namespace Management APIs

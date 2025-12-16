@@ -1,3 +1,6 @@
+import asyncio
+import json
+
 import torch
 from functools import wraps
 import hashlib
@@ -27,6 +30,8 @@ from tilellm.shared.tiledesk_chatmodel_info import TiledeskAICallbackHandler
 from tilellm.shared.timed_cache import TimedCache
 from tilellm.shared.llm_config import get_llm_params
 
+from tilellm.models.llm import LlmEmbeddingModel # Need this import
+
 logger = logging.getLogger(__name__)
 
 def _hash_api_key(api_key: str) -> str:
@@ -34,7 +39,54 @@ def _hash_api_key(api_key: str) -> str:
     Crea un hash SHA256 della chiave API per utilizzarlo nella cache
     senza esporre la chiave completa nei log.
     """
-    return hashlib.sha256(api_key.encode('utf-8')).hexdigest()[:16]
+    return hashlib.sha256(api_key.encode('utf-8')).hexdigest()#[:16]
+
+async def _get_llm_config_for_client(question, llm_params: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Helper function to consolidate LLM client configuration based on the question object.
+    Returns a dictionary of parameters suitable for various LangChain Chat models.
+    """
+    api_key_param = None
+    custom_headers_to_use = None
+    model_name_param = None
+    base_url_param = None
+    
+    # Determine API key, model name, base URL, and custom headers
+    if isinstance(question.model, LlmEmbeddingModel):
+        api_key_param = question.model.api_key
+        custom_headers_to_use = question.model.custom_headers
+        model_name_param = question.model.name
+        base_url_param = question.model.url
+    else:
+        # Fallback for when question.model is a string or other object
+        # The key can be llm_key or gptkey depending on the decorator
+        if hasattr(question, 'llm_key'):
+            api_key_param = question.llm_key
+        elif hasattr(question, 'gptkey'):
+            api_key_param = question.gptkey
+            
+        model_name_param = question.model if isinstance(question.model, str) else (question.model.name if hasattr(question.model, 'name') else None)
+        base_url_param = question.model.url if hasattr(question.model, 'url') else None
+
+    # Default vLLM base_url if not specified
+    if question.llm == "vllm" and not base_url_param:
+        base_url_param = "http://localhost:8001"
+
+    # Consolidate all parameters for the client
+    client_config = {
+        "api_key": api_key_param,
+        "model": model_name_param,
+        "base_url": base_url_param,
+        "default_headers": custom_headers_to_use,
+        **llm_params # Include generic LLM parameters
+    }
+    
+    # Filter out None values for default_headers if it's None to avoid passing default_headers=None explicitly
+    # Some LangChain clients might not like default_headers=None if they expect Dict[str, str]
+    if client_config.get("default_headers") is None:
+        del client_config["default_headers"]
+    
+    return client_config
 
 class LLMInjectionError(Exception):
     """Eccezione personalizzata per errori di injection LLM"""
@@ -171,16 +223,21 @@ def inject_repo_async(func: Callable) -> Callable:
         repo_type = question.engine.type if engine_name == 'pinecone' else None
 
         # Costruisci chiave cache
-        cache_key_parts = [engine_name]
-        if repo_type:
-            cache_key_parts.append(repo_type)
+        #cache_key_parts = [engine_name]
+        #if repo_type:
+        #    cache_key_parts.append(repo_type)
 
-        if hasattr(question.engine, 'host') and question.engine.host:
-            cache_key_parts.append(question.engine.host)
-        elif hasattr(question.engine, 'endpoint') and question.engine.endpoint:
-            cache_key_parts.append(question.engine.endpoint)
+        #if hasattr(question.engine, 'host') and question.engine.host:
+        #    cache_key_parts.append(question.engine.host)
+        #elif hasattr(question.engine, 'endpoint') and question.engine.endpoint:
+        #    cache_key_parts.append(question.engine.endpoint)
 
-        cache_key = tuple(cache_key_parts)
+        #_hash_api_key(str(question.engine.get("api_key").get_secret_value())) if temp_client_base_config.get(
+        #    "api_key") else "no_key"
+        cache_key_tuple = await _build_repository_cache_key(question)
+
+        key_string = "|".join([str(item) for item in cache_key_tuple])
+        cache_key = _hash_api_key(key_string)
 
         async def _async_creator() -> Any:
             """Factory function async per creare nuove istanze del repository"""
@@ -248,75 +305,98 @@ def inject_llm(func):
     async def wrapper(question, *args, **kwargs):
         try:
             logger.debug(question)
-            # 1. Crea una chiave di cache univoca per il modello LLM
-            cache_key = (
-                question.llm,
-                question.model,
-                _hash_api_key(str(question.llm_key.get_secret_value()))  # Hash della chiave per sicurezza
+            
+            # The cache key now needs to include custom_headers if present to ensure uniqueness
+            # The _get_llm_config_for_client will return the actual headers to use
+            # But for the cache key, we need to hash the headers or at least their presence
+            
+            # Temporarily call helper to get config for cache key, discard direct config values
+            # The _creator will re-evaluate for the actual instance.
+            llm_params_for_cache_key = get_llm_params(
+                provider=question.llm,
+                temperature=question.temperature,
+                top_p=question.top_p,
+                max_tokens=question.max_tokens
             )
+            temp_client_base_config = asyncio.run(_get_llm_config_for_client(question, llm_params_for_cache_key)) # Use asyncio.run for sync context
+            
+            cache_key_parts = [
+                question.llm,
+                temp_client_base_config.get("model") if temp_client_base_config.get("model") else (question.model if isinstance(question.model, str) else question.model.name if hasattr(question.model, 'name') else None),
+                _hash_api_key(str(temp_client_base_config.get("api_key").get_secret_value())) if temp_client_base_config.get("api_key") else "no_key"
+            ]
+            if temp_client_base_config.get("base_url"):
+                cache_key_parts.append(temp_client_base_config.get("base_url"))
+            if temp_client_base_config.get("default_headers"):
+                # Hash of headers to ensure cache key uniqueness
+                headers_hash = hashlib.sha256(json.dumps(temp_client_base_config["default_headers"], sort_keys=True).encode('utf-8')).hexdigest()
+                cache_key_parts.append(headers_hash)
+            
+            cache_key = tuple(cache_key_parts)
+
             def _creator():
-                # Ottieni parametri filtrati per il provider specifico
-                llm_params = get_llm_params(
+                logger.info(f"Creazione nuovo oggetto Chat in cache con chiave: {cache_key}")
+                
+                # Re-evaluate llm_params and client config within _creator
+                inner_llm_params = get_llm_params(
                     provider=question.llm,
                     temperature=question.temperature,
                     top_p=question.top_p,
                     max_tokens=question.max_tokens
                 )
+                inner_client_base_config = asyncio.run(_get_llm_config_for_client(question, inner_llm_params)) # Call async helper in sync context
 
-                if question.llm == "openai":
-                    # OLD: return ChatOpenAI(api_key=question.llm_key, model=question.model,
-                    #                        temperature=question.temperature, max_tokens=question.max_tokens, top_p=question.top_p)
-                    return ChatOpenAI(api_key=question.llm_key, model=question.model, **llm_params)
+                inner_client_config = {**inner_llm_params}
+                if inner_client_base_config.get("api_key"):
+                    inner_client_config["api_key"] = inner_client_base_config["api_key"]
+                if inner_client_base_config.get("model"):
+                    inner_client_config["model"] = inner_client_base_config["model"]
+                if inner_client_base_config.get("base_url"):
+                    inner_client_config["base_url"] = inner_client_base_config["base_url"]
+                if inner_client_base_config.get("default_headers"):
+                    inner_client_config["default_headers"] = inner_client_base_config["default_headers"]
+
+                if question.llm == "openai" or question.llm == "vllm":
+                    from langchain_openai import ChatOpenAI
+                    return ChatOpenAI(**inner_client_config)
 
                 elif question.llm == "anthropic":
-                    # OLD: return ChatAnthropic(anthropic_api_key=question.llm_key, model=question.model,
-                    #                           temperature=question.temperature, max_tokens=question.max_tokens, top_p=question.top_p)
-                    return ChatAnthropic(anthropic_api_key=question.llm_key, model=question.model, **llm_params)
+                    from langchain_anthropic import ChatAnthropic
+                    inner_client_config["anthropic_api_key"] = inner_client_config.pop("api_key", None)
+                    return ChatAnthropic(**inner_client_config)
 
                 elif question.llm == "cohere":
-                    # OLD: return ChatCohere(cohere_api_key=question.llm_key, model=question.model,
-                    #                        temperature=question.temperature, max_tokens=question.max_tokens)
-                    # p è compreso tra 0.00 e 0.99
-                    return ChatCohere(cohere_api_key=question.llm_key, model=question.model, **llm_params)
+                    from langchain_cohere import ChatCohere
+                    inner_client_config["cohere_api_key"] = inner_client_config.pop("api_key", None)
+                    return ChatCohere(**inner_client_config)
 
                 elif question.llm == "google":
-                    # OLD: return ChatGoogleGenerativeAI(google_api_key=question.llm_key, model=question.model,
-                    #                                     temperature=question.temperature, max_tokens=question.max_tokens,
-                    #                                     top_p=question.top_p, convert_system_message_to_human=True)
-                    # ai_msg.usage_metadata per controllare i token
-                    # convert_system_message_to_human è deprecato, LangChain gestisce automaticamente i system message
-                    return ChatGoogleGenerativeAI(google_api_key=question.llm_key, model=question.model, **llm_params)
+                    from langchain_google_genai import ChatGoogleGenerativeAI
+                    inner_client_config["google_api_key"] = inner_client_config.pop("api_key", None)
+                    return ChatGoogleGenerativeAI(**inner_client_config)
 
                 elif question.llm == "ollama":
-                    # OLD: return ChatOllama(model=question.model.name, temperature=question.temperature,
-                    #                        num_predict=question.max_tokens, top_p=question.max_tokens, base_url=question.model.url)
-                    return ChatOllama(model=question.model.name, base_url=question.model.url, **llm_params)
-
-                elif question.llm == "vllm":
-                    # OLD: return ChatOpenAI(api_key=SecretStr(question.llm_key), model=question.model.name, base_url=question.model.url,
-                    #                        temperature=question.temperature, max_tokens=question.max_tokens, top_p=question.top_p)
-                    return ChatOpenAI(api_key=SecretStr(question.llm_key), model=question.model.name,
-                                     base_url=question.model.url, **llm_params)
+                    from langchain_community.chat_models import ChatOllama
+                    inner_client_config["num_predict"] = inner_client_config.pop("max_tokens", None)
+                    return ChatOllama(**inner_client_config)
 
                 elif question.llm == "groq":
-                    # OLD: return ChatGroq(api_key=question.llm_key, model=question.model,
-                    #                      temperature=question.temperature, max_tokens=question.max_tokens, top_p=question.top_p)
-                    return ChatGroq(api_key=question.llm_key, model=question.model, **llm_params)
+                    from langchain_groq import ChatGroq
+                    return ChatGroq(**inner_client_config)
 
                 elif question.llm == "deepseek":
-                    # OLD: return ChatDeepSeek(api_key=question.llm_key, model=question.model,
-                    #                          temperature=question.temperature, max_tokens=question.max_tokens, top_p=question.top_p)
-                    return ChatDeepSeek(api_key=question.llm_key, model=question.model, **llm_params)
+                    from langchain_deepseek import ChatDeepSeek
+                    return ChatDeepSeek(**inner_client_config)
 
                 elif question.llm == "mistralai":
-                    # OLD: return ChatMistralAI(api_key=question.llm_key, model_name=question.model,
-                    #                           temperature=question.temperature, max_tokens=question.max_tokens, top_p=question.top_p)
-                    return ChatMistralAI(api_key=question.llm_key, model_name=question.model, **llm_params)
+                    from langchain_mistralai import ChatMistralAI
+                    inner_client_config["model_name"] = inner_client_config.pop("model", None)
+                    return ChatMistralAI(**inner_client_config)
 
                 else:
-                    # OLD: return ChatOpenAI(api_key=question.llm_key, model=question.model,
-                    #                        temperature=question.temperature, max_tokens=question.max_tokens, top_p=question.top_p)
-                    return ChatOpenAI(api_key=question.llm_key, model=question.model, **llm_params)
+                    logger.warning(f"Unknown LLM provider '{question.llm}', falling back to OpenAI")
+                    from langchain_openai import ChatOpenAI
+                    return ChatOpenAI(**inner_client_config)
 
             chat_model = TimedCache.get(
                 object_type="chat",
@@ -414,55 +494,96 @@ def inject_llm_chat(func):
             # --- 1. Gestione Cache per il Modello LLM (Chat Model) ---
 
             # Chiave di cache univoca per il modello LLM. Include tutti i parametri che lo definiscono.
+            # Temporarily call helper to get config for cache key, discard direct config values
+            # The _llm_creator will re-evaluate for the actual instance.
+            llm_params_for_cache_key = get_llm_params(
+                provider=question.llm,
+                temperature=question.temperature,
+                top_p=question.top_p,
+                max_tokens=question.max_tokens
+            )
+            temp_client_base_config = asyncio.run(_get_llm_config_for_client(question, llm_params_for_cache_key)) # Use asyncio.run for sync context
+            
             llm_cache_key_parts = [
                 question.llm,
-                question.model if isinstance(question.model, str) else question.model.name,
-                _hash_api_key(str(question.gptkey.get_secret_value()))
+                temp_client_base_config.get("model") if temp_client_base_config.get("model") else (question.model if isinstance(question.model, str) else (question.model.name if hasattr(question.model, 'name') else None)),
+                _hash_api_key(str(temp_client_base_config.get("api_key").get_secret_value())) if temp_client_base_config.get("api_key") else "no_key"
             ]
-            if question.llm in ["vllm", "ollama"]:
-                llm_cache_key_parts.append(question.model.url)
-
+            if temp_client_base_config.get("base_url"):
+                llm_cache_key_parts.append(temp_client_base_config.get("base_url"))
+            if temp_client_base_config.get("default_headers"):
+                # Hash of headers to ensure cache key uniqueness
+                headers_hash = hashlib.sha256(json.dumps(temp_client_base_config["default_headers"], sort_keys=True).encode('utf-8')).hexdigest()
+                llm_cache_key_parts.append(headers_hash)
+            
             llm_cache_key = tuple(llm_cache_key_parts)
+
 
             # Costruttore per il modello LLM (eseguito solo se l'oggetto non è in cache)
             def _llm_creator():
                 logger.info(f"Creazione nuovo oggetto Chat in cache con chiave: {llm_cache_key}")
-                if question.llm == "openai":
-                    return ChatOpenAI(api_key=question.gptkey, model=question.model, temperature=question.temperature,
-                                      max_tokens=question.max_tokens, top_p=question.top_p)
-                elif question.llm == "anthropic":
-                    return ChatAnthropic(anthropic_api_key=question.gptkey, model=question.model,
-                                         temperature=question.temperature, max_tokens=question.max_tokens,
-                                         top_p=question.top_p)
-                elif question.llm == "cohere":
-                    return ChatCohere(cohere_api_key=question.gptkey, model=question.model,
-                                      temperature=question.temperature, max_tokens=question.max_tokens)
-                elif question.llm == "google":
-                    # convert_system_message_to_human è deprecato, LangChain gestisce automaticamente i system message
-                    return ChatGoogleGenerativeAI(google_api_key=question.gptkey, model=question.model,
-                                                  temperature=question.temperature, max_tokens=question.max_tokens,
-                                                  top_p=question.top_p)
-                elif question.llm == "mistralai":
-                    return ChatMistralAI(api_key=question.gptkey,model_name=question.model,
-                                         temperature=question.temperature,max_tokens=question.max_tokens,
-                                         top_p=question.top_p)
+                
+                # Ottieni parametri filtrati per il provider specifico
+                inner_llm_params = get_llm_params(
+                    provider=question.llm,
+                    temperature=question.temperature,
+                    top_p=question.top_p,
+                    max_tokens=question.max_tokens
+                )
+                inner_client_base_config = asyncio.run(_get_llm_config_for_client(question, inner_llm_params))
 
-                elif question.llm == "vllm":
-                    return ChatOpenAI(api_key=SecretStr(question.gptkey), model=question.model.name,
-                                      base_url=question.model.url, temperature=question.temperature,
-                                      max_tokens=question.max_tokens, top_p=question.top_p)
+                inner_client_config = {**inner_llm_params}
+                if inner_client_base_config.get("api_key"):
+                    inner_client_config["api_key"] = inner_client_base_config["api_key"]
+                if inner_client_base_config.get("model"):
+                    inner_client_config["model"] = inner_client_base_config["model"]
+                if inner_client_base_config.get("base_url"):
+                    inner_client_config["base_url"] = inner_client_base_config["base_url"]
+                if inner_client_base_config.get("default_headers"):
+                    inner_client_config["default_headers"] = inner_client_base_config["default_headers"]
+
+
+                if question.llm == "openai" or question.llm == "vllm":
+                    from langchain_openai import ChatOpenAI
+                    return ChatOpenAI(**inner_client_config)
+
+                elif question.llm == "anthropic":
+                    from langchain_anthropic import ChatAnthropic
+                    inner_client_config["anthropic_api_key"] = inner_client_config.pop("api_key", None)
+                    return ChatAnthropic(**inner_client_config)
+
+                elif question.llm == "cohere":
+                    from langchain_cohere import ChatCohere
+                    inner_client_config["cohere_api_key"] = inner_client_config.pop("api_key", None)
+                    return ChatCohere(**inner_client_config)
+
+                elif question.llm == "google":
+                    from langchain_google_genai import ChatGoogleGenerativeAI
+                    inner_client_config["google_api_key"] = inner_client_config.pop("api_key", None)
+                    return ChatGoogleGenerativeAI(**inner_client_config)
+
+                elif question.llm == "mistralai":
+                    from langchain_mistralai import ChatMistralAI
+                    inner_client_config["model_name"] = inner_client_config.pop("model", None)
+                    return ChatMistralAI(**inner_client_config)
+
                 elif question.llm == "groq":
-                    return ChatGroq(api_key=question.gptkey, model=question.model, temperature=question.temperature,
-                                    max_tokens=question.max_tokens, top_p=question.top_p)
+                    from langchain_groq import ChatGroq
+                    return ChatGroq(**inner_client_config)
+
                 elif question.llm == "deepseek":
-                    return ChatDeepSeek(api_key=question.gptkey, model=question.model, temperature=question.temperature,
-                                        max_tokens=question.max_tokens, top_p=question.top_p)
+                    from langchain_deepseek import ChatDeepSeek
+                    return ChatDeepSeek(**inner_client_config)
+
                 elif question.llm == "ollama":
-                    return ChatOllama(model=question.model.name, temperature=question.temperature,
-                                      num_predict=question.max_tokens, base_url=question.model.url)
+                    from langchain_community.chat_models import ChatOllama
+                    inner_client_config["num_predict"] = inner_client_config.pop("max_tokens", None)
+                    return ChatOllama(**inner_client_config)
+
                 else:  # Fallback a OpenAI
-                    return ChatOpenAI(api_key=question.gptkey, model=question.model, temperature=question.temperature,
-                                      max_tokens=question.max_tokens, top_p=question.top_p)
+                    from langchain_openai import ChatOpenAI
+                    logger.warning(f"Unknown LLM provider '{question.llm}', falling back to OpenAI")
+                    return ChatOpenAI(**inner_client_config)
 
             # Recupera o crea il modello LLM dalla cache
             llm = TimedCache.get(object_type="chat", key=llm_cache_key, constructor=_llm_creator)
@@ -593,7 +714,72 @@ def inject_llm_chat_async(func: Callable) -> Callable:
     return async_wrapper
 
 
+async def _build_repository_cache_key(question: Any) -> tuple:
+    """
+    Costruisce la chiave di cache basata sui parametri specifici dell'engine,
+    inclusa la versione hashata della chiave API.
+    """
+    # Assicurati che question.engine esista
+    if not hasattr(question, 'engine') or not question.engine:
+        # Restituisce una tupla chiara in caso di configurazione mancante
+        return ("engine_config_missing",)
 
+    engine_config = question.engine
+
+    # Semplificazione: gestisce sia oggetti con attributi che dizionari
+    def get_value(key: str, default: Any = None) -> Any:
+        if isinstance(engine_config, dict):
+            return engine_config.get(key, default)
+        return getattr(engine_config, key, default)
+
+    engine_name = get_value('name')
+
+    # --- 1. Estrarre e Hashare l'API Key ---
+
+    raw_api_key_object = get_value("api_key")
+
+    hashed_api_key: str
+
+    if raw_api_key_object:
+        try:
+            # Assumiamo Pydantic SecretStr: estrai il valore segreto
+            api_key_str = raw_api_key_object.get_secret_value()
+            hashed_api_key = _hash_api_key(api_key_str)
+        except AttributeError:
+            # Non è un SecretStr, trattalo come stringa o valore diretto
+            api_key_str = str(raw_api_key_object)
+            hashed_api_key = _hash_api_key(api_key_str)
+    else:
+        hashed_api_key = "no_key"
+
+    # --- 2. Costruire le Parti della Tupla ---
+
+    # Repo Type (solo per Pinecone)
+    repo_type = get_value('type') if engine_name == 'pinecone' else None
+
+    # Host/Endpoint (gestione fallback)
+    host = get_value('host') or get_value('endpoint')
+
+    # Index Name
+    index_name = get_value('index_name')
+
+    # --- 3. Composizione Finale della Tupla ---
+
+    # La tupla può contenere diversi tipi, ma qui usiamo str/None per semplicità
+    cache_key_parts = (
+        engine_name or "unknown_engine",
+        repo_type,  # 'pod' | 'serverless' | None
+        hashed_api_key,  # L'elemento cruciale per l'univocità delle credenziali
+        host,  # Host del servizio
+        index_name,  # Nome dell'indice
+        # Aggiungi qui altre parti se necessario (es. vector_size)
+    )
+
+    # Filtriamo gli elementi None per rendere la tupla più pulita e corta
+    # e castiamo a stringa per consistenza se usiamo un hash finale
+    final_key_tuple = tuple(str(p) for p in cache_key_parts if p is not None)
+
+    return final_key_tuple
 
 async def _build_llm_cache_key(question) -> tuple:
     """Costruisce la chiave di cache per il modello LLM"""
@@ -640,7 +826,6 @@ async def _build_embedding_cache_key(question) -> tuple:
 async def _create_llm_instance(question):
     """Crea una nuova istanza del modello LLM usando configurazione centralizzata"""
     try:
-        # Ottieni parametri filtrati per il provider specifico
         llm_params = get_llm_params(
             provider=question.llm,
             temperature=question.temperature,
@@ -648,143 +833,134 @@ async def _create_llm_instance(question):
             max_tokens=question.max_tokens
         )
 
-        if question.llm == "openai":
+        client_base_config = await _get_llm_config_for_client(question, llm_params)
+
+        client_config = {**llm_params}
+        if client_base_config.get("api_key"):
+            client_config["api_key"] = client_base_config["api_key"]
+        if client_base_config.get("model"):
+            client_config["model"] = client_base_config["model"]
+        if client_base_config.get("base_url"):
+            client_config["base_url"] = client_base_config["base_url"]
+        if client_base_config.get("default_headers"):
+            client_config["default_headers"] = client_base_config["default_headers"]
+
+
+        if question.llm == "openai" or question.llm == "vllm":
             from langchain_openai import ChatOpenAI
-            # OLD: return ChatOpenAI(api_key=question.gptkey, model=question.model,
-            #                        temperature=question.temperature, max_tokens=question.max_tokens, top_p=question.top_p)
-            return ChatOpenAI(api_key=question.gptkey, model=question.model, **llm_params)
+            return ChatOpenAI(**client_config)
 
         elif question.llm == "anthropic":
             from langchain_anthropic import ChatAnthropic
-            # OLD: return ChatAnthropic(anthropic_api_key=question.gptkey, model=question.model,
-            #                           temperature=question.temperature, max_tokens=question.max_tokens, top_p=question.top_p)
-            return ChatAnthropic(anthropic_api_key=question.gptkey, model=question.model, **llm_params)
+            client_config["anthropic_api_key"] = client_config.pop("api_key", None)
+            return ChatAnthropic(**client_config)
 
         elif question.llm == "cohere":
             from langchain_cohere import ChatCohere
-            # OLD: return ChatCohere(cohere_api_key=question.gptkey, model=question.model,
-            #                        temperature=question.temperature, max_tokens=question.max_tokens)
-            return ChatCohere(cohere_api_key=question.gptkey, model=question.model, **llm_params)
+            client_config["cohere_api_key"] = client_config.pop("api_key", None)
+            return ChatCohere(**client_config)
 
         elif question.llm == "google":
             from langchain_google_genai import ChatGoogleGenerativeAI
-            # OLD: return ChatGoogleGenerativeAI(google_api_key=question.gptkey, model=question.model,
-            #                                     temperature=question.temperature, max_tokens=question.max_tokens,
-            #                                     top_p=question.top_p, convert_system_message_to_human=True)
-            # convert_system_message_to_human è deprecato, LangChain gestisce automaticamente i system message
-            return ChatGoogleGenerativeAI(google_api_key=question.gptkey, model=question.model, **llm_params)
+            client_config["google_api_key"] = client_config.pop("api_key", None)
+            return ChatGoogleGenerativeAI(**client_config)
 
         elif question.llm == "mistralai":
             from langchain_mistralai import ChatMistralAI
-            # OLD: return ChatMistralAI(api_key=question.gptkey, model_name=question.model,
-            #                           temperature=question.temperature, max_tokens=question.max_tokens, top_p=question.top_p)
-            return ChatMistralAI(api_key=question.gptkey, model_name=question.model, **llm_params)
-
-        elif question.llm == "vllm":
-            from langchain_openai import ChatOpenAI
-            # OLD: return ChatOpenAI(api_key=SecretStr(question.gptkey), model=question.model.name, base_url=question.model.url,
-            #                        temperature=question.temperature, max_tokens=question.max_tokens, top_p=question.top_p)
-            return ChatOpenAI(api_key=SecretStr(question.gptkey), model=question.model.name,
-                             base_url=question.model.url, **llm_params)
+            client_config["model_name"] = client_config.pop("model", None)
+            return ChatMistralAI(**client_config)
 
         elif question.llm == "groq":
             from langchain_groq import ChatGroq
-            # OLD: return ChatGroq(api_key=question.gptkey, model=question.model,
-            #                      temperature=question.temperature, max_tokens=question.max_tokens, top_p=question.top_p)
-            return ChatGroq(api_key=question.gptkey, model=question.model, **llm_params)
+            return ChatGroq(**client_config)
 
         elif question.llm == "deepseek":
             from langchain_deepseek import ChatDeepSeek
-            # OLD: return ChatDeepSeek(api_key=question.gptkey, model=question.model,
-            #                          temperature=question.temperature, max_tokens=question.max_tokens, top_p=question.top_p)
-            return ChatDeepSeek(api_key=question.gptkey, model=question.model, **llm_params)
+            return ChatDeepSeek(**client_config)
 
         elif question.llm == "ollama":
             from langchain_community.chat_models import ChatOllama
-            # OLD: return ChatOllama(model=question.model.name, temperature=question.temperature,
-            #                        num_predict=question.max_tokens, base_url=question.model.url)
-            return ChatOllama(model=question.model.name, base_url=question.model.url, **llm_params)
+            client_config["num_predict"] = client_config.pop("max_tokens", None)
+            return ChatOllama(**client_config)
 
         else:  # Fallback a OpenAI
             from langchain_openai import ChatOpenAI
             logger.warning(f"Unknown LLM provider '{question.llm}', falling back to OpenAI")
-            # OLD: return ChatOpenAI(api_key=question.gptkey, model=question.model,
-            #                        temperature=question.temperature, max_tokens=question.max_tokens, top_p=question.top_p)
-            return ChatOpenAI(api_key=question.gptkey, model=question.model, **llm_params)
+            return ChatOpenAI(**client_config)
 
     except Exception as e:
-        logger.error(f"Errore nella creazione del modello LLM {question.llm}: {e}")
+        logger.error(f"Errore nella creazione del modello LLM {question.llm}: {e}", exc_info=True)
         raise
-
 
 async def _create_standard_llm_instance(question) -> Any:
     """Crea una nuova istanza del modello LLM standard usando configurazione centralizzata"""
     try:
-        # Ottieni parametri filtrati per il provider specifico
         llm_params = get_llm_params(
             provider=question.llm,
             temperature=question.temperature,
             top_p=question.top_p,
             max_tokens=question.max_tokens
         )
+        
+        # Use the centralized helper to get client configuration base
+        client_base_config = await _get_llm_config_for_client(question, llm_params)
+        
+        # Start with llm_params and add base config (model is handled per provider)
+        client_config = {**llm_params}
+        if client_base_config.get("api_key"):
+            client_config["api_key"] = client_base_config["api_key"]
+        if client_base_config.get("model"):
+            client_config["model"] = client_base_config["model"]
+        if client_base_config.get("base_url"):
+            client_config["base_url"] = client_base_config["base_url"]
+        if client_base_config.get("default_headers"):
+            client_config["default_headers"] = client_base_config["default_headers"]
 
-        if question.llm == "openai":
-            # OLD: return ChatOpenAI(api_key=question.llm_key, model=question.model,
-            #                        temperature=question.temperature, max_tokens=question.max_tokens, top_p=question.top_p)
-            return ChatOpenAI(api_key=question.llm_key, model=question.model, **llm_params)
+        # Now, adapt client_config for each specific provider
+        if question.llm == "openai" or question.llm == "vllm":
+            from langchain_openai import ChatOpenAI
+            return ChatOpenAI(**client_config)
 
         elif question.llm == "anthropic":
-            # OLD: return ChatAnthropic(anthropic_api_key=question.llm_key, model=question.model,
-            #                           temperature=question.temperature, max_tokens=question.max_tokens, top_p=question.top_p)
-            return ChatAnthropic(anthropic_api_key=question.llm_key, model=question.model, **llm_params)
+            from langchain_anthropic import ChatAnthropic
+            client_config["anthropic_api_key"] = client_config.pop("api_key", None)
+            return ChatAnthropic(**client_config)
 
         elif question.llm == "cohere":
-            # OLD: return ChatCohere(cohere_api_key=question.llm_key, model=question.model,
-            #                        temperature=question.temperature, max_tokens=question.max_tokens)
-            return ChatCohere(cohere_api_key=question.llm_key, model=question.model, **llm_params)
+            from langchain_cohere import ChatCohere
+            client_config["cohere_api_key"] = client_config.pop("api_key", None)
+            return ChatCohere(**client_config)
 
         elif question.llm == "google":
-            # OLD: return ChatGoogleGenerativeAI(google_api_key=question.llm_key, model=question.model,
-            #                                     temperature=question.temperature, max_tokens=question.max_tokens,
-            #                                     top_p=question.top_p, convert_system_message_to_human=True)
-            # convert_system_message_to_human è deprecato, LangChain gestisce automaticamente i system message
-            return ChatGoogleGenerativeAI(google_api_key=question.llm_key, model=question.model, **llm_params)
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            client_config["google_api_key"] = client_config.pop("api_key", None)
+            return ChatGoogleGenerativeAI(**client_config)
 
         elif question.llm == "ollama":
-            # OLD: return ChatOllama(model=question.model.name, temperature=question.temperature,
-            #                        num_predict=question.max_tokens, top_p=question.top_p, base_url=question.model.url)
-            return ChatOllama(model=question.model.name, base_url=question.model.url, **llm_params)
-
-        elif question.llm == "vllm":
-            # OLD: return ChatOpenAI(api_key=SecretStr(question.llm_key), model=question.model.name, base_url=question.model.url,
-            #                        temperature=question.temperature, max_tokens=question.max_tokens, top_p=question.top_p)
-            return ChatOpenAI(api_key=SecretStr(question.llm_key), model=question.model.name,
-                             base_url=question.model.url, **llm_params)
+            from langchain_community.chat_models import ChatOllama
+            client_config["num_predict"] = client_config.pop("max_tokens", None)
+            return ChatOllama(**client_config)
 
         elif question.llm == "groq":
-            # OLD: return ChatGroq(api_key=question.llm_key, model=question.model,
-            #                      temperature=question.temperature, max_tokens=question.max_tokens, top_p=question.top_p)
-            return ChatGroq(api_key=question.llm_key, model=question.model, **llm_params)
+            from langchain_groq import ChatGroq
+            return ChatGroq(**client_config)
 
         elif question.llm == "deepseek":
-            # OLD: return ChatDeepSeek(api_key=question.llm_key, model=question.model,
-            #                          temperature=question.temperature, max_tokens=question.max_tokens, top_p=question.top_p)
-            return ChatDeepSeek(api_key=question.llm_key, model=question.model, **llm_params)
+            from langchain_deepseek import ChatDeepSeek
+            return ChatDeepSeek(**client_config)
 
         elif question.llm == "mistralai":
-            # OLD: return ChatMistralAI(api_key=question.llm_key, model_name=question.model,
-            #                           temperature=question.temperature, max_tokens=question.max_tokens, top_p=question.top_p)
-            return ChatMistralAI(api_key=question.llm_key, model_name=question.model, **llm_params)
+            from langchain_mistralai import ChatMistralAI
+            client_config["model_name"] = client_config.pop("model", None)
+            return ChatMistralAI(**client_config)
 
         else:
-            # Fallback a OpenAI
             logger.warning(f"Unknown LLM provider '{question.llm}', falling back to OpenAI")
-            # OLD: return ChatOpenAI(api_key=question.llm_key, model=question.model,
-            #                        temperature=question.temperature, max_tokens=question.max_tokens, top_p=question.top_p)
-            return ChatOpenAI(api_key=question.llm_key, model=question.model, **llm_params)
+            from langchain_openai import ChatOpenAI
+            return ChatOpenAI(**client_config)
 
     except Exception as e:
-        logger.error(f"Errore nella creazione del modello LLM standard {question.llm}: {e}")
+        logger.error(f"Errore nella creazione del modello LLM standard {question.llm}: {e}", exc_info=True)
         raise
 
 async def _create_embedding_instance(question):
@@ -853,39 +1029,77 @@ def inject_reason_llm(func):
         try:
             logger.debug(question)
 
-            # 1. Crea una chiave di cache univoca per il modello LLM
-            cache_key = (
-                question.llm,
-                question.model,
-                _hash_api_key(str(question.llm_key.get_secret_value()))  # Hash della chiave per sicurezza
+            llm_params_for_cache_key = get_llm_params(
+                provider=question.llm,
+                temperature=question.temperature,
+                top_p=question.top_p,
+                max_tokens=question.max_tokens
             )
+            temp_client_base_config = asyncio.run(_get_llm_config_for_client(question, llm_params_for_cache_key))
+            
+            cache_key_parts = [
+                "reasoning", # Add type to distinguish from standard LLM
+                question.llm,
+                temp_client_base_config.get("model") if temp_client_base_config.get("model") else (question.model if isinstance(question.model, str) else (question.model.name if hasattr(question.model, 'name') else None)),
+                _hash_api_key(str(temp_client_base_config.get("api_key").get_secret_value())) if temp_client_base_config.get("api_key") else "no_key"
+            ]
+            if temp_client_base_config.get("base_url"):
+                cache_key_parts.append(temp_client_base_config.get("base_url"))
+            if temp_client_base_config.get("default_headers"):
+                headers_hash = hashlib.sha256(json.dumps(temp_client_base_config["default_headers"], sort_keys=True).encode('utf-8')).hexdigest()
+                cache_key_parts.append(headers_hash)
+            
+            cache_key = tuple(cache_key_parts)
 
             def _creator():
+                logger.info(f"Creazione nuovo oggetto Chat (reasoning) in cache con chiave: {cache_key}")
+                
+                inner_llm_params = get_llm_params(
+                    provider=question.llm,
+                    temperature=question.temperature,
+                    top_p=question.top_p,
+                    max_tokens=question.max_tokens
+                )
+                inner_client_base_config = asyncio.run(_get_llm_config_for_client(question, inner_llm_params))
+
+                client_config = {**inner_llm_params}
+                if inner_client_base_config.get("api_key"):
+                    client_config["api_key"] = inner_client_base_config["api_key"]
+                if inner_client_base_config.get("model"):
+                    client_config["model"] = inner_client_base_config["model"]
+                if inner_client_base_config.get("base_url"):
+                    client_config["base_url"] = inner_client_base_config["base_url"]
+                if inner_client_base_config.get("default_headers"):
+                    client_config["default_headers"] = inner_client_base_config["default_headers"]
+
                 if question.llm == "openai":
-                    return ChatOpenAI(api_key=question.llm_key,
-                                      model=question.model,
-                                      temperature=question.temperature,
-                                      max_completion_tokens=question.max_tokens)
+                    from langchain_openai import ChatOpenAI
+                    # Use max_completion_tokens for reasoning context
+                    client_config["max_completion_tokens"] = client_config.pop("max_tokens", None)
+                    return ChatOpenAI(**client_config)
                 elif question.llm == "anthropic":
-                    return ChatAnthropic(anthropic_api_key=question.llm_key,
-                                         model=question.model,
-                                         temperature=question.temperature,
-                                         thinking=question.thinking,
-                                         max_tokens=question.max_tokens)
+                    from langchain_anthropic import ChatAnthropic
+                    client_config["anthropic_api_key"] = client_config.pop("api_key", None)
+                    client_config["max_tokens"] = client_config.pop("max_tokens", None) # Anthropic uses max_tokens, not max_completion_tokens
+                    if hasattr(question, 'thinking') and question.thinking is not None:
+                        client_config["thinking"] = question.thinking
+                    return ChatAnthropic(**client_config)
                 elif question.llm == "deepseek":
-                    return ChatDeepSeek(api_key=question.llm_key,
-                                        model=question.model,
-                                        temperature=question.temperature,
-                                        )
+                    from langchain_deepseek import ChatDeepSeek
+                    # Deepseek uses max_tokens. Langchain DeepSeek model uses max_tokens not max_completion_tokens
+                    return ChatDeepSeek(**client_config)
+                elif question.llm == "vllm":
+                    from langchain_openai import ChatOpenAI # vLLM uses OpenAI compatible API
+                    client_config["max_completion_tokens"] = client_config.pop("max_tokens", None)
+                    return ChatOpenAI(**client_config)
                 else:
-                    # Comportamento di default come OpenAI
-                    return ChatOpenAI(api_key=question.llm_key,
-                                      model=question.model,
-                                      temperature=question.temperature,
-                                      max_completion_tokens=question.max_tokens)
+                    logger.warning(f"Unknown LLM provider '{question.llm}' for reasoning, falling back to OpenAI")
+                    from langchain_openai import ChatOpenAI
+                    client_config["max_completion_tokens"] = client_config.pop("max_tokens", None)
+                    return ChatOpenAI(**client_config)
 
             chat_model = TimedCache.get(
-                object_type="reasoning",  # Assicurati che questo corrisponda al tipo di oggetto gestito dalla tua cache
+                object_type="reasoning",
                 key=cache_key,
                 constructor=_creator
             )
@@ -974,53 +1188,99 @@ async def _build_reasoning_llm_cache_key(question) -> Tuple:
 async def _create_reasoning_llm_instance(question) -> Any:
     """Crea una nuova istanza del modello LLM specializzato per reasoning"""
     try:
+        llm_params = get_llm_params(
+            provider=question.llm,
+            temperature=question.temperature,
+            top_p=question.top_p,
+            max_tokens=question.max_tokens
+        )
+
+        client_base_config = await _get_llm_config_for_client(question, llm_params)
+
+        client_config = {**llm_params}
+        if client_base_config.get("api_key"):
+            client_config["api_key"] = client_base_config["api_key"]
+        if client_base_config.get("model"):
+            client_config["model"] = client_base_config["model"]
+        if client_base_config.get("base_url"):
+            client_config["base_url"] = client_base_config["base_url"]
+        if client_base_config.get("default_headers"):
+            client_config["default_headers"] = client_base_config["default_headers"]
+
+        # Estrai la configurazione reasoning se presente
+        thinking_config = question.thinking if hasattr(question, 'thinking') and question.thinking else None
+
         if question.llm == "openai":
-            # Per OpenAI, usa max_completion_tokens invece di max_tokens per reasoning
-            return ChatOpenAI(
-                api_key=question.llm_key,
-                model=question.model,
-                temperature=question.temperature,
-                max_completion_tokens=question.max_tokens
-            )
+            from langchain_openai import ChatOpenAI
+            client_config["max_completion_tokens"] = client_config.pop("max_tokens", None)
+
+            # Aggiungi parametri specifici per GPT-5 reasoning
+            if thinking_config:
+                # Costruisci il dizionario reasoning se ci sono parametri
+                reasoning_dict = {}
+                if thinking_config.reasoning_effort:
+                    reasoning_dict["effort"] = thinking_config.reasoning_effort
+                if thinking_config.reasoning_summary:
+                    reasoning_dict["summary"] = thinking_config.reasoning_summary
+
+                # Passa il dizionario reasoning solo se ha contenuti
+                if reasoning_dict:
+                    client_config["reasoning"] = reasoning_dict
+                    # Usa il nuovo formato response per reasoning models
+                    client_config["output_version"] = "responses/v1"
+
+            return ChatOpenAI(**client_config)
 
         elif question.llm == "anthropic":
-            # Anthropic supporta il thinking mode per reasoning
-            kwargs = {
-                "anthropic_api_key": question.llm_key,
-                "model": question.model,
-                "temperature": question.temperature,
-                "max_tokens": question.max_tokens
-            }
+            from langchain_anthropic import ChatAnthropic
+            client_config["anthropic_api_key"] = client_config.pop("api_key", None)
 
-            # Aggiungi thinking mode se disponibile
-            if hasattr(question, 'thinking') and question.thinking is not None:
-                kwargs["thinking"] = question.thinking
+            # Aggiungi parametri specifici per Claude thinking
+            if thinking_config:
+                thinking_dict = {}
+                if thinking_config.type:
+                    thinking_dict["type"] = thinking_config.type
+                if thinking_config.budget_tokens:
+                    thinking_dict["budget_tokens"] = thinking_config.budget_tokens
+                if thinking_dict:
+                    client_config["thinking"] = thinking_dict
 
-            return ChatAnthropic(**kwargs)
+            return ChatAnthropic(**client_config)
+
+        elif question.llm == "google":
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            client_config["google_api_key"] = client_config.pop("api_key", None)
+
+            # Aggiungi parametri specifici per Gemini thinking
+            if thinking_config:
+                if thinking_config.thinkingBudget is not None:
+                    # Gemini 2.5 Pro usa thinkingBudget
+                    client_config["thinking_budget"] = thinking_config.thinkingBudget
+                elif thinking_config.thinkingLevel:
+                    # Gemini 3.0 Pro usa thinkingLevel
+                    client_config["thinking_level"] = thinking_config.thinkingLevel
+
+            return ChatGoogleGenerativeAI(**client_config)
 
         elif question.llm == "deepseek":
-            # DeepSeek supporta bene il reasoning
-            return ChatDeepSeek(
-                api_key=question.llm_key,
-                model=question.model,
-                temperature=question.temperature,
-                max_tokens=question.max_tokens
-            )
+            from langchain_deepseek import ChatDeepSeek
+            # DeepSeek non ha parametri specifici per reasoning, è automatico
+            return ChatDeepSeek(**client_config)
+
+        elif question.llm == "vllm":
+            from langchain_openai import ChatOpenAI # vLLM uses OpenAI compatible API
+            client_config["max_completion_tokens"] = client_config.pop("max_tokens", None)
+            return ChatOpenAI(**client_config)
 
         else:
-            # Fallback a OpenAI con max_completion_tokens
             logger.warning(f"LLM provider '{question.llm}' not optimized for reasoning, falling back to OpenAI")
-            return ChatOpenAI(
-                api_key=question.llm_key,
-                model=question.model,
-                temperature=question.temperature,
-                max_completion_tokens=question.max_tokens
-            )
+            from langchain_openai import ChatOpenAI
+            client_config["max_completion_tokens"] = client_config.pop("max_tokens", None)
+            return ChatOpenAI(**client_config)
 
     except Exception as e:
-        logger.error(f"Errore nella creazione del modello LLM reasoning {question.llm}: {e}")
+        logger.error(f"Errore nella creazione del modello LLM reasoning {question.llm}: {e}", exc_info=True)
         raise
-
 
 def inject_reason_llm_old(func):
     @wraps(func)

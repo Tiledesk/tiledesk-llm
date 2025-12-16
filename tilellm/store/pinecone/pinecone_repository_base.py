@@ -201,59 +201,6 @@ class CachedVectorStore_old:
         return self._index
 
 
-    async def _ensure_connection_old(self):
-        """Assicura che la connessione sia attiva e valida"""
-        try:
-            async with self._lock:
-                if self._vector_store is not None:
-                    # Verifica se la connessione è ancora valida
-                    try:
-                        await self._index.describe_index_stats()
-                        return  # Connessione ancora valida
-                    except Exception as e:
-                        logger.warning(f"Connessione scaduta, riconnessione: {e}")
-                        await self._reset_connection()
-
-
-
-                # Se non abbiamo ancora una connessione, creala
-                if self._pc_client is None:
-
-                    self._pc_client = pinecone.PineconeAsyncio(
-                        api_key=self.engine.apikey.get_secret_value()
-                    )
-
-                # Se non abbiamo l'host, ottienilo
-                if self._host is None:
-                    # Controlla se l'indice esiste
-                    existing_indexes = await self._pc_client.list_indexes()
-                    if self.engine.index_name not in existing_indexes.names():
-                        # Crea l'indice se non esiste
-                        await self._create_index_if_not_exists()
-
-                    self._host = (await self._pc_client.describe_index(self.engine.index_name)).host
-
-                # Se non abbiamo l'index o il vector_store, creali
-                if self._index is None or self._vector_store is None:
-                    self._index = self._pc_client.IndexAsyncio(
-                        name=self.engine.index_name,
-                        host=self._host
-                    )
-
-                    self._vector_store = PineconeVectorStore(
-                        index=self._index,
-                        embedding=self.embeddings,
-                        text_key=self.engine.text_key,
-                        #pinecone_api_key=self.engine.apikey.get_secret_value(),
-                        #index_name=self.engine.index_name
-                    )
-
-        except Exception as e:
-            logger.error(f"Error ensuring connection for {self.engine.index_name}: {e}")
-            # Reset tutto in caso di errore
-            await self._reset_connection()
-            raise
-
     async def _create_index_if_not_exists(self):
         """Crea l'indice se non esiste"""
         logger.info(f'Creating new index {self.engine.index_name}...')
@@ -413,7 +360,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
                 describe = await index.describe_index_stats()
                 # print(describe)
                 logger.debug(describe)
-                namespaces = describe.get("namespaces", {})
+                namespaces = describe.namespaces
                 total_vectors = 1
 
                 if namespaces:
@@ -476,7 +423,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
                 describe = await index.describe_index_stats()
 
                 logger.debug(describe)
-                namespaces = describe.get("namespaces", {})
+                namespaces = describe.namespaces
 
                 results = []
 
@@ -518,7 +465,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
                 describe = await index.describe_index_stats()
 
                 logger.debug(describe)
-                namespaces = describe.get("namespaces", {})
+                namespaces = describe.namespaces
                 total_vectors = 1
 
                 if namespaces:
@@ -584,7 +531,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
                 describe = await index.describe_index_stats()
 
                 logger.debug(describe)
-                namespaces = describe.get("namespaces", {})
+                namespaces = describe.namespaces
                 total_vectors = 1
                 description = RepositoryItemNamespaceResult(namespace=namespace, vector_count=0)
                 if namespaces:
@@ -654,7 +601,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
             async with index as index:
                 describe = await index.describe_index_stats()
                 logger.debug(describe)
-                namespaces = describe.get("namespaces", {})
+                namespaces = describe.namespaces
                 total_vectors = 1
 
                 if namespaces:
@@ -975,7 +922,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
     @staticmethod
     async def create_index_cache_wrapper(engine, embeddings, emb_dimension, embedding_config_key=None) -> CachedVectorStore:
         cache_key = (
-            str(engine.apikey)[:20],
+            str(engine.apikey.get_secret_value())[:20],
             engine.index_name,
             engine.type,
             embedding_config_key if embedding_config_key is not None else "default"
@@ -1017,89 +964,8 @@ async def _create_vector_store_instance_cached(engine, embeddings, emb_dimension
     # Inizializza la connessione
     await cached_vs._ensure_connection()
 
-    return cached_vs
+#    return cached_vs
 
-async def _create_vector_store_instance_old_old(engine, embeddings, emb_dimension) -> PineconeVectorStore:
-    """
-    Logica interna per creare effettivamente il vector_store
-    (estratta per mantenere il codice pulito)
-    """
-    pc = pinecone.PineconeAsyncio(api_key=engine.apikey.get_secret_value())
-
-    try:
-        # Controlla se l'indice esiste
-        existing_indexes = await pc.list_indexes()
-        index_exists = engine.index_name in existing_indexes.names()
-
-        if index_exists:
-            logger.debug(f'Index {engine.index_name} exists. Loading vector store from cache...')
-            host = (await pc.describe_index(engine.index_name)).host
-
-            # Crea l'index connection
-            index = pc.IndexAsyncio(name=engine.index_name, host=host)
-
-            vector_store = PineconeVectorStore(
-                index=index,
-                embedding=embeddings,
-                text_key=engine.text_key,
-                pinecone_api_key=engine.apikey.get_secret_value(),
-                index_name=engine.index_name
-            )
-
-        else:
-            # Crea nuovo indice
-            logger.info(f'Creating new index {engine.index_name} and vector store...')
-
-            if engine.type == "serverless":
-                await pc.create_index(
-                    name=engine.index_name,
-                    dimension=emb_dimension,
-                    metric=engine.metric,
-                    spec=pinecone.ServerlessSpec(
-                        cloud="aws",
-                        region="us-west-2"
-                    )
-                )
-            else:  # Pod type
-                await pc.create_index(
-                    name=engine.index_name,
-                    dimension=emb_dimension,
-                    metric=engine.metric,
-                    spec=pinecone.PodSpec(
-                        pod_type="p1",
-                        pods=1,
-                        environment="us-west4-gpc"
-                    )
-                )
-
-            # Attendi che l'indice sia pronto
-            while not (await pc.describe_index(engine.index_name)).status["ready"]:
-                logger.debug(f"Waiting for index {engine.index_name} to be ready...")
-                await asyncio.sleep(1)
-
-            host = (await pc.describe_index(engine.index_name)).host
-            index = pc.IndexAsyncio(name=engine.index_name, host=host)
-
-            vector_store = PineconeVectorStore(
-                index=index,
-                embedding=embeddings,
-                text_key=engine.text_key,
-                pinecone_api_key=engine.apikey.get_secret_value(),
-                index_name=engine.index_name
-            )
-
-        logger.info(f"Vector store created successfully for index: {engine.index_name}")
-        return vector_store
-
-    except Exception as e:
-        logger.error(f"Error creating vector store for index {engine.index_name}: {e}")
-        raise
-    finally:
-        # Assicurati che la connessione Pinecone sia chiusa
-        try:
-            await pc.close()
-        except Exception as close_ex:
-            logger.warning(f"Error closing Pinecone connection: {close_ex}")
 
 
 

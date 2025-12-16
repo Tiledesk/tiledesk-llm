@@ -67,41 +67,8 @@ class EmbeddingFactory:
 
         return tuple(key_parts)
 
-    def create_V1(self, config: Dict[str, Any]) -> Tuple[Embeddings, int]:
-        """
-        Metodo principale per creare o recuperare gli embedding dalla cache.
-        """
-        try:
-            cache_key = self._get_cache_key(config)
 
-            # Funzione che sa come creare l'oggetto se non è in cache
-            def _creator() -> Tuple[Embeddings, int]:
-
-                self.logger.info(f"Cache miss for key {cache_key}. Creating new embedding object.")
-                if config.get("legacy_mode", False):
-                    return self._create_legacy(config)
-
-                provider = config["provider"].lower()
-                if provider not in self.provider_map:
-                    raise ValueError(f"Provider non supportato: {provider}")
-
-                return self.provider_map[provider](config)
-
-            # Usa TimedCache.get per ottenere l'oggetto
-            # Il costruttore (_creator) verrà chiamato solo se l'oggetto non è in cache
-            embedding_obj, dimension = TimedCache.get(
-                object_type="embedding",
-                key=cache_key,
-                constructor=_creator
-            )
-
-            return embedding_obj, dimension
-
-        except Exception as e:
-            self.logger.error(f"Embedding error: {str(e)}", exc_info=True)
-            raise EmbeddingCreationError("Errore nella creazione degli embedding", e)
-
-    def create_gpt5(self, config: Dict[str, Any]) -> Tuple[Embeddings, int]:
+    def create_embedding_cache(self, config: Dict[str, Any]) -> Tuple[Embeddings, int]:
         try:
             cache_key = self._get_cache_key(config)
 
@@ -146,7 +113,7 @@ class EmbeddingFactory:
             raise EmbeddingCreationError("Errore nella creazione degli embedding", e)
 
     def create(self, config: Dict[str, Any]) -> Tuple[Embeddings, int]:
-        return self.create_gpt5(config)
+        return self.create_embedding_cache(config)
 
     def _generate_model_id(self, config: Dict[str, Any]) -> str:
         """Genera un ID univoco per il caching del modello."""
@@ -231,10 +198,14 @@ class EmbeddingFactory:
 
     def _create_vllm(self, config: Dict) -> Tuple[Embeddings, int]:
         from langchain_openai import OpenAIEmbeddings
+        
+        api_key = config.get("api_key")
+        headers = config.get("custom_headers")
         return OpenAIEmbeddings(
             model=config["model_name"],
             base_url=config.get("base_url", "http://localhost:8001"),
-            api_key=SecretStr("a")
+            api_key=api_key,
+            default_headers=headers
         ), config.get("dimension", 3072)
 
     def _create_google(self, config: Dict) -> Tuple[Embeddings, int]:
@@ -321,9 +292,10 @@ def inject_embedding(factory: Optional[EmbeddingFactory] = None):
                     config = {
                         "provider": item.embedding.provider,
                         "model_name": item.embedding.name,
-                        "api_key": item.embedding.api_key.get_secret_value(),
+                        "api_key": item.embedding.api_key.get_secret_value() if item.embedding.api_key else None,
                         "dimension": item.embedding.dimension,
-                        "base_url": item.embedding.url
+                        "base_url": item.embedding.url,
+                        "custom_headers": item.embedding.custom_headers
                     }
                 else:
                     raise TypeError(f"Tipo non supportato per embedding: {type(item.embedding)}")
@@ -371,12 +343,14 @@ def inject_embedding_qa(factory: Optional[EmbeddingFactory] = None):
                     model_name = question.embedding.embedding_model
                     base_url = question.embedding.embedding_host
                     dimensione = question.embedding.embedding_dimension
+                    custom_headers = question.embedding.embedding_custom_headers
                     config = {
                         "provider": provider,
                         "model_name": model_name,
-                        "api_key": key,
+                        "api_key": key.get_secret_value() if key else None,
                         "dimension": dimensione,
-                        "base_url": base_url
+                        "base_url": base_url,
+                        "custom_headers": custom_headers
                     }
                 else:
                     config = {
@@ -453,39 +427,7 @@ class AsyncEmbeddingFactory:
 
         return tuple(key_parts)
 
-    async def create_v1(self, config: Dict[str, Any]) -> Tuple[Embeddings, int]:
-        """
-        Metodo principale asincrono per creare o recuperare gli embedding dalla cache.
-        """
-        try:
-            cache_key = self._get_cache_key(config)
-
-            # Funzione asincrona che sa come creare l'oggetto se non è in cache
-            async def _async_creator() -> Tuple[Embeddings, int]:
-                self.logger.info(f"Cache miss for key {cache_key}. Creating new embedding object.")
-                if config.get("legacy_mode", False):
-                    return await self._create_legacy(config)
-
-                provider = config["provider"].lower()
-                if provider not in self.provider_map:
-                    raise ValueError(f"Provider non supportato: {provider}")
-
-                return await self.provider_map[provider](config)
-
-            # Usa TimedCache.async_get per operazioni asincrone
-            embedding_obj, dimension = await TimedCache.async_get(
-                object_type="embedding",
-                key=cache_key,
-                constructor=_async_creator
-            )
-
-            return embedding_obj, dimension
-
-        except Exception as e:
-            self.logger.error(f"Embedding error: {str(e)}", exc_info=True)
-            raise EmbeddingCreationError("Errore nella creazione degli embedding", e)
-
-    async def create_gpt5(self, config: Dict[str, Any]) -> Tuple[Embeddings, int]:
+    async def create_embedding_model_cache(self, config: Dict[str, Any]) -> Tuple[Embeddings, int]:
         try:
             cache_key = self._get_cache_key(config)
 
@@ -564,7 +506,7 @@ class AsyncEmbeddingFactory:
             raise EmbeddingCreationError("Errore nella creazione degli embedding", e)
 
     async def create(self, config: Dict[str, Any]) -> Tuple[Embeddings, int]:
-        return await self.create_gpt5(config)
+        return await self.create_embedding_model_cache(config)
 
     @staticmethod
     def _generate_model_id(config: Dict[str, Any]) -> str:
@@ -666,10 +608,13 @@ class AsyncEmbeddingFactory:
         from langchain_openai import OpenAIEmbeddings
 
         def _create():
+            api_key = config.get("api_key")
+            headers = config.get("custom_headers")
             return OpenAIEmbeddings(
                 model=config["model_name"],
                 base_url=config.get("base_url", "http://localhost:8001"),
-                api_key=SecretStr("a")
+                api_key=api_key,
+                default_headers=headers
             ), config.get("dimension", 3072)
 
         loop = asyncio.get_event_loop()
@@ -778,9 +723,10 @@ def inject_embedding_async(factory: Optional[AsyncEmbeddingFactory] = None):
                     config = {
                         "provider": item.embedding.provider,
                         "model_name": item.embedding.name,
-                        "api_key": item.embedding.api_key,
+                        "api_key": item.embedding.api_key.get_secret_value() if item.embedding.api_key else None,
                         "dimension": item.embedding.dimension,
-                        "base_url": item.embedding.url
+                        "base_url": item.embedding.url,
+                        "custom_headers": item.embedding.custom_headers
                     }
                 else:
                     raise TypeError(f"Tipo non supportato per embedding: {type(item.embedding)}")
@@ -820,12 +766,14 @@ def inject_embedding_qa_async(factory: Optional[AsyncEmbeddingFactory] = None):
                     model_name = question.embedding.embedding_model
                     base_url = question.embedding.embedding_host
                     dimensione = question.embedding.embedding_dimension
+                    custom_headers = question.embedding.embedding_custom_headers
                     config = {
                         "provider": provider,
                         "model_name": model_name,
-                        "api_key": key,
+                        "api_key": key.get_secret_value() if key else None,
                         "dimension": dimensione,
-                        "base_url": base_url
+                        "base_url": base_url,
+                        "custom_headers": custom_headers
                     }
                 else:
                     config = {

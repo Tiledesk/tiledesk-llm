@@ -2,14 +2,13 @@ import time
 
 import logging
 
-from typing import List
+from typing import List, Optional, Sequence, Any
 
 import requests
 from bs4 import BeautifulSoup, Comment
 
 from langchain_community.document_loaders import (
     UnstructuredURLLoader,
-    AsyncChromiumLoader,
     PyPDFLoader,
     Docx2txtLoader,
     TextLoader
@@ -38,7 +37,23 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
     """
     urls = [url]
     params_type_4 = kwargs.get("parameters_scrape_type_4")
-    browser_headers = kwargs.get("browser_headers")
+    browser_headers: Optional[dict] = kwargs.get("browser_headers")
+    
+    # Default browser headers if not provided
+    if not browser_headers:
+        browser_headers = {
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+    # At this point browser_headers is guaranteed to be a dict
+    assert isinstance(browser_headers, dict)
+    
+    # Validate parameters for scrape_type 4
+    if scrape_type == 4 and params_type_4 is None:
+        raise ValueError("parameters_scrape_type_4 is required for scrape_type=4")
+    
+    # Validate parameters for scrape_type 2, 5
+    if scrape_type in [2, 5] and params_type_4 is None:
+        raise ValueError("parameters_scrape_type_4 is required for scrape_type=2 or 5")
 
 
     try:
@@ -67,7 +82,11 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
                 params=params_type_4,
                 browser_headers=browser_headers
             )
-        else:
+        elif scrape_type == 4:
+            # params_type_4 is guaranteed to be not None due to earlier validation
+            if params_type_4 is None:
+                raise ValueError("parameters_scrape_type_4 is required for scrape_type=4")
+            assert params_type_4 is not None
             return await handle_chromium_loader(
                 urls,
                 transformer=BeautifulSoupTransformer(),
@@ -80,14 +99,23 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
                     "remove_comments": params_type_4.remove_comments
                 }
             )
+        else:
+            raise ValueError(f"Unsupported scrape_type: {scrape_type}")
     except Exception as ex:
         logger.error(f"Errore nel metodo principale ({scrape_type}): {str(ex)}")
+        # Se l'errore è relativo a CAPTCHA, non procedere con fallback
+        if "CAPTCHA" in str(ex) or "bloccata" in str(ex) or "troppo breve" in str(ex):
+            raise
         return await robust_fallback(url, params_type_4, browser_headers=browser_headers)
 
 
-async def handle_unstructured_loader(urls: list, mode: str, strategy: str = None, browser_headers = dict) -> list[Document]:
+async def handle_unstructured_loader(urls: list, mode: str, strategy: Optional[str] = None, browser_headers: Optional[dict] = None) -> list[Document]:
     """Gestisce il caricamento con UnstructuredURLLoader"""
     #print(urls)
+    if browser_headers is None or browser_headers is dict:
+        browser_headers = {
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
     loader_args = {
         "urls": urls,
         "continue_on_failure": False,
@@ -101,40 +129,75 @@ async def handle_unstructured_loader(urls: list, mode: str, strategy: str = None
         loader_args["mode"] = mode
     logger.info(f"loader args for UnstructuredLoader {loader_args}")
     loader = UnstructuredURLLoader(**loader_args)
-    docs = await loader.aload()
-    return clean_documents_metadata(docs)
+    try:
+        docs = await loader.aload()
+        return clean_documents_metadata(docs)
+    finally:
+        if hasattr(loader, 'close'):
+            loader.close()
+        elif hasattr(loader, 'aclose'):
+            await loader.aclose()
 
-async def handle_playwright_scrape(url: str, params: object, browser_headers: dict) -> list[Document]:
+async def handle_playwright_scrape(url: str, params: object, browser_headers: Optional[dict] = None) -> list[Document]:
     """Gestisce lo scraping con Playwright"""
+    if browser_headers is None:
+        browser_headers = {
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
     docs = await scrape_page(url, params, browser_headers = browser_headers)
     return clean_documents_metadata(docs)
 
-async def handle_playwright_scrape_complex(url: str, params: object,browser_headers: dict) -> list[Document]:
+async def handle_playwright_scrape_complex(url: str, params: object, browser_headers: Optional[dict] = None) -> list[Document]:
     """Gestisce lo scraping con Playwright"""
+    if browser_headers is None:
+        browser_headers = {
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
     docs = await scrape_page_complex(url, params, browser_headers = browser_headers)
     return clean_documents_metadata(docs)
 
 
 async def handle_chromium_loader(
         urls: list,
-        transformer: object = None,
-        params: object = None,
-        transform_kwargs: dict = None,
-        browser_headers :dict= None
+        transformer: Optional[Any] = None,
+        params: Optional[object] = None,
+        transform_kwargs: Optional[dict] = None,
+        browser_headers: Optional[dict] = None
 ) -> list[Document]:
-    """Gestisce AsyncChromiumLoader con trasformazione opzionale"""
-    loader = AsyncChromiumLoader(
-        urls=urls,
-        user_agent=browser_headers["user-agent"]
-    )
-    docs = await loader.aload()
-
+    """Gestisce scraping con Playwright e trasformazione opzionale (sostituisce AsyncChromiumLoader)"""
+    if browser_headers is None:
+        browser_headers = {
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+    
+    docs = []
+    for url in urls:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox"
+                ]
+            )
+            try:
+                page = await browser.new_page(
+                    extra_http_headers=browser_headers,
+                    java_script_enabled=True
+                )
+                await page.goto(url=url, wait_until="load", timeout=60000)
+                html = await page.content()
+                metadata = {"source": url}
+                doc = Document(page_content=html, metadata=metadata)
+                docs.append(doc)
+            finally:
+                await browser.close()
+    
     # Controllo del contenuto minimo
     if not docs or any(len(doc.page_content.strip()) < 50 for doc in docs):
         raise ValueError("Contenuto insufficiente o vuoto")
 
     if transformer and transform_kwargs:
-
         docs = transformer.transform_documents(docs, **transform_kwargs)
     elif transformer:
         docs = transformer.transform_documents(docs)
@@ -142,22 +205,28 @@ async def handle_chromium_loader(
     return clean_documents_metadata(docs)
 
 
-async def scrape_page_fallback_selectors(url, browser_headers:dict=None):
+async def scrape_page_fallback_selectors(url, browser_headers: Optional[dict] = None):
     """Fallback con selettori più permissivi"""
+    if browser_headers is None:
+        browser_headers = {
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True,
                                           args=[
                                               "--disable-blink-features=AutomationControlled",
                                               "--no-sandbox"
                                           ])
-        page = await browser.new_page(extra_http_headers=browser_headers,
-                                      java_script_enabled=True)
+        try:
+            page = await browser.new_page(extra_http_headers=browser_headers,
+                                          java_script_enabled=True)
 
-        await page.goto(url=url, wait_until="networkidle", timeout=60000)
-        time.sleep(2)  # Tempo ridotto per fallback
+            await page.goto(url=url, wait_until="networkidle", timeout=60000)
+            time.sleep(2)  # Tempo ridotto per fallback
 
-        results = await page.content()
-        await browser.close()
+            results = await page.content()
+        finally:
+            await browser.close()
 
         # Selettori di fallback più permissivi
         fallback_selectors = get_fallback_selectors()
@@ -193,9 +262,14 @@ def get_fallback_selectors():
         "div:not(.sidebar):not(.advertisement):not(.ads):not(.popup)"
     ]
 
-async def robust_fallback(url: str, params: object = None, browser_headers:dict=None) -> list[Document]:
+async def robust_fallback(url: str, params: Optional[object] = None, browser_headers: Optional[dict] = None) -> list[Document]:
     """Meccanismo di fallback a più livelli"""
     logger.warning(f"Attivazione fallback per URL: {url}")
+    if browser_headers is None:
+        browser_headers = {
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+    assert browser_headers is not None
 
     try:
         # Primo fallback: metodo alternativo sincrono
@@ -212,44 +286,46 @@ async def robust_fallback(url: str, params: object = None, browser_headers:dict=
         logger.error(f"Fallback 2 fallito: {str(e)}")
 
     try:
-        # Terzo fallback: Chromium con timeout aumentato
-        logger.info("Tentativo fallback 3: Chromium rinforzato")
-        loader = AsyncChromiumLoader(
+        # Terzo fallback: Playwright diretto (sostituisce AsyncChromiumLoader)
+        logger.info("Tentativo fallback 3: Playwright rinforzato")
+        return await handle_chromium_loader(
             urls=[url],
-            user_agent=browser_headers["user-agent"],
-            headless=True
+            transformer=None,
+            params=None,
+            transform_kwargs=None,
+            browser_headers=browser_headers
         )
-        docs = await loader.aload()
-        return clean_documents_metadata(docs)
     except Exception as e:
         logger.error(f"Fallback 3 fallito: {str(e)}")
 
-    # Fallback finale: documento vuoto
-    logger.error("Tutti i fallback falliti, restituisco documento vuoto")
-    return clean_documents_metadata([Document(
-        page_content="",
-        metadata={"source": url}
-    )])
+    # Fallback finale: solleva eccezione
+    error_msg = f"Tutti i fallback falliti per l'URL: {url}. Impossibile recuperare contenuto."
+    logger.error(error_msg)
+    raise ValueError(error_msg)
 
 
-def clean_documents_metadata(docs: list[Document]) -> list[Document]:
+def clean_documents_metadata(docs: Sequence[Document]) -> list[Document]:
     """Pulisce i metadati per tutti i documenti"""
     for doc in docs:
         doc.metadata = clean_metadata(doc.metadata)
-    return docs
+    return list(docs)
 
-async def scrape_page(url, params_type_4, browser_headers:dict, time_sleep=2):
+async def scrape_page(url, params_type_4, browser_headers: Optional[dict] = None, time_sleep=2):
     logger.info("Starting scraping...")
-    try:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True,
-                                              args=[
-                                                  "--disable-blink-features=AutomationControlled",
-                                                  "--no-sandbox"
-                                              ]
-                                              )
+    if browser_headers is None:
+        browser_headers = {
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True,
+                                            args=[
+                                                "--disable-blink-features=AutomationControlled",
+                                                "--no-sandbox"
+                                            ]
+                                            )
+        try:
             page = await browser.new_page(extra_http_headers=browser_headers, #user_agent="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
-                                    java_script_enabled=True)
+                                java_script_enabled=True)
 
             try:
                 # 1. Navigazione iniziale. 'load' è un buon punto di partenza.
@@ -284,8 +360,6 @@ async def scrape_page(url, params_type_4, browser_headers:dict, time_sleep=2):
 
             results = await page.content()
 
-            await browser.close()
-
             metadata = {"source": url}
             doc = Document(page_content=results, metadata=metadata)
 
@@ -301,17 +375,19 @@ async def scrape_page(url, params_type_4, browser_headers:dict, time_sleep=2):
                 remove_lines=params_type_4.remove_lines,
                 remove_comments=params_type_4.remove_comments
             )
-
-    except Exception as e:
-        logger.error(f"Playwright scrape failed: {str(e)}")
-        raise
+        finally:
+            await browser.close()
 
 
 
 
 
-async def scrape_page_complex(url, params_type_4, browser_headers: dict, time_sleep=2):
+async def scrape_page_complex(url, params_type_4, browser_headers: Optional[dict] = None, time_sleep=2):
     logger.info("Starting scraping...")
+    if browser_headers is None:
+        browser_headers = {
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
     import asyncio
     from playwright.async_api import async_playwright
     from playwright_stealth import Stealth, ALL_EVASIONS_DISABLED_KWARGS
@@ -342,103 +418,106 @@ async def scrape_page_complex(url, params_type_4, browser_headers: dict, time_sl
                     "--disable-renderer-backgrounding",
                 ]
             )
-
-            # **2. Context con parametri umani-realistici**
-            context = await browser.new_context(
-                extra_http_headers=browser_headers,
-                viewport={"width": 1920, "height": 1080},
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-                locale="it-IT",
-                timezone_id="Europe/Rome",
-                permissions=["geolocation"],  # Simula permessi reali
-            )
-
-            # **3. APPLICA STEALTH AL CONTESTO**
-            await stealth.apply_stealth_async(context)
-
-            page = await context.new_page()
-
-            # **4. Intercetta e logga i redirect**
-            async def check_redirect(route, request):
-                if "captcha-delivery.com" in request.url or "geo.captcha-delivery.com" in request.url:
-                    logger.error(f"❌ CAPTCHA DETECTED! Request: {request.url}")
-                    # **Scegli una strategia:**
-                    await route.abort()  # Blocca la richiesta
-                    # Oppure continua per analizzare la risposta:
-                    # await route.continue_()
-                else:
-                    await route.continue_()
-
-            await page.route("**/*", check_redirect)
-
-            # **5. Logga ogni navigazione per debug**
-            def log_navigation(frame):
-                logger.info(f"🌐 Navigated to: {frame.url}")
-                if "captcha-delivery.com" in frame.url:
-                    logger.error("🚫 Siamo stati rediretti al CAPTCHA!")
-
-            page.on("framenavigated", log_navigation)
-
-            # **6. Vai alla pagina con timeout e strategia di attesa**
             try:
-                await page.goto(
-                    url=url,
-                    wait_until="domcontentloaded",  # Più veloce di "networkidle"
-                    timeout=30000
+                # **2. Context con parametri umani-realistici**
+                context = await browser.new_context(
+                    extra_http_headers=browser_headers,
+                    viewport={"width": 1920, "height": 1080},
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                    locale="it-IT",
+                    timezone_id="Europe/Rome",
+                    permissions=["geolocation"],  # Simula permessi reali
                 )
-            except Exception as e:
-                logger.error(f"Errore durante la navigazione: {e}")
+
+                # **3. APPLICA STEALTH AL CONTESTO**
+                await stealth.apply_stealth_async(context)
+
+                page = await context.new_page()
+
+                # **4. Intercetta e logga i redirect**
+                async def check_redirect(route, request):
+                    if "captcha-delivery.com" in request.url or "geo.captcha-delivery.com" in request.url:
+                        logger.error(f"❌ CAPTCHA DETECTED! Request: {request.url}")
+                        # **Scegli una strategia:**
+                        await route.abort()  # Blocca la richiesta
+                        # Oppure continua per analizzare la risposta:
+                        # await route.continue_()
+                    else:
+                        await route.continue_()
+
+                await page.route("**/*", check_redirect)
+
+                # **5. Logga ogni navigazione per debug**
+                def log_navigation(frame):
+                    logger.info(f"🌐 Navigated to: {frame.url}")
+                    if "captcha-delivery.com" in frame.url:
+                        logger.error("🚫 Siamo stati rediretti al CAPTCHA!")
+
+                page.on("framenavigated", log_navigation)
+
+                # **6. Vai alla pagina con timeout e strategia di attesa**
+                try:
+                    await page.goto(
+                        url=url,
+                        wait_until="domcontentloaded",  # Più veloce di "networkidle"
+                        timeout=30000
+                    )
+                except Exception as e:
+                    logger.error(f"Errore durante la navigazione: {e}")
+                    raise ValueError(f"Navigazione fallita per l'URL: {url}. Errore: {e}")
+
+                # **7. Attendi elementi specifici del sito target**
+                try:
+                    # **SOSTITUISCI** con un selettore REALE della pagina target
+                    # Esempio: await page.wait_for_selector("main, article, .content", timeout=10000)
+                    await page.wait_for_selector("body", timeout=5000)  # Fallback generico
+                except Exception as e:
+                    logger.warning(f"⚠️ Elementi target non trovati: {e}")
+
+                # **8. CORRETTO: Sleep asincrono**
+                await asyncio.sleep(params_type_4.time_sleep)
+
+                # **9. VERIFICA FINALE della URL e contenuto**
+                current_url = page.url
+                if "captcha-delivery.com" in current_url:
+                    logger.error("🚫 Pagina CAPTCHA rilevata, scraping annullato.")
+                    raise ValueError("Pagina bloccata da CAPTCHA. Impossibile procedere con lo scraping.")
+
+                # **10. Ottieni contenuto e chiudi**
+                results = await page.content()
+                logger.error(f"Contenuto {results}")
+                # **11. Processa e valida il contenuto**
+                transformed_content = custom_html_transform(
+                    results,
+                    selectors_to_extract=params_type_4.tags_to_extract,
+                    unwanted_tags=getattr(params_type_4, 'unwanted_tags', []),
+                    unwanted_classnames=getattr(params_type_4, 'unwanted_classnames', []),
+                    remove_lines=getattr(params_type_4, 'remove_lines', True),
+                    remove_comments=getattr(params_type_4, 'remove_comments', True)
+                )
+
+                # **12. Doppio check: il contenuto è valido?**
+                if "captcha-delivery.com" in transformed_content or len(transformed_content.strip()) < 500:
+                    error_msg = "Contenuto bloccato da CAPTCHA o troppo breve (meno di 500 caratteri). Impossibile procedere con lo scraping."
+                    logger.error(f"❌ {error_msg}")
+                    raise ValueError(error_msg)
+
+                metadata = {"source": url}
+                doc = Document(page_content=transformed_content, metadata=metadata)
+                return [doc]
+            finally:
                 await browser.close()
-                return []
-
-            # **7. Attendi elementi specifici del sito target**
-            try:
-                # **SOSTITUISCI** con un selettore REALE della pagina target
-                # Esempio: await page.wait_for_selector("main, article, .content", timeout=10000)
-                await page.wait_for_selector("body", timeout=5000)  # Fallback generico
-            except Exception as e:
-                logger.warning(f"⚠️ Elementi target non trovati: {e}")
-
-            # **8. CORRETTO: Sleep asincrono**
-            await asyncio.sleep(params_type_4.time_sleep)
-
-            # **9. VERIFICA FINALE della URL e contenuto**
-            current_url = page.url
-            if "captcha-delivery.com" in current_url:
-                logger.error("🚫 Pagina CAPTCHA rilevata, scraping annullato.")
-                await browser.close()
-                return []  # O solleva un'eccezione specifica
-
-            # **10. Ottieni contenuto e chiudi**
-            results = await page.content()
-
-            await browser.close()
-            logger.error(f"Contenuto {results}")
-            # **11. Processa e valida il contenuto**
-            transformed_content = custom_html_transform(
-                results,
-                selectors_to_extract=params_type_4.tags_to_extract,
-                unwanted_tags=getattr(params_type_4, 'unwanted_tags', []),
-                unwanted_classnames=getattr(params_type_4, 'unwanted_classnames', []),
-                remove_lines=getattr(params_type_4, 'remove_lines', True),
-                remove_comments=getattr(params_type_4, 'remove_comments', True)
-            )
-
-            # **12. Doppio check: il contenuto è valido?**
-            if "captcha-delivery.com" in transformed_content or len(transformed_content.strip()) < 500:
-                logger.error("❌ Contenuto bloccato o troppo breve, documento scartato.")
-                return []
-
-            metadata = {"source": url}
-            doc = Document(page_content=transformed_content, metadata=metadata)
-            return [doc]
 
     except Exception as e:
         logger.error(f"Playwright scrape failed: {str(e)}")
         raise
 
-async def scrape_page_complex_old(url, params_type_4, browser_headers:dict, time_sleep=2):
+async def scrape_page_complex_old(url, params_type_4, browser_headers: Optional[dict] = None, time_sleep=2):
     logger.info("Starting scraping...")
+    if browser_headers is None:
+        browser_headers = {
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True,
@@ -698,11 +777,28 @@ def clean_metadata(dictionary):
 
 async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers):
     if type_source in ['url', 'txt']:
-        return await get_content_by_url(source,
+        documents = await get_content_by_url(source,
                                         scrape_type,
                                         parameters_scrape_type_4=parameters_scrape_type_4,
                                         browser_headers=browser_headers)
-    return load_document(source, type_source)
+    else:
+        documents = load_document(source, type_source)
+    
+    # Verifica che i documenti siano validi
+    if not documents:
+        raise ValueError(f"Nessun documento recuperato dalla sorgente: {source} (tipo: {type_source})")
+    
+    # Verifica che ci sia almeno un documento con contenuto non vuoto
+    has_content = False
+    for doc in documents:
+        if doc and doc.page_content and doc.page_content.strip():
+            has_content = True
+            break
+    
+    if not has_content:
+        raise ValueError(f"Documenti recuperati ma contenuto vuoto dalla sorgente: {source} (tipo: {type_source})")
+    
+    return documents
 
 
 def calc_embedding_cost(texts, embedding):

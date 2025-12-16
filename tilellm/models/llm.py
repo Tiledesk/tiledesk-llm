@@ -7,6 +7,7 @@ from langchain_mcp_adapters.client import MultiServerMCPClient
 from tilellm.models.base import AWSAuthentication, ServerConfig
 from tilellm.models.embedding import LlmEmbeddingModel, EmbeddingModel
 from tilellm.models.schemas.multimodal_content import MultimodalContent, ImageContent
+from tilellm.models.schemas.general_schemas import ReasoningConfig
 from tilellm.models.vector_store import Engine
 
 if TYPE_CHECKING:
@@ -191,7 +192,10 @@ class QuestionToLLM(BaseModel):
     top_p: Optional[float] = Field(default=1.0)
     stream: Optional[bool] = Field(default_factory=lambda: False)
     debug: bool = Field(default_factory=lambda: False)
-    thinking: Optional[Dict[str, Any]] = Field(default=None)
+    thinking: Optional[ReasoningConfig] = Field(
+        default=None,
+        description="Reasoning configuration for advanced models (GPT-5, Claude 4/4.5, Gemini 2.5/3.0, DeepSeek)"
+    )
     system_context: str = Field(default="You are a helpful AI bot. Always reply in the same language of the question.")
     chat_history_dict: Optional[Dict[str, "ChatEntry"]] = None
     n_messages: int = Field(default_factory=lambda: None)

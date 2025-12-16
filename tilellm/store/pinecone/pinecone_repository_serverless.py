@@ -191,6 +191,13 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
             logger.debug(documents)
 
+            if len(chunks) == 0:
+                return IndexingResult(id=item.id,
+                                      chunks=0,
+                                      total_tokens=0,
+                                      cost="0.000000",
+                                      error="No chunks generated from source")
+
             total_tokens, cost = self.calc_embedding_cost(chunks, item.embedding)
 
             returned_ids = await self.upsert_vector_store(vector_store=vector_store,
@@ -216,7 +223,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                                   chunks=len(chunks),
                                   total_tokens=total_tokens,
                                   status=400,
-                                  cost=f"{cost:.6f}")
+                                  cost=f"{cost:.6f}",
+                                  error=repr(ex))
 
 
     @inject_embedding()
@@ -279,6 +287,13 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                     breakpoint_threshold_type=item.breakpoint_threshold_type)
                 )
 
+            if len(chunks) == 0:
+                return IndexingResult(id=item.id,
+                                      chunks=0,
+                                      total_tokens=0,
+                                      cost="0.000000",
+                                      error="No chunks generated from source")
+
             contents = [chunk.page_content for chunk in chunks]
             total_tokens, cost = self.calc_embedding_cost(chunks, item.embedding)
 
@@ -310,7 +325,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             await idx.close()
             return IndexingResult(id=item.id, chunks=len(chunks), total_tokens=total_tokens,
                                              status=400,
-                                             cost=f"{cost:.6f}")
+                                             cost=f"{cost:.6f}",
+                                             error=repr(ex))
 
         #return pinecone_result
 

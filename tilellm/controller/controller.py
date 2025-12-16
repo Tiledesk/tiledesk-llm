@@ -291,6 +291,20 @@ async def ask_reason_llm(question, chat_model=None):
             # Estrai content e reasoning content
             _, content, reasoning_content = get_reasoning_content(result, question.llm)
 
+            # Converti content in stringa se è una lista (formato responses/v1 di OpenAI)
+            if isinstance(content, list):
+                # Estrai il testo dalle risposte
+                content_parts = []
+                for item in content:
+                    if isinstance(item, dict):
+                        if 'text' in item:
+                            content_parts.append(item['text'])
+                        elif 'content' in item:
+                            content_parts.append(item['content'])
+                content = ''.join(content_parts) if content_parts else str(content)
+            elif not isinstance(content, str):
+                content = str(content)
+
             # Aggiorna history usando il metodo centralizzato
             updated_history = _update_history(
                 question.chat_history_dict,
@@ -308,15 +322,33 @@ async def ask_reason_llm(question, chat_model=None):
 
     except Exception as e:
         import traceback
-        traceback.print_exc()
+        error_traceback = traceback.format_exc()
+        logger.error(f"Error in ask_reason_llm: {str(e)}\n{error_traceback}")
 
-        result_to_return = SimpleAnswer(
-            answer=repr(e),
-            chat_history_dict={}
+        # Determina il tipo di errore e il messaggio appropriato
+        error_message = str(e)
+        error_type = type(e).__name__
+
+        # Gestisci errori specifici con messaggi più chiari
+        if "unexpected keyword argument" in error_message:
+            error_message = f"Configuration error: {error_message}. Please check the 'thinking' parameters for your chosen model."
+        elif "API key" in error_message or "authentication" in error_message.lower():
+            error_message = f"Authentication error: {error_message}"
+        elif "rate limit" in error_message.lower():
+            error_message = f"Rate limit exceeded: {error_message}"
+        elif "timeout" in error_message.lower():
+            error_message = f"Request timeout: {error_message}"
+
+        # Restituisci errore come ReasoningAnswer con status 400
+        error_response = ReasoningAnswer(
+            answer=f"Error ({error_type}): {error_message}",
+            reasoning_content="",
+            chat_history_dict=question.chat_history_dict if hasattr(question, 'chat_history_dict') else {}
         )
-        raise fastapi.exceptions.HTTPException(
+
+        return JSONResponse(
             status_code=400,
-            detail=result_to_return.model_dump()
+            content=error_response.model_dump()
         )
 
 
@@ -579,17 +611,30 @@ def _create_event(event_type: str, data: dict) -> str:
 
 def _reasoning_chunk_processor(chunk, question):
     """
-    Processor per chunk con reasoning content (es. DeepSeek, o1).
+    Processor per chunk con reasoning content (es. DeepSeek, Claude, Gemini).
+
+    Args:
+        chunk: Il chunk ricevuto dallo stream
+        question: QuestionToLLM object con la configurazione
 
     Returns:
         dict con chiavi: 'content', 'reasoning_content', 'events'
     """
     is_reasoning, content_text, reasoning_text = get_reasoning_content(chunk, question.llm)
 
+    # Controlla se mostrare il thinking nello stream
+    show_thinking = True  # Default
+    if hasattr(question, 'thinking') and question.thinking is not None:
+        show_thinking = question.thinking.show_thinking_stream
+
     events = []
     if is_reasoning:
-        events.append({"reasoning_content": reasoning_text})
+        # Se show_thinking_stream è True, invia il reasoning nello stream
+        if show_thinking:
+            events.append({"reasoning_content": reasoning_text})
+        # Altrimenti non inviare eventi, ma accumula comunque il reasoning_content
     else:
+        # Invia sempre il content normale
         events.append({"content": content_text})
 
     return {
@@ -2383,18 +2428,49 @@ def get_reasoning_content(chunk, llm):
         llm: llm usato
 
     Returns:
-        str or None: Il valore di 'reasoning_content' se esiste, altrimenti None.
+        tuple: (is_thinking, content_text, reasoning_text)
+            - is_thinking: True se questo chunk contiene thinking content
+            - content_text: Il contenuto della risposta principale
+            - reasoning_text: Il contenuto del reasoning/thinking
     """
-    if llm=="openai":
-        return False, chunk.content, ''
-    elif llm=="deepseek":
+    if llm == "openai":
+        # OpenAI GPT-5 con responses/v1 restituisce una lista di oggetti
+        full_text = ""
+        full_reasoning = ""
+        is_reasoning = False
+
+        if isinstance(chunk.content, list):
+            # Formato responses/v1: lista di oggetti con type e text/reasoning
+            for item in chunk.content:
+                if isinstance(item, dict):
+                    # Reasoning content ha type='reasoning' o 'reason'
+                    if item.get('type') == 'reasoning' or item.get('type') == 'reason':
+                        full_reasoning += item.get('text', item.get('reasoning', ''))
+                        is_reasoning = True
+                    # Text content ha type='text' o 'message'
+                    elif item.get('type') == 'text' or item.get('type') == 'message':
+                        full_text += item.get('text', item.get('content', ''))
+                    # Fallback: cerca direttamente 'text' o 'content'
+                    elif 'text' in item:
+                        full_text += item['text']
+                    elif 'content' in item:
+                        full_text += item['content']
+            return is_reasoning, full_text, full_reasoning
+        else:
+            # Formato standard: stringa semplice
+            return False, chunk.content, ''
+
+    elif llm == "deepseek":
+        # DeepSeek usa additional_kwargs['reasoning_content']
         if 'reasoning_content' in chunk.additional_kwargs:
             return True, chunk.content, chunk.additional_kwargs['reasoning_content']
         else:
             return False, chunk.content, ''
-    elif llm=="anthropic":
-        full_thinking=""
-        full_text=""
+
+    elif llm == "anthropic":
+        # Claude usa una lista di elementi con 'thinking' e 'text'
+        full_thinking = ""
+        full_text = ""
         is_thinking = False
         if not chunk.content:  # Controlla se la lista è vuota
             return False, full_text, full_thinking
@@ -2408,5 +2484,44 @@ def get_reasoning_content(chunk, llm):
 
         return is_thinking, full_text, full_thinking
 
+    elif llm == "google":
+        # Gemini usa diverse strutture a seconda della versione API
+        full_thinking = ""
+        full_text = ""
+        is_thinking = False
+
+        # Controlla se chunk.content è una lista (formato v1alpha)
+        if isinstance(chunk.content, list):
+            for content_part in chunk.content:
+                if isinstance(content_part, dict):
+                    # Formato: {'type': 'thinking', 'thinking': '...'}
+                    if content_part.get('type') == 'thinking':
+                        full_thinking += content_part.get('thinking', '')
+                        is_thinking = True
+                    # Formato: {'type': 'text', 'text': '...'}
+                    elif content_part.get('type') == 'text':
+                        full_text += content_part.get('text', '')
+                        is_thinking = False
+                    # Fallback: cerca direttamente 'thinking' o 'text'
+                    elif 'thinking' in content_part:
+                        full_thinking += content_part['thinking']
+                        is_thinking = True
+                    elif 'text' in content_part:
+                        full_text += content_part['text']
+                        is_thinking = False
+
+        # Controlla anche additional_kwargs per compatibilità
+        elif hasattr(chunk, 'additional_kwargs') and 'thinking' in chunk.additional_kwargs:
+            full_thinking = chunk.additional_kwargs['thinking']
+            full_text = chunk.content if isinstance(chunk.content, str) else ''
+            is_thinking = True
+
+        else:
+            # Fallback: tratta come testo normale
+            full_text = chunk.content if isinstance(chunk.content, str) else ''
+
+        return is_thinking, full_text, full_thinking
+
     else:
-        return False, '', ''
+        # Provider non supportato per reasoning
+        return False, chunk.content if hasattr(chunk, 'content') else '', ''

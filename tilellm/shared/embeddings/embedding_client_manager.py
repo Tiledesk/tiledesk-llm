@@ -186,7 +186,7 @@ class EmbeddingSessionManager:
         from langchain_openai import OpenAIEmbeddings
         from pydantic import SecretStr
         import httpx
-
+        logger.info("§================================================>Provo a creare la connessione")
         http_client = httpx.AsyncClient(
             timeout=httpx.Timeout(60.0),
             limits=httpx.Limits(max_keepalive_connections=20, max_connections=100)
@@ -195,7 +195,7 @@ class EmbeddingSessionManager:
         embedding_client = OpenAIEmbeddings(
             model=self.config["model_name"],
             base_url=self.config.get("base_url", "http://localhost:8001"),
-            api_key=SecretStr("a"),
+            api_key=self.config.get("api_key","none"),
             http_async_client=http_client
         )
 
@@ -267,6 +267,9 @@ class CachedAsyncEmbeddingFactory:
 
         if config.get("base_url"):
             key_parts.append(config.get("base_url"))
+
+        logger.info(f"======================================>Cache key: {key_parts}")
+        #TODO bisogna fare l'hash della cache key
 
         return tuple(key_parts)
 
@@ -438,13 +441,13 @@ def inject_embedding_async_optimized(factory: Optional[CachedAsyncEmbeddingFacto
                         "legacy_mode": True,
                         "provider": "openai",  # Default per legacy
                         "model_name": item.embedding,
-                        "api_key": item.gptkey
+                        "api_key": item.gptkey.get_secret_value()
                     }
                 elif isinstance(item.embedding, LlmEmbeddingModel):
                     config = {
                         "provider": item.embedding.provider,
                         "model_name": item.embedding.name,
-                        "api_key": item.embedding.api_key,
+                        "api_key": item.embedding.api_key.get_secret_value(),
                         "dimension": item.embedding.dimension,
                         "base_url": item.embedding.url
                     }

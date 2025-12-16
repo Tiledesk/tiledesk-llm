@@ -342,6 +342,13 @@ class QdrantRepository(VectorStoreRepository):
 
             logger.debug(documents)
 
+            if len(chunks) == 0:
+                return IndexingResult(id=item.id,
+                                      chunks=0,
+                                      total_tokens=0,
+                                      cost="0.000000",
+                                      error="No chunks generated from source")
+
             total_tokens, cost = calc_embedding_cost(chunks, item.embedding)
 
             returned_ids = await self.upsert_vector_store(vector_store=vector_store,
@@ -364,7 +371,8 @@ class QdrantRepository(VectorStoreRepository):
                                   chunks=len(chunks),
                                   total_tokens=total_tokens,
                                   status=400,
-                                  cost=f"{cost:.6f}")
+                                  cost=f"{cost:.6f}",
+                                  error=repr(ex))
 
     @inject_embedding_async_optimized()
     async def add_item_hybrid(self, item, embedding_obj=None, embedding_dimension=None):
@@ -448,6 +456,13 @@ class QdrantRepository(VectorStoreRepository):
                     breakpoint_threshold_type=item.breakpoint_threshold_type)
                 )
 
+            if len(chunks) == 0:
+                return IndexingResult(id=item.id,
+                                      chunks=0,
+                                      total_tokens=0,
+                                      cost="0.000000",
+                                      error="No chunks generated from source")
+
             contents = [chunk.page_content for chunk in chunks]
             total_tokens, cost = calc_embedding_cost(chunks, item.embedding)
 
@@ -474,8 +489,9 @@ class QdrantRepository(VectorStoreRepository):
             traceback.print_exc()
             logger.error(repr(ex))
             return IndexingResult(id=item.id, chunks=len(chunks), total_tokens=total_tokens,
-                                  status=400,
-                                  cost=f"{cost:.6f}")
+                                   status=400,
+                                   cost=f"{cost:.6f}",
+                                   error=repr(ex))
 
     @inject_embedding_qa_async_optimized()
     async def get_chunks_from_repo(self, question_answer:QuestionAnswer, embedding_obj=None, embedding_dimension=None):
@@ -1220,7 +1236,7 @@ class QdrantRepository(VectorStoreRepository):
             )
             chunks = text_splitter.split_documents(data)
         else:
-            from langchain.text_splitter import RecursiveCharacterTextSplitter
+            from langchain_classic.text_splitter import RecursiveCharacterTextSplitter
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
             chunks = text_splitter.split_documents(data)
 
