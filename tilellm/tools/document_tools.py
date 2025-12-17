@@ -395,7 +395,7 @@ async def scrape_page_complex(url, params_type_4, browser_headers: Optional[dict
         # **1. Configura Stealth con tutte le evasioni attivate**
         stealth = Stealth(
             # Disabilita le evasioni problematiche se necessario
-            # **{**ALL_EVASIONS_DISABLED_KWARGS, "navigator_languages": True}
+            **{**ALL_EVASIONS_DISABLED_KWARGS, "navigator_languages": True}
         )
 
         async with async_playwright() as p:
@@ -601,7 +601,7 @@ def custom_html_transform(html_content, selectors_to_extract=None, unwanted_tags
                 element.decompose()
 
     # Estrai elementi basandosi sui selettori CSS
-    extracted_elements = []
+    # extracted_elements = []
 
     text_parts: List[str] = []
 
@@ -616,10 +616,12 @@ def custom_html_transform(html_content, selectors_to_extract=None, unwanted_tags
         except Exception as e:
             # Se il selettore CSS fallisce, prova come tag semplice (fallback)
             try:
+                logger.error(f"Playwright scrape failed: {str(e)}")
                 elements = soup.find_all(selector)
                 elements_to_process.extend(elements)
             except Exception:
                 # Se anche questo fallisce, continua con il prossimo selettore
+                logger.error(f"Playwright scrape failed: {str(e)}")
                 continue
 
     # Rimuovi duplicati mantenendo l'ordine di apparizione nel DOM

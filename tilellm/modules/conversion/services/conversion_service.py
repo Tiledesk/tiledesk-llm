@@ -10,7 +10,7 @@ import fitz  # PyMuPDF
 import aiohttp
 from fastapi import HTTPException
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 from pdf2image import convert_from_bytes
 from PIL import Image
 

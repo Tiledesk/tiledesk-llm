@@ -1,12 +1,12 @@
 import datetime
-from typing import Dict, Optional, List, Union, Any, Literal, TYPE_CHECKING
+from typing import Dict, Optional, List, Union, Any, TYPE_CHECKING
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, RootModel, model_validator
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from tilellm.models.base import AWSAuthentication, ServerConfig
 from tilellm.models.embedding import LlmEmbeddingModel, EmbeddingModel
-from tilellm.models.schemas.multimodal_content import MultimodalContent, ImageContent
+from tilellm.models.schemas.multimodal_content import MultimodalContent
 from tilellm.models.schemas.general_schemas import ReasoningConfig
 from tilellm.models.vector_store import Engine
 
@@ -73,7 +73,7 @@ class QuestionAnswer(BaseModel):
     question: str
     namespace: str
     llm: Optional[str] = Field(default="openai")
-    gptkey: SecretStr
+    gptkey: Optional[SecretStr] = "sk"
     model: Union[str, LlmEmbeddingModel] = Field(default="gpt-3.5-turbo")
     sparse_encoder: Optional[str] = Field(default="splade") #bge-m3
     temperature: float = Field(default=0.0)
@@ -81,7 +81,7 @@ class QuestionAnswer(BaseModel):
     max_tokens: int = Field(default=512)
     top_p: Optional[float] = Field(default=1.0)
     stream: Optional[bool] = Field(default_factory=lambda: False)
-    embedding: Union[str,EmbeddingModel] = Field(default_factory=lambda: "text-embedding-ada-002")
+    embedding: Union[str,LlmEmbeddingModel] = Field(default_factory=lambda: "text-embedding-ada-002")
     similarity_threshold: float = Field(default_factory=lambda: 1.0)
     debug: bool = Field(default_factory=lambda: False)
     citations: bool = Field(default_factory=lambda: False)
@@ -339,28 +339,8 @@ class ToolOptions(RootModel[Dict[str, Any]]):
     pass
 
 
-class QuestionToAgent(BaseModel):
-    question: str
-    llm_key: Union[SecretStr, AWSAuthentication]
-    llm: str
-    model: str = Field(default="gpt-3.5-turbo")
-    tools: Optional[List[Dict[str, ToolOptions]]] = Field(default_factory=list) # Default changed to list
-    system_context: str = Field(default="You are a helpful AI bot. Always reply in the same language of the question.")
-    temperature: float = Field(default=0.0)
-    max_tokens: int = Field(default=128)
-    chat_history_dict: Optional[Dict[str, "ChatEntry"]] = None
-    n_messages: int = Field(default_factory=lambda: None)
-
-    @field_validator("n_messages")
-    def n_messages_range(cls, v):
-        """Ensures n_messages is within greater than 0"""
-        if v is not None and not v > 0: # Aggiungi la verifica per None
-            raise ValueError("n_messages must be greater than 0")
-        return v
-
 # Risolvi forward references dopo che ChatEntry è caricato
 def rebuild_llm_models():
     from tilellm.models.chat import ChatEntry
     QuestionAnswer.model_rebuild()
     QuestionToLLM.model_rebuild()
-    QuestionToAgent.model_rebuild()

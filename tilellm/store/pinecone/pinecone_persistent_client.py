@@ -1,7 +1,7 @@
 import asyncio
 import time
 from typing import Optional, Dict, Any
-from pinecone import Pinecone, ServerlessSpec, PodSpec
+from pinecone import Pinecone, ServerlessSpec #, PodSpec
 import logging
 
 logger = logging.getLogger(__name__)
@@ -103,6 +103,7 @@ class PersistentPineconeClient:
                     environment = getattr(engine, "environment", "us-west1-gcp")
                     pod_type = getattr(engine, "pod_type", "p1")
                     pods = getattr(engine, "pods", 1)
+                    logger.debug(f"Index creation '{engine.index_name}' ({engine.type}) ({environment}) ({pod_type}) ({pods}) Disabled.")
                     try:
                         logger.info("TENTATIVO DI CREAZIONE DI INDICE - Creazione su POD disabilitata")
                         pass

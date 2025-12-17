@@ -1,9 +1,8 @@
 import time
 from collections import OrderedDict
-from functools import wraps
 import logging
 
-from typing import Any, Dict, Optional, Tuple, Callable, Type
+from typing import Any, Dict, Optional, Tuple, Callable
 import asyncio
 
 logger = logging.getLogger("GlobalCache")

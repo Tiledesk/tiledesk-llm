@@ -2,7 +2,8 @@ from enum import Enum
 from pydantic import BaseModel, Field, SecretStr, model_validator
 from typing import Optional, List
 
-class EmbeddingProviders(str, Enum):
+
+class LLMEmbeddingProviders(str, Enum):
     OPENAI = "openai"
     HUGGINGFACE = "huggingface"
     OLLAMA = "ollama"
@@ -10,6 +11,7 @@ class EmbeddingProviders(str, Enum):
     COHERE = "cohere"
     VOYAGE = "voyage"
     VLLM = "vllm"
+    ANTHROPIC = "anthropic"
 
 class AWSAuthentication(BaseModel):
     aws_access_key_id: str

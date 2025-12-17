@@ -6,9 +6,17 @@
 ### **Copyright**: Tiledesk SRL
 
 ---
+## [2025-12-17]
+### 0.7.2-rc1
+- Added: implemented structured output response for /api/ask endpoint
+- Added: structured output for /api/ask.
+- Improved: interfaces for /api/scrape/single and /api/qa.
+- Added: custom_headers and api_key for /api/ask to support vLLM.
+---
+
 
 ## [2025-12-13]
-### 0.70.1-rc2
+### 0.7.1-rc2
 - Fixed: Session leak issues in web scraping functions by adding proper try-finally blocks for browser cleanup.
 - Fixed: Improved CAPTCHA error handling to propagate clear error messages to users instead of returning empty results.
 - Fixed: Added proper resource cleanup for UnstructuredURLLoader sessions.

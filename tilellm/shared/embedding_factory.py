@@ -5,14 +5,14 @@ import hashlib
 
 from huggingface_hub import snapshot_download
 
-from pydantic import BaseModel, ValidationError, SecretStr
+from pydantic import ValidationError
 import torch
 from langchain.embeddings.base import Embeddings
 import logging
 
 from langchain_huggingface import HuggingFaceEmbeddings
 
-from tilellm.models import EmbeddingModel, LlmEmbeddingModel
+from tilellm.models import LlmEmbeddingModel #EmbeddingModel,
 from tilellm.shared.embeddings.resilient_embeddings import ResilientEmbeddings
 from tilellm.shared.timed_cache import TimedCache
 
@@ -337,18 +337,18 @@ def inject_embedding_qa(factory: Optional[EmbeddingFactory] = None):
 
             try:
 
-                if isinstance(question.embedding, EmbeddingModel):
-                    provider = question.embedding.embedding_provider
-                    key = question.embedding.embedding_key
-                    model_name = question.embedding.embedding_model
-                    base_url = question.embedding.embedding_host
-                    dimensione = question.embedding.embedding_dimension
-                    custom_headers = question.embedding.embedding_custom_headers
+                if isinstance(question.embedding, LlmEmbeddingModel): #EmbeddingModel):
+                    provider = question.embedding.provider
+                    key = question.embedding.api_key
+                    model_name = question.embedding.name
+                    base_url = question.embedding.url
+                    dimension = question.embedding.dimension
+                    custom_headers = question.embedding.custom_headers
                     config = {
                         "provider": provider,
                         "model_name": model_name,
                         "api_key": key.get_secret_value() if key else None,
-                        "dimension": dimensione,
+                        "dimension": dimension,
                         "base_url": base_url,
                         "custom_headers": custom_headers
                     }
@@ -760,18 +760,18 @@ def inject_embedding_qa_async(factory: Optional[AsyncEmbeddingFactory] = None):
             factory = factory or AsyncEmbeddingFactory()
 
             try:
-                if isinstance(question.embedding, EmbeddingModel):
-                    provider = question.embedding.embedding_provider
-                    key = question.embedding.embedding_key
-                    model_name = question.embedding.embedding_model
-                    base_url = question.embedding.embedding_host
-                    dimensione = question.embedding.embedding_dimension
-                    custom_headers = question.embedding.embedding_custom_headers
+                if isinstance(question.embedding, LlmEmbeddingModel): #EmbeddingModel):
+                    provider = question.embedding.provider
+                    key = question.embedding.api_key
+                    model_name = question.embedding.name
+                    base_url = question.embedding.url
+                    dimension = question.embedding.dimension
+                    custom_headers = question.embedding.custom_headers
                     config = {
                         "provider": provider,
                         "model_name": model_name,
                         "api_key": key.get_secret_value() if key else None,
-                        "dimension": dimensione,
+                        "dimension": dimension,
                         "base_url": base_url,
                         "custom_headers": custom_headers
                     }
@@ -809,13 +809,13 @@ async def create_embedding_instance(question):
     factory = AsyncEmbeddingFactory()
 
     # Configura in base al tipo di question
-    if hasattr(question, 'embedding') and isinstance(question.embedding, EmbeddingModel):
+    if hasattr(question, 'embedding') and isinstance(question.embedding, LlmEmbeddingModel):#EmbeddingModel):
         embedding_config = {
-            "provider": question.embedding.embedding_provider,
-            "model_name": question.embedding.embedding_model,
-            "api_key": question.embedding.embedding_key,
-            "dimension": question.embedding.embedding_dimension,
-            "base_url": question.embedding.embedding_host
+            "provider": question.embedding.provider,
+            "model_name": question.embedding.name,
+            "api_key": question.embedding.api_key,
+            "dimension": question.embedding.dimension,
+            "base_url": question.embedding.url
         }
     else:
         # Modalità legacy o configurazione semplice

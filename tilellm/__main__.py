@@ -18,7 +18,6 @@ from tilellm.shared.const import populate_constant
 from tilellm.shared.timed_cache import TimedCache
 from tilellm.shared.utility import decode_jwt
 from tilellm.models import (ItemSingle,
-                            QuestionToAgent,
                             Engine,
                             QuestionToLLM,
                             QuestionAnswer)
@@ -35,7 +34,6 @@ from tilellm.store.redis_repository import redis_xgroup_create
 from tilellm.controller.controller import (ask_with_memory,
                                            ask_hybrid_with_memory,
                                            ask_for_chunks,
-                                           ask_with_sequence,
                                            add_item,
                                            add_item_hybrid,
                                            delete_namespace,
@@ -47,7 +45,6 @@ from tilellm.controller.controller import (ask_with_memory,
                                            get_list_namespace,
                                            get_sources_namespace,
                                            ask_to_llm,
-                                           ask_to_agent,
                                            ask_reason_llm, ask_mcp_agent_llm, ask_mcp_agent_llm_simple)
 
 import logging
@@ -273,9 +270,9 @@ async def enqueue_scrape_item_main(item: ItemSingle, redis_client: Redis = Depen
     scrape_status_response = ScrapeStatusResponse(status_message="Document added to queue",
                                                   status_code=0
                                                   )
-    addtoqueue = await redis_client.set(f"{item.namespace}/{item.id}",
-                                        scrape_status_response.model_dump_json(),
-                                        ex=expiration_in_seconds)
+    await redis_client.set(f"{item.namespace}/{item.id}",
+                           scrape_status_response.model_dump_json(),
+                           ex=expiration_in_seconds)
 
     logger.debug(res)
 
@@ -444,22 +441,6 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
     return result
 
 
-@app.post("/api/agent", response_model=SimpleAnswer, tags=["Question & Answer"])
-async def post_ask_to_agent_main(question_to_agent: QuestionToAgent):
-    """
-    Query and Aswer with chat history
-    :param question_to_agent:
-    :return: SimpleAnswer
-    """
-    print(question_to_agent)
-    logger.debug(question_to_agent)
-
-    result = await ask_to_agent(question_to_agent)
-
-    logger.debug(result)
-    return JSONResponse(content=result.model_dump())
-
-
 
 @app.post("/api/ask", response_model=SimpleAnswer, tags=["Question & Answer"])
 async def post_ask_to_llm_main(question: QuestionToLLM):
@@ -516,15 +497,6 @@ async def post_ask_to_llm_reason_main(question: QuestionToLLM):
     logger.info(question)
 
     return await ask_reason_llm(question=question)
-
-
-@app.post("/api/qachain", response_model=RetrievalResult, tags=["Question & Answer"])
-async def post_ask_with_memory_chain_main(question_answer: QuestionAnswer):
-    logger.debug(question_answer)
-    result = await ask_with_sequence(question_answer)
-    logger.debug(result)
-    return JSONResponse(content=result.model_dump())
-    # return result
 
 
 @app.post("/api/scrape/status", response_model=
@@ -584,7 +556,7 @@ async def delete_item_id_namespace_post(item_to_delete: RepositoryItem):
         namespace = item_to_delete.namespace
 
         logger.info(f"delete of id {metadata_id} dal namespace {namespace}")
-        result = await delete_id_from_namespace(item_to_delete, metadata_id, namespace)
+        await delete_id_from_namespace(item_to_delete, metadata_id, namespace)
 
         return JSONResponse(content={"success": True, "message": f"ids {metadata_id} in Namespace {namespace} deleted"})
     except Exception as ex:
@@ -593,18 +565,18 @@ async def delete_item_id_namespace_post(item_to_delete: RepositoryItem):
 
 
 @app.post("/api/delete/namespace", tags=["Namespace"])
-async def delete_namespace_main(namespace_to_delete: RepositoryNamespace):
+async def delete_namespace_main_post(namespace_to_delete: RepositoryNamespace):
     """
     Delete Pinecone namespace by namespace_id
     :param namespace_to_delete:
     :return:
     """
     try:
-        result = await delete_namespace(namespace_to_delete)
+        await delete_namespace(namespace_to_delete)
         return JSONResponse(content={"success": "true", "message": f"{namespace_to_delete.namespace} is deleted from database"})
     except Exception as ex:
         return JSONResponse(content={"success": "false", "message": f"namespace {namespace_to_delete.namespace} is not deleted. {repr(ex)}"})
-        #raise HTTPException(status_code=400, detail={"success": "false", "message": repr(ex)})
+
 
 
 @app.get("/api/list/namespace/{token}", response_model=RepositoryNamespaceResult, tags=["Namespace"])
@@ -616,7 +588,7 @@ async def list_namespace_main(token: str):
     try:
         engine_dec = decode_jwt(token)
         #print(type(engine_dec))
-        logger.debug(f"All Namespaces ")
+        logger.debug("All Namespaces ")
         repository_engine = RepositoryEngine(**engine_dec)
         result = await get_list_namespace(repository_engine)
         return JSONResponse(content=result.model_dump(exclude_none=True))
@@ -647,7 +619,7 @@ async def get_items_id_namespace_main(token: str, metadata_id: str, namespace: s
 
 
 @app.get("/api/desc/namespace/{namespace}/{token}", response_model=RepositoryDescNamespaceResult, tags=["Namespace"])
-async def list_namespace_items_main(token: str, namespace: str):
+async def list_namespace_items_desc_main(token: str, namespace: str):
     """
     Get description for given namespace
     :param token
@@ -724,7 +696,7 @@ async def delete_namespace_main(token: str, namespace: str):
 
         namespace_to_delete = RepositoryNamespace(namespace=namespace, engine=engine)
 
-        result = await delete_namespace(namespace_to_delete)
+        await delete_namespace(namespace_to_delete)
         return JSONResponse(content={"message": f"Namespace {namespace} deleted"})
     except Exception as ex:
         return JSONResponse(content={"success": "false",
@@ -747,7 +719,7 @@ async def delete_item_chunk_id_namespace_main(token: str, chunk_id: str, namespa
         engine_dec = decode_jwt(token)
         repository_engine = RepositoryEngine(**engine_dec)
 
-        result = await delete_chunk_id_from_namespace(repository_engine, chunk_id, namespace)
+        await delete_chunk_id_from_namespace(repository_engine, chunk_id, namespace)
 
         return JSONResponse(content={"message": f"ids {chunk_id} in Namespace {namespace} deleted"})
     except Exception as ex:
@@ -774,7 +746,7 @@ async def delete_item_id_namespace_main(token: str, metadata_id: str, namespace:
                                         engine=engine
         )
         #repository_engine = RepositoryEngine(**engine_dec)
-        result = await delete_id_from_namespace(item_to_delete, metadata_id, namespace)
+        await delete_id_from_namespace(item_to_delete, metadata_id, namespace)
 
         return JSONResponse(content={"message": f"ids {metadata_id} in Namespace {namespace} deleted"})
     except Exception as ex:

@@ -10,20 +10,13 @@ from typing import Dict, Any, Callable, Tuple
 
 from langchain_community.callbacks.openai_info import OpenAICallbackHandler
 from langchain_deepseek import ChatDeepSeek
-from langchain_mistralai import ChatMistralAI
 
-from langchain_ollama import ChatOllama
-from pydantic import SecretStr
-
-from tilellm.models import EmbeddingModel
+from tilellm.models import LlmEmbeddingModel, LLMEmbeddingProviders  # EmbeddingModel
 from tilellm.shared import const
 
 from langchain_openai.chat_models import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
-from langchain_cohere import ChatCohere
-from langchain_google_genai import ChatGoogleGenerativeAI
 
-from langchain_groq import ChatGroq
 
 from tilellm.shared.embedding_factory import EmbeddingFactory, AsyncEmbeddingFactory
 from tilellm.shared.tiledesk_chatmodel_info import TiledeskAICallbackHandler
@@ -50,6 +43,7 @@ async def _get_llm_config_for_client(question, llm_params: Dict[str, Any]) -> Di
     custom_headers_to_use = None
     model_name_param = None
     base_url_param = None
+    #provider_param = None
     
     # Determine API key, model name, base URL, and custom headers
     if isinstance(question.model, LlmEmbeddingModel):
@@ -57,6 +51,7 @@ async def _get_llm_config_for_client(question, llm_params: Dict[str, Any]) -> Di
         custom_headers_to_use = question.model.custom_headers
         model_name_param = question.model.name
         base_url_param = question.model.url
+        #provider_param = question.model.provider
     else:
         # Fallback for when question.model is a string or other object
         # The key can be llm_key or gptkey depending on the decorator
@@ -67,6 +62,7 @@ async def _get_llm_config_for_client(question, llm_params: Dict[str, Any]) -> Di
             
         model_name_param = question.model if isinstance(question.model, str) else (question.model.name if hasattr(question.model, 'name') else None)
         base_url_param = question.model.url if hasattr(question.model, 'url') else None
+        #provider_param = question.llm if isinstance(question.llm, str) else (question.model.provider if hasattr(question.model, 'provider') else None)
 
     # Default vLLM base_url if not specified
     if question.llm == "vllm" and not base_url_param:
@@ -74,6 +70,7 @@ async def _get_llm_config_for_client(question, llm_params: Dict[str, Any]) -> Di
 
     # Consolidate all parameters for the client
     client_config = {
+        #"provider" : provider_param,
         "api_key": api_key_param,
         "model": model_name_param,
         "base_url": base_url_param,
@@ -297,7 +294,6 @@ def inject_repo_async(func: Callable) -> Callable:
             raise
 
     return async_wrapper
-
 
 
 def inject_llm(func):
@@ -593,12 +589,12 @@ def inject_llm_chat(func):
             # Usa la tua EmbeddingFactory già refattorizzata (soluzione più pulita) o la logica qui sotto.
             # Qui replichiamo la logica per chiarezza.
             embedding_config = {}
-            if isinstance(question.embedding, EmbeddingModel):
+            if isinstance(question.embedding, LlmEmbeddingModel):#EmbeddingModel):
                 embedding_config = {
-                    "provider": question.embedding.embedding_provider,
-                    "model_name": question.embedding.embedding_model,
-                    "api_key": question.embedding.embedding_key,
-                    "base_url": question.embedding.embedding_host
+                    "provider": question.embedding.provider,
+                    "model_name": question.embedding.name,
+                    "api_key": question.embedding.api_key,
+                    "base_url": question.embedding.url
                 }
             else:  # Modalità legacy con stringa
                 embedding_config = {
@@ -608,23 +604,17 @@ def inject_llm_chat(func):
                     "legacy_mode": True
                 }
 
-            # Qui usiamo la EmbeddingFactory che a sua volta usa TimedCache.
-            # factory = EmbeddingFactory()
-            # llm_embeddings, _ = factory.create(embedding_config)
-            # Per adesso, la lasciamo esplicita:
 
             embedding_cache_key = tuple(sorted(embedding_config.items()))
 
             def _embedding_creator():
                 logger.info(f"Creazione nuovo oggetto Embedding in cache con chiave: {embedding_cache_key}")
                 # ... Inserire qui la logica di creazione degli embedding che era nel decorator originale ...
-                # Questa parte diventa molto complessa, per questo usare EmbeddingFactory è meglio.
-                # Per semplicità, ipotizziamo di avere la factory:
                 factory = EmbeddingFactory()
                 embedding_obj, _ = factory.create(embedding_config)
                 return embedding_obj
 
-            llm_embeddings = _embedding_creator()#TimedCache.get(object_type="embedding", key=embedding_cache_key, constructor=_embedding_creator)
+            llm_embeddings = _embedding_creator()
 
             # --- 3. Callback Handler creation (Always New) ---
             callback_handler = None
@@ -671,7 +661,7 @@ def inject_llm_chat_async(func: Callable) -> Callable:
             llm_cache_key = await _build_llm_cache_key(question)
 
             async def _llm_creator():
-                logger.info(f"Creazione nuovo oggetto Chat in cache con chiave: {llm_cache_key}")
+                logger.debug(f"Creazione nuovo oggetto Chat in cache con chiave: {llm_cache_key}")
                 return await _create_llm_instance(question)
 
             # Recupera o crea il modello LLM dalla cache (async)
@@ -685,7 +675,7 @@ def inject_llm_chat_async(func: Callable) -> Callable:
             embedding_cache_key = await _build_embedding_cache_key(question)
 
             async def _embedding_creator():
-                logger.info(f"Creazione nuovo oggetto Embedding in cache con chiave: {embedding_cache_key}")
+                logger.debug(f"Creazione nuovo oggetto Embedding in cache con chiave: {embedding_cache_key}")
                 return await _create_embedding_instance(question)
 
             # Recupera o crea gli embedding dalla cache (async) - UNA SOLA VOLTA
@@ -781,7 +771,7 @@ async def _build_repository_cache_key(question: Any) -> tuple:
 
     return final_key_tuple
 
-async def _build_llm_cache_key(question) -> tuple:
+async def _build_llm_cache_key_old(question) -> tuple:
     """Costruisce la chiave di cache per il modello LLM"""
 
     cache_key_parts = [
@@ -797,18 +787,60 @@ async def _build_llm_cache_key(question) -> tuple:
 
     return tuple(cache_key_parts)
 
+async def _build_llm_cache_key(question) -> tuple:
+    """Costruisce la chiave di cache per il modello LLM"""
+
+    cache_key_parts = ["chat"]
+    cache_key_parts_dic = {}
+
+    if isinstance(question.model, LlmEmbeddingModel):  # EmbeddingModel):
+        cache_key_parts_dic = {
+            "model_type": "chat_object",
+            "provider": question.model.provider,
+            "model_name": question.model.name,
+            "api_key": _hash_api_key(str(question.model.api_key.get_secret_value())),  # Hash della chiave
+            #"base_url": question.model.url
+        }
+        if question.model.url is not None:
+            cache_key_parts_dic["base_url"] = question.model.url
+
+    else:  # Modalità legacy con stringa
+        cache_key_parts_dic = {
+            "model_type": "chat_legacy",
+            "provider": question.llm,
+            "model_name": question.model,
+            "api_key": _hash_api_key(str(question.gptkey.get_secret_value())),
+            "legacy_mode": True
+        }
+
+    sorted_params = tuple(
+        (k, str(v)) for k, v in sorted(cache_key_parts_dic.items())
+        if v is not None
+    )
+
+    # Chiave finale: prefisso + parametri
+
+    cache_key =("chat",) + sorted_params
+    logger.info(cache_key)
+
+
+    #return tuple(cache_key_parts)
+    return cache_key
+
+
+
 
 async def _build_embedding_cache_key(question) -> tuple:
     """Costruisce la chiave di cache per gli embedding"""
     embedding_config = {}
 
-    if isinstance(question.embedding, EmbeddingModel):
+    if isinstance(question.embedding, LlmEmbeddingModel):#EmbeddingModel):
         embedding_config = {
             "embedding_type": "object",
-            "provider": question.embedding.embedding_provider,
-            "model_name": question.embedding.embedding_model,
-            "api_key": _hash_api_key(str(question.embedding.embedding_key.get_secret_value())),  # Hash della chiave
-            "base_url": question.embedding.embedding_host
+            "provider": question.embedding.provider,
+            "model_name": question.embedding.name,
+            "api_key": _hash_api_key(str(question.embedding.api_key.get_secret_value())),  # Hash della chiave
+            "base_url": question.embedding.url
         }
     else:  # Modalità legacy con stringa
         embedding_config = {
@@ -825,9 +857,14 @@ async def _build_embedding_cache_key(question) -> tuple:
 
 async def _create_llm_instance(question):
     """Crea una nuova istanza del modello LLM usando configurazione centralizzata"""
+
     try:
+
+        provider_param = question.model.provider.value if hasattr(question.model, 'provider') else question.llm if isinstance(
+            question.llm, str) else None
+
         llm_params = get_llm_params(
-            provider=question.llm,
+            provider=provider_param,
             temperature=question.temperature,
             top_p=question.top_p,
             max_tokens=question.max_tokens
@@ -836,6 +873,7 @@ async def _create_llm_instance(question):
         client_base_config = await _get_llm_config_for_client(question, llm_params)
 
         client_config = {**llm_params}
+
         if client_base_config.get("api_key"):
             client_config["api_key"] = client_base_config["api_key"]
         if client_base_config.get("model"):
@@ -846,39 +884,39 @@ async def _create_llm_instance(question):
             client_config["default_headers"] = client_base_config["default_headers"]
 
 
-        if question.llm == "openai" or question.llm == "vllm":
+        if provider_param == "openai" or provider_param == "vllm":
             from langchain_openai import ChatOpenAI
             return ChatOpenAI(**client_config)
 
-        elif question.llm == "anthropic":
+        elif provider_param == "anthropic":
             from langchain_anthropic import ChatAnthropic
             client_config["anthropic_api_key"] = client_config.pop("api_key", None)
             return ChatAnthropic(**client_config)
 
-        elif question.llm == "cohere":
+        elif provider_param == "cohere":
             from langchain_cohere import ChatCohere
             client_config["cohere_api_key"] = client_config.pop("api_key", None)
             return ChatCohere(**client_config)
 
-        elif question.llm == "google":
+        elif provider_param == "google":
             from langchain_google_genai import ChatGoogleGenerativeAI
             client_config["google_api_key"] = client_config.pop("api_key", None)
             return ChatGoogleGenerativeAI(**client_config)
 
-        elif question.llm == "mistralai":
+        elif provider_param == "mistralai":
             from langchain_mistralai import ChatMistralAI
             client_config["model_name"] = client_config.pop("model", None)
             return ChatMistralAI(**client_config)
 
-        elif question.llm == "groq":
+        elif provider_param == "groq":
             from langchain_groq import ChatGroq
             return ChatGroq(**client_config)
 
-        elif question.llm == "deepseek":
+        elif provider_param == "deepseek":
             from langchain_deepseek import ChatDeepSeek
             return ChatDeepSeek(**client_config)
 
-        elif question.llm == "ollama":
+        elif provider_param == "ollama":
             from langchain_community.chat_models import ChatOllama
             client_config["num_predict"] = client_config.pop("max_tokens", None)
             return ChatOllama(**client_config)
@@ -967,12 +1005,12 @@ async def _create_embedding_instance(question):
     """Crea una nuova istanza del modello di embedding utilizzando EmbeddingFactory"""
     try:
         # Prepara la configurazione per EmbeddingFactory
-        if isinstance(question.embedding, EmbeddingModel):
+        if isinstance(question.embedding, LlmEmbeddingModel):#EmbeddingModel):
             embedding_config = {
-                "provider": question.embedding.embedding_provider,
-                "model_name": question.embedding.embedding_model,
-                "api_key": question.embedding.embedding_key,
-                "base_url": question.embedding.embedding_host
+                "provider": question.embedding.provider,
+                "model_name": question.embedding.name,
+                "api_key": question.embedding.api_key,
+                "base_url": question.embedding.url
             }
         else:  # Modalità legacy
             embedding_config = {
@@ -1281,44 +1319,6 @@ async def _create_reasoning_llm_instance(question) -> Any:
     except Exception as e:
         logger.error(f"Errore nella creazione del modello LLM reasoning {question.llm}: {e}", exc_info=True)
         raise
-
-def inject_reason_llm_old(func):
-    @wraps(func)
-    async def wrapper(question, *args, **kwargs):
-        logger.debug(question)
-        if question.llm == "openai":
-            chat_model = ChatOpenAI(api_key=question.llm_key,
-                                    model=question.model,
-                                    temperature=question.temperature,
-                                    max_completion_tokens=question.max_tokens)
-        elif question.llm == "anthropic":
-            chat_model = ChatAnthropic(anthropic_api_key=question.llm_key,
-                                       model=question.model,
-                                       temperature=question.temperature,
-                                       thinking=question.thinking,
-                                       max_tokens=question.max_tokens)
-        elif question.llm == "deepseek":
-            chat_model = ChatDeepSeek(api_key=question.llm_key,
-                                      model=question.model,
-                                      temperature=question.temperature,
-                                      #max_tokens=question.max_tokens
-                                      )
-
-        else:
-            chat_model = ChatOpenAI(api_key=question.llm_key,
-                                    model=question.model,
-                                    temperature=question.temperature,
-                                    max_completion_tokens=question.max_tokens)
-
-
-
-        # Add chat_model agli kwargs
-        kwargs['chat_model'] = chat_model
-
-        # Chiama la funzione originale con i nuovi kwargs
-        return await func(question, *args, **kwargs)
-
-    return wrapper
 
 def decode_jwt(token:str):
     import jwt

@@ -3,7 +3,7 @@ from threading import Lock
 import torch
 from pinecone_text.sparse import SpladeEncoder
 from FlagEmbedding import BGEM3FlagModel
-from typing import Dict, Any, Optional, Union, List
+from typing import Dict, Optional, Union, List
 import logging
 from collections import OrderedDict
 
@@ -14,7 +14,7 @@ class TiledeskSpladeEncoder:
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.logger.info(f"Init of SpladeEncoder on device: {self.device}")
         self.splade = SpladeEncoder(device=self.device)
-        self.logger.info(f"SpladeEncoder loaded")
+        self.logger.info("SpladeEncoder loaded")
 
     def encode_documents(self, contents: List[str], batch_size: Optional[int] = 10) -> List[Dict[str, List]]:
         if not batch_size:
@@ -112,10 +112,10 @@ class TiledeskSparseEncoders:
 
             # Crea nuovo encoder se non in cache
             if model_name == "splade":
-                cls._logger.info(f"Creating new SpladeEncoder instance")
+                cls._logger.info("Creating new SpladeEncoder instance")
                 encoder = TiledeskSpladeEncoder()
             elif model_name == "bge-m3":
-                cls._logger.info(f"Creating new BGEM3 instance")
+                cls._logger.info("Creating new BGEM3 instance")
                 encoder = TiledeskBGEM3()
             else:
                 raise ValueError(f"Unsupported model: {model_name}. Use 'splade' or 'bge-m3'.")

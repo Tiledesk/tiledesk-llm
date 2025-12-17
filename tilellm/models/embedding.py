@@ -1,11 +1,13 @@
-from pydantic import BaseModel, Field, SecretStr, model_validator, field_validator, validator
-from typing import Optional, Union, Dict, Any
+import logging
+
+from pydantic import BaseModel, Field, SecretStr, model_validator #, field_validator, validator
+from typing import Optional, Dict, Any
 from huggingface_hub import snapshot_download # Potrebbe andare in utils/huggingface_utils.py
 
 #from pydantic.v1 import validator
 
-from tilellm.models.base import EmbeddingProviders
-
+from tilellm.models.base import LLMEmbeddingProviders
+logger = logging.getLogger(__name__)
 
 # Potrebbe essere spostato in un file di utilities se non strettamente legato al modello
 def prepare_huggingface_model(model_name: str):
@@ -33,7 +35,7 @@ EMBEDDING_CONFIGS = {
 }
 
 class LlmEmbeddingModel(BaseModel):
-    provider: EmbeddingProviders
+    provider: LLMEmbeddingProviders
     name: str
     api_key: Optional[SecretStr] | None = None
     url: Optional[str] = Field(default_factory=lambda: "")
@@ -42,17 +44,11 @@ class LlmEmbeddingModel(BaseModel):
 
     @model_validator(mode='after')
     def validate_model(self):
-        print(f"Validazione dopo l'inizializzazione del modello: {self.name} con provider {self.provider}")
-        if self.provider == EmbeddingProviders.HUGGINGFACE:
+        logger.debug(f"Validazione dopo l'inizializzazione del modello: {self.name} con provider {self.provider}")
+        if self.provider == LLMEmbeddingProviders.HUGGINGFACE:
             prepare_huggingface_model(self.name)
         return self
 
-    #@validator('name')
-    #def validate_model_name(cls, v, values):
-    #    print(f"{v} ===== {values}")
-    #    if values.get('provider') == EmbeddingProviders.HUGGINGFACE:
-    #        prepare_huggingface_model(v)  # Scarica il modello alla validazione
-    #    return v
 
 class EmbeddingModel(BaseModel):
     embedding_provider: str

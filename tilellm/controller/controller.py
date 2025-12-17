@@ -6,21 +6,14 @@ from typing import List, Any, Optional
 
 import re
 
-from langchain_classic.chains.combine_documents import create_stuff_documents_chain
 from langchain_core.messages import ToolMessage
 
 import fastapi
 import asyncio
 from fastapi.responses import JSONResponse
 
-from langchain_classic.chains import ConversationalRetrievalChain, LLMChain  # Deprecata
-
 from langchain_core.documents import Document
-from langchain_core.prompts import PromptTemplate #, SystemMessagePromptTemplate
 
-from langchain_openai import ChatOpenAI
-from langchain_openai import OpenAIEmbeddings
-from langchain_community.callbacks.openai_info import OpenAICallbackHandler
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
@@ -43,7 +36,6 @@ from tilellm.models.schemas import (
        RepositoryEngine,ReasoningAnswer, RetrievalChunksResult)
 from tilellm.models import (
     ChatEntry,
-    QuestionToAgent,
     QuestionToLLM,
     QuestionAnswer,
     SimpleAnswer,
@@ -59,8 +51,6 @@ from langchain_classic.chains import create_retrieval_chain
 
 from langchain_community.chat_message_histories import ChatMessageHistory
 from langchain_core.chat_history import BaseChatMessageHistory
-
-from tilellm.agents.shopify_agent import lookup as shopify_lookup_agent
 
 import logging
 
@@ -181,8 +171,14 @@ async def ask_hybrid_with_memory(question_answer, repo=None, llm=None, callback_
 
         # Load session history and prepare conversational chain
         store = {}
-        get_session_history = lambda session_id: get_or_create_session_history(store, session_id,
-                                                                                   question_answer.chat_history_dict)
+        def get_session_history(session_id):
+            return get_or_create_session_history(store,
+                                                 session_id,
+                                                 question_answer.chat_history_dict
+                                                 )
+        # get_session_history = lambda session_id: get_or_create_session_history(store, session_id,
+        #                                                                           question_answer.chat_history_dict)
+
         # Generate the final answer, with or without citations result, citations, success
         result_to_return = await generate_answer_with_history(llm=llm,
                                                               question_answer=question_answer,
@@ -223,9 +219,14 @@ async def ask_reason_llm(question, chat_model=None):
 
         # Setup session history
         store = {}
-        get_session_history = lambda session_id: get_or_create_session_history(
-            store, session_id, question.chat_history_dict
-        )
+        #get_session_history = lambda session_id: get_or_create_session_history(
+        #    store, session_id, question.chat_history_dict
+        #)
+        def get_session_history(session_id):
+            return get_or_create_session_history(store,
+                                                 session_id,
+                                                 question.chat_history_dict
+                                                 )
 
         # Crea il runnable con history
         runnable = qa_prompt | chat_model
@@ -406,7 +407,7 @@ Previous conversation history:
         if question.structured_output and question.output_schema:
             structured_llm = chat_model.with_structured_output(question.output_schema)
             result_message = await structured_llm.ainvoke(messages)
-            
+
             # The result is a Pydantic model, convert it to a dict
             if hasattr(result_message, 'model_dump'):
                 answer_content = result_message.model_dump()
@@ -551,6 +552,7 @@ Provide a brief summary (max 200 words):"""
         ])
         return summary_msg.content.strip()
     except Exception as e:
+        logger.exception(e)
         # Fallback: ritorna una versione troncata
         return f"Earlier conversation summary (auto-generated): {history_text[:500]}..."
 
@@ -603,10 +605,10 @@ def _extract_token_info(message) -> PromptTokenInfo:
     )
 
 
-def _create_event(event_type: str, data: dict) -> str:
-    """Crea un evento SSE formattato"""
-    import json
-    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+#def _create_event(event_type: str, data: dict) -> str:
+#    """Crea un evento SSE formattato"""
+#    import json
+#    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
 
 
 def _reasoning_chunk_processor(chunk, question):
@@ -789,9 +791,13 @@ async def ask_to_llm_1(question: QuestionToLLM, chat_model=None) :
         # --- FINE MODIFICA ---
 
         store = {}
-        get_session_history = lambda session_id: get_or_create_session_history(store, session_id,
-                                                                               question.chat_history_dict)
-
+        #get_session_history = lambda session_id: get_or_create_session_history(store, session_id,
+        #                                                                       question.chat_history_dict)
+        def get_session_history(session_id):
+            return get_or_create_session_history(store,
+                                                 session_id,
+                                                 question.chat_history_dict
+                                                 )
 
 
         runnable = qa_prompt | chat_model
@@ -1123,7 +1129,7 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
                         "type": "image_url",
                         "image_url": {"url": data_uri}
                     })
-                    logger.info(f"Converted image to data URI format")
+                    logger.info("Converted image to data URI format")
                 else:
                     cleaned_content.append(item)
 
@@ -1162,13 +1168,13 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
 
                     url = doc_info.get("url", storage_entry.get("url", ""))
                     system_prompt += f"  • {doc_id}: {mime_type}\n"
-                    system_prompt += f"    Type: URL\n"
+                    system_prompt += "    Type: URL\n"
                     system_prompt += f"    URL: {url}\n"
                     system_prompt += f"    Referenced in message as: [DOCUMENT_{doc_id}]\n"
                 else:
                     size = len(storage_entry.get("data", ""))
                     system_prompt += f"  • {doc_id}: {mime_type}\n"
-                    system_prompt += f"    Type: BASE64\n"
+                    system_prompt += "    Type: BASE64\n"
                     system_prompt += f"    Size: {size} bytes\n"
                     system_prompt += f"    Referenced in message as: [DOCUMENT_{doc_id}]\n"
 
@@ -1424,7 +1430,7 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
         result = extract_conversation_flow(response['messages'])
         logger.info(f"============== \n{response} \n====================")
         logger.info(f"Extracted conversation flow:\n{result}")
-        logger.info(f"Agent completed successfully")
+        logger.info("Agent completed successfully")
 
         # Estrae i token consumati da tutti i messaggi AIMessage
         total_input_tokens = 0
@@ -1543,7 +1549,7 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
                                 ref_id = f"base64_ref_{base64_counter}"
 
                                 # Estrai il base64
-                                source = item.get('source', {}) 
+                                source = item.get('source', {})
                                 if isinstance(source, dict) and source.get('type') == 'base64':
                                     base64_data = source.get('data', '')
                                     media_type = source.get('media_type', 'image/png')
@@ -1601,7 +1607,7 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
                                 base64_counter += 1
                                 ref_id = f"base64_ref_{base64_counter}"
 
-                                source = item.get('source', {}) 
+                                source = item.get('source', {})
                                 mime_type = item.get('mime_type', 'application/pdf')
 
                                 if isinstance(source, dict) and source.get('type') == 'base64':
@@ -1751,7 +1757,7 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
                             sample_cleaned = re.sub(r'\s+', '', sample_raw)  # Pulisci \n, \r, spazi
 
                             if re.fullmatch(r'[A-Za-z0-9+/=]+', sample_cleaned):
-                                logger.warning(f"[STATE_MODIFIER] Detected large RAW string. Storing as ref.")
+                                logger.warning("[STATE_MODIFIER] Detected large RAW string. Storing as ref.")
 
                                 base64_counter += 1
                                 ref_id = f"base64_ref_{base64_counter}"
@@ -1843,7 +1849,7 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
             """
             current_messages = request.messages
 
-            logger.debug(f"[MIDDLEWARE] ========== CALLED ==========")
+            logger.debug("[MIDDLEWARE] ========== CALLED ==========")
             logger.debug(f"[MIDDLEWARE] Processing {len(current_messages)} messages")
 
             # DEBUG: Analizza messaggi PRIMA della pulizia
@@ -1931,7 +1937,7 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
             final_cleaned = process_messages_state_modifier({"messages": response["messages"]})
             response["messages"] = final_cleaned["messages"]
 
-        logger.info(f"Agent response received")
+        logger.info("Agent response received")
         result = extract_conversation_flow(response['messages'])
         logger.debug(result)
 
@@ -2016,8 +2022,14 @@ async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler
 
         # Load session history and prepare conversational chain
         store = {}
-        get_session_history = lambda session_id: get_or_create_session_history(store, session_id,
-                                                                               question_answer.chat_history_dict)
+        #get_session_history = lambda session_id: get_or_create_session_history(
+        #    store, session_id, question_answer.chat_history_dict
+        #)
+        def get_session_history(session_id):
+            return get_or_create_session_history(store,
+                                                 session_id,
+                                                 question_answer.chat_history_dict
+                                                 )
 
         # Generate the final answer, with or without citations
         result_to_return = await generate_answer_with_history(llm=llm,
@@ -2053,179 +2065,6 @@ async def ask_for_chunks(question_answer:QuestionAnswer, repo=None) -> Retrieval
         return result_to_return
     except Exception as e:
         return handle_exception(e, question_answer)
-
-@inject_llm_async
-async def ask_to_agent(question_to_agent: QuestionToAgent, chat_model=None):
-    try:
-        logger.info(question_to_agent)
-        #chat_history_list = []
-        #tools = load_tools(
-        #    question_to_agent.tools,
-        #    endpoint="https://swapi-graphql.netlify.app/.netlify/functions/index",
-        #    api_key="ciccio"
-        #)
-        #agent = initialize_agent(
-        #    tools, chat_model, agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION, verbose=True
-        #)
-        #result = agent.invoke(question_to_agent.question)
-        # Usa il metodo centralizzato per formattare la history
-        result_history = _format_history_as_text(question_to_agent.chat_history_dict)
-        print(result_history)
-
-
-        #qa_prompt = ChatPromptTemplate.from_messages(
-        #    [
-        #        ("system", question_to_agent.system_context),
-        #        MessagesPlaceholder("tools_result"),
-        #        MessagesPlaceholder("chat_history", n_messages=question_to_agent.n_messages),
-        #        ("human", "{input}"),
-        #    ]
-        #)
-
-        #store = {}
-
-        #def get_session_history(session_id: str) -> BaseChatMessageHistory:
-        #    if session_id not in store:
-        #        store[session_id] = load_session_history(question_to_agent.chat_history_dict)  # ChatMessageHistory()
-        #    return store[session_id]
-
-        result_shopify = shopify_lookup_agent(question_to_agent=question_to_agent, chat_model=chat_model, chat_history=result_history)
-        # print(f"RESULT: {result_shopify.get('output')} type: {type(result_shopify.get('output'))}")
-
-        # Aggiorna history usando il metodo centralizzato
-        updated_history = _update_history(
-            question_to_agent.chat_history_dict,
-            question_to_agent.question,
-            result_shopify.get("output")
-        )
-
-        answer_to_agent = SimpleAnswer(answer=result_shopify.get("output"), chat_history_dict=updated_history)
-        # print(answer_to_agent)
-        return answer_to_agent
-
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-
-        result_to_return = SimpleAnswer(answer=repr(e),
-                                        chat_history_dict={})
-        raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
-
-
-@inject_repo_async
-async def ask_with_sequence(question_answer, repo=None) -> RetrievalResult:
-    try:
-        logger.info(question_answer)
-
-        question_answer_list = []
-        if question_answer.chat_history_dict is not None:
-            for key, entry in question_answer.chat_history_dict.items():
-                question_answer_list.append((entry.question, entry.answer))
-
-        logger.info(question_answer_list)
-        openai_callback_handler = OpenAICallbackHandler()
-
-        llm = ChatOpenAI(model_name=question_answer.model,
-                         temperature=question_answer.temperature,
-                         openai_api_key=question_answer.gptkey,
-                         max_tokens=question_answer.max_tokens,
-
-                         callbacks=[openai_callback_handler])
-
-        emb_dimension = repo.get_embeddings_dimension(question_answer.embedding)
-        oai_embeddings = OpenAIEmbeddings(api_key=question_answer.gptkey, model=question_answer.embedding)
-
-        vector_store = await repo.create_index(oai_embeddings, emb_dimension, )
-        idllmchain = get_idproduct_chain(llm)
-        res = idllmchain.invoke(question_answer.question)
-
-        retriever = vector_store.as_retriever(search_type='similarity', search_kwargs={'k': question_answer.top_k,
-                                                                                       'namespace': question_answer.namespace})
-
-        # mydocs = retriever.get_relevant_documents( question_answer.question)
-        # from pprint import pprint
-        # pprint(len(mydocs))
-
-        if question_answer.system_context is not None and question_answer.system_context:
-
-            sys_template = """{system_context}.\n\n                              {context}\n                           """
-
-            sys_prompt = PromptTemplate.from_template(sys_template)
-
-
-            crc = ConversationalRetrievalChain.from_llm(
-                llm=llm,
-                retriever=retriever,
-                return_source_documents=True,
-                combine_docs_chain_kwargs={"prompt": sys_prompt}
-            )
-
-            result = crc.invoke({'question': question_answer.question, 'system_context': question_answer.system_context,
-                                 'chat_history': question_answer_list})
-
-        else:
-            crc = ConversationalRetrievalChain.from_llm(llm=llm,
-                                                        retriever=retriever,
-                                                        return_source_documents=True)
-
-            result = crc.invoke({'question': res.get('text'), 'chat_history': question_answer_list})
-
-        docs = result["source_documents"]
-
-        ids = []
-        sources = []
-        for doc in docs:
-            ids.append(doc.metadata['id'])
-            sources.append(doc.metadata['source'])
-            print(doc)
-
-        ids = list(set(ids))
-        sources = list(set(sources))
-        source = " ".join(sources)
-        meta_id = ids[0]
-
-        logger.info(result)
-
-        question_answer_list.append((result['question'], result['answer']))
-
-        chat_entries = [ChatEntry(question=q, answer=a) for q, a in question_answer_list]
-        chat_history_dict = {str(i): entry for i, entry in enumerate(chat_entries)}
-
-        success = bool(openai_callback_handler.successful_requests)
-        prompt_token_size = openai_callback_handler.total_tokens
-
-        result_to_return = RetrievalResult(
-            answer=result['answer'],
-            namespace=question_answer.namespace,
-            sources=sources,
-            ids=ids,
-            source=source,
-            id=meta_id,
-            prompt_token_size=prompt_token_size,
-            success=success,
-            error_message=None,
-            chat_history_dict=chat_history_dict
-
-        )
-
-        return result_to_return
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        question_answer_list = []
-        if question_answer.chat_history_dict is not None:
-            for key, entry in question_answer.chat_history_dict.items():
-                question_answer_list.append((entry.question, entry.answer))
-        chat_entries = [ChatEntry(question=q, answer=a) for q, a in question_answer_list]
-        chat_history_dict = {str(i): entry for i, entry in enumerate(chat_entries)}
-
-        result_to_return = RetrievalResult(
-            namespace=question_answer.namespace,
-            error_message=repr(e),
-            chat_history_dict=chat_history_dict
-
-        )
-        raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
 
 
 @inject_repo_async
@@ -2380,19 +2219,6 @@ async def get_sources_namespace(repository_engine: RepositoryEngine, source: str
         return await repo.get_sources_namespace(engine=repository_engine.engine, source=source, namespace=namespace)
     except Exception as ex:
         raise ex
-
-
-def get_idproduct_chain(llm) -> LLMChain:
-    summary_template = """
-         I want the product Identifier from this phrase (remember, it's composed by 5 digit like 36400. Ignore the other informations). Give me only the number. {question}.
-     """
-
-    summary_prompt_template = PromptTemplate(
-        input_variables=["question"],
-        template=summary_template,
-    )
-
-    return LLMChain(llm=llm, prompt=summary_prompt_template)
 
 
 def verify_answer(s):

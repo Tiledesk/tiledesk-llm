@@ -75,6 +75,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
             if question_answer.search_type == 'hybrid':
                 emb_dimension = await self.get_embeddings_dimension(question_answer.embedding)
+                logger.debug(f"emb dimension {emb_dimension}")
                 sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
                 index = await vector_store.async_index
                 sparse_vector = sparse_encoder.encode_queries(question_answer.question)
@@ -423,7 +424,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
     async def upsert_vector_store_hybrid(indice, contents, chunks, metadata_id, engine, namespace, embeddings, sparse_vectors, doc_batch_size=100):
         # Ridotto da 1000 a 100 per evitare il limite di 300000 token per richiesta di OpenAI
         embedding_chunk_size = doc_batch_size
-        batch_size: int = 32
+        #batch_size: int = 32
 
         ids = [f"{metadata_id}#{uuid.uuid4().hex}" for _ in range(len(chunks))]
         metadatas = [{**chunk.metadata, engine.text_key: chunk.page_content} for chunk in chunks]
@@ -467,3 +468,4 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
     async def upsert_vector_store(vector_store, chunks, metadata_id, namespace):
         ids = [f"{metadata_id}#{uuid.uuid4().hex}" for _ in range(len(chunks))]
         returned_ids = await vector_store.aadd_documents(chunks, namespace=namespace, ids=ids)
+        logger.debug(f"upsert_vector_store: {returned_ids}")

@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field, field_validator
-from typing import Dict, Any, Union, List, Optional, TYPE_CHECKING, Literal
+from typing import Dict, Any, Union, Optional, TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from tilellm.models.chat import ChatEntry

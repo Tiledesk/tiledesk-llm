@@ -2,7 +2,7 @@
 Configurazione centralizzata per i parametri dei vari provider LLM.
 Ogni provider ha regole specifiche su quali parametri accettare.
 """
-from typing import Dict, Any, Optional, Set
+from typing import Dict, Any, Optional
 from dataclasses import dataclass
 
 
@@ -30,7 +30,7 @@ PROVIDER_CONFIGS = {
         name="anthropic",
         supports_temperature=True,
         supports_top_p=True,
-        temperature_top_p_exclusive=False
+        temperature_top_p_exclusive=True
     ),
     "cohere": LLMProviderConfig(
         name="cohere",

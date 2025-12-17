@@ -1,5 +1,5 @@
-from pydantic import BaseModel, ValidationError, Field
-from typing import Dict, Optional, Union, List, Any
+from pydantic import BaseModel, ValidationError
+from typing import Dict, Union, List
 
 from tilellm.models.schemas.multimodal_content import MultimodalContent, TextContent, ImageContent, DocumentContent
 

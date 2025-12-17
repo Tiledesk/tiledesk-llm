@@ -128,7 +128,8 @@ class CachedVectorStore:
                 if self._qdrant_client:
                     try:
                         self._qdrant_client.close()
-                    except:
+                    except Exception as e:
+                        logger.debug(f"Close problem {repr(e)}")
                         pass
                 self._qdrant_client = None
 
@@ -151,6 +152,7 @@ class CachedVectorStore:
             self._qdrant_client.get_collection(collection_name=collection_name)
         except Exception:
             logger.info(f"La collection '{collection_name}' non esiste. Inizio la creazione...")
+
             metric_distance = models.Distance[self.engine.metric.upper()]
             self._qdrant_client.create_collection(
                 collection_name=collection_name,
@@ -522,6 +524,8 @@ class QdrantRepository(VectorStoreRepository):
 
             if question_answer.search_type == 'hybrid':
                 emb_dimension = await self.get_embeddings_dimension(question_answer.embedding)
+                logger.debug(f"emb_dimension: {emb_dimension}")
+                filter_qdrant = models.Filter()
                 sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
                 index = vector_store.client
                 sparse_vector = sparse_encoder.encode_queries(question_answer.question)
@@ -892,7 +896,7 @@ class QdrantRepository(VectorStoreRepository):
             else:
                 client = AsyncQdrantClient(url=engine.host+":"+str(engine.port),api_key=engine.apikey.get_secret_value())
 
-            result = []
+            # result = []
             all_object_filter = models.Filter(
                 must=[models.FieldCondition(
                     key="metadata.namespace",
@@ -1185,6 +1189,7 @@ class QdrantRepository(VectorStoreRepository):
     async def upsert_vector_store(vector_store:QdrantVectorStore, chunks, metadata_id, namespace):
         ids = [f"{uuid.uuid4().hex}" for _ in range(len(chunks))]
         returned_ids = await vector_store.aadd_documents(documents=chunks, ids=ids)
+        logger.debug(f"Upserted {len(returned_ids)} documents into {namespace}")
 
 
     @staticmethod
@@ -1325,7 +1330,7 @@ class QdrantRepository(VectorStoreRepository):
     async def upsert_vector_store_hybrid(vector_store: QdrantVectorStore, contents, chunks, metadata_id, engine, namespace, embeddings,
                                          sparse_vectors):
         embedding_chunk_size = 100
-        batch_size: int = 32
+        # batch_size: int = 32
 
         ids = [f"{uuid.uuid4().hex}" for _ in range(len(chunks))]
         metadatas = [{**chunk.metadata, "namespace": namespace} for chunk in chunks]
@@ -1339,7 +1344,7 @@ class QdrantRepository(VectorStoreRepository):
             sparse_values = sparse_vectors[i: i + embedding_chunk_size]
 
 
-            print(f" collection {engine.index_name}")
+            logger.info(f" collection {engine.index_name}")
             resp = vector_store.client.upsert(collection_name=engine.index_name,
                                                     points=[
                                                         models.PointStruct(

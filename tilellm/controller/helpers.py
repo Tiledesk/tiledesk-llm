@@ -3,7 +3,7 @@ import json
 import logging
 import base64
 import httpx
-from typing import Union, List, Any, Dict, Tuple, Optional
+from typing import Union, List, Any, Dict, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -50,31 +50,6 @@ async def _preprocess_documents_for_mcp(
             document_source = item.get("source", {})
             mime_type = item.get("mime_type", "application/pdf")
 
-            # VECCHIO CODICE (commentato):
-            # Determina se è un URL o base64
-            # if isinstance(document_source, str):
-            #     # È un URL http/https
-            #     if document_source.startswith(("http://", "https://")):
-            #         url = document_source
-            #         base64_data = None
-            #         logger.info(f"Document URL detected: {url}")
-            #     else:
-            #         # È già base64
-            #         url = None
-            #         base64_data = document_source
-            #         logger.info(f"Document base64 detected")
-            # elif isinstance(document_source, dict):
-            #     # Formato: {"type": "base64", "media_type": "...", "data": "..."}
-            #     url = None
-            #     base64_data = document_source.get("data", "")
-            #     mime_type = document_source.get("media_type", mime_type)
-            #     logger.info(f"Document base64 (dict format) detected")
-            # else:
-            #     logger.warning(f"Unknown document source format: {type(document_source)}")
-            #     transformed_content.append(item)
-            #     continue
-
-            # NUOVO CODICE: Gestione flessibile del campo source
             url = None
             base64_data = None
 
@@ -226,7 +201,7 @@ async def _preprocess_documents_for_mcp(
                     has_converted_documents = True
                     logger.info(f"Successfully converted document using tool {conversion_tool.name}")
                 else:
-                    logger.warning(f"Tool executed but no images found in result, keeping original document")
+                    logger.warning("Tool executed but no images found in result, keeping original document")
                     transformed_content.append(item)
 
             except Exception as e:

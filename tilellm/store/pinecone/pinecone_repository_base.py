@@ -52,7 +52,8 @@ class CachedVectorStore:
                 if self._pc_client:
                     try:
                         await self._pc_client.close()
-                    except:
+                    except Exception as e:
+                        logger.debug(f"Exception on Session close {repr(e)}")
                         pass
                 self._pc_client = pinecone.PineconeAsyncio(api_key=self.engine.apikey.get_secret_value())
                 self._loop = cur_loop
@@ -91,7 +92,8 @@ class CachedVectorStore:
                     if self._pc_client:
                         try:
                             await self._pc_client.close()
-                        except:
+                        except Exception as e:
+                            logger.debug(f"Exception on Session close {repr(e)}")
                             pass
                     self._pc_client = None
                     self._host = None
@@ -101,7 +103,8 @@ class CachedVectorStore:
                     await idx.describe_index_stats()
                     self._last_check = time.time()
                     return True
-                except:
+                except Exception as e:
+                    logger.debug(f"Exception {repr(e)}")
                     return False
             return False
 
@@ -239,7 +242,8 @@ class CachedVectorStore_old:
         if self._pc_client:
             try:
                 await self._pc_client.close()
-            except:
+            except Exception as e:
+                logger.debug(f"Connection test failed for {self.engine.index_name}: {e}")
                 pass
         self._pc_client = None
 
@@ -297,7 +301,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
             index = pc.IndexAsyncio(name=engine.index_name, host=host)
             # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
             async with index as index:
-                delete_response = await index.delete(delete_all=True, namespace=namespace_to_delete.namespace)
+                await index.delete(delete_all=True, namespace=namespace_to_delete.namespace)
         except Exception as ex:
 
             logger.error(ex)
@@ -331,7 +335,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
             async with index as index:
                 #describe = await index.describe_index_stats()
 
-                delete_response = await index.delete(ids=[chunk_id], namespace=namespace)
+                await index.delete(ids=[chunk_id], namespace=namespace)
         except Exception as ex:
 
             logger.error(ex)
@@ -556,7 +560,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
             # pprint(matches)
             # ids = [obj.get('id') for obj in matches]
             # print(type(matches[0].get('id')))
-            result = []
+            # result = []
             ids_count: Dict[str, RepositoryIdSummaryResult] = {}
 
             for obj in matches:

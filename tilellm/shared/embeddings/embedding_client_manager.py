@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 # Importa la tua factory esistente
 from tilellm.shared.timed_cache import TimedCache
-from tilellm.models import EmbeddingModel, LlmEmbeddingModel
+from tilellm.models import LlmEmbeddingModel #, EmbeddingModel,
 
 logger = logging.getLogger(__name__)
 
@@ -184,9 +184,9 @@ class EmbeddingSessionManager:
     async def _create_vllm_with_session(self):
         """Crea VLLM embeddings con sessione persistente"""
         from langchain_openai import OpenAIEmbeddings
-        from pydantic import SecretStr
+
         import httpx
-        logger.info("§================================================>Provo a creare la connessione")
+        logger.debug("Connection instance ")
         http_client = httpx.AsyncClient(
             timeout=httpx.Timeout(60.0),
             limits=httpx.Limits(max_keepalive_connections=20, max_connections=100)
@@ -482,13 +482,13 @@ def inject_embedding_qa_async_optimized(factory: Optional[CachedAsyncEmbeddingFa
             factory = factory or CachedAsyncEmbeddingFactory()
 
             try:
-                if isinstance(question.embedding, EmbeddingModel):
+                if isinstance(question.embedding, LlmEmbeddingModel):#EmbeddingModel):
                     config = {
-                        "provider": question.embedding.embedding_provider,
-                        "model_name": question.embedding.embedding_model,
-                        "api_key": question.embedding.embedding_key,
-                        "dimension": question.embedding.embedding_dimension,
-                        "base_url": question.embedding.embedding_host
+                        "provider": question.embedding.provider,
+                        "model_name": question.embedding.name,
+                        "api_key": question.embedding.api_key,
+                        "dimension": question.embedding.dimension,
+                        "base_url": question.embedding.url
                     }
                 else:
                     config = {
@@ -520,13 +520,13 @@ async def create_optimized_embedding_instance(question):
     """Funzione helper per creare embeddings ottimizzati"""
     factory = CachedAsyncEmbeddingFactory()
 
-    if hasattr(question, 'embedding') and isinstance(question.embedding, EmbeddingModel):
+    if hasattr(question, 'embedding') and isinstance(question.embedding, LlmEmbeddingModel):#EmbeddingModel):
         config = {
-            "provider": question.embedding.embedding_provider,
-            "model_name": question.embedding.embedding_model,
-            "api_key": question.embedding.embedding_key,
-            "dimension": question.embedding.embedding_dimension,
-            "base_url": question.embedding.embedding_host
+            "provider": question.embedding.provider,
+            "model_name": question.embedding.name,
+            "api_key": question.embedding.api_key,
+            "dimension": question.embedding.dimension,
+            "base_url": question.embedding.url
         }
     else:
         config = {

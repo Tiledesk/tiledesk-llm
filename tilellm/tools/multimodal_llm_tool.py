@@ -7,15 +7,15 @@ per effettuare operazioni multimodali (analisi di immagini, documenti, etc.)
 
 import logging
 import base64
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 from langchain_core.tools import tool
-from pydantic import BaseModel, Field
 
-logger = logging.getLogger(__name__)
+
 
 from typing import Optional, List, Dict
 from pydantic import BaseModel, Field
 
+logger = logging.getLogger(__name__)
 
 class MultimodalLLMInput(BaseModel):
     """Input schema for the multimodal LLM tool."""
