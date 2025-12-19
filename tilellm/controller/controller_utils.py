@@ -297,15 +297,13 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
 
     def extract_content(input_dict):
         # print(input_dict["answer"])
-        return {"input": input_dict["input"], "answer": input_dict["answer"]}
+        return {"input": input_dict.get("input"), "answer": input_dict.get("answer")}
 
     # --- INIZIO MODIFICA: gestione history come stringa quando contextualize_prompt=False ---
     if not question_answer.contextualize_prompt:
         # NUOVO FLUSSO: history iniettata come stringa nel system prompt
         # NON usa RunnableWithMessageHistory, invoca direttamente rag_chain
         # Questo risparmia token perché non c'è overhead di MessagesPlaceholder
-
-        start_time = datetime.now() if question_answer.debug else 0
 
         # Converti la history in stringa
         chat_history_text = chat_history_to_text(question_answer)
@@ -319,102 +317,156 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
             if "{context}" not in question_answer.system_context:
                 logger.warning("Custom system_context does not contain {context} placeholder - adding it automatically")
                 system_with_context = f"""{question_answer.system_context}
-
-Retrieved context:
-{{context}}
-"""
+                                Retrieved context:
+                                                {{context}}
+                                """
             else:
                 system_with_context = question_answer.system_context
 
             # Appende la history al system prompt
             system_final = f"""{system_with_context}
-
-<previous_conversation>
-{chat_history_text}
-</previous_conversation>
-"""
+            
+            <previous_conversation>
+            {chat_history_text}
+            </previous_conversation>
+            """
         else:
             # CASO 2: prompt default già contiene {chat_history_text}
             logger.info(f"Using default prompt with injected history variable (length: {len(chat_history_text)} chars)")
             system_final = const.qa_system_prompt_with_history_injected
 
-        # Gestione citazioni
-        if question_answer.citations:
-            # Con citazioni: usa structured output
-            retrieve_docs = (lambda x: x["input"]) | retriever
+        qa_prompt_final = ChatPromptTemplate.from_messages([
+            ("system", system_final),
+            ("human", "{input}"),
+        ])
 
-            qa_prompt_final = ChatPromptTemplate.from_messages([
-                ("system", system_final),
-                ("human", "{input}"),
-            ])
-
-            rag_chain_from_docs = (
-                RunnablePassthrough.assign(context=(lambda x: format_docs_with_id(x["context"])))
-                | qa_prompt_final
-                | llm.with_structured_output(QuotedAnswer)
-            )
-
-            chain_w_citations = (
-                RunnablePassthrough.assign(context=retrieve_docs)
-                .assign(answer=rag_chain_from_docs)
-                .assign(only_answer=lambda text: text["answer"].answer)
-            )
-
-            # Invoca con o senza chat_history_text come variabile
-            if question_answer.system_context:
-                result = await chain_w_citations.ainvoke({"input": question_answer.question})
-            else:
-                result = await chain_w_citations.ainvoke({
-                    "input": question_answer.question,
-                    "chat_history_text": chat_history_text
-                })
-
-            citations = result['answer'].citations
-            result['answer'] = result['answer'].answer
+        # Se non c'è system_context custom, la chain si aspetta 'chat_history_text'
+        if question_answer.system_context:
+            chain_input = {"input": question_answer.question}
         else:
-            # Senza citazioni: invocazione diretta
-            qa_prompt_final = ChatPromptTemplate.from_messages([
-                ("system", system_final),
-                ("human", "{input}"),
-            ])
+            chain_input = {"input": question_answer.question, "chat_history_text": chat_history_text}
 
-            rag_chain_simple = create_retrieval_chain(retriever,
-                                                      create_stuff_documents_chain(llm, qa_prompt_final))
 
-            # Invoca con o senza chat_history_text come variabile
-            if question_answer.system_context:
-                result = await rag_chain_simple.ainvoke({"input": question_answer.question})
+        if question_answer.stream:
+
+            if question_answer.citations:
+                rag_chain_from_docs_stream = (
+                    RunnablePassthrough.assign(context=(lambda x: format_docs_with_id(x["context"])))
+                    | qa_prompt_final
+                    | llm
+                )
+                retrieve_docs = (lambda x: x["input"]) | retriever
+                runnable = (
+                    RunnablePassthrough.assign(context=retrieve_docs)
+                    .assign(answer=rag_chain_from_docs_stream)
+                )
             else:
-                result = await rag_chain_simple.ainvoke({
+                runnable = create_retrieval_chain(retriever, create_stuff_documents_chain(llm, qa_prompt_final))
+
+            async def get_stream_llm_simple():
+                full_response = ""
+                message_id = str(uuid.uuid4())
+                start_time = datetime.now()
+                result_context = None
+
+                # Add citation prompt tail if needed
+                local_chain_input = chain_input.copy()
+                if question_answer.citations:
+                    local_chain_input["input"] = local_chain_input["input"] + "\n" + const.stream_citations_tail
+
+                yield _create_event("metadata", {"message_id": message_id, "status": "started", "timestamp": start_time.isoformat()})
+
+                async for chunk in runnable.astream(local_chain_input):
+                    content_to_stream = None
+                    if "answer" in chunk:
+                        if isinstance(chunk["answer"], str):
+                            content_to_stream = chunk["answer"]
+                        elif hasattr(chunk["answer"], "content"):
+                            content_to_stream = chunk["answer"].content
+
+                    if content_to_stream:
+                        full_response += content_to_stream
+                        yield _create_event("chunk", {"content": content_to_stream, "message_id": message_id})
+                        await asyncio.sleep(0.02)
+
+                    if "context" in chunk and result_context is None: # Capture context once
+                        result_context = chunk["context"]
+
+                # Final processing after stream ends
+                citations = extract_citations(full_response) if question_answer.citations else []
+                end_time = datetime.now()
+                full_response, success = verify_answer(full_response)
+
+                final_result_dict = {
                     "input": question_answer.question,
-                    "chat_history_text": chat_history_text
+                    "answer": full_response,
+                    "context": result_context if result_context else [],
+                    "chat_history": []
+                }
+
+                question_answer_list.append((question_answer.question, full_response))
+
+                result_to_return = format_result(
+                    result=final_result_dict,
+                    citations=citations,
+                    question_answer=question_answer,
+                    callback_handler=callback_handler,
+                    question_answer_list=question_answer_list,
+                    success=success,
+                    duration=(end_time - start_time).total_seconds()
+                )
+
+                yield _create_event("metadata", {
+                    "message_id": message_id,
+                    "status": "completed",
+                    "timestamp": end_time.isoformat(),
+                    "duration": (end_time - start_time).total_seconds(),
+                    "full_response": full_response,
+                    "model_used": result_to_return.model_dump()
                 })
 
-            citations = None
+            return StreamingResponse(
+                get_stream_llm_simple(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache"}
+            )
+        else: # NOT STREAMING
+            start_time = datetime.now() if question_answer.debug else 0
+            if question_answer.citations:
+                retrieve_docs = (lambda x: x["input"]) | retriever
+                rag_chain_from_docs = (
+                    RunnablePassthrough.assign(context=(lambda x: format_docs_with_id(x["context"])))
+                    | qa_prompt_final
+                    | llm.with_structured_output(QuotedAnswer)
+                )
+                chain_w_citations = (
+                    RunnablePassthrough.assign(context=retrieve_docs)
+                    .assign(answer=rag_chain_from_docs)
+                    .assign(only_answer=lambda text: text["answer"].answer)
+                )
+                result = await chain_w_citations.ainvoke(chain_input)
+                citations = result['answer'].citations
+                result['answer'] = result['answer'].answer
+            else:
+                rag_chain_simple = create_retrieval_chain(retriever, create_stuff_documents_chain(llm, qa_prompt_final))
+                result = await rag_chain_simple.ainvoke(chain_input)
+                citations = None
 
-        end_time = datetime.now() if question_answer.debug else 0
-        duration = (end_time - start_time).total_seconds() if question_answer.debug else 0.0
-
-        # Processa la risposta
-        result['answer'], success = verify_answer(result['answer'])
-
-        # Aggiungi chat_history al result (mancante quando non usiamo RunnableWithMessageHistory)
-        # Questo è necessario per format_result() che si aspetta questa chiave
-        result['chat_history'] = []  # Non necessaria nel nuovo flusso, ma richiesta da format_result()
-
-        question_answer_list.append((question_answer.question, result['answer']))
-
-        result_to_return = format_result(
-            result=result,
-            citations=citations,
-            question_answer=question_answer,
-            callback_handler=callback_handler,
-            question_answer_list=question_answer_list,
-            success=success,
-            duration=duration
-        )
-
-        return JSONResponse(content=result_to_return.model_dump())
+            end_time = datetime.now() if question_answer.debug else 0
+            duration = (end_time - start_time).total_seconds() if question_answer.debug else 0.0
+            result['answer'], success = verify_answer(result['answer'])
+            result['chat_history'] = []
+            question_answer_list.append((question_answer.question, result['answer']))
+            result_to_return = format_result(
+                result=result,
+                citations=citations,
+                question_answer=question_answer,
+                callback_handler=callback_handler,
+                question_answer_list=question_answer_list,
+                success=success,
+                duration=duration
+            )
+            return JSONResponse(content=result_to_return.model_dump())
     # --- FINE MODIFICA ---
 
     # CODICE ORIGINALE: usa RunnableWithMessageHistory (quando contextualize_prompt=True)
@@ -433,7 +485,7 @@ Retrieved context:
                 RunnablePassthrough.assign(context=retrieve_docs)
                 .assign(answer=rag_chain_from_docs)
                 .assign(only_answer=RunnableLambda(extract_content)#lambda text: text["answer"].answer)
-                                 )
+                )
             )
 
             conversational_rag_chain = RunnableWithMessageHistory(

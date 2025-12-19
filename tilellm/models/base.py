@@ -12,6 +12,7 @@ class LLMEmbeddingProviders(str, Enum):
     VOYAGE = "voyage"
     VLLM = "vllm"
     ANTHROPIC = "anthropic"
+    GROQ = "groq"
 
 class AWSAuthentication(BaseModel):
     aws_access_key_id: str

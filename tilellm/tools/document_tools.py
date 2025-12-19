@@ -463,7 +463,7 @@ async def scrape_page_complex(url, params_type_4, browser_headers: Optional[dict
                         timeout=30000
                     )
                 except Exception as e:
-                    logger.error(f"Errore durante la navigazione: {e}")
+                    #logger.error(f"Errore durante la navigazione: {e}")
                     raise ValueError(f"Navigazione fallita per l'URL: {url}. Errore: {e}")
 
                 # **7. Attendi elementi specifici del sito target**
@@ -497,13 +497,14 @@ async def scrape_page_complex(url, params_type_4, browser_headers: Optional[dict
                 )
 
                 # **12. Doppio check: il contenuto è valido?**
-                if "captcha-delivery.com" in transformed_content or len(transformed_content.strip()) < 500:
+                if "captcha-delivery.com" in transformed_content or len(transformed_content.strip()) < 50:
                     error_msg = "Contenuto bloccato da CAPTCHA o troppo breve (meno di 500 caratteri). Impossibile procedere con lo scraping."
                     logger.error(f"❌ {error_msg}")
                     raise ValueError(error_msg)
 
                 metadata = {"source": url}
                 doc = Document(page_content=transformed_content, metadata=metadata)
+                print(doc)
                 return [doc]
             finally:
                 await browser.close()
@@ -512,7 +513,7 @@ async def scrape_page_complex(url, params_type_4, browser_headers: Optional[dict
         logger.error(f"Playwright scrape failed: {str(e)}")
         raise
 
-async def scrape_page_complex_old(url, params_type_4, browser_headers: Optional[dict] = None, time_sleep=2):
+async def scrape_page_complex_a(url, params_type_4, browser_headers: Optional[dict] = None, time_sleep=2):
     logger.info("Starting scraping...")
     if browser_headers is None:
         browser_headers = {
