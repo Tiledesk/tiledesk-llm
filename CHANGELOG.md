@@ -6,6 +6,12 @@
 ### **Copyright**: Tiledesk SRL
 
 ---
+## [2025-12-19]
+### 0.7.2-rc2
+- Fixed: Restored missing Groq provider in the providers list.
+---
+
+
 ## [2025-12-17]
 ### 0.7.2-rc1
 - Added: implemented structured output response for /api/ask endpoint
