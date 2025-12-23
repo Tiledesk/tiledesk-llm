@@ -23,7 +23,8 @@ from typing import Callable
 
 from tilellm.controller.controller_utils import preprocess_chat_history, \
     fetch_question_vectors, retrieve_documents, create_chains, get_or_create_session_history, \
-    generate_answer_with_history, handle_exception, initialize_retrievers, _create_event, extract_conversation_flow, create_contextualize_query
+    generate_answer_with_history, handle_exception, initialize_retrievers, _create_event, extract_conversation_flow, \
+    create_contextualize_query, get_filtered_tools, get_all_filtered_tools
 from tilellm.controller.helpers import _get_question_list
 from tilellm.models.schemas import (
     RetrievalResult,
@@ -61,14 +62,14 @@ logger = logging.getLogger(__name__)
 
 def handle_agent_exception(e: Exception, context: str = "Agent execution") -> JSONResponse:
     """
-    Gestisce le eccezioni nelle funzioni agent restituendo messaggi user-friendly.
+    Handles exceptions in agent functions and returns user‑friendly messages.
 
     Args:
-        e: L'eccezione catturata
-        context: Contesto dell'errore per il logging
+        e (Exception): The caught exception.
+        context (Any): Context information about the error for logging purposes.
 
     Returns:
-        JSONResponse con messaggio di errore chiaro per l'utente
+        JSONResponse: A response containing a clear, user‑friendly error message.
     """
     import traceback
     traceback.print_exc()
@@ -81,32 +82,32 @@ def handle_agent_exception(e: Exception, context: str = "Agent execution") -> JS
 
     # Errori di file non trovato
     if "not found" in error_message.lower() or "does not exist" in error_message.lower():
-        user_message = "Il file richiesto non è stato trovato. Verifica che il file sia stato caricato correttamente."
+        user_message = "The requested file was not found. Please verify that the file was uploaded correctly."
         status_code = 404
 
     # Errori di tool/MCP
     elif "tool" in error_message.lower() and ("error" in error_message.lower() or "failed" in error_message.lower()):
-        user_message = f"Errore nell'esecuzione del tool: {error_message}"
+        user_message = f"Error running the tool: {error_message}"
         status_code = 400
 
     # Errori di formato base64
     elif "base64" in error_message.lower() or "invalid" in error_message.lower():
-        user_message = "Errore nel processare il contenuto multimediale. Verifica che i file siano nel formato corretto."
+        user_message = "Error processing the multimedia content. Please verify that the files are in the correct format."
         status_code = 400
 
     # Errori di modello/API
     elif "model" in error_message.lower() or "api" in error_message.lower() or "rate" in error_message.lower():
-        user_message = f"Errore nella comunicazione con il modello AI: {error_message}"
+        user_message = f"Communication Error with the AI model. {error_message}"
         status_code = 503
 
     # Errori di timeout
     elif "timeout" in error_message.lower():
-        user_message = "L'operazione ha impiegato troppo tempo. Riprova con una richiesta più semplice."
+        user_message = "The operation took too long. Please try again with a simpler request."
         status_code = 504
 
     # Errore generico
     else:
-        user_message = f"Si è verificato un errore: {error_message}"
+        user_message = f"An error has occurred. {error_message}"
         status_code = 500
 
     error_response = SimpleAnswer(
@@ -129,6 +130,17 @@ def handle_agent_exception(e: Exception, context: str = "Agent execution") -> JS
 @inject_repo_async
 @inject_llm_chat_async
 async def ask_hybrid_with_memory(question_answer, repo=None, llm=None, callback_handler=None, llm_embeddings=None, emb_dimension=None, embedding_config_key=None):
+    """
+    Hybrid search
+    :param question_answer:
+    :param repo:
+    :param llm:
+    :param callback_handler:
+    :param llm_embeddings:
+    :param emb_dimension:
+    :param embedding_config_key:
+    :return:
+    """
     try:
         logger.info(question_answer)
 
@@ -201,9 +213,8 @@ async def ask_hybrid_with_memory(question_answer, repo=None, llm=None, callback_
 @inject_reason_llm_async
 async def ask_reason_llm(question, chat_model=None):
     """
-    Gestisce richieste a LLM con supporto per reasoning content (es. DeepSeek, o1).
-    Usa i metodi privati centralizzati per stream e history.
-
+    Manages requests to LLMs with support for reasoning content (e.g., DeepSeek, gtp-5.1, gemini-2.5-pro, claude-4.5).
+    Uses centralized private methods for streaming and history.
     :param question: QuestionToLLM
     :param chat_model: Il modello LLM
     :return: ReasoningAnswer in streaming o JSON
@@ -356,7 +367,7 @@ async def ask_reason_llm(question, chat_model=None):
 @inject_llm_async
 async def ask_to_llm(question: QuestionToLLM, chat_model=None):
     """
-    Gestisce richieste a LLM con supporto multimodale, history e streaming.
+    Manages requests to LLMs with multimodal support, history, and streaming.
     :param question: QuestionToLLM
     :param chat_model:
     :return: SimpleAnswer
@@ -376,9 +387,9 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None):
                 # Modifica il system message per includere la history
                 system_with_history = f"""{question.system_context}
 
-Previous conversation history:
-{history_text}
-"""
+                                        Previous conversation history:
+                                        {history_text}
+                                        """
                 messages[0] = SystemMessage(content=system_with_history)
 
             else:
@@ -467,32 +478,32 @@ async def _process_history_messages(
         chat_model
 ) -> list:
     """
-    Processa la history e ritorna lista di messaggi.
-    Gestisce limitazione e summarization.
+    Processes the history and returns a list of messages.
+    Handles limitation and summarization.
     """
     if not chat_history:
         return []
 
     sorted_keys = sorted(chat_history.keys(), key=lambda x: int(x))
 
-    # Nessun limite: ritorna tutto
+    # No limits: everything returns.
     if max_messages is None:
         return _build_message_list(chat_history, sorted_keys)
 
     total_turns = len(sorted_keys)
 
-    # La history sta dentro il limite
+    # History stays within the limit.
     if total_turns <= max_messages:
         return _build_message_list(chat_history, sorted_keys)
 
-    # Supera il limite
+    # Exceed the limit.
     recent_keys = sorted_keys[-max_messages:]
 
     if not summarize_old:
-        # Solo limita: prendi gli ultimi N turni
+        # Limit only: take the last N turns.
         return _build_message_list(chat_history, recent_keys)
 
-    # Summarization attiva: riassumi la parte vecchia
+    # Summarization active: summarize the old part.
     old_keys = sorted_keys[:-max_messages]
     old_history_text = _format_history_as_text(
         {k: chat_history[k] for k in old_keys}
@@ -501,7 +512,7 @@ async def _process_history_messages(
     # Crea il riassunto della history vecchia
     summary = await _summarize_history(old_history_text, chat_model)
 
-    # Costruisci i messaggi: [summary] + [recent messages]
+    # Build messages: [summary] + [recent messages]
     messages = [
         SystemMessage(content=f"Summary of earlier conversation:\n{summary}")
     ]
@@ -511,13 +522,18 @@ async def _process_history_messages(
 
 
 def _build_message_list(chat_history: dict, keys: list) -> list:
-    """Costruisce lista di messaggi Human/AI dalla history"""
+    """
+    Builds list of Human/AI messages from history
+    :param chat_history:
+    :param keys:
+    :return:
+    """
     messages = []
 
     for key in keys:
         entry = chat_history[key]
 
-        # Messaggio utente (gestisce multimodale)
+        # User Message (multimodal)
         user_content = (
             entry.get_question_content()
             if hasattr(entry, 'get_question_content')
@@ -525,7 +541,7 @@ def _build_message_list(chat_history: dict, keys: list) -> list:
         )
         messages.append(HumanMessage(content=user_content))
 
-        # Messaggio assistente
+        # Assistant message
         messages.append(AIMessage(content=entry.answer))
 
     return messages
@@ -533,18 +549,18 @@ def _build_message_list(chat_history: dict, keys: list) -> list:
 
 async def _summarize_history(history_text: str, chat_model) -> str:
     """
-    Usa l'LLM per creare un riassunto conciso della history vecchia.
+    Use the LLM to create a concise summary of the old history.
     """
     summarization_prompt = f"""You are tasked with summarizing a conversation history.
-Create a concise summary that captures:
-- Main topics discussed
-- Key information exchanged
-- Important context for continuing the conversation
-
-Conversation history to summarize:
-{history_text}
-
-Provide a brief summary (max 200 words):"""
+                            Create a concise summary that captures:
+                            - Main topics discussed
+                            - Key information exchanged
+                            - Important context for continuing the conversation
+                            
+                            Conversation history to summarize:
+                            {history_text}
+                            
+                            Provide a brief summary (max 200 words):"""
 
     try:
         summary_msg = await chat_model.ainvoke([
@@ -553,12 +569,16 @@ Provide a brief summary (max 200 words):"""
         return summary_msg.content.strip()
     except Exception as e:
         logger.exception(e)
-        # Fallback: ritorna una versione troncata
+        # Fallback: Returns a truncated version.
         return f"Earlier conversation summary (auto-generated): {history_text[:500]}..."
 
 
 def _format_history_as_text(chat_history: dict) -> str:
-    """Formatta la history come testo leggibile"""
+    """
+    Format history as readable text
+    :param chat_history:
+    :return:
+    """
     if not chat_history:
         return "No previous conversation."
 
@@ -581,7 +601,7 @@ def _format_history_as_text(chat_history: dict) -> str:
 
 
 def _update_history(current_history: dict, new_question, new_answer) -> dict:
-    """Aggiorna la history con la nuova domanda/risposta"""
+    """Update the history with new question/answer"""
     if not current_history:
         current_history = {}
 
@@ -595,7 +615,7 @@ def _update_history(current_history: dict, new_question, new_answer) -> dict:
 
 
 def _extract_token_info(message) -> PromptTokenInfo:
-    """Estrae le informazioni sui token dal messaggio"""
+    """Extracts token information from the message"""
     usage_meta = getattr(message, 'usage_metadata', None) or {}
 
     return PromptTokenInfo(
@@ -605,22 +625,20 @@ def _extract_token_info(message) -> PromptTokenInfo:
     )
 
 
-#def _create_event(event_type: str, data: dict) -> str:
-#    """Crea un evento SSE formattato"""
-#    import json
-#    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
-
-
 def _reasoning_chunk_processor(chunk, question):
     """
-    Processor per chunk con reasoning content (es. DeepSeek, Claude, Gemini).
+    Per-chunk processor with reasoning content (e.g., DeepSeek, Claude, Gemini).
 
     Args:
-        chunk: Il chunk ricevuto dallo stream
-        question: QuestionToLLM object con la configurazione
+        chunk: The chunk received from the stream
+        question: QuestionToLLM object with the configuration
 
     Returns:
-        dict con chiavi: 'content', 'reasoning_content', 'events'
+        dict with keys: 'content', 'reasoning_content', 'events'
+
+    :param chunk:
+    :param question:
+    :return:
     """
     is_reasoning, content_text, reasoning_text = get_reasoning_content(chunk, question.llm)
 
@@ -655,21 +673,29 @@ async def _stream_generic_response(
     response_class=None
 ):
     """
-    Metodo generico per gestire streaming di qualsiasi runnable.
+    Generic method to handle streaming for any runnable.
 
     Args:
-        runnable: Il runnable da eseguire (chat_model, RunnableWithMessageHistory, agent, etc.)
-        input_data: I dati di input da passare al runnable (dict o list di messaggi)
-        question: L'oggetto QuestionToLLM con i parametri della richiesta
-        config: Configurazione opzionale per il runnable (default: None)
-        chunk_processor: Funzione opzionale che prende (chunk, question) e ritorna dict con chiavi:
-                        - 'content': contenuto principale da accumulare
-                        - 'events': lista di eventi SSE da emettere
-                        Se None, usa il processing standard (solo 'content')
-        response_class: Classe per la risposta finale (default: SimpleAnswer)
+        runnable: The runnable to execute (chat_model, RunnableWithMessageHistory, agent, etc.)
+        input_data: Input data to pass to the runnable (dict or list of messages)
+        question: The QuestionToLLM object with request parameters
+        config: Optional configuration for the runnable (default: None)
+        chunk_processor: Optional function that takes (chunk, question) and returns a dict with keys:
+            'content': main content to accumulate
+            'events': list of SSE events to emit
+            If None, uses standard processing ('content' only)
+        response_class: Class for the final response (default: SimpleAnswer)
 
     Yields:
-        Eventi SSE formattati
+        Formatted SSE events
+
+    :param runnable:
+    :param input_data:
+    :param question:
+    :param config:
+    :param chunk_processor:
+    :param response_class:
+    :return:
     """
     if response_class is None:
         response_class = SimpleAnswer
@@ -907,19 +933,24 @@ async def ask_to_llm_1(question: QuestionToLLM, chat_model=None) :
 @inject_llm_async
 async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
     """
-    Invoca un agent MCP gestendo input multimodali (testo, immagini, documenti).
+    Invokes an MCP agent by handling multimodal inputs (text, images, documents).
+    Cleanup Strategy:
+        1. Normalizes input into a list of content items
+        2.Extracts and stores base64 documents/images in a separate storage
+        3. Replaces base64 with text references in messages
+        4. Middleware further cleans messages before each LLM call
+        5. The internal multimodal tool accesses storage when necessary
 
-    Strategia di pulizia:
-    1. Normalizza l'input in una lista di contenuti
-    2. Estrae e memorizza documenti/immagini base64 in storage separato
-    3. Sostituisce base64 con riferimenti testuali nei messaggi
-    4. Il middleware pulisce ulteriormente i messaggi prima di ogni chiamata LLM
-    5. Il tool multimodale interno accede allo storage quando necessario
+    :param question:
+    :param chat_model:
+    :return:
     """
     mcp_client = question.create_mcp_client()
 
     try:
-        tools = await mcp_client.get_tools()
+        #tools = await mcp_client.get_tools()
+
+        tools = await get_all_filtered_tools(mcp_client, question.servers)
         logger.info(f"Available MCP tools: {[tool.name for tool in tools]}")
 
         # Storage condiviso per contenuti base64
@@ -1322,7 +1353,7 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
             request: ModelRequest,
             handler: Callable[[ModelRequest], ModelResponse],
         ) -> ModelResponse:
-            """Middleware chiamato prima di ogni invocazione LLM per pulire i messaggi."""
+            """Middleware called before each LLM invocation to clean messages."""
             messages = request.messages
             cleaned_messages = []
 
@@ -1472,21 +1503,25 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
 @inject_llm_async
 async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
     """
-    Versione ottimizzata che risolve il problema del context overflow.
+    Optimized version that resolves the context overflow issue.
+    PROBLEM: When MCP tools return base64 images, they are included in the agent's messages, causing context overflow (671K tokens).
+    SOLUTION:
+        1. Extract and store base64 content in a separate storage
+        2. Replace base64 in messages with text references
+        3. The internal multimodal tool accesses storage when invoked
+        4. Agent messages remain lightweight (text + references only)
 
-    PROBLEMA: Quando i tool MCP restituiscono immagini in base64, queste vengono
-    incluse nei messaggi dell'agent causando l'overflow del contesto (671K tokens).
-
-    SOLUZIONE:
-    1. Estrai e memorizza i contenuti base64 in uno storage separato
-    2. Sostituisci il base64 nei messaggi con riferimenti testuali
-    3. Il tool multimodale interno accede allo storage quando invocato
-    4. I messaggi dell'agent rimangono leggeri (solo testo + riferimenti)
+    :param question:
+    :param chat_model:
+    :return:
     """
     mcp_client = question.create_mcp_client()
 
     try:
-        tools = await mcp_client.get_tools()
+        #tools = await mcp_client.get_tools()
+        tools = await get_all_filtered_tools(mcp_client, question.servers)
+
+        logger.info(f"Available MCP tools: {[tool.name for tool in tools]}")
 
         # Crea il tool multimodale interno con accesso allo storage
         from tilellm.tools.multimodal_llm_tool import create_multimodal_llm_tool
@@ -1657,8 +1692,8 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
 
         def process_messages_state_modifier(state):
             """
-            State modifier che rimuove il base64 da TUTTI i messaggi ad ogni step.
-            Intercetta sia gli input che gli output dei tool (ToolMessage).
+            State modifier that removes base64 from ALL messages at every step.
+            Intercepts both inputs and tool outputs (ToolMessage).
             """
             messages = state.get("messages", [])
             cleaned_messages = []
@@ -2076,8 +2111,10 @@ async def add_item(item, repo=None) -> IndexingResult:
     :param repo:
     :return: PineconeIndexingResult
     """
-
-    return await repo.add_item(item)
+    try:
+        return await repo.add_item(item)
+    except Exception as e:
+        raise e
 
 
 @inject_repo_async
@@ -2086,7 +2123,10 @@ async def add_item_hybrid(item, repo=None) -> IndexingResult:
 
     :return:
     """
-    return await repo.add_item_hybrid(item)
+    try:
+        return await repo.add_item_hybrid(item)
+    except Exception as e:
+        raise e
 
 
 @inject_repo_async
@@ -2174,17 +2214,18 @@ async def get_ids_namespace(repository_engine: RepositoryEngine, metadata_id: st
 
 
 @inject_repo_async
-async def get_listitems_namespace(repository_engine: RepositoryEngine, namespace: str, repo=None) -> RepositoryItems:
+async def get_listitems_namespace(repository_engine: RepositoryEngine, namespace: str, with_text=False, repo=None) -> RepositoryItems:
     """
     Get all items from given namespace
     :param repository_engine: RepositoryEngine
     :param namespace: namespace_id
+    :param with_text: Text of chunk
     :param repo:
     :return: list of al items PineconeItems
     """
     try:
         return await repo.get_all_obj_namespace(engine=repository_engine.engine,
-                                                   namespace=namespace)
+                                                   namespace=namespace, with_text=with_text)
     except Exception as ex:
         raise ex
 
@@ -2246,18 +2287,18 @@ def format_docs_with_id(docs: List[Document]) -> str:
 
 def get_reasoning_content(chunk, llm):
     """
-    Verifica se la chiave 'reasoning_content' esiste nel dizionario annidato
-    'additional_kwargs' di un chunk e restituisce il suo valore.
+    Checks if the 'reasoning_content' key exists in the nested
+    'additional_kwargs' dictionary of a chunk and returns its value.
 
     Args:
-        chunk (dict): Il dizionario contenente i dati.
-        llm: llm usato
+        chunk (dict): The dictionary containing the data.
+        llm: The LLM used.
 
     Returns:
         tuple: (is_thinking, content_text, reasoning_text)
-            - is_thinking: True se questo chunk contiene thinking content
-            - content_text: Il contenuto della risposta principale
-            - reasoning_text: Il contenuto del reasoning/thinking
+            - is_thinking: True if this chunk contains thinking content
+            - content_text: The main response content
+            - reasoning_text: The reasoning/thinking content
     """
     if llm == "openai":
         # OpenAI GPT-5 con responses/v1 restituisce una lista di oggetti

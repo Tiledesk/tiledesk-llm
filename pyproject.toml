@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "tilellm"
-version = "0.7.2-rc2"
+version = "0.7.3-rc1"
 description = "tiledesk for RAG"
 authors = ["Gianluca Lorenzo <gianluca.lorenzo@gmail.com>"]
 repository = "https://github.com/Tiledesk/tiledesk-llm"
@@ -71,13 +71,14 @@ pdf2image= "1.17.0"
 
 simsimd = "6.5.3"#"6.5.0"
 
+networkx= "3.6.1"
 
 #[tool.poetry.dependencies.pinecone-text]
 #version = "0.10.0"
 #extras = ["splade"]
 
 
-pinecone = {extras = ["async"], version = "7.3.0"}
+pinecone = "7.3.0"#{extras = ["async"], version = "7.3.0"}
 pinecone-text = "0.11.0"
 
 neo4j = "^5.26.0"

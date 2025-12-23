@@ -320,7 +320,7 @@ class TimedCache:
             return obj
 
         # Miss: crea
-        logger.info(f"Creazione nuovo oggetto {object_type}/{key}")
+        logger.info(f"New object creation {object_type}/{key}")
         obj = await constructor(*args, **kwargs)
         cache[key] = (obj, now)
         return obj

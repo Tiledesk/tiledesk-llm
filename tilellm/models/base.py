@@ -26,6 +26,7 @@ class ServerConfig(BaseModel):
     command: Optional[str] = None
     args: Optional[List[str]] = None
     api_key: Optional[SecretStr] = None
+    enabled_tools: Optional[List[str]] = Field(default_factory=lambda: ["all"])
     parameters: Optional[dict] = Field(default_factory=dict)
 
     @model_validator(mode='after')

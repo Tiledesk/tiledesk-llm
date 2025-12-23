@@ -102,15 +102,15 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
         else:
             raise ValueError(f"Unsupported scrape_type: {scrape_type}")
     except Exception as ex:
-        logger.error(f"Errore nel metodo principale ({scrape_type}): {str(ex)}")
-        # Se l'errore è relativo a CAPTCHA, non procedere con fallback
-        if "CAPTCHA" in str(ex) or "bloccata" in str(ex) or "troppo breve" in str(ex):
+        logger.error(f"Error in the main method get_content_by_url ({scrape_type}): {str(ex)}")
+        # If the error is related to a CAPTCHA, Do not proceed with fallback
+        if "CAPTCHA" in str(ex) or "blocked" in str(ex) or "too short" in str(ex):
             raise
         return await robust_fallback(url, params_type_4, browser_headers=browser_headers)
 
 
 async def handle_unstructured_loader(urls: list, mode: str, strategy: Optional[str] = None, browser_headers: Optional[dict] = None) -> list[Document]:
-    """Gestisce il caricamento con UnstructuredURLLoader"""
+    """Manages loading with UnstructuredURLLoader"""
     #print(urls)
     if browser_headers is None or browser_headers is dict:
         browser_headers = {
@@ -139,7 +139,7 @@ async def handle_unstructured_loader(urls: list, mode: str, strategy: Optional[s
             await loader.aclose()
 
 async def handle_playwright_scrape(url: str, params: object, browser_headers: Optional[dict] = None) -> list[Document]:
-    """Gestisce lo scraping con Playwright"""
+    """Handles scraping with Playwright"""
     if browser_headers is None:
         browser_headers = {
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
@@ -148,7 +148,7 @@ async def handle_playwright_scrape(url: str, params: object, browser_headers: Op
     return clean_documents_metadata(docs)
 
 async def handle_playwright_scrape_complex(url: str, params: object, browser_headers: Optional[dict] = None) -> list[Document]:
-    """Gestisce lo scraping con Playwright"""
+    """Handles scraping with Playwright"""
     if browser_headers is None:
         browser_headers = {
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
@@ -164,7 +164,7 @@ async def handle_chromium_loader(
         transform_kwargs: Optional[dict] = None,
         browser_headers: Optional[dict] = None
 ) -> list[Document]:
-    """Gestisce scraping con Playwright e trasformazione opzionale (sostituisce AsyncChromiumLoader)"""
+    """Handles scraping with Playwright and optional transformation (replace AsyncChromiumLoader)"""
     if browser_headers is None:
         browser_headers = {
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
@@ -194,8 +194,8 @@ async def handle_chromium_loader(
                 await browser.close()
     
     # Controllo del contenuto minimo
-    if not docs or any(len(doc.page_content.strip()) < 50 for doc in docs):
-        raise ValueError("Contenuto insufficiente o vuoto")
+    if not docs or any(len(doc.page_content.strip()) < 20 for doc in docs):
+        raise ValueError("Insufficient or empty content")
 
     if transformer and transform_kwargs:
         docs = transformer.transform_documents(docs, **transform_kwargs)
@@ -206,7 +206,7 @@ async def handle_chromium_loader(
 
 
 async def scrape_page_fallback_selectors(url, browser_headers: Optional[dict] = None):
-    """Fallback con selettori più permissivi"""
+    """Fallback with more permissive selectors"""
     if browser_headers is None:
         browser_headers = {
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
@@ -263,8 +263,8 @@ def get_fallback_selectors():
     ]
 
 async def robust_fallback(url: str, params: Optional[object] = None, browser_headers: Optional[dict] = None) -> list[Document]:
-    """Meccanismo di fallback a più livelli"""
-    logger.warning(f"Attivazione fallback per URL: {url}")
+    """Multi-level Fallback Mechanism"""
+    logger.warning(f"Fallback activation for URL: {url}")
     if browser_headers is None:
         browser_headers = {
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
@@ -272,22 +272,22 @@ async def robust_fallback(url: str, params: Optional[object] = None, browser_hea
     assert browser_headers is not None
 
     try:
-        # Primo fallback: metodo alternativo sincrono
-        logger.info("Tentativo fallback 1: scrape asincrono")
+        # First fallback: alternative sync method
+        logger.info("Fallback attempt 1: async scrape")
         return clean_documents_metadata(await scrape_page_fallback_selectors(url, browser_headers=browser_headers))
     except Exception as e:
-        logger.error(f"Fallback 1 fallito: {str(e)}")
+        logger.error(f"Fallback 1 fail: {str(e)}")
 
     try:
-        # Secondo fallback: Playwright diretto
-        logger.info("Tentativo fallback 2: Playwright")
+        # Second fallback: Playwright
+        logger.info("Fallback attempt 2: Playwright")
         return await handle_playwright_scrape(url, params, browser_headers=browser_headers)
     except Exception as e:
-        logger.error(f"Fallback 2 fallito: {str(e)}")
+        logger.error(f"Fallback 2 fail: {str(e)}")
 
     try:
-        # Terzo fallback: Playwright diretto (sostituisce AsyncChromiumLoader)
-        logger.info("Tentativo fallback 3: Playwright rinforzato")
+        # Third fallback: Playwright (in place of AsyncChromiumLoader)
+        logger.info("Fallback attempt 3: reinforced Playwright")
         return await handle_chromium_loader(
             urls=[url],
             transformer=None,
@@ -296,16 +296,16 @@ async def robust_fallback(url: str, params: Optional[object] = None, browser_hea
             browser_headers=browser_headers
         )
     except Exception as e:
-        logger.error(f"Fallback 3 fallito: {str(e)}")
+        logger.error(f"Fallback 3 failed: {str(e)}")
 
-    # Fallback finale: solleva eccezione
-    error_msg = f"Tutti i fallback falliti per l'URL: {url}. Impossibile recuperare contenuto."
+    # Final Fallback: arise exception
+    error_msg = f"All fallbacks failed for URL: {url}. Unable to retrieve content."
     logger.error(error_msg)
     raise ValueError(error_msg)
 
 
 def clean_documents_metadata(docs: Sequence[Document]) -> list[Document]:
-    """Pulisce i metadati per tutti i documenti"""
+    """Clean metadata for all documents"""
     for doc in docs:
         doc.metadata = clean_metadata(doc.metadata)
     return list(docs)
@@ -324,33 +324,33 @@ async def scrape_page(url, params_type_4, browser_headers: Optional[dict] = None
                                             ]
                                             )
         try:
-            page = await browser.new_page(extra_http_headers=browser_headers, #user_agent="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
-                                java_script_enabled=True)
+            page = await browser.new_page(extra_http_headers=browser_headers,
+                                          java_script_enabled=True)
 
             try:
-                # 1. Navigazione iniziale. 'load' è un buon punto di partenza.
+                # 1. Initial navigation. 'load' is a good starting point.
                 logger.debug("Navigating to page and waiting for 'load' state...")
                 await page.goto(url=url, wait_until="load", timeout=60000)
 
-                # 2. CICLO DI ATTESA DINAMICA (sostituisce il time.sleep)
+                # 2. DYNAMIC WAIT LOOP (replaces (time.sleep)
                 logger.debug("Waiting for DOM to stabilize...")
                 previous_html_size = 0
-                # Eseguiamo il controllo per un massimo di 5 volte (es. 5 * 2 secondi = 10 secondi max)
-                # per evitare loop infiniti su pagine che cambiano sempre (es. con un timer).
+                # Perform the check-up to 5 times (e.g.,5 × 2 seconds = 10 seconds max)
+                # to avoid infinite loops on pages that constantly change (e.g., with a timer).
                 for _ in range(5):
                     await page.wait_for_timeout(2000)  # Attendi 2 secondi tra un controllo e l'altro
 
                     current_html_size = len(await page.content())
 
-                    # Se la dimensione non è cambiata, la pagina è stabile.
+                    # If the size hasn't changed, the page is stable.
                     if current_html_size == previous_html_size:
                         logger.debug("DOM is stable. Proceeding.")
                         break
 
-                    # Altrimenti, aggiorna la dimensione e continua a controllare.
+                    # Otherwise, update the size and keep checking.
                     previous_html_size = current_html_size
                     logger.debug(f"DOM is still changing... current size: {current_html_size}")
-                else:  # Questo `else` si attiva solo se il `for` loop finisce senza `break`
+                else:  # This `else` fires only if the `for` loop ends without a `break`
                     logger.warning("DOM did not stabilize after several checks. Proceeding anyway.")
 
             except PlaywrightTimeoutError:
@@ -392,9 +392,9 @@ async def scrape_page_complex(url, params_type_4, browser_headers: Optional[dict
     from playwright.async_api import async_playwright
     from playwright_stealth import Stealth, ALL_EVASIONS_DISABLED_KWARGS
     try:
-        # **1. Configura Stealth con tutte le evasioni attivate**
+        # **1. Configure Stealth with all evasions enabled**
         stealth = Stealth(
-            # Disabilita le evasioni problematiche se necessario
+            # Disable problematic evasions if necessary.
             **{**ALL_EVASIONS_DISABLED_KWARGS, "navigator_languages": True}
         )
 
@@ -419,74 +419,74 @@ async def scrape_page_complex(url, params_type_4, browser_headers: Optional[dict
                 ]
             )
             try:
-                # **2. Context con parametri umani-realistici**
+                # 2 **Context with human‑realistic parameters.**
                 context = await browser.new_context(
                     extra_http_headers=browser_headers,
                     viewport={"width": 1920, "height": 1080},
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
                     locale="it-IT",
                     timezone_id="Europe/Rome",
-                    permissions=["geolocation"],  # Simula permessi reali
+                    permissions=["geolocation"],  # Simulate real permissions
                 )
 
-                # **3. APPLICA STEALTH AL CONTESTO**
+                # **3. Apply STEALTH to the Contest**
                 await stealth.apply_stealth_async(context)
 
                 page = await context.new_page()
 
-                # **4. Intercetta e logga i redirect**
+                # **4. Intercept and log the redirect**
                 async def check_redirect(route, request):
                     if "captcha-delivery.com" in request.url or "geo.captcha-delivery.com" in request.url:
                         logger.error(f"❌ CAPTCHA DETECTED! Request: {request.url}")
-                        # **Scegli una strategia:**
-                        await route.abort()  # Blocca la richiesta
-                        # Oppure continua per analizzare la risposta:
+                        # ** Choose a strategy:**
+                        await route.abort()  # Block the request
+                        # Otherwise continue in order to analyze the response:
                         # await route.continue_()
                     else:
                         await route.continue_()
 
                 await page.route("**/*", check_redirect)
 
-                # **5. Logga ogni navigazione per debug**
+                # **5. Log each navigation for debug**
                 def log_navigation(frame):
                     logger.info(f"🌐 Navigated to: {frame.url}")
                     if "captcha-delivery.com" in frame.url:
-                        logger.error("🚫 Siamo stati rediretti al CAPTCHA!")
+                        logger.error("🚫 redirect to CAPTCHA!")
 
                 page.on("framenavigated", log_navigation)
 
-                # **6. Vai alla pagina con timeout e strategia di attesa**
+                # **6. Navigate to the page using a timeout and a waiting strategy.**
                 try:
                     await page.goto(
                         url=url,
-                        wait_until="domcontentloaded",  # Più veloce di "networkidle"
+                        wait_until="domcontentloaded",  # Faster than "networkidle"
                         timeout=30000
                     )
                 except Exception as e:
-                    #logger.error(f"Errore durante la navigazione: {e}")
-                    raise ValueError(f"Navigazione fallita per l'URL: {url}. Errore: {e}")
+                    #logger.error(f"Navigation error: {e}")
+                    raise ValueError(f"Navigation failed for URL: {url}. Error: {e}")
 
-                # **7. Attendi elementi specifici del sito target**
+                # **7. Wait for specific elements on the target site.**
                 try:
-                    # **SOSTITUISCI** con un selettore REALE della pagina target
-                    # Esempio: await page.wait_for_selector("main, article, .content", timeout=10000)
+                    # **Replace ** with a real selector from the target page.
+                    # Es: await page.wait_for_selector("main, article, .content", timeout=10000)
                     await page.wait_for_selector("body", timeout=5000)  # Fallback generico
                 except Exception as e:
-                    logger.warning(f"⚠️ Elementi target non trovati: {e}")
+                    logger.warning(f"⚠️ Target elements not found: {e}")
 
-                # **8. CORRETTO: Sleep asincrono**
+                # **8. CORRECT: async Sleep**
                 await asyncio.sleep(params_type_4.time_sleep)
 
-                # **9. VERIFICA FINALE della URL e contenuto**
+                # **9. URL and Content FINAL CHECK**
                 current_url = page.url
                 if "captcha-delivery.com" in current_url:
-                    logger.error("🚫 Pagina CAPTCHA rilevata, scraping annullato.")
-                    raise ValueError("Pagina bloccata da CAPTCHA. Impossibile procedere con lo scraping.")
+                    logger.error("🚫 CAPTCHA page detected, scraping canceled.")
+                    raise ValueError("Page blocked by CAPTCHA. Unable to proceed with scraping.")
 
-                # **10. Ottieni contenuto e chiudi**
+                # **10. Retrieve the content and close.**
                 results = await page.content()
-                logger.error(f"Contenuto {results}")
-                # **11. Processa e valida il contenuto**
+                logger.error(f"Content {results}")
+                # **11. Process and validate the content.**
                 transformed_content = custom_html_transform(
                     results,
                     selectors_to_extract=params_type_4.tags_to_extract,
@@ -496,9 +496,9 @@ async def scrape_page_complex(url, params_type_4, browser_headers: Optional[dict
                     remove_comments=getattr(params_type_4, 'remove_comments', True)
                 )
 
-                # **12. Doppio check: il contenuto è valido?**
+                # **12. Double check: is the content valid?**
                 if "captcha-delivery.com" in transformed_content or len(transformed_content.strip()) < 50:
-                    error_msg = "Contenuto bloccato da CAPTCHA o troppo breve (meno di 500 caratteri). Impossibile procedere con lo scraping."
+                    error_msg = "Content blocked by CAPTCHA or too short (less than 20 characters). Unable to proceed with scraping."
                     logger.error(f"❌ {error_msg}")
                     raise ValueError(error_msg)
 
@@ -533,7 +533,7 @@ async def scrape_page_complex_a(url, params_type_4, browser_headers: Optional[di
                                                   "--disable-gpu",
                                               ]
                                               )
-            page = await browser.new_page(extra_http_headers=browser_headers, #user_agent="Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
+            page = await browser.new_page(extra_http_headers=browser_headers,
                                           java_script_enabled=True)
 
             page.on("request", handle_request)
@@ -567,15 +567,15 @@ async def scrape_page_complex_a(url, params_type_4, browser_headers: Optional[di
 def custom_html_transform(html_content, selectors_to_extract=None, unwanted_tags=None,
                           unwanted_classnames=None, remove_lines=True, remove_comments=True):
     """
-    Trasforma il contenuto HTML usando selettori CSS personalizzati
+    Transform HTML content using custom CSS selectors
 
     Args:
-        html_content (str): Contenuto HTML da processare
-        selectors_to_extract (list): Lista di selettori CSS (es. ["div.class", "p#id", "section"])
-        unwanted_tags (list): Tag da rimuovere
-        unwanted_classnames (list): Classi da rimuovere
-        remove_lines (bool): Se rimuovere linee vuote
-        remove_comments (bool): Se rimuovere commenti HTML
+        html_content (str): HTML content
+        selectors_to_extract (list): list of CSS selectors (es. ["div.class", "p#id", "section"])
+        unwanted_tags (list): Tag to remove
+        unwanted_classnames (list): Class to remove
+        remove_lines (bool): remove blank line
+        remove_comments (bool): remove HTML comments
     """
     import re
     if not selectors_to_extract:
@@ -679,23 +679,6 @@ def load_document(url: str, type_source: str):
     if type_source == 'pdf':
 
         logger.info(f'Loading {url}')
-        """
-        import requests
-        import tempfile
-        
-        response = requests.get(url)
-        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
-            # Scrivi il contenuto scaricato nel file temporaneo
-            temp_file.write(response.content)
-
-            # Ottieni il percorso del file temporaneo
-            file_path = temp_file.name
-        #
-        loader = UnstructuredPDFLoader(file_path=file_path,
-            strategy="hi_res",
-            infer_table_structure=True,
-            model_name="yolox")
-        """
         loader = PyPDFLoader(url)
     elif type_source == 'docx':
         logger.info(f'Loading {url}')
@@ -789,7 +772,7 @@ async def fetch_documents(type_source, source, scrape_type, parameters_scrape_ty
     
     # Verifica che i documenti siano validi
     if not documents:
-        raise ValueError(f"Nessun documento recuperato dalla sorgente: {source} (tipo: {type_source})")
+        raise ValueError(f"No documents retrieved from the source: {source} (source type: {type_source})")
     
     # Verifica che ci sia almeno un documento con contenuto non vuoto
     has_content = False
@@ -799,7 +782,7 @@ async def fetch_documents(type_source, source, scrape_type, parameters_scrape_ty
             break
     
     if not has_content:
-        raise ValueError(f"Documenti recuperati ma contenuto vuoto dalla sorgente: {source} (tipo: {type_source})")
+        raise ValueError(f"Documents retrieved but source content is empty: {source} (source type: {type_source})")
     
     return documents
 
@@ -836,8 +819,8 @@ def calc_embedding_cost(texts, embedding):
 async def handle_request(request):
     """Callback function to handle network requests asynchronously."""
     if request.is_navigation_request() and request.resource_type == "document":
-        logger.info(f"URL della richiesta principale: {request.url}")
-        logger.info("Header inviati:")
+        logger.info(f": {request.url}")
+        logger.info("Sent Headers. ")
         headers = await request.all_headers()
         for name, value in headers.items():
             logger.info(f"  {name}: {value}")

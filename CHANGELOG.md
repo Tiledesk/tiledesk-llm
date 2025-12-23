@@ -6,6 +6,17 @@
 ### **Copyright**: Tiledesk SRL
 
 ---
+## [2025-12-23]
+### 0.7.3-rc1
+- Fixed: Correct error messages and set response status to 400 on error.
+- Modified: MCP servers can now filter tools to be used via `enabled_tools` parameter.
+- Added: New endpoint `/api/listcompleteitems/namespace/{namespace}/all` for retrieving all items with full text content.
+- Added: Knowledge Graph managed with Neo4j.
+  - Graph creation starting from chunks in the repository.
+  - Advanced query using 3. Balancing Matrix.
+---
+
+
 ## [2025-12-19]
 ### 0.7.2-rc2
 - Fixed: Restored missing Groq provider in the providers list.
@@ -28,6 +39,7 @@
 - Fixed: Added proper resource cleanup for UnstructuredURLLoader sessions.
 - Added: Documentation for reasoning models management via `/api/thinking` endpoint, including support for GPT-5, Claude 4/4.5, Gemini 2.5/3.0, and DeepSeek reasoner models.
 ---
+
 
 ## [2025-12-09]
 ### 0.7.1-rc1

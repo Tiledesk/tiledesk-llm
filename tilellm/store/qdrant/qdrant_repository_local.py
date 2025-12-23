@@ -19,7 +19,8 @@ from tilellm.models.schemas import (RepositoryQueryResult,
 from tilellm.models import (MetadataItem,
                             Engine,
                             ItemSingle,
-                            QuestionAnswer
+                            QuestionAnswer,
+                            LlmEmbeddingModel
                             )
 
 from typing import Dict
@@ -30,11 +31,12 @@ from tilellm.shared.embeddings.embedding_client_manager import inject_embedding_
     inject_embedding_qa_async_optimized
 from tilellm.shared.sparse_util import hybrid_score_norm
 from tilellm.shared.timed_cache import TimedCache
-from tilellm.store.vector_store_repository import VectorStoreRepository
+from tilellm.store.vector_store_repository import VectorStoreRepository, VectorStoreIndexingError
 from tilellm.tools.document_tools import fetch_documents, get_content_by_url_with_bs, calc_embedding_cost
 from tilellm.tools.sparse_encoders import TiledeskSparseEncoders
 
 logger = logging.getLogger(__name__)
+
 
 
 class CachedVectorStore:
@@ -243,13 +245,20 @@ class QdrantRepository(VectorStoreRepository):
             if point.payload and "page_content" in point.payload:
                 payload = point.payload
                 payload["metadata"]["text"] = payload.pop("page_content")
+                payload["id"] = point.id
                 documents.append(payload)
 
         results = {"matches": documents}
         return results
 
     async def initialize_embeddings_and_index(self, question_answer, llm_embeddings, emb_dimension=None, embedding_config_key=None):
-        emb_dimension = await self.get_embeddings_dimension(question_answer.embedding)
+        logger.info(f"Embedding parameter type: {type(question_answer.embedding)}, value: {question_answer.embedding}")
+        # Use provided dimension if available, otherwise compute from embedding model
+        if emb_dimension is None:
+            emb_dimension = await self.get_embeddings_dimension(question_answer.embedding)
+        else:
+            logger.info(f"Using provided embedding dimension: {emb_dimension}")
+        logger.info(f"Embedding dimension for collection: {emb_dimension}")
         sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
         vector_store = await self.create_index(question_answer.engine, llm_embeddings, emb_dimension, embedding_config_key)
         index = vector_store.client
@@ -299,13 +308,13 @@ class QdrantRepository(VectorStoreRepository):
                     field_name="metadata.id",
                     field_schema="keyword"  # 'keyword' è buono per ID di tenant
                 )
-                print(f"Payload index created on 'tenant_id' for collection '{item.engine.index_name}'.")
+                logger.info(f"Payload index created on 'tenant_id' for collection '{item.engine.index_name}'.")
             except Exception as e:
                 if "already exists" in str(e).lower() or "already present" in str(e).lower():  # Adatta il controllo dell'errore
-                    print(
+                    logger.error(
                         f"Payload index on 'tenant_id' likely already exists for collection '{item.engine.index_name}'.")
                 else:
-                    print(f"Could not create payload index (it might already exist or another error): {e}")
+                    logger.error(f"Could not create payload index (it might already exist or another error): {e}")
 
             if item.type in ['url', 'pdf', 'docx', 'txt']:
                 documents = await fetch_documents(type_source=item.type,
@@ -345,11 +354,8 @@ class QdrantRepository(VectorStoreRepository):
             logger.debug(documents)
 
             if len(chunks) == 0:
-                return IndexingResult(id=item.id,
-                                      chunks=0,
-                                      total_tokens=0,
-                                      cost="0.000000",
-                                      error="No chunks generated from source")
+                raise Exception("No chunks generated from source")
+
 
             total_tokens, cost = calc_embedding_cost(chunks, item.embedding)
 
@@ -369,12 +375,15 @@ class QdrantRepository(VectorStoreRepository):
             import traceback
             traceback.print_exc()
             logger.error(repr(ex))
-            return IndexingResult(id=item.id,
+
+            index_res = IndexingResult(id=item.id,
                                   chunks=len(chunks),
                                   total_tokens=total_tokens,
                                   status=400,
                                   cost=f"{cost:.6f}",
-                                  error=repr(ex))
+                                  error=str(ex)
+                                       )
+            raise VectorStoreIndexingError(index_res.model_dump())
 
     @inject_embedding_async_optimized()
     async def add_item_hybrid(self, item, embedding_obj=None, embedding_dimension=None):
@@ -419,13 +428,13 @@ class QdrantRepository(VectorStoreRepository):
                     field_name="metadata.id",
                     field_schema="keyword"  # 'keyword' è buono per ID di tenant
                 )
-                print(f"Payload index created on 'tenant_id' for collection '{item.engine.index_name}'.")
+                logger.info(f"Payload index created on 'tenant_id' for collection '{item.engine.index_name}'.")
             except Exception as e:
                 if "already exists" in str(e).lower() or "already present" in str(e).lower():  # Adatta il controllo dell'errore
-                    print(
+                    logger.error(
                         f"Payload index on 'tenant_id' likely already exists for collection '{item.engine.index_name}'.")
                 else:
-                    print(f"Could not create payload index (it might already exist or another error): {e}")
+                    logger.error(f"Could not create payload index (it might already exist or another error): {e}")
 
             if item.type in ['url', 'pdf', 'docx', 'txt']:
                 documents = await self.fetch_documents(type_source=item.type,
@@ -459,11 +468,8 @@ class QdrantRepository(VectorStoreRepository):
                 )
 
             if len(chunks) == 0:
-                return IndexingResult(id=item.id,
-                                      chunks=0,
-                                      total_tokens=0,
-                                      cost="0.000000",
-                                      error="No chunks generated from source")
+                raise Exception("No chunks generated from source")
+
 
             contents = [chunk.page_content for chunk in chunks]
             total_tokens, cost = calc_embedding_cost(chunks, item.embedding)
@@ -490,10 +496,11 @@ class QdrantRepository(VectorStoreRepository):
             import traceback
             traceback.print_exc()
             logger.error(repr(ex))
-            return IndexingResult(id=item.id, chunks=len(chunks), total_tokens=total_tokens,
+            index_res= IndexingResult(id=item.id, chunks=len(chunks), total_tokens=total_tokens,
                                    status=400,
                                    cost=f"{cost:.6f}",
-                                   error=repr(ex))
+                                   error=str(ex))
+            raise VectorStoreIndexingError(index_res.model_dump())
 
     @inject_embedding_qa_async_optimized()
     async def get_chunks_from_repo(self, question_answer:QuestionAnswer, embedding_obj=None, embedding_dimension=None):
@@ -795,11 +802,12 @@ class QdrantRepository(VectorStoreRepository):
 
             raise ex
 
-    async def get_all_obj_namespace(self, engine: Engine, namespace: str) -> RepositoryItems:
+    async def get_all_obj_namespace(self, engine: Engine, namespace: str, with_text:bool = False) -> RepositoryItems:
         """
         Query Qdrant to get all object
         :param engine: Engine
         :param namespace:
+        :param with_text:
         :return:
         """
 
@@ -824,6 +832,7 @@ class QdrantRepository(VectorStoreRepository):
 
                 all_points = []
                 next_page_offset = None
+                with_payload = ['metadata','page_content'] if with_text else ['metadata']
 
                 while True:
                     # Esegue la richiesta di scroll
@@ -835,7 +844,7 @@ class QdrantRepository(VectorStoreRepository):
                         scroll_filter=all_object_filter,
                         offset=next_page_offset,
                         limit=100,  # Puoi modificare il limite per recuperare più o meno punti per volta
-                        with_payload=['metadata'],  # Specifica i campi di metadata da recuperare
+                        with_payload=with_payload,  # Specifica i campi di metadata da recuperare
                         with_vectors=False  # Non recuperare i vettori, a meno che non ti servano
 
                     )
@@ -858,6 +867,7 @@ class QdrantRepository(VectorStoreRepository):
                     metadata_source = metadata.get('source') if metadata else None
                     metadata_type = metadata.get('type') if metadata else None
                     metadata_date = metadata.get('date', 'Date not defined') if metadata else None
+                    text_content = point.payload.get("page_content") if with_text else None
 
                     logger.debug(f"Point ID: {point_id}")
                     logger.debug(f"  Metadata Name: {metadata_id}")
@@ -870,7 +880,7 @@ class QdrantRepository(VectorStoreRepository):
                                                         metadata_source=metadata_source,
                                                         metadata_type=metadata_type,
                                                         date=metadata_date,
-                                                        text=None))
+                                                        text=text_content))
 
             res = RepositoryItems(matches=result)
             logger.debug(res)
@@ -1195,25 +1205,35 @@ class QdrantRepository(VectorStoreRepository):
     @staticmethod
     async def get_embeddings_dimension(embedding):
         """
-        Get embedding dimension for OpenAI embedding model
-        :param embedding:
+        Get embedding dimension for embedding model
+        :param embedding: string or LlmEmbeddingModel
         :return:
         """
-        emb_dimension = 1536
-        try:
-            if embedding == "text-embedding-3-large":
-                emb_dimension = 3072
-            elif embedding == "text-embedding-3-small":
-                emb_dimension = 1536
-            else:
-                embedding = "text-embedding-ada-002"
-                emb_dimension = 1536
-
-        except IndexError:
-            embedding = "text-embedding-ada-002"
-            emb_dimension = 1536
-
-        return emb_dimension
+        from tilellm.models import LlmEmbeddingModel
+        if isinstance(embedding, LlmEmbeddingModel):
+            # Use the dimension from the model if provided
+            if embedding.dimension is not None:
+                return embedding.dimension
+            # Otherwise fallback to default mapping
+            # (could also compute from model name)
+            embedding_str = embedding.name
+        else:
+            embedding_str = embedding
+        
+        # Map known embedding model names to dimensions
+        if embedding_str == "text-embedding-3-large":
+            return 3072
+        elif embedding_str == "text-embedding-3-small":
+            return 1536
+        elif embedding_str == "text-embedding-ada-002":
+            return 1536
+        elif embedding_str == "sentence-transformers/all-MiniLM-L6-v2":
+            return 384
+        elif embedding_str == "BAAI/bge-m3":
+            return 1024
+        # Add more mappings as needed
+        # Default fallback for unknown models
+        return 768
 
 
     @staticmethod

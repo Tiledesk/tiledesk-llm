@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import time
 import logging
 from typing import Optional, Dict, Any, Tuple
@@ -10,9 +11,16 @@ from pydantic import ValidationError
 # Importa la tua factory esistente
 from tilellm.shared.timed_cache import TimedCache
 from tilellm.models import LlmEmbeddingModel #, EmbeddingModel,
+from tilellm.store.vector_store_repository import VectorStoreIndexingError
 
 logger = logging.getLogger(__name__)
 
+def _hash_api_key(api_key: str) -> str:
+    """
+    Crea un hash SHA256 della chiave API per utilizzarlo nella cache
+    senza esporre la chiave completa nei log.
+    """
+    return hashlib.sha256(api_key.encode('utf-8')).hexdigest()#[:16]
 
 class EmbeddingSessionManager:
     """Manager per gestire sessioni HTTP persistenti per gli embeddings"""
@@ -259,7 +267,7 @@ class CachedAsyncEmbeddingFactory:
 
         api_key = config.get("api_key")
         if api_key:
-            key_parts.append(str(api_key))
+            key_parts.append(_hash_api_key(str(api_key)))
 
         if config.get("provider") == "huggingface":
             key_parts.append(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
@@ -268,8 +276,7 @@ class CachedAsyncEmbeddingFactory:
         if config.get("base_url"):
             key_parts.append(config.get("base_url"))
 
-        logger.info(f"======================================>Cache key: {key_parts}")
-        #TODO bisogna fare l'hash della cache key
+        logger.info(f"Cache key: {key_parts}")
 
         return tuple(key_parts)
 
@@ -452,7 +459,7 @@ def inject_embedding_async_optimized(factory: Optional[CachedAsyncEmbeddingFacto
                         "base_url": item.embedding.url
                     }
                 else:
-                    raise TypeError(f"Tipo non supportato per embedding: {type(item.embedding)}")
+                    raise TypeError(f"Unsupported type for embedding: {type(item.embedding)}")
 
                 # Crea embeddings con sessioni ottimizzate
                 embedding_obj, dimension = await factory.create(config)
@@ -462,10 +469,12 @@ def inject_embedding_async_optimized(factory: Optional[CachedAsyncEmbeddingFacto
 
                 return await func(self, item, *args, **kwargs)
 
+            except VectorStoreIndexingError as vsie:
+                raise vsie
             except ValidationError as ve:
-                raise EmbeddingCreationError("Validazione fallita", ve)
+                raise EmbeddingCreationError("Validation failed", ve)
             except Exception as e:
-                raise EmbeddingCreationError("Errore generico nella creazione embedding", e)
+                raise EmbeddingCreationError("Generic error in embedding creation", e)
 
         return wrapper
 

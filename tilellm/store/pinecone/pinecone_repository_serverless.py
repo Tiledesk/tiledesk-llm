@@ -11,6 +11,7 @@ from tilellm.models import (MetadataItem,
                             )
 from tilellm.shared.embeddings.embedding_client_manager import inject_embedding_qa_async_optimized
 from tilellm.shared.sparse_util import hybrid_score_norm
+from tilellm.store.vector_store_repository import VectorStoreIndexingError
 
 from tilellm.tools.document_tools import (get_content_by_url,
                                           get_content_by_url_with_bs,
@@ -193,11 +194,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             logger.debug(documents)
 
             if len(chunks) == 0:
-                return IndexingResult(id=item.id,
-                                      chunks=0,
-                                      total_tokens=0,
-                                      cost="0.000000",
-                                      error="No chunks generated from source")
+                raise Exception("No chunks generated from source")
 
             total_tokens, cost = self.calc_embedding_cost(chunks, item.embedding)
 
@@ -220,12 +217,14 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             import traceback
             traceback.print_exc()
             logger.error(repr(ex))
-            return IndexingResult(id=item.id,
+            index_res =  IndexingResult(id=item.id,
                                   chunks=len(chunks),
                                   total_tokens=total_tokens,
                                   status=400,
                                   cost=f"{cost:.6f}",
-                                  error=repr(ex))
+                                  error=str(ex))
+            raise VectorStoreIndexingError(index_res.model_dump())
+
 
 
     @inject_embedding()
@@ -289,11 +288,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                 )
 
             if len(chunks) == 0:
-                return IndexingResult(id=item.id,
-                                      chunks=0,
-                                      total_tokens=0,
-                                      cost="0.000000",
-                                      error="No chunks generated from source")
+                raise Exception("No chunks generated from source")
 
             contents = [chunk.page_content for chunk in chunks]
             total_tokens, cost = self.calc_embedding_cost(chunks, item.embedding)
@@ -324,10 +319,14 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             logger.error(repr(ex))
             idx = await vector_store.async_index
             await idx.close()
-            return IndexingResult(id=item.id, chunks=len(chunks), total_tokens=total_tokens,
-                                             status=400,
-                                             cost=f"{cost:.6f}",
-                                             error=repr(ex))
+            index_res =  IndexingResult(id=item.id,
+                                        chunks=len(chunks),
+                                        total_tokens=total_tokens,
+                                        status=400,
+                                        cost=f"{cost:.6f}",
+                                        error=str(ex))
+
+            raise VectorStoreIndexingError(index_res.model_dump())
 
         #return pinecone_result
 
@@ -372,11 +371,28 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
     @staticmethod
     async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers):
         if type_source in ['url', 'txt']:
-            return await get_content_by_url(source,
-                                            scrape_type,
-                                            parameters_scrape_type_4=parameters_scrape_type_4,
-                                            browser_headers=browser_headers)
-        return load_document(source, type_source)
+            documents = await get_content_by_url(source,
+                                                 scrape_type,
+                                                 parameters_scrape_type_4=parameters_scrape_type_4,
+                                                 browser_headers=browser_headers)
+        else:
+            documents = load_document(source, type_source)
+
+        # Verifica che i documenti siano validi
+        if not documents:
+            raise ValueError(f"No documents retrieved from the source: {source} (source type: {type_source})")
+
+        # Verifica che ci sia almeno un documento con contenuto non vuoto
+        has_content = False
+        for doc in documents:
+            if doc and doc.page_content and doc.page_content.strip():
+                has_content = True
+                break
+
+        if not has_content:
+            raise ValueError(f"Documents retrieved but source content is empty: {source} (source type: {type_source})")
+
+        return documents
 
     @staticmethod
     def process_document_metadata(document, metadata):

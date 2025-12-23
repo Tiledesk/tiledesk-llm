@@ -5,6 +5,7 @@ from typing import Union
 from fastapi import (FastAPI,
                      Depends,
                      HTTPException)
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi_cprofile.profiler import CProfileMiddleware
 from fastapi.responses import JSONResponse
 
@@ -88,6 +89,7 @@ load_dotenv(ENVIRONMENTS.get(environment) or '.environ')
 redis_url = os.environ.get("REDIS_URL")
 tilellm_role = os.environ.get("TILELLM_ROLE")
 
+security = HTTPBearer()
 
 async def get_redis_client():
     redis_client = None
@@ -358,7 +360,9 @@ async def create_scrape_item_single(item: ItemSingle, redis_client: Redis = Depe
         #    logger.error(f"Error {e}, webhook: {webhook}")
         traceback.print_exc()
         logger.error(e)
-        raise HTTPException(status_code=400, detail=repr(e))
+        #raise HTTPException(status_code=400, detail=str(e))
+        return JSONResponse(status_code=400, content=e.args[0])
+
 
 @app.post("/api/scrape/hybrid", response_model=IndexingResult, tags=["Scrape"])
 async def create_scrape_item_hybrid(item: ItemSingle, redis_client: Redis = Depends(get_redis_client)):
@@ -654,6 +658,29 @@ async def list_namespace_items_main(token: str, namespace: str):
         result = await get_listitems_namespace(repository_engine, namespace)
 
         return JSONResponse(content=result.model_dump(exclude_none=True))
+    except Exception as ex:
+        logger.error(ex)
+        raise HTTPException(status_code=400, detail=repr(ex))
+
+@app.get("/api/listcompleteitems/namespace/{namespace}/all", response_model=RepositoryItems, tags=["Namespace"])
+async def list_namespace_items_with_text(
+    namespace: str,
+    credentials: HTTPAuthorizationCredentials = Depends(security)
+):
+    """
+    Get all items with given namespace
+    :param credentials: Bearer token
+    :param namespace: namespace_id
+    :return: list of all items in namespace
+    """
+    try:
+        token = credentials.credentials  # estrae il token dall'header
+        logger.info(f"retrieve namespace {namespace}  Raw token: %s {token}")
+        engine_dec = decode_jwt(token)
+        logger.info(f"asd {engine_dec}")
+        repository_engine = RepositoryEngine(**engine_dec)
+        result = await get_listitems_namespace(repository_engine, namespace, True)
+        return result  # FastAPI serializzerà il modello
     except Exception as ex:
         logger.error(ex)
         raise HTTPException(status_code=400, detail=repr(ex))

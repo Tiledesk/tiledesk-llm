@@ -202,26 +202,26 @@ class QuestionToLLM(BaseModel):
     structured_output: Optional[bool] = Field(default=False)
     output_schema: Optional[Any] = Field(default=None)
     servers: Optional[Dict[str, ServerConfig]] = Field(default_factory=dict)
-    tools: Optional[List[str]] = Field(default=None, description="Lista di nomi di tool interni da tool_registry")
+    tools: Optional[List[str]] = Field(default=None, description="List of internal tool names from tool_registry")
 
     # Modalità di gestione history
     contextualize_prompt: Optional[bool] = Field(
-        default=False,description="Se True, inietta la history come testo nel system prompt. Se False, passa la "
-                                  "history come messaggi strutturati (consigliato per LLM moderni)"
+        default=False,description="If True, injects the history as text into the system prompt. "
+                                  "If False, passes the history as structured messages (recommended for modern LLMs)."
     )
 
     # Limitazione history
     max_history_messages: Optional[int] = Field(
         default=None,
-        description="Numero massimo di turni (coppie domanda/risposta) da mantenere. "
-                    "None = illimitato. Es: 10 = ultimi 10 turni (20 messaggi)"
+        description="Maximum number of turns (question/answer pairs) to keep. None = unlimited. "
+                    "E.g.: 10 = last 10 turns (20 messages)."
     )
 
     # Summarization
     summarize_old_history: bool = Field(
         default=False,
-        description="Se True e max_history_messages è impostato, riassume automaticamente "
-                    "la history più vecchia invece di scartarla. Richiede una chiamata LLM extra."
+        description="If True and max_history_messages is set, automatically summarizes the oldest history "
+                    "instead of discarding it. Requires an extra LLM call."
     )
 
     @model_validator(mode="after")
@@ -306,7 +306,7 @@ class QuestionToLLM(BaseModel):
     def create_mcp_client(self):
         """Crea un'istanza di MultiServerMCPClient dalla configurazione"""
         config_dict = {
-            name: server_config.model_dump(exclude_unset=True)
+            name: server_config.model_dump(exclude_unset=True, exclude={"enabled_tools"})
             for name, server_config in self.servers.items()
         }
         return MultiServerMCPClient(config_dict)
@@ -314,9 +314,9 @@ class QuestionToLLM(BaseModel):
 
     def get_question_content(self) -> Union[str, List[Dict[str, Any]]]:
         """
-        Prepara il contenuto della domanda nel formato corretto per LangChain.
-        - Se la domanda è una stringa, la restituisce.
-        - Se è una lista multimodale, la formatta come richiesto.
+        Prepare the question content in the correct format for LangChain.
+            - If the question is a string, it returns it.
+            - If it is a multimodal list, it formats it as required.
         """
         if isinstance(self.question, str):
             # Caso semplice: solo testo
@@ -332,7 +332,7 @@ class QuestionToLLM(BaseModel):
             return formatted_content
 
         # Fallback nel caso di un tipo non previsto
-        raise TypeError("Il tipo di 'question' non è supportato.")
+        raise TypeError("The 'question' type is not supported.")
 
 
 class ToolOptions(RootModel[Dict[str, Any]]):

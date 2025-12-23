@@ -27,6 +27,47 @@ def hybrid_score_norm(dense, sparse, alpha: float):
     return [v * alpha for v in dense], hs
 
 
+def hybrid_rrf(dense, sparse, k=60):
+    """Reciprocal Rank Fusion (RRF) for combining two ranked lists.
+
+    RRF score = 1/(k + rank_dense) + 1/(k + rank_sparse)
+
+    Args:
+        dense: List of float scores from dense retrieval (higher is better)
+        sparse: List of float scores from sparse retrieval (higher is better)
+        k: Smoothing constant (default 60)
+
+    Returns:
+        List of combined RRF scores in same order as input lists.
+        
+    Note:
+        Assumes dense and sparse are aligned (same documents in same order).
+        Ranks are determined by sorting scores in descending order.
+    """
+    if len(dense) != len(sparse):
+        raise ValueError("dense and sparse must have same length")
+    
+    # Create list of indices
+    indices = list(range(len(dense)))
+    
+    # Sort indices by dense scores descending
+    dense_ranked = sorted(indices, key=lambda i: dense[i], reverse=True)
+    # Assign ranks (0 for highest score)
+    dense_ranks = {idx: rank for rank, idx in enumerate(dense_ranked)}
+    
+    # Sort indices by sparse scores descending
+    sparse_ranked = sorted(indices, key=lambda i: sparse[i], reverse=True)
+    sparse_ranks = {idx: rank for rank, idx in enumerate(sparse_ranked)}
+    
+    # Calculate RRF scores
+    rrf_scores = []
+    for i in indices:
+        rrf_score = 1/(k + dense_ranks[i]) + 1/(k + sparse_ranks[i])
+        rrf_scores.append(rrf_score)
+    
+    return rrf_scores
+
+
 
 
 class HybridRetriever(BaseRetriever):

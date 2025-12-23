@@ -5,7 +5,7 @@ import asyncio
 from fastapi.responses import StreamingResponse
 import traceback
 import uuid
-from typing import List
+from typing import List, Optional, Dict
 
 import fastapi
 
@@ -13,12 +13,13 @@ from langchain_core.documents import Document
 from langchain_core.messages import ToolMessage
 
 from langchain_core.runnables import RunnablePassthrough, RunnableLambda
+from langchain_core.tools import BaseTool
 
 from starlette.responses import JSONResponse
 from tilellm.models.schemas import (RetrievalResult,
                                     QuotedAnswer,
                                     Citation)
-from tilellm.models import ChatEntry
+from tilellm.models import ChatEntry, ServerConfig
 
 from tilellm.shared.sparse_util import HybridRetriever
 from langchain_community.document_transformers import EmbeddingsRedundantFilter
@@ -850,3 +851,95 @@ def extract_conversation_flow(messages: list) -> dict:
         "tools": tools,
         "ai_message": ai_message
     }
+
+
+async def get_filtered_tools_by_metadata(
+    all_tools: List[BaseTool],
+    servers_config: Dict[str, ServerConfig]
+) -> List[BaseTool]:
+    """
+    Filtra i tool analizzando i metadati dell'oggetto BaseTool.
+    """
+    filtered_tools = []
+
+    for tool in all_tools:
+        # 1. Recuperiamo il nome del server dai metadati.
+        # Nota: La chiave potrebbe essere "server_name" o "server" a seconda
+        # di come il tuo MultiServerMCPClient popola i metadata.
+        origin_server = tool.metadata.get("server_name") or tool.metadata.get("server")
+
+        # Se il tool non ha informazioni sull'origine, o il server non è in config, lo saltiamo
+        if not origin_server or origin_server not in servers_config:
+            continue
+
+        config = servers_config[origin_server]
+
+        # 2. Verifichiamo se il tool è abilitato per quel server specifico
+        # Qui usiamo tool.name perché è il nome originale registrato sul server MCP
+        if "all" in config.enabled_tools or tool.name in config.enabled_tools:
+            filtered_tools.append(tool)
+
+    return filtered_tools
+
+async def get_filtered_tools(
+    all_tools: List[BaseTool],
+    servers_config: Dict[str, ServerConfig]
+) -> List[BaseTool]:
+    """
+    Filtra i tool di LangGraph basandosi esclusivamente sulla proprietà .name
+    """
+    # 1. Raccogliamo tutti i nomi dei tool abilitati esplicitamente
+    enabled_names = set()
+    has_global_all = False
+
+    for config in servers_config.values():
+        if "all" in config.enabled_tools:
+            # Se un server ha "all", teoricamente vorremmo tutti i SUOI tool.
+            # Senza metadata/prefissi, "all" diventa un comando "passa tutto".
+            has_global_all = True
+        else:
+            enabled_names.update(config.enabled_tools)
+
+    # 2. Logica di filtraggio
+    if has_global_all:
+        # Nota: Se hai "all" in un server e nomi specifici in un altro,
+        # senza metadati l'unica opzione sicura è restituire tutto,
+        # altrimenti rischieresti di tagliare fuori i tool del server "all".
+        return all_tools
+
+    # 3. Ritorna solo i tool il cui nome è nella whitelist
+    return [t for t in all_tools if t.name in enabled_names]
+
+
+async def get_all_filtered_tools(mcp_client, servers_config: Dict[str, ServerConfig]) -> List[BaseTool]:
+    """
+    Recupera e filtra i tool server per server prima di unirli.
+    """
+    final_tools = []
+
+    for server_name, config in servers_config.items():
+        try:
+            # 1. Recuperiamo i tool solo per questo specifico server
+            server_tools = await mcp_client.get_tools(server_name=server_name)
+            print(server_tools)
+            # 2. Applichiamo il filtro basato sulla config di QUESTO server
+            if not config.enabled_tools:
+                continue
+
+            if "all" in config.enabled_tools:
+                # Se è "all", prendiamo tutto quello che ha restituito questo server
+                final_tools.extend(server_tools)
+            else:
+                # Altrimenti prendiamo solo i tool esplicitamente nominati
+                filtered = [
+                    t for t in server_tools
+                    if t.name in config.enabled_tools
+                ]
+                final_tools.extend(filtered)
+
+        except Exception as e:
+            # Gestione errore se un server specifico non risponde o non esiste
+            print(f"Errore nel recupero tool per il server {server_name}: {e}")
+            continue
+
+    return final_tools

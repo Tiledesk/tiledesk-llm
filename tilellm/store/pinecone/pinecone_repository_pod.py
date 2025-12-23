@@ -12,6 +12,7 @@ from tilellm.models import (MetadataItem,
 
 from tilellm.shared.embedding_factory import inject_embedding
 from tilellm.shared.embeddings.embedding_client_manager import inject_embedding_qa_async_optimized
+from tilellm.store.vector_store_repository import VectorStoreIndexingError
 from tilellm.tools.document_tools import (get_content_by_url,
                                           get_content_by_url_with_bs,
                                           load_document
@@ -86,13 +87,26 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                     type_source == 'txt'):
 
                 documents = []
-                if type_source == 'url' or type_source == 'txt':
+                if type_source in ['url', 'txt']:
                     documents = await get_content_by_url(source,
                                                          scrape_type,
                                                          parameters_scrape_type_4=parameters_scrape_type_4,
                                                          browser_headers=item.browser_headers)
                 else:  # type_source == 'pdf' or 'docx' or 'txt':
                     documents = load_document(source, type_source)
+
+                if not documents:
+                    raise ValueError(f"No documents retrieved from the source: {source} (source type: {type_source})")
+
+                has_content = False
+                for doc in documents:
+                    if doc and doc.page_content and doc.page_content.strip():
+                        has_content = True
+                        break
+
+                if not has_content:
+                    raise ValueError(
+                        f"Documents retrieved but source content is empty: {source} (source type: {type_source})")
 
                 for single_document in documents:
                     single_document.metadata["id"] = metadata_id
@@ -120,11 +134,8 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 # pprint(documents)
                 logger.debug(documents)
                 if len(chunks) == 0:
-                    return IndexingResult(id=metadata_id,
-                                          chunks=0,
-                                          total_tokens=0,
-                                          cost="0.000000",
-                                          error="No chunks generated from source")
+                    raise Exception("No chunks generated from source")
+
                 ids = await vector_store.aadd_documents(chunks,
                                                       namespace=namespace
                                                       )
@@ -145,11 +156,8 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                     chunks.append(document)
  
                 if len(chunks) == 0:
-                    return IndexingResult(id=metadata_id,
-                                          chunks=0,
-                                          total_tokens=0,
-                                          cost="0.000000",
-                                          error="No chunks generated from source")
+                    raise Exception("No chunks generated from source")
+
                 total_tokens, cost = self.calc_embedding_cost(chunks, embedding_name)
                 ids = await vector_store.aadd_documents(chunks,
                                                        namespace=namespace
@@ -185,13 +193,17 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
             #    await index.close()
             pinecone_result = IndexingResult(id=metadata_id, chunks=len(chunks), total_tokens=total_tokens,
                                              cost=f"{cost:.6f}")
+            return pinecone_result
+
         except Exception as ex:
             logger.error(repr(ex))
-            pinecone_result = IndexingResult(id=metadata_id, chunks=len(chunks), total_tokens=total_tokens,
+            index_res = IndexingResult(id=metadata_id, chunks=len(chunks), total_tokens=total_tokens,
                                              status=400,
                                              cost=f"{cost:.6f}",
-                                             error=repr(ex))
-        return pinecone_result
+                                             error=str(ex))
+
+            raise VectorStoreIndexingError(index_res.model_dump())
+
 
     @inject_embedding()
     async def add_item_hybrid(self, item, embedding_obj=None, embedding_dimension=None):

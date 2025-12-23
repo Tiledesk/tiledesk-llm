@@ -3,7 +3,7 @@
 Tiledesk LLM is a powerful backend service designed for Retrieval-Augmented Generation (RAG). It provides a comprehensive suite of REST APIs to handle document scraping, indexing, question answering, and interaction with various Large Language Models (LLMs).
 
 **Interactive API Docs**:
-- **Swagger UI**: Access at the root URL (e.g., `http://localhost:8000/`)
+- **Swagger UI**: Access at the root URL (e.g., `http://localhost:8000/docs`)
 - **ReDoc**: Access at `/redoc` (e.g., `http://localhost:8000/redoc`)
 
 ---
@@ -29,14 +29,15 @@ Tiledesk LLM is a powerful backend service designed for Retrieval-Augmented Gene
 
 ### Large Language Models (LLMs)
 
-| Provider (`llm`) | Models (`model`)
-| ---------------- | ----------------------------------------------------------------------------- |
-| **OpenAI**       | `gpt-5.2`, `gpt-5-mini`, `gpt-4.1`, `gpt-4o`, `gpt-4o-mini`
-| **Anthropic**    | `claude-opus-4.5`, `claude-sonnet-4.5`, `claude-haiku-4.5`, `claude-opus-4.1`
-| **Google**       | `gemini-3-pro`, `gemini-2.5-pro`, `gemini-2.5-flash`
-| **Groq**         | `mixtral-8x22b`, `llama-4-scout`, `llama3-70b`, `llama3-8b`, `mixtral-8x7b`
+| Provider (`llm`) | Models (`model`)                                                              
+|------------------|-------------------------------------------------------------------------------|
+| **OpenAI**       | `gpt-5.2`, `gpt-5-mini`, `gpt-4.1`, `gpt-4o`, `gpt-4o-mini`                   
+| **Anthropic**    | `claude-opus-4.5`, `claude-sonnet-4.5`, `claude-haiku-4.5`, `claude-opus-4.1` 
+| **Google**       | `gemini-3-pro`, `gemini-2.5-pro`, `gemini-2.5-flash`                          
+| **Groq**         | `mixtral-8x22b`, `llama-4-scout`, `llama3-70b`, `llama3-8b`, `mixtral-8x7b`   
 | **Deepseek**     | `deepseek-chat`                                                               |
-| **vLLM**         | `qwen2.5` ... |
+| **Ollama**       | `llama3.x` ...                                                                |
+| **vLLM**         | `qwen2.5` ...                                                                 |
 
 ### Embedding Models
 
@@ -149,7 +150,7 @@ If you are using Qdrant as your vector store, you can run it via Docker:
 ```bash
 docker run -p 6333:6333 -p 6334:6334 \
     --name qdrant \
-    -v "$(pwd)/sviluppo/qdrant_storage:/qdrant/storage:z" \
+    -v "$(pwd)/qdrant_storage:/qdrant/storage:z" \
     qdrant/qdrant
 ```
 
@@ -234,6 +235,7 @@ These endpoints manage vector store namespaces. A valid JWT `{token}` containing
 - **`GET /api/list/namespace/{token}`**: Lists all namespaces and their vector counts.
 - **`GET /api/desc/namespace/{namespace}/{token}`**: Describes a specific namespace, listing document IDs.
 - **`GET /api/listitems/namespace/{namespace}/{token}`**: Lists all text chunks within a namespace.
+- **`GET /api/listcompleteitems/namespace/{namespace}/all`**: Lists all text chunks within a namespace.
 - **`GET /api/id/{metadata_id}/namespace/{namespace}/{token}`**: Retrieves all chunks for a specific document ID.
 - **`GET /api/items?source=...&namespace=...&token=...`**: Gets items filtered by source and namespace.
 - **`DELETE /api/namespace/{namespace}/{token}`**: Deletes an entire namespace.
@@ -303,6 +305,37 @@ Reranking improves search relevance by reordering retrieved documents based on t
   "reranking_multiplier": 3,
   "reranker_model": "BAAI/bge-reranker-v2-m3",
   "search_type": "hybrid"
+}
+```
+
+### MCP (Model Context Protocol) Integration
+The `/api/ask` endpoint supports integration with MCP servers, enabling the LLM to use external tools and data sources.
+
+- **Server Configuration**: Configure MCP servers in the `servers` field with transport options (`sse`, `stdio`, `streamable_http`).
+- **Tool Filtering**: Use the `enabled_tools` parameter on each server configuration to specify which tools from that server are available (default: `["all"]`).
+- **Internal Tools**: Specify internal tools from the tool registry using the `tools` field in the request body.
+
+**Example** (MCP integration):
+```json
+{
+  "question": "Analyze the repository",
+  "llm": "openai",
+  "model": "gpt-4o",
+  "llm_key": "sk-...",
+  "servers": {
+    "github": {
+      "transport": "sse",
+      "url": "https://mcp-server.com/github",
+      "enabled_tools": ["search_repo", "read_file"]
+    },
+    "filesystem": {
+      "transport": "stdio",
+      "command": "mcp-server-fs",
+      "args": ["--root", "/home/user/docs"],
+      "enabled_tools": ["list_directory", "read_file"]
+    }
+  },
+  "tools": ["pdf_extractor", "web_search"]
 }
 ```
 

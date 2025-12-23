@@ -447,11 +447,12 @@ class PineconeRepositoryBase(VectorStoreRepository):
 
             raise ex
 
-    async def get_all_obj_namespace(self, engine: Engine, namespace: str) -> RepositoryItems:
+    async def get_all_obj_namespace(self, engine: Engine, namespace: str, with_text:bool=False) -> RepositoryItems:
         """
         Query Pinecone to get all object
         :param engine: Engine
         :param namespace:
+        :param with_text:
         :return:
         """
         import pinecone
@@ -494,13 +495,14 @@ class PineconeRepositoryBase(VectorStoreRepository):
             # ids = [obj.get('id') for obj in matches]
             # print(type(matches[0].get('id')))
             result = []
+
             for obj in matches:
                 result.append(RepositoryQueryResult(id=obj.get('id', ""),
                                                     metadata_id=obj.get('metadata').get('id'),
                                                     metadata_source=obj.get('metadata').get('source'),
                                                     metadata_type=obj.get('metadata').get('type'),
                                                     date=obj.get('metadata').get('date', 'Date not defined'),
-                                                    text=None  # su pod content, su Serverless text
+                                                    text=obj.get('metadata').get(engine.text_key) if with_text else None  # su pod content, su Serverless text
                                                     )
                               )
             res = RepositoryItems(matches=result)

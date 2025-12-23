@@ -15,6 +15,7 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from tilellm.models import LlmEmbeddingModel #EmbeddingModel,
 from tilellm.shared.embeddings.resilient_embeddings import ResilientEmbeddings
 from tilellm.shared.timed_cache import TimedCache
+from tilellm.store.vector_store_repository import VectorStoreIndexingError
 
 
 def _hash_api_key(api_key: str) -> str:
@@ -298,7 +299,7 @@ def inject_embedding(factory: Optional[EmbeddingFactory] = None):
                         "custom_headers": item.embedding.custom_headers
                     }
                 else:
-                    raise TypeError(f"Tipo non supportato per embedding: {type(item.embedding)}")
+                    raise TypeError(f"Embedding type not supported: {type(item.embedding)}")
 
                 # Crea gli embedding
                 result = factory.create(config)
@@ -316,6 +317,8 @@ def inject_embedding(factory: Optional[EmbeddingFactory] = None):
 
                 return await func(self, item, *args, **kwargs)
 
+            except VectorStoreIndexingError as vsie:
+                raise vsie
             except ValidationError as ve:
                 raise EmbeddingCreationError("Validazione fallita", ve)
             except Exception as e:

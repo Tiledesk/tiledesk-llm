@@ -260,14 +260,14 @@ def inject_repo_async(func: Callable) -> Callable:
                     logger.info("Injecting QdrantRepository (async)")
                     from tilellm.store.qdrant.qdrant_repository_local import QdrantRepository
                     repo_instance = QdrantRepository()
-                    logger.info(f"Creato async QdrantRepository con chiave: {cache_key}")
+                    logger.info(f"Create async QdrantRepository with key: {cache_key}")
                     return repo_instance
 
                 else:
                     raise ValueError(f"Unknown engine name: {engine_name}")
 
             except Exception as e:
-                logger.error(f"Errore nella creazione async del repository {cache_key}: {e}")
+                logger.error(f"Error in the asynchronous creation of the repository {cache_key}: {e}")
                 raise
 
         try:
@@ -279,10 +279,10 @@ def inject_repo_async(func: Callable) -> Callable:
             )
 
             if repo is None:
-                logger.error(f"Repository None ottenuto dalla cache async per chiave: {cache_key}")
+                logger.error(f"Repository None obtained from async cache for key: {cache_key}")
                 raise RuntimeError(f"Failed to get repository for key: {cache_key}")
 
-            logger.debug(f"Repository async {type(repo).__name__} ottenuto/creato per chiave: {cache_key}")
+            logger.debug(f"Repository async {type(repo).__name__} get/create with key: {cache_key}")
 
             kwargs['repo'] = repo
 
@@ -290,7 +290,7 @@ def inject_repo_async(func: Callable) -> Callable:
             return await func(question, *args, **kwargs)
 
         except Exception as e:
-            logger.error(f"Errore nel decoratore async inject_repo per {func.__name__}: {e}")
+            logger.error(f"Error in decorator async inject_repo for {func.__name__}: {e}")
             raise
 
     return async_wrapper

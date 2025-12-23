@@ -390,6 +390,31 @@ Gets all items in a namespace.
 ```
 
 ---
+### GET `/api/listcompleteitems/namespace/{namespace}/all`
+Gets all items in a namespace with full text content. Uses Bearer token authentication (Authorization header).
+
+**Path Parameters**:
+- `namespace`: Namespace ID
+
+**Authentication**: Bearer token (via `Authorization: Bearer <token>` header)
+
+**Response** (`RepositoryItems`):
+```json
+{
+  "matches": [
+    {
+      "id": "chunk-001",
+      "metadata_id": "doc-001",
+      "metadata_source": "https://example.com",
+      "metadata_type": "pdf",
+      "date": "2025-11-08 16:30:00",
+      "text": "Content..."
+    }
+  ]
+}
+```
+
+---
 
 ### GET `/api/id/{metadata_id}/namespace/{namespace}/{token}`
 Retrieves all chunks of a specific document.

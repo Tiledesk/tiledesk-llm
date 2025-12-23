@@ -1,5 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
+from typing import Optional
 
 from tilellm.models.schemas import (RepositoryNamespace,
                                     RepositoryItems,
@@ -13,6 +14,12 @@ from tilellm.tools.document_tools import get_content_by_url, load_document
 
 
 logger = logging.getLogger(__name__)
+
+class VectorStoreIndexingError(Exception):
+    """Eccezione personalizzata per errori nel vector store"""
+    def __init__(self, message: dict):
+        self.message = message
+        super().__init__(message)
 
 class VectorStoreRepository(ABC):
 
@@ -97,11 +104,12 @@ class VectorStoreRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_all_obj_namespace(self,engine: Engine, namespace: str) -> RepositoryItems:
+    async def get_all_obj_namespace(self,engine: Engine, namespace: str, with_text:bool) -> RepositoryItems:
         """
         Query Vector store to get all object
         :param engine: Engine
         :param namespace:
+        :param with_text:
         :return:
         """
         pass
@@ -137,14 +145,40 @@ class VectorStoreRepository(ABC):
         pass
 
     @staticmethod
-    async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4,browser_headers):
+    async def fetch_documents_old(type_source, source, scrape_type, parameters_scrape_type_4,browser_headers):
         if type_source in ['url', 'txt']:
             return await get_content_by_url(source,
                                             scrape_type,
                                             parameters_scrape_type_4=parameters_scrape_type_4,
                                             browser_headers=browser_headers)
+
         return load_document(source, type_source)
 
+    @staticmethod
+    async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers):
+        if type_source in ['url', 'txt']:
+            documents = await get_content_by_url(source,
+                                                 scrape_type,
+                                                 parameters_scrape_type_4=parameters_scrape_type_4,
+                                                 browser_headers=browser_headers)
+        else:
+            documents = load_document(source, type_source)
+
+        # Verifica che i documenti siano validi
+        if not documents:
+            raise ValueError(f"No documents retrieved from the source: {source} (source type: {type_source})")
+
+        # Verifica che ci sia almeno un documento con contenuto non vuoto
+        has_content = False
+        for doc in documents:
+            if doc and doc.page_content and doc.page_content.strip():
+                has_content = True
+                break
+
+        if not has_content:
+            raise ValueError(f"Documents retrieved but source content is empty: {source} (source type: {type_source})")
+
+        return documents
 
     @staticmethod
     def calc_embedding_cost(texts, embedding):
