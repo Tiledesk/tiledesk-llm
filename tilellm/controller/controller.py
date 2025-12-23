@@ -24,7 +24,7 @@ from typing import Callable
 from tilellm.controller.controller_utils import preprocess_chat_history, \
     fetch_question_vectors, retrieve_documents, create_chains, get_or_create_session_history, \
     generate_answer_with_history, handle_exception, initialize_retrievers, _create_event, extract_conversation_flow, \
-    create_contextualize_query, get_filtered_tools, get_all_filtered_tools
+    create_contextualize_query, get_all_filtered_tools
 from tilellm.controller.helpers import _get_question_list
 from tilellm.models.schemas import (
     RetrievalResult,
@@ -45,6 +45,9 @@ from tilellm.models import (
 
 from tilellm.shared.utility import inject_repo_async, \
     inject_llm_chat_async, inject_llm_async, inject_reason_llm_async
+
+from tilellm.shared.mcp_prompt import MCP_BASE64_MANAGEMENT_TEMPLATE, \
+    MCP_DOC_HEADER_TEMPLATE, MCP_DOC_INSTRUCTIONS_TEMPLATE, MCP_INTERNAL_TOOL_TEMPLATE
 
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.runnables.history import RunnableWithMessageHistory
@@ -1185,10 +1188,7 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
 
         # Aggiungi istruzioni SOLO se ci sono documenti E tool
         if has_documents and has_tools:
-            system_prompt += "\n\n=== DOCUMENT PROCESSING INSTRUCTIONS ===\n"
-            system_prompt += f"\nYou have {len(document_metadata)} document(s) attached and {len(tools)} tool(s) available.\n"
-
-            system_prompt += "\nDOCUMENTS PROVIDED:\n"
+            doc_list = ""
             for doc_info in document_metadata:
                 doc_id = doc_info["id"]
                 mime_type = doc_info["mime_type"]
@@ -1196,50 +1196,24 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
                 storage_entry = base64_storage.get(doc_id, {})
 
                 if source_type == "url":
-
                     url = doc_info.get("url", storage_entry.get("url", ""))
-                    system_prompt += f"  • {doc_id}: {mime_type}\n"
-                    system_prompt += "    Type: URL\n"
-                    system_prompt += f"    URL: {url}\n"
-                    system_prompt += f"    Referenced in message as: [DOCUMENT_{doc_id}]\n"
+                    doc_list += f"  • {doc_id}: {mime_type}\n"
+                    doc_list += "    Type: URL\n"
+                    doc_list += f"    URL: {url}\n"
+                    doc_list += f"    Referenced in message as: [DOCUMENT_{doc_id}]\n"
                 else:
                     size = len(storage_entry.get("data", ""))
-                    system_prompt += f"  • {doc_id}: {mime_type}\n"
-                    system_prompt += "    Type: BASE64\n"
-                    system_prompt += f"    Size: {size} bytes\n"
-                    system_prompt += f"    Referenced in message as: [DOCUMENT_{doc_id}]\n"
+                    doc_list += f"  • {doc_id}: {mime_type}\n"
+                    doc_list += "    Type: BASE64\n"
+                    doc_list += f"    Size: {size} bytes\n"
+                    doc_list += f"    Referenced in message as: [DOCUMENT_{doc_id}]\n"
 
-            system_prompt += "\nHOW TO PROCESS DOCUMENTS:\n"
-            system_prompt += "1. You will see document references like:\n"
-            system_prompt += "   - [DOCUMENT_doc_1: application/pdf, URL=https://example.com/file.pdf] (URL type)\n"
-            system_prompt += "   - [DOCUMENT_doc_2: application/pdf, 52341 bytes] (BASE64 type)\n"
-            system_prompt += "\n2. Check the MCP tool's parameters to understand what it accepts:\n"
-            system_prompt += "   - If tool has 'url' parameter → use it for URL documents\n"
-            system_prompt += "   - If tool has 'pdf_base64' or 'file_data' → use it for BASE64 documents\n"
-            system_prompt += "\n3. CRITICAL - How to retrieve and pass document data:\n"
-            system_prompt += "   a) Look up the document ID in the 'DOCUMENTS PROVIDED' section above\n"
-            system_prompt += "   b) Check if it's Type: URL or Type: BASE64\n"
-            system_prompt += "   c) For URL documents:\n"
-            system_prompt += "      - Find the URL listed in 'DOCUMENTS PROVIDED'\n"
-            system_prompt += "      - Pass it directly to the tool's 'url' parameter (e.g., url='https://...')\n"
-            system_prompt += "      - DO NOT try to download or convert it - the tool handles this!\n"
-            system_prompt += "   d) For BASE64 documents:\n"
-            system_prompt += "      - The base64 data is in storage (you don't see it to avoid context overflow)\n"
-            system_prompt += "      - Pass the document ID reference to the tool (the system resolves it automatically)\n"
-            system_prompt += "      - Or use placeholder like 'pdf_base64=<base64_data_from_storage> '\n"
-            system_prompt += "\nEXAMPLES:\n"
-            system_prompt += "  Example 1 - URL Document:\n"
-            system_prompt += "    User: 'Convert the PDF to images'\n"
-            system_prompt += "    You see: [DOCUMENT_doc_1: application/pdf, URL=https://pdfobject.com/pdf/sample.pdf]\n"
-            system_prompt += "    Tool param: 'url' (accepts URL)\n"
-            system_prompt += "    ✓ CORRECT: convert_pdf_to_images(url='https://pdfobject.com/pdf/sample.pdf')\n"
-            system_prompt += "    ✗ WRONG: convert_pdf_to_images(pdf_base64='...')  ← Don't download it yourself!\n"
-            system_prompt += "\n  Example 2 - BASE64 Document:\n"
-            system_prompt += "    User: 'Extract text from PDF'\n"
-            system_prompt += "    You see: [DOCUMENT_doc_2: application/pdf, 52341 bytes]\n"
-            system_prompt += "    Tool param: 'pdf_base64' (accepts base64)\n"
-            system_prompt += "    ✓ CORRECT: extract_text(pdf_base64='<base64_data_from_storage>')\n"
-            system_prompt += "\nNote: The system automatically manages base64 data to avoid context overflow.\n"
+            system_prompt += "\n\n" + MCP_DOC_HEADER_TEMPLATE.format(
+                doc_count=len(document_metadata),
+                tool_count=len(tools),
+                doc_list=doc_list
+            )
+            system_prompt += "\n" + MCP_DOC_INSTRUCTIONS_TEMPLATE.format()
 
         # --- STEP 5: Setup Tool Multimodale Interno + Registry Tools ---
         from tilellm.tools.multimodal_llm_tool import create_multimodal_llm_tool
@@ -1266,24 +1240,9 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
 
         # Aggiungi istruzioni per il tool interno (solo se necessario)
         if has_documents:
-            system_prompt += "\n\nINTERNAL TOOL AVAILABLE:\n"
-            system_prompt += "  • invoke_multimodal_llm: Analyzes images/documents with vision capabilities\n"
-            system_prompt += "  Use this after converting documents to images for visual analysis.\n"
+            system_prompt += "\n\n" + MCP_INTERNAL_TOOL_TEMPLATE.format()
             # --- AGGIORNA IL SYSTEM PROMPT ---
-            system_prompt += f"""
-                                           IMPORTANT: Base64 Content Management
-
-                                           Large base64-encoded images are automatically extracted and replaced with references
-                                           to avoid context overflow. You will see references like:
-                                           - [IMAGE_REF:base64_ref_1:length=52341]
-
-                                           When you need to analyze image content:
-                                           1. Use the invoke_multimodal_llm tool
-                                           2. Pass the reference: images_base64=["<base64_ref_1>"]
-                                           3. The tool will automatically resolve and analyze it
-
-                                           Currently available: {len(base64_storage)} references
-                                           """
+            system_prompt += MCP_BASE64_MANAGEMENT_TEMPLATE.format(storage_count=len(base64_storage))
 
         # --- STEP 6: Funzioni di Pulizia Messaggi ---
         def clean_message_content(content: str) -> tuple[str, bool]:
@@ -1859,20 +1818,7 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
             return {"messages": cleaned_messages}
 
         # --- AGGIORNA IL SYSTEM PROMPT ---
-        system_instructions = f"""
-                                IMPORTANT: Base64 Content Management
-                                
-                                Large base64-encoded images are automatically extracted and replaced with references
-                                to avoid context overflow. You will see references like:
-                                - [IMAGE_REF:base64_ref_1:length=52341]
-                                
-                                When you need to analyze image content:
-                                1. Use the invoke_multimodal_llm tool
-                                2. Pass the reference: images_base64=["<base64_ref_1>"]
-                                3. The tool will automatically resolve and analyze it
-                                
-                                Currently available: {len(base64_storage)} references
-                                """
+        system_instructions = MCP_BASE64_MANAGEMENT_TEMPLATE.format(storage_count=len(base64_storage))
 
         @wrap_model_call
         async def pre_model_cleaning_middleware(

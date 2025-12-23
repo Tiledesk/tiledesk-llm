@@ -1,0 +1,104 @@
+version: "3.8"
+
+services:
+  backend-llm-train-kb:
+    image: tilellm:latest
+    container_name: backend-llm-train-kb
+    environment:
+      - JWT_SECRET_KEY=la-tua-nuova-chiave-segreta-256-bit
+      - TIMEOUT=240
+      - REDIS_URL=redis://redis-kb:6379/0
+      - TOKENIZERS_PARALLELISM=false
+      - WORKERS=2
+      # - TILELLM_ROLE=train
+    ports:
+      - "8000:8000"
+      - "3009:3009"
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: '4096M'
+        reservations:
+          cpus: '1'
+          memory: '2048M'
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu, utility, compute ]
+
+  backend-llm-query-kb:
+    image: tilellm:latest
+    container_name: backend-llm-query-kb
+    environment:
+      - JWT_SECRET_KEY=la-tua-nuova-chiave-segreta-256-bit
+      - TIMEOUT=240
+      - REDIS_URL=redis://redis-kb:6379/0
+      - TOKENIZERS_PARALLELISM=false
+      - WORKERS=3
+    ports:
+      - "8001:8000"
+      - "3010:3009"
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: '4096M'
+        reservations:
+          cpus: '1'
+          memory: '2048M'
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu, utility, compute ]
+
+  redis-kb:
+    container_name: redis-kb
+    image: redis:latest
+    ports:
+      - "6379:6379"
+
+
+
+  qdrant-kb:
+    container_name: qdrant-kb
+    image: qdrant/qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - "~/sviluppo/qdrant_storage:/qdrant/storage"
+
+  vllm-generate:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-generate
+    ports:
+      - "8002:8000"
+    volumes:
+      - "~/.cache/huggingface:/root/.cache/huggingface"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu, utility, compute ]
+    command: ["--max-model-len", "2048", "--runner", "generate", "--gpu-memory-utilization", "0.4", "--model", "KingNish/Qwen2.5-0.5b-Test-ft"]
+    ipc: host
+
+  vllm-pool:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-pool
+    ports:
+      - "8003:8000"
+    volumes:
+      - "~/.cache/huggingface:/root/.cache/huggingface"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu, utility, compute ]
+    command: ["--max-model-len", "2048", "--runner", "pooling", "--gpu-memory-utilization", "0.4", "--model", "KingNish/Qwen2.5-0.5b-Test-ft"]
+    ipc: host
