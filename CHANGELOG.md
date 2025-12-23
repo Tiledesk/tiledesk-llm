@@ -5,7 +5,11 @@
     * Andrea Sponziello
 ### **Copyright**: Tiledesk SRL
 
+## [2025-12-23]
+### 0.7.3-rc2
+- Updated: tiledesk-train-jobworker to version 0.0.41
 ---
+
 ## [2025-12-23]
 ### 0.7.3-rc1
 - Fixed: Correct error messages and set response status to 400 on error.
