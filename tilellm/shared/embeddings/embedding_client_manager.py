@@ -5,13 +5,18 @@ import logging
 from typing import Optional, Dict, Any, Tuple
 from functools import wraps
 from langchain.embeddings.base import Embeddings
-import torch
+try:
+    import torch
+except ImportError:
+    torch = None
 from pydantic import ValidationError
 
 # Importa la tua factory esistente
 from tilellm.shared.timed_cache import TimedCache
 from tilellm.models import LlmEmbeddingModel #, EmbeddingModel,
 from tilellm.store.vector_store_repository import VectorStoreIndexingError
+import httpx
+from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +26,94 @@ def _hash_api_key(api_key: str) -> str:
     senza esporre la chiave completa nei log.
     """
     return hashlib.sha256(api_key.encode('utf-8')).hexdigest()#[:16]
+
+class TEIEmbeddings(Embeddings):
+    def __init__(self, base_url: str, model: str, api_key: Optional[str] = None, client: Optional[httpx.AsyncClient] = None, headers: Optional[Dict[str, Any]] = None):
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.api_key = api_key
+        self.client = client
+        self.headers = headers or {}
+
+    async def _acall(self, inputs):
+        url = f"{self.base_url}/embed"
+        request_headers = {"Content-Type": "application/json"}
+        request_headers.update(self.headers)
+        
+        if self.api_key:
+             # Check if api_key is SecretStr
+            if hasattr(self.api_key, 'get_secret_value'):
+                request_headers["Authorization"] = f"Bearer {self.api_key.get_secret_value()}"
+            else:
+                request_headers["Authorization"] = f"Bearer {self.api_key}"
+        
+        payload = {"inputs": inputs}
+        
+        try:
+            if self.client and not self.client.is_closed:
+                response = await self.client.post(url, json=payload, headers=request_headers)
+            else:
+                 # Force fallback
+                 raise RuntimeError("Client not available or closed")
+        except (RuntimeError, httpx.RequestError):
+             # Fallback to ephemeral client if shared client fails (e.g. loop mismatch or closed loop)
+             async with httpx.AsyncClient() as client:
+                 response = await client.post(url, json=payload, headers=request_headers)
+        
+        response.raise_for_status()
+        return response.json()
+
+    def _run_in_thread(self, coro):
+        import asyncio
+        from concurrent.futures import ThreadPoolExecutor
+        
+        def run_async():
+            new_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(new_loop)
+            try:
+                return new_loop.run_until_complete(coro)
+            finally:
+                new_loop.close()
+        
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(run_async).result()
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = None
+            
+        if loop and loop.is_running():
+             return self._run_in_thread(self.aembed_documents(texts))
+        else:
+             if not loop:
+                 loop = asyncio.new_event_loop()
+                 asyncio.set_event_loop(loop)
+             return loop.run_until_complete(self.aembed_documents(texts))
+
+    def embed_query(self, text: str) -> List[float]:
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+        except RuntimeError:
+            loop = None
+            
+        if loop and loop.is_running():
+             return self._run_in_thread(self.aembed_query(text))
+        else:
+             if not loop:
+                 loop = asyncio.new_event_loop()
+                 asyncio.set_event_loop(loop)
+             return loop.run_until_complete(self.aembed_query(text))
+
+    async def aembed_documents(self, texts: List[str]) -> List[List[float]]:
+        return await self._acall(texts)
+
+    async def aembed_query(self, text: str) -> List[float]:
+        result = await self._acall(text)
+        return result[0]
 
 class EmbeddingSessionManager:
     """Manager per gestire sessioni HTTP persistenti per gli embeddings"""
@@ -61,7 +154,8 @@ class EmbeddingSessionManager:
             key_parts.append(str(api_key)[:20])  # Solo primi 20 caratteri
 
         if config.get("provider") == "huggingface":
-            key_parts.append(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
+            device_default = "cuda" if torch and torch.cuda.is_available() else "cpu"
+            key_parts.append(config.get("device", device_default))
             key_parts.append(str(config.get("normalize", True)))
 
         if config.get("base_url"):
@@ -110,6 +204,8 @@ class EmbeddingSessionManager:
             return await self._create_vllm_with_session()
         elif provider == "voyage":
             return await self._create_voyage_with_session()
+        elif provider == "tei":
+            return await self._create_tei_with_session()
         else:
             raise ValueError(f"Provider non supportato: {provider}")
 
@@ -142,7 +238,8 @@ class EmbeddingSessionManager:
         """Crea HuggingFace embeddings (non necessita gestione HTTP)"""
         from langchain_huggingface import HuggingFaceEmbeddings
 
-        device = self.config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+        device_default = "cuda" if torch and torch.cuda.is_available() else "cpu"
+        device = self.config.get("device", device_default)
 
         return HuggingFaceEmbeddings(
             model_name=self.config["model_name"],
@@ -204,7 +301,8 @@ class EmbeddingSessionManager:
             model=self.config["model_name"],
             base_url=self.config.get("base_url", "http://localhost:8001"),
             api_key=self.config.get("api_key","none"),
-            http_async_client=http_client
+            http_async_client=http_client,
+            default_headers=self.config.get("custom_headers")
         )
 
         embedding_client._http_client = http_client
@@ -218,6 +316,25 @@ class EmbeddingSessionManager:
             model=self.config["model_name"],
             voyage_api_key=self.config["api_key"]
         )
+
+    async def _create_tei_with_session(self):
+        """Crea TEI embeddings con sessione persistente"""
+        
+        http_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(60.0),
+            limits=httpx.Limits(max_keepalive_connections=20, max_connections=100)
+        )
+        
+        embedding_client = TEIEmbeddings(
+            base_url=self.config.get("base_url", ""),
+            model=self.config.get("model_name", "tei"),
+            api_key=self.config.get("api_key"),
+            client=http_client,
+            headers=self.config.get("custom_headers")
+        )
+        
+        embedding_client._http_client = http_client
+        return embedding_client
 
     async def release_client(self):
         """Rilascia un riferimento al client"""
@@ -235,9 +352,15 @@ class EmbeddingSessionManager:
             try:
                 # Chiudi sessione HTTP se presente
                 if hasattr(self._embedding_client, '_http_client'):
-                    await self._embedding_client._http_client.aclose()
-                elif hasattr(self._embedding_client, 'client') and hasattr(self._embedding_client.client, 'close'):
-                    await self._embedding_client.client.close()
+                    if hasattr(self._embedding_client._http_client, 'aclose'):
+                        await self._embedding_client._http_client.aclose()
+                    else:
+                        await self._embedding_client._http_client.close()
+                elif hasattr(self._embedding_client, 'client'):
+                    if hasattr(self._embedding_client.client, 'aclose'):
+                        await self._embedding_client.client.aclose()
+                    elif hasattr(self._embedding_client.client, 'close'):
+                        await self._embedding_client.client.close()
 
                 logger.debug("Closed embedding client HTTP session")
             except Exception as e:
@@ -270,7 +393,8 @@ class CachedAsyncEmbeddingFactory:
             key_parts.append(_hash_api_key(str(api_key)))
 
         if config.get("provider") == "huggingface":
-            key_parts.append(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
+            device_default = "cuda" if torch and torch.cuda.is_available() else "cpu"
+            key_parts.append(config.get("device", device_default))
             key_parts.append(config.get("normalize", True))
 
         if config.get("base_url"):
@@ -341,6 +465,7 @@ class CachedAsyncEmbeddingFactory:
             "cohere": 1024,
             "vllm": 3072,
             "voyage": 1024,
+            "tei": 1024,
         }
 
         if provider in dimensions and isinstance(dimensions[provider], dict):
@@ -456,7 +581,8 @@ def inject_embedding_async_optimized(factory: Optional[CachedAsyncEmbeddingFacto
                         "model_name": item.embedding.name,
                         "api_key": item.embedding.api_key.get_secret_value(),
                         "dimension": item.embedding.dimension,
-                        "base_url": item.embedding.url
+                        "base_url": item.embedding.url,
+                        "custom_headers": item.embedding.custom_headers
                     }
                 else:
                     raise TypeError(f"Unsupported type for embedding: {type(item.embedding)}")
@@ -495,16 +621,17 @@ def inject_embedding_qa_async_optimized(factory: Optional[CachedAsyncEmbeddingFa
                     config = {
                         "provider": question.embedding.provider,
                         "model_name": question.embedding.name,
-                        "api_key": question.embedding.api_key,
+                        "api_key": question.embedding.api_key.get_secret_value() if question.embedding.api_key else None,
                         "dimension": question.embedding.dimension,
-                        "base_url": question.embedding.url
+                        "base_url": question.embedding.url,
+                        "custom_headers": question.embedding.custom_headers
                     }
                 else:
                     config = {
                         "legacy_mode": True,
                         "provider": "openai",
                         "model_name": question.embedding,
-                        "api_key": question.gptkey
+                        "api_key": question.gptkey.get_secret_value() if question.gptkey else None
                     }
 
                 embedding_obj, dimension = await factory.create(config)
@@ -533,9 +660,10 @@ async def create_optimized_embedding_instance(question):
         config = {
             "provider": question.embedding.provider,
             "model_name": question.embedding.name,
-            "api_key": question.embedding.api_key,
+            "api_key": question.embedding.api_key.get_secret_value() if question.embedding.api_key else None,
             "dimension": question.embedding.dimension,
-            "base_url": question.embedding.url
+            "base_url": question.embedding.url,
+            "custom_headers": question.embedding.custom_headers
         }
     else:
         config = {
@@ -544,5 +672,7 @@ async def create_optimized_embedding_instance(question):
             "model_name": getattr(question, 'embedding', 'text-embedding-ada-002'),
             "api_key": getattr(question, 'gptkey', None)
         }
+        if config["api_key"] and hasattr(config["api_key"], "get_secret_value"):
+             config["api_key"] = config["api_key"].get_secret_value()
 
     return await factory.create(config)

@@ -23,14 +23,17 @@ from tilellm.models import (MetadataItem,
                             LlmEmbeddingModel
                             )
 
-from typing import Dict
+from typing import Dict, List, Optional, Union
 
 import logging
+
+from tilellm.models.llm import TEIConfig
 
 from tilellm.shared.embeddings.embedding_client_manager import inject_embedding_async_optimized, \
     inject_embedding_qa_async_optimized
 from tilellm.shared.sparse_util import hybrid_score_norm
 from tilellm.shared.timed_cache import TimedCache
+from tilellm.shared.utility import _hash_api_key
 from tilellm.store.vector_store_repository import VectorStoreRepository, VectorStoreIndexingError
 from tilellm.tools.document_tools import fetch_documents, get_content_by_url_with_bs, calc_embedding_cost
 from tilellm.tools.sparse_encoders import TiledeskSparseEncoders
@@ -87,6 +90,10 @@ class CachedVectorStore:
 
             # Assicura che la collection esista, altrimenti la crea
             await self._create_collection_if_not_exists()
+
+    async def get_index(self):
+        await self._ensure_client()
+        return self._qdrant_client
 
     async def get_vector_store(self) -> QdrantVectorStore:
         """
@@ -185,7 +192,147 @@ class CachedVectorStore:
 
 
 class QdrantRepository(VectorStoreRepository):
+    sparse_enabled = True
 
+    async def aadd_documents(self, engine: Engine, documents: List[Document], namespace: str, embedding_model: any, sparse_encoder: Union[str, TEIConfig, None] = None, **kwargs):
+        logger.info(f"Adding {len(documents)} documents to namespace '{namespace}' with hybrid embeddings.")
+
+        sparse_encoder = TiledeskSparseEncoders(sparse_encoder) # Initialize with a default sparse encoder
+        # 1. Get Qdrant Client
+        cached_vs_wrapper = await self.create_index_cache_wrapper(engine, embedding_model, await self.get_embeddings_dimension(embedding_model))
+        qdrant_client = await cached_vs_wrapper.get_client()
+        collection_name = engine.index_name
+
+        try:
+            # 2. Clear namespace before adding new documents
+            logger.info(f"Clearing namespace '{namespace}' before upserting.")
+            delete_filter = models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="metadata.namespace",
+                        match=models.MatchValue(value=namespace)
+                    )
+                ]
+            )
+            qdrant_client.delete(
+                collection_name=collection_name,
+                points_selector=models.FilterSelector(filter=delete_filter)
+            )
+            logger.info(f"Cleared namespace '{namespace}' in collection '{collection_name}'.")
+
+            # 3. Prepare data and embeddings
+            doc_batch_size = 50 # Qdrant also has limits on request size
+            contents = [doc.page_content for doc in documents]
+            metadatas = [doc.metadata for doc in documents]
+
+            point_ids_generated = []
+
+            for i in range(0, len(documents), doc_batch_size):
+                batch_contents = contents[i: i + doc_batch_size]
+                batch_metadatas = metadatas[i: i + doc_batch_size]
+                batch_ids = [str(uuid.uuid4()) for _ in batch_contents]
+
+                # Generate dense embeddings
+                dense_embeds = await embedding_model.aembed_documents(batch_contents)
+
+                # Generate sparse embeddings
+                sparse_embeds = sparse_encoder.encode_documents(batch_contents)
+
+                # 4. Upsert to Qdrant
+                points_to_upsert = []
+                for j, content in enumerate(batch_contents):
+                    # Combine metadata and ensure namespace is present
+                    combined_metadata = {
+                        **batch_metadatas[j],
+                        "namespace": namespace, # Ensure namespace is in metadata
+                        "page_content": content # Store page_content in payload for retrieval
+                    }
+
+                    points_to_upsert.append(
+                        models.PointStruct(
+                            id=batch_ids[j],
+                            vector={
+                                "text-dense": dense_embeds[j],
+                                "text-sparse": models.SparseVector(
+                                    indices=sparse_embeds[j]['indices'],
+                                    values=sparse_embeds[j]['values']
+                                )
+                            },
+                            payload={"metadata": combined_metadata} # Qdrant payload stores metadata
+                        )
+                    )
+                
+                response = qdrant_client.upsert(
+                    collection_name=collection_name,
+                    points=points_to_upsert,
+                    wait=True # Wait for the operation to complete
+                )
+                point_ids_generated.extend([p.id for p in points_to_upsert])
+                logger.info(f"Upserted batch {i//doc_batch_size + 1} with {len(points_to_upsert)} points to namespace '{namespace}'. Status: {response.status.name}")
+            
+            logger.info(f"Successfully added {len(documents)} documents to namespace '{namespace}'.")
+            return point_ids_generated
+
+        except Exception as e:
+            logger.error(f"Error adding documents to Qdrant: {e}")
+            raise
+
+
+    async def search_community_report(self, question_answer, index, dense_vector, sparse_vector):
+        
+        # Apply alpha weighting if specified, otherwise default to raw vectors (which Qdrant will fuse via RRF)
+        if question_answer.alpha == 0.5:
+            dense = dense_vector
+            sparse = sparse_vector
+        else:
+            dense, sparse = hybrid_score_norm(dense_vector, sparse_vector, alpha=question_answer.alpha)
+
+        filter_qdrant = models.Filter(
+            should=[
+                models.FieldCondition(
+                    key="metadata.namespace",
+                    match=models.MatchValue(
+                        value=question_answer.namespace
+                    ),
+                ),
+            ]
+        )
+
+        search_result = index.query_points(
+            collection_name=question_answer.engine.index_name,
+            query=models.FusionQuery(
+                fusion=models.Fusion.RRF  # we are using reciprocal rank fusion here
+            ),
+            prefetch=[
+                models.Prefetch(
+                    query=dense,
+                    using="text-dense"
+                ),
+
+                models.Prefetch(
+                    query=sparse,
+                    using="text-sparse"
+                ),
+            ],
+            query_filter=filter_qdrant,  # If you don't want any filters for now
+            limit=question_answer.top_k,  # 5 the closest results
+        ).points
+
+        # search_result = index.query_points(
+        #    query_vector=dense,
+        #    query_sparse_vector=models.SparseVector(
+        #        indices=sparse.get('indices'),
+        #        values=sparse.get('values')
+        #    ),
+        #    filter=filter_qdrant,
+        #    limit=question_answer.top_k,
+        #    with_payload=True
+        # )
+
+        metadata = [point.payload for point in search_result]
+
+        results = {"matches": metadata}
+        return results
 
 
     async def perform_hybrid_search(self, question_answer, index, dense_vector, sparse_vector):
@@ -194,7 +341,6 @@ class QdrantRepository(VectorStoreRepository):
             sparse = sparse_vector
         else:
             dense, sparse = hybrid_score_norm(dense_vector, sparse_vector, alpha=question_answer.alpha)
-
         filter_qdrant = models.Filter(
             should=[
                 models.FieldCondition(
@@ -239,7 +385,6 @@ class QdrantRepository(VectorStoreRepository):
 
         #metadata = [point.payload for point in search_result]
 
-
         documents = []
         for point in search_result:
             if point.payload and "page_content" in point.payload:
@@ -251,7 +396,7 @@ class QdrantRepository(VectorStoreRepository):
         results = {"matches": documents}
         return results
 
-    async def initialize_embeddings_and_index(self, question_answer, llm_embeddings, emb_dimension=None, embedding_config_key=None):
+    async def initialize_embeddings_and_index(self, question_answer, llm_embeddings, emb_dimension=None, embedding_config_key=None, cache_suffix=None):
         logger.info(f"Embedding parameter type: {type(question_answer.embedding)}, value: {question_answer.embedding}")
         # Use provided dimension if available, otherwise compute from embedding model
         if emb_dimension is None:
@@ -1105,7 +1250,7 @@ class QdrantRepository(VectorStoreRepository):
             raise ex
 
     @staticmethod
-    async def create_index_cache_wrapper(engine, embeddings, emb_dimension, embedding_config_key=None) -> CachedVectorStore:
+    async def create_index_cache_wrapper(engine, embeddings, emb_dimension, embedding_config_key=None,  cache_suffix=None) -> CachedVectorStore:
         """
         Ottiene un'istanza di CachedVectorStore dalla cache o ne crea una nuova.
         La chiave della cache è basata sui parametri di connessione di Qdrant e sulla configurazione embedding.
@@ -1114,9 +1259,11 @@ class QdrantRepository(VectorStoreRepository):
             engine.host,
             engine.port,
             engine.index_name,
-            str(engine.apikey)[:20] if engine.apikey else "",
+            _hash_api_key(engine.apikey.get_secret_value()) if engine.apikey else "",
             embedding_config_key if embedding_config_key is not None else "default"  # Aggiunto per evitare conflitti cache tra diversi embedding
         )
+        if cache_suffix is not None:
+            cache_key = cache_key + (cache_suffix,)
 
         async def _wrapper_creator():
             return await _create_vector_store_instance(engine, embeddings, emb_dimension)

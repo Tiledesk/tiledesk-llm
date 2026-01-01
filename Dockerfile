@@ -1,102 +1,77 @@
-# STAGE 1: LLM
-FROM python:3.12
+# --- STAGE 1: Builder (Python) ---
+FROM python:3.12-slim AS python-builder
 
-RUN apt update && apt dist-upgrade -y
-RUN apt install -y poppler-utils exiftool
+ARG EXTRAS=""
 
+WORKDIR /build
+RUN apt update && apt install -y --no-install-recommends \
+    gcc g++ libffi-dev build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
-ARG IMAGICLE=false
+COPY pyproject.toml .
+COPY ./tilellm ./tilellm
+COPY log_conf.json .
 
-WORKDIR /tiledesk-llm
-
-COPY log_conf.json /tiledesk-llm/log_conf.json
-COPY pyproject.toml /tiledesk-llm/pyproject.toml
-COPY ./tilellm /tiledesk-llm/tilellm
-# RUN pip install pytest-playwright
-
-
-RUN echo "Installazione progetto..." && \
-    pip install . && \
-    echo "Pulizia cache pip..." && \
-    pip cache purge
-
-RUN pip install "uvicorn[standard]" gunicorn
-RUN python -m nltk.downloader punkt
-RUN python -m nltk.downloader punkt_tab
-RUN python -m nltk.downloader averaged_perceptron_tagger
-RUN python -m nltk.downloader averaged_perceptron_tagger_eng
-RUN python -m nltk.downloader stopwords
-RUN playwright install chromium
-RUN playwright install-deps chromium
-
-RUN if [ "$IMAGICLE" = "true" ]; then \
-        echo "IMAGICLE è TRUE: Disinstallo torch e salto il download dei modelli."; \
-        # Disinstalla torch (usando -y per confermare) e pulisci la cache residua
-        # pip uninstall -y torch; \
+# Installazione dipendenze in una cartella locale per facile copia
+RUN if [ -z "$EXTRAS" ]; then \
+    pip install --prefix=/install .; \
     else \
-        echo "IMAGICLE è FALSE o non impostata: Eseguo download modelli."; \
-        # Esegue il download del modello 1 (SPLADE)
-        python -c "from transformers import AutoModelForSequenceClassification; AutoModelForSequenceClassification.from_pretrained('naver/splade-cocondenser-ensembledistil');" && \
-        # Esegue il download del modello 2 (CrossEncoder)
-        python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2');" ; \
+    pip install --prefix=/install ".[$EXTRAS]"; \
     fi
-# RUN python -c "from transformers import AutoModelForSequenceClassification; model = AutoModelForSequenceClassification.from_pretrained('BAAI/bge-m3');"
-# RUN python -c "from transformers import AutoModelForSequenceClassification; model = AutoModelForSequenceClassification.from_pretrained('naver/splade-cocondenser-ensembledistil');"
-# RUN python -c "from sentence_transformers import CrossEncoder; model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2');"
+RUN pip install --prefix=/install "uvicorn[standard]" gunicorn
 
-# RUN pip cache purge
-# Aggiustare redis
-ENV REDIS_HOST=redis
-ENV REDIS_URL=redis://redis:6379/0
-ENV TOKENIZERS_PARALLELISM=false
-
-# Expose the port your FastAPI application uses (modify if needed)
-EXPOSE 8000
-
-COPY entrypoint.sh /tiledesk-llm/entrypoint.sh
-RUN chmod +x /tiledesk-llm/entrypoint.sh
-
-# STAGE 2: WORKER
-
-RUN curl -sL https://deb.nodesource.com/setup_16.x | bash -
-RUN apt-get install -y nodejs
-
-####
-RUN npm install -g npm@8.x.x
-
-#RUN sed -i 's/stable\/updates/stable-security\/updates/' /etc/apt/sources.list
-
-RUN apt-get update
-
-# Create app directory
+# --- STAGE 2: Builder (Node.js) ---
+FROM node:16-slim AS node-builder
 WORKDIR /usr/src/app
+COPY worker/package*.json ./
+ARG NPM_TOKEN
+# Gestione token se presente
+RUN if [ "$NPM_TOKEN" ]; then echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" > .npmrc; fi
+RUN npm install --production && rm -f .npmrc
 COPY ./worker .
 
+# --- STAGE 3: Final Runtime ---
+FROM python:3.12-slim
 
-ARG NPM_TOKEN
+ARG EXTRAS=""
 
-RUN if [ "$NPM_TOKEN" ]; \
-    then RUN COPY .npmrc_ .npmrc \
-    else export SOMEVAR=world; \
-    fi
-
-
-# Install app dependencies
-# A wildcard is used to ensure both package.json AND package-lock.json are copied
-# where available (npm@5+)
-COPY worker/package*.json ./
-
-RUN npm install --production
-
-
-
-RUN rm -f .npmrc
-
-# Bundle app source
-#COPY . .
+# Variabili d'ambiente
+ENV REDIS_HOST=redis \
+    REDIS_URL=redis://redis:6379/0 \
+    TOKENIZERS_PARALLELISM=false \
+    PYTHONPATH=/tiledesk-llm \
+    PATH="/root/.local/bin:$PATH"
 
 WORKDIR /tiledesk-llm
 
-EXPOSE 3009
+# Installazione dipendenze di sistema minime
+RUN apt update && apt install -y --no-install-recommends \
+    poppler-utils exiftool curl \
+    && curl -sL https://deb.nodesource.com/setup_16.x | bash - \
+    && apt install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
 
-ENTRYPOINT ["sh","-c","/tiledesk-llm/entrypoint.sh & node /usr/src/app/index.js"]
+# Copia le librerie Python installate nel builder
+COPY --from=python-builder /install /usr/local
+# Copia l'app Node.js
+COPY --from=node-builder /usr/src/app /usr/src/app
+# Copia il codice sorgente
+COPY . .
+
+
+
+# NLTK e Playwright (solo Chromium per risparmiare spazio)
+RUN python -m nltk.downloader punkt punkt_tab averaged_perceptron_tagger averaged_perceptron_tagger_eng stopwords
+RUN pip install playwright && playwright install chromium --with-deps
+
+# Download Modelli (condizionale)
+ARG IMAGICLE=false
+RUN if [ "$IMAGICLE" != "true" ]; then \
+    python -c "from transformers import AutoModelForSequenceClassification; AutoModelForSequenceClassification.from_pretrained('naver/splade-cocondenser-ensembledistil');" && \
+    python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2');"; \
+    fi
+
+EXPOSE 8000 3009
+RUN chmod +x /tiledesk-llm/entrypoint.sh
+
+ENTRYPOINT ["/tiledesk-llm/docker-entrypoint.sh"]

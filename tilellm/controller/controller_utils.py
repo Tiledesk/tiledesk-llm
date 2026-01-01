@@ -139,11 +139,29 @@ async def initialize_retrievers(question_answer, repo, llm_embeddings, embedding
 
 
 # Function to fetch vectors for the given question
-async def fetch_question_vectors(question_answer, sparse_encoder, llm_embeddings):
-    sparse_vector = sparse_encoder.encode_queries(question_answer.question)
+async def fetch_question_vectors_nopar(question_answer, sparse_encoder, llm_embeddings):
+    if sparse_encoder is None:
+        sparse_vector = None
+    else:
+        sparse_vector = sparse_encoder.encode_queries(question_answer.question)
     dense_vector = await llm_embeddings.aembed_query(question_answer.question)
     return dense_vector, sparse_vector
 
+async def fetch_question_vectors(question_answer, sparse_encoder, llm_embeddings):
+     """Generate dense and sparse vectors in parallel"""
+     tasks = [llm_embeddings.aembed_query(question_answer.question)]
+     # Dense vector task
+
+     # Sparse vector task (wrapped in async)
+     if sparse_encoder:
+         async def get_sparse():
+             return sparse_encoder.encode_queries(question_answer.question)
+         tasks.append(get_sparse())
+     else:
+         tasks.append(asyncio.sleep(0, result=None))
+
+     dense_vector, sparse_vector = await asyncio.gather(*tasks)
+     return dense_vector, sparse_vector
 
 # Function to perform hybrid search
 #async def perform_hybrid_search(question_answer, index, dense_vector, sparse_vector):
@@ -177,7 +195,14 @@ def retrieve_documents(question_answer, results, contextualized_query=None):
     if question_answer.reranking and len(documents) > question_answer.top_k:
         # Per l'hybrid search, dobbiamo applicare il re-ranking manualmente
         ranking_query = contextualized_query if contextualized_query else question_answer.question
-        reranker = TileReranker(model_name=question_answer.reranker_model)
+        
+        # Determine model config
+        if isinstance(question_answer.reranking, bool): # True
+             model_config = question_answer.reranker_model
+        else:
+             model_config = question_answer.reranking
+
+        reranker = TileReranker(model_name=model_config)
         reranked_docs = reranker.rerank_documents(ranking_query, documents, question_answer.top_k)
         retriever = HybridRetriever(documents=reranked_docs, k=question_answer.top_k)
     else:

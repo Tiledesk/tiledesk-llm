@@ -505,6 +505,191 @@ Converts files between different formats.
 
 ---
 
+## Knowledge Graph APIs
+
+The Knowledge Graph module provides GraphRAG (Graph-based Retrieval Augmented Generation) capabilities using Neo4j and MinIO.
+
+### Utility Endpoints
+
+#### `GET /api/kg/health`
+Check Neo4j connection health.
+
+**Response**:
+```json
+{
+  "status": "healthy",
+  "neo4j_version": "5.x.x",
+  "database": "neo4j"
+}
+```
+
+#### `GET /api/kg/stats`
+Get database statistics.
+
+**Response**:
+```json
+{
+  "node_count": 1500,
+  "relationship_count": 3000,
+  "labels": ["Document", "Person", "Organization"],
+  "relationship_types": ["REFERENCES", "RELATES_TO"]
+}
+```
+
+### Node Management
+
+#### `POST /api/kg/nodes`
+Create a new node in the knowledge graph.
+
+**Request Body** (`Node`):
+```json
+{
+  "label": "Document",
+  "properties": {
+    "title": "Introduction to RAG",
+    "content": "RAG stands for Retrieval Augmented Generation...",
+    "embedding": [0.1, 0.2, 0.3]
+  }
+}
+```
+
+**Response**: Same as request with generated `id` field.
+
+#### `GET /api/kg/nodes/{node_id}`
+Retrieve a node by ID.
+
+#### `GET /api/kg/nodes?label={label}&limit={limit}`
+List nodes by label.
+
+#### `DELETE /api/kg/nodes/{node_id}?detach={true|false}`
+Delete a node (optionally delete connected relationships).
+
+### Relationship Management
+
+#### `POST /api/kg/relationships`
+Create a relationship between two nodes.
+
+**Request Body** (`Relationship`):
+```json
+{
+  "source_id": "node-123",
+  "target_id": "node-456",
+  "type": "REFERENCES",
+  "properties": {
+    "weight": 0.8,
+    "context": "citation"
+  }
+}
+```
+
+#### `GET /api/kg/nodes/{node_id}/relationships?direction={incoming|outgoing|both}`
+Get all relationships connected to a node.
+
+### Graph Operations
+
+#### `POST /api/kg/create`
+Create/import a knowledge graph from documents in a vector store namespace.
+
+**Request Body** (`GraphCreateRequest`):
+```json
+{
+  "namespace": "my-documents",
+  "engine": {
+    "name": "pinecone",
+    "type": "serverless",
+    "apikey": "your-api-key",
+    "vector_size": 1536,
+    "index_name": "tilellm"
+  }
+}
+```
+
+**Response**:
+```json
+{
+  "message": "Graph creation started",
+  "job_id": "job-123",
+  "nodes_created": 150,
+  "relationships_created": 300
+}
+```
+
+#### `POST /api/kg/cluster`
+Detect communities in the knowledge graph and generate reports.
+
+**Request Body** (`GraphClusterRequest`):
+```json
+{
+  "namespace": "my-documents",
+  "engine": { /* engine config */ },
+  "algorithm": "louvain",
+  "min_community_size": 3
+}
+```
+
+### Search & QA Endpoints
+
+#### `POST /api/kg/hybrid` (Primary endpoint)
+Integrated hybrid search with global + parallel retrieval + RRF + expansion + reranking.
+
+**Request Body** (`GraphQAAdvancedRequest`):
+```json
+{
+  "question": "What is the relationship between AI and machine learning?",
+  "namespace": "my-documents",
+  "engine": { /* engine config */ },
+  "retrieval_strategy": "integrated_hybrid",
+  "top_k": 10
+}
+```
+
+**Response** (`GraphQAAdvancedResponse`):
+```json
+{
+  "answer": "AI is a broader field that encompasses machine learning...",
+  "entities": [
+    {
+      "id": "node-123",
+      "label": "Concept",
+      "properties": {"name": "Artificial Intelligence"}
+    }
+  ],
+  "relationships": [
+    {
+      "id": "rel-456",
+      "type": "CONTAINS",
+      "source_id": "node-123",
+      "target_id": "node-789"
+    }
+  ],
+  "retrieval_strategy": "integrated_hybrid",
+  "scores": {
+    "global_search": 0.85,
+    "community_search": 0.92
+  }
+}
+```
+
+#### `POST /api/kg/qams`
+Community/Global search on community reports (Microsoft GraphRAG).
+
+#### `POST /api/kg/clusterms`
+Perform Louvain clustering with MinIO storage.
+
+#### `POST /api/kg/leidenms`
+Perform Leiden clustering.
+
+#### `POST /api/kg/hierarchicalms`
+Perform Hierarchical Clustering (Levels 0, 1, 2) using Leiden.
+
+### Deprecated Endpoints
+
+- `POST /api/kg/qa` - Use `/api/kg/hybrid`
+- `POST /api/kg/graphqa` - Use `/api/kg/hybrid`
+- `POST /api/kg/hybridms` - Use `/api/kg/hybrid`
+
+---
+
 ## Tools Registry APIs
 
 ### GET `/api/tools`
@@ -746,4 +931,4 @@ curl -X POST "http://localhost:8000/api/ask" \
 
 **Repository**: https://github.com/Tiledesk/tiledesk-llm
 
-**Last updated**: 2025-11-08
+**Last updated**: 2025-12-30

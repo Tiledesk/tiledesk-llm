@@ -1,7 +1,8 @@
 import asyncio
 import json
+import yaml
+from functools import lru_cache
 
-import torch
 from functools import wraps
 import hashlib
 
@@ -26,6 +27,24 @@ from tilellm.shared.llm_config import get_llm_params
 from tilellm.models.llm import LlmEmbeddingModel # Need this import
 
 logger = logging.getLogger(__name__)
+
+@lru_cache(maxsize=1)
+def get_service_config():
+    """
+    Loads the service_conf.yaml file and caches the result.
+    Returns:
+        A dictionary with the service configuration, or an empty dict if not found.
+    """
+    try:
+        with open("service_conf.yaml", "r") as f:
+            return yaml.safe_load(f)
+    except FileNotFoundError:
+        logger.warning("service_conf.yaml not found. Module-specific configurations will be ignored.")
+        return {}
+    except Exception as e:
+        logger.error(f"Error loading service_conf.yaml: {e}")
+        return {}
+
 
 def _hash_api_key(api_key: str) -> str:
     """
@@ -111,6 +130,7 @@ class LocalEmbeddingModelCache:
             model_name: str,
             normalize_embeddings: bool = True
     ) -> Any:
+        import torch
         # Genera chiave univoca basata su nome modello e normalizzazione
         cache_key = f"hf_{model_name}_{normalize_embeddings}"
 
@@ -134,6 +154,7 @@ class LocalEmbeddingModelCache:
     @classmethod
     def clear_cache(cls):
         """Svuota la cache e libera memoria GPU"""
+        import torch
         cls._logger.warning("Svuotamento cache modelli HuggingFace...")
         cls._cache.clear()
         if torch.cuda.is_available():

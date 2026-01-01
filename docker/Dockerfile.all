@@ -1,0 +1,68 @@
+# --- STAGE 1: Builder (Python with Poetry) ---
+FROM python:3.12-slim AS python-builder
+
+# Install poetry
+ENV POETRY_VERSION=2.1.2
+RUN pip install "poetry==$POETRY_VERSION"
+
+WORKDIR /build
+
+# Copy dependency definition files
+COPY pyproject.toml poetry.lock ./
+COPY ./tilellm ./tilellm
+COPY log_conf.json .
+
+# Install 'all' optional dependencies
+RUN poetry install --no-root --no-interaction --no-ansi --only main --extras all
+RUN poetry run pip install "uvicorn[standard]" gunicorn
+
+# --- STAGE 2: Builder (Node.js) ---
+FROM node:16-slim AS node-builder
+WORKDIR /usr/src/app
+COPY worker/package*.json ./
+ARG NPM_TOKEN
+# Gestione token se presente
+RUN if [ "$NPM_TOKEN" ]; then echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" > .npmrc; fi
+RUN npm install --production && rm -f .npmrc
+COPY ./worker .
+
+# --- STAGE 3: Final Runtime ---
+FROM python:3.12-slim
+
+# Environment variables
+ENV REDIS_HOST=redis \
+    REDIS_URL=redis://redis:6379/0 \
+    TOKENIZERS_PARALLELISM=false \
+    PYTHONPATH=/tiledesk-llm \
+    PATH="/root/.local/bin:$PATH"
+
+WORKDIR /tiledesk-llm
+
+# Install minimal system dependencies
+RUN apt update && apt install -y --no-install-recommends \
+    poppler-utils exiftool curl \
+    && curl -sL https://deb.nodesource.com/setup_16.x | bash - \
+    && apt install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy Python virtual environment from builder
+COPY --from=python-builder /root/.cache/pypoetry/virtualenvs/tilellm-*/ /root/.cache/pypoetry/virtualenvs/tilellm/
+
+# Copy Node.js application
+COPY --from=node-builder /usr/src/app /usr/src/app
+
+# Copy application source code
+COPY . .
+
+# NLTK and Playwright (Chromium only to save space)
+RUN python -m nltk.downloader punkt punkt_tab averaged_perceptron_tagger averaged_perceptron_tagger_eng stopwords
+RUN pip install playwright && playwright install chromium --with-deps
+
+# Download Models (always for 'all' configuration)
+RUN python -c "from transformers import AutoModelForSequenceClassification; AutoModelForSequenceClassification.from_pretrained('naver/splade-cocondenser-ensembledistil');"
+RUN python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2');"
+
+EXPOSE 8000 3009
+RUN chmod +x /tiledesk-llm/entrypoint.sh
+
+ENTRYPOINT ["sh","-c","/tiledesk-llm/entrypoint.sh & node /usr/src/app/index.js"]

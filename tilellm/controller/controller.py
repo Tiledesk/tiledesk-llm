@@ -1986,11 +1986,17 @@ async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler
         if question_answer.reranking:
             contextualize_query = await create_contextualize_query(llm,question_answer)
 
-            reranker = TileReranker(model_name=question_answer.reranker_model)
+            # Determine model config
+            if isinstance(question_answer.reranking, bool): # True
+                 model_config = question_answer.reranker_model
+            else:
+                 model_config = question_answer.reranking
+
+            reranker = TileReranker(model_name=model_config)
             retriever = RerankedRetriever(base_retriever=base_retriever,
                                           reranker=reranker,
                                           top_k=question_answer.top_k,
-                                          use_reranking=question_answer.reranking,
+                                          use_reranking=True,
                                           contextualize_query=contextualize_query)
 
         else:

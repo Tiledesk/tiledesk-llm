@@ -1,5 +1,5 @@
 import datetime
-from typing import Dict, Optional, List, Union, Any, TYPE_CHECKING
+from typing import Dict, Optional, List, Union, Any, TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field, SecretStr, field_validator, RootModel, model_validator
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -14,6 +14,14 @@ if TYPE_CHECKING:
     from tilellm.models.chat import ChatEntry
 
 
+class TEIConfig(BaseModel):
+    provider: Literal["tei"] = "tei"
+    name: str
+    api_key: Optional[SecretStr] | None = None
+    url: Optional[str] = Field(default_factory=lambda: "")
+    custom_headers: Optional[Dict[str, Any]] = None
+
+
 class ItemSingle(BaseModel):
     id: str
     source: str | None = None
@@ -22,7 +30,7 @@ class ItemSingle(BaseModel):
     hybrid: Optional[bool] = Field(default=False)
     hybrid_batch_size: Optional[int] = Field(default=10)
     doc_batch_size: Optional[int] = Field(default=100)
-    sparse_encoder: Optional[str] = Field(default="splade") # spade|bge-m3
+    sparse_encoder: Union[str, TEIConfig, None] = Field(default="splade") # spade|bge-m3 or TEIConfig
     gptkey: SecretStr | None = None
     scrape_type: int = Field(default_factory=lambda: 0)
     embedding: Union[str, LlmEmbeddingModel] = Field(default="text-embedding-ada-002")
@@ -75,7 +83,7 @@ class QuestionAnswer(BaseModel):
     llm: Optional[str] = Field(default="openai")
     gptkey: Optional[SecretStr] = "sk"
     model: Union[str, LlmEmbeddingModel] = Field(default="gpt-3.5-turbo")
-    sparse_encoder: Optional[str] = Field(default="splade") #bge-m3
+    sparse_encoder: Union[str, TEIConfig, None] = Field(default="splade") #bge-m3
     temperature: float = Field(default=0.0)
     top_k: int = Field(default=5)
     max_tokens: int = Field(default=512)
@@ -89,7 +97,7 @@ class QuestionAnswer(BaseModel):
     system_context: Optional[str] = None
     search_type: str = Field(default_factory=lambda: "similarity")
     chunks_only: Optional[bool] = Field(default_factory=lambda: False)
-    reranking : Optional[bool] = Field(default_factory=lambda: False)
+    reranking : Union[bool, TEIConfig] = Field(default_factory=lambda: False)
     reranking_multiplier: int = 3  # moltiplicatore per top_k
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     contextualize_prompt: Optional[bool] = Field(default=False, description="Enable/disable contextualize_q_system_prompt usage")

@@ -6,7 +6,6 @@ import hashlib
 from huggingface_hub import snapshot_download
 
 from pydantic import ValidationError
-import torch
 from langchain.embeddings.base import Embeddings
 import logging
 
@@ -16,6 +15,7 @@ from tilellm.models import LlmEmbeddingModel #EmbeddingModel,
 from tilellm.shared.embeddings.resilient_embeddings import ResilientEmbeddings
 from tilellm.shared.timed_cache import TimedCache
 from tilellm.store.vector_store_repository import VectorStoreIndexingError
+from tilellm.shared.embeddings.embedding_client_manager import TEIEmbeddings
 
 
 def _hash_api_key(api_key: str) -> str:
@@ -37,7 +37,8 @@ class EmbeddingFactory:
             "google": self._create_google,
             "cohere": self._create_cohere,
             "vllm": self._create_vllm,
-            "voyage": self._create_voyage
+            "voyage": self._create_voyage,
+            "tei": self._create_tei
         }
         #self._gpu_model_cache: Dict[str, Embeddings] = {}
         self.logger.info("EmbeddingFactory initialized with cache ")
@@ -60,7 +61,12 @@ class EmbeddingFactory:
 
         # Parametri specifici che alterano l'oggetto creato
         if config.get("provider") == "huggingface":
-            key_parts.append(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
+            try:
+                import torch
+                default_device = "cuda" if torch.cuda.is_available() else "cpu"
+            except ImportError:
+                default_device = "cpu"
+            key_parts.append(config.get("device", default_device))
             key_parts.append(config.get("normalize", True))
 
         if config.get("base_url"):
@@ -129,10 +135,17 @@ class EmbeddingFactory:
 
         # Per HuggingFace, includi il device e normalize_embeddings nell'ID della cache
         # se diverse combinazioni di questi parametri richiedono istanze diverse.
+        # Per HuggingFace, includi il device e normalize_embeddings nell'ID della cache
+        # se diverse combinazioni di questi parametri richiedono istanze diverse.
         if provider == "huggingface":
-            device = config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+            try:
+                import torch
+                default_device = "cuda" if torch.cuda.is_available() else "cpu"
+            except ImportError:
+                default_device = "cpu"
+            device = config.get("device", default_device)
             normalize = config.get("normalize", True)
-            return f"{provider}_{model_name}_{device}_{normalize}"
+            return f"{provider}_{model_name}_{default_device}_{normalize}"
 
         return f"{provider}_{model_name}"
 
@@ -181,7 +194,13 @@ class EmbeddingFactory:
 
         #self._prepare_huggingface_model(config["model_name"])
 
-        device = config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+        try:
+            import torch
+            default_device = "cuda" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            default_device = "cpu"
+
+        device = config.get("device", default_device)
 
         return HuggingFaceEmbeddings(
             model_name=config["model_name"],
@@ -228,6 +247,14 @@ class EmbeddingFactory:
         return VoyageAIEmbeddings(
             model=config["model_name"],
             voyage_api_key=config["api_key"]
+        ), config.get("dimension", 1024)
+
+    def _create_tei(self, config: Dict) -> Tuple[Embeddings, int]:
+        return TEIEmbeddings(
+            base_url=config.get("base_url"),
+            model=config.get("model_name"),
+            api_key=config.get("api_key"),
+            headers=config.get("custom_headers")
         ), config.get("dimension", 1024)
 
     def _create_legacy(self, config: Dict) -> Tuple[Embeddings, int]:
@@ -399,7 +426,8 @@ class AsyncEmbeddingFactory:
             "google": self._create_google,
             "cohere": self._create_cohere,
             "vllm": self._create_vllm,
-            "voyage": self._create_voyage
+            "voyage": self._create_voyage,
+            "tei": self._create_tei
         }
         self.logger.info("AsyncEmbeddingFactory initialized with cache")
 
@@ -422,7 +450,12 @@ class AsyncEmbeddingFactory:
 
         # Parametri specifici che alterano l'oggetto creato
         if config.get("provider") == "huggingface":
-            key_parts.append(config.get("device", "cuda" if torch.cuda.is_available() else "cpu"))
+            try:
+                import torch
+                default_device = "cuda" if torch.cuda.is_available() else "cpu"
+            except ImportError:
+                default_device = "cpu"
+            key_parts.append(config.get("device", default_device))
             key_parts.append(config.get("normalize", True))
 
         if config.get("base_url"):
@@ -520,10 +553,17 @@ class AsyncEmbeddingFactory:
         provider = config.get("provider", "unknown").lower()
         model_name = config.get("model_name", "default")
 
+        # Per HuggingFace, includi il device e normalize_embeddings nell'ID della cache
+        # se diverse combinazioni di questi parametri richiedono istanze diverse.
         if provider == "huggingface":
-            device = config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+            try:
+                import torch
+                default_device = "cuda" if torch.cuda.is_available() else "cpu"
+            except ImportError:
+                default_device = "cpu"
+            device = config.get("device", default_device)
             normalize = config.get("normalize", True)
-            return f"{provider}_{model_name}_{device}_{normalize}"
+            return f"{provider}_{model_name}_{default_device}_{normalize}"
 
         return f"{provider}_{model_name}"
 
@@ -577,7 +617,12 @@ class AsyncEmbeddingFactory:
         """Crea embedding HuggingFace in modo asincrono"""
 
         def _create():
-            device = config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+            try:
+                import torch
+                default_device = "cuda" if torch.cuda.is_available() else "cpu"
+            except ImportError:
+                default_device = "cpu"
+            device = config.get("device", default_device)
             return HuggingFaceEmbeddings(
                 model_name=config["model_name"],
                 model_kwargs={"device": device, "trust_remote_code": True},
@@ -660,6 +705,20 @@ class AsyncEmbeddingFactory:
             return VoyageAIEmbeddings(
                 model=config["model_name"],
                 voyage_api_key=config["api_key"]
+            ), config.get("dimension", 1024)
+
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, _create)
+
+    @staticmethod
+    async def _create_tei(config: Dict) -> Tuple[Embeddings, int]:
+        """Crea embedding TEI in modo asincrono"""
+        def _create():
+            return TEIEmbeddings(
+                base_url=config.get("base_url"),
+                model=config.get("model_name"),
+                api_key=config.get("api_key"),
+                headers=config.get("custom_headers")
             ), config.get("dimension", 1024)
 
         loop = asyncio.get_event_loop()

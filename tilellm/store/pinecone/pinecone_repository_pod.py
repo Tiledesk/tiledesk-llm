@@ -1,4 +1,6 @@
 import datetime
+import uuid
+from typing import List, Optional, Union
 
 from fastapi import HTTPException
 
@@ -9,9 +11,10 @@ from tilellm.models import (MetadataItem,
                             Engine,
                             QuestionAnswer
                             )
+from tilellm.models.llm import TEIConfig
 
 from tilellm.shared.embedding_factory import inject_embedding
-from tilellm.shared.embeddings.embedding_client_manager import inject_embedding_qa_async_optimized
+from tilellm.shared.embeddings.embedding_client_manager import inject_embedding_qa_async_optimized, inject_embedding_async_optimized
 from tilellm.store.vector_store_repository import VectorStoreIndexingError
 from tilellm.tools.document_tools import (get_content_by_url,
                                           get_content_by_url_with_bs,
@@ -34,9 +37,35 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
 
 
     async def perform_hybrid_search(self, question_answer, index, dense_vector, sparse_vector):
-        pass
+        # Pinecone Pod indices are always dense only
+        if sparse_vector is not None:
+            logger.warning("Pinecone Pod indices are dense only, ignoring sparse vector.")
+        
+        try:
+            results = await index.query(
+                top_k=question_answer.top_k,
+                vector=dense_vector,
+                namespace=question_answer.namespace,
+                include_metadata=True
+            )
+            return results
+        finally:
+            await index.close()
 
-    @inject_embedding()
+
+    async def search_community_report(self, question_answer, index, dense_vector, sparse_vector):
+        try:
+            results = await index.query(
+                top_k=question_answer.top_k,
+                vector=dense_vector,
+                namespace=question_answer.namespace,
+                include_metadata=True
+            )
+            return results
+        finally:
+            await index.close()
+
+    @inject_embedding_async_optimized()
     async def add_item(self, item, embedding_obj=None, embedding_dimension=None) -> IndexingResult:
         """
         Add items to name
@@ -205,12 +234,98 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
             raise VectorStoreIndexingError(index_res.model_dump())
 
 
-    @inject_embedding()
+    @inject_embedding_async_optimized()
     async def add_item_hybrid(self, item, embedding_obj=None, embedding_dimension=None):
         pass
 
-    async def initialize_embeddings_and_index(self, question_answer, llm_embeddings, emb_dimension=None, embedding_config_key=None):
-        pass
+    async def initialize_embeddings_and_index(self, question_answer, llm_embeddings, emb_dimension=None, embedding_config_key=None, cache_suffix=None):
+        emb_dimension = await self.get_embeddings_dimension(question_answer.embedding)
+        
+        # Pinecone Pod indices are always dense only
+        # Normalize sparse_encoder (empty string treated as None)
+        sparse_encoder_param = question_answer.sparse_encoder
+        if sparse_encoder_param == "":
+            sparse_encoder_param = None
+        
+        if sparse_encoder_param is not None:
+            logger.warning("Pinecone Pod indices are dense only, ignoring sparse_encoder parameter.")
+        
+        sparse_encoder = None  # Always None for Pod
+        
+        vector_store = await self.create_index(question_answer.engine, llm_embeddings, emb_dimension, embedding_config_key, cache_suffix)
+        index = await vector_store.async_index
+
+        return emb_dimension, sparse_encoder, index
+
+    #@inject_embedding()
+    async def aadd_documents(self, engine: Engine, documents: List[Document], namespace: str, embedding_model: any, sparse_encoder: Union[str, TEIConfig, None] = None, **kwargs):
+        # Pinecone Pod indices are always dense only
+        # Normalize sparse_encoder (empty string treated as None)
+        if sparse_encoder == "":
+            sparse_encoder = None
+        if sparse_encoder is not None:
+            logger.warning(f"Pinecone Pod indices are dense only, ignoring sparse_encoder parameter.")
+        
+        logger.info(f"Adding {len(documents)} documents to namespace '{namespace}' with dense embeddings only (Pod).")
+        
+        # 1. Get Pinecone Index
+        emb_dimension = await self.get_embeddings_dimension(embedding_model)
+        vector_store_instance = await self.create_index(engine, embedding_model, emb_dimension)
+        index = await vector_store_instance.async_index
+
+        try:
+            # 2. Clear namespace before adding new documents (handle missing namespace)
+            try:
+                logger.info(f"Clearing namespace '{namespace}' before upserting.")
+                await index.delete(delete_all=True, namespace=namespace)
+            except Exception as e:
+                if "Namespace not found" in str(e):
+                    logger.info(f"Namespace '{namespace}' does not exist, skipping deletion.")
+                else:
+                    raise
+
+            # 3. Prepare data and embeddings in batches
+            doc_batch_size = 100 # Pods can often handle larger batches
+            contents = [doc.page_content for doc in documents]
+            metadatas = [doc.metadata for doc in documents]
+            
+            all_vector_ids = []
+            for i in range(0, len(documents), doc_batch_size):
+                batch_contents = contents[i: i + doc_batch_size]
+                batch_metadatas = metadatas[i: i + doc_batch_size]
+                batch_ids = [str(uuid.uuid4()) for _ in batch_contents]
+
+                # Generate dense embeddings only
+                dense_embeds = await embedding_model.aembed_documents(batch_contents)
+
+                # 4. Upsert to Pinecone
+                vectors_to_upsert = []
+                for j, content in enumerate(batch_contents):
+                    combined_metadata = {
+                        **batch_metadatas[j],
+                        engine.text_key: content,
+                        "namespace": namespace
+                    }
+                    vector = {
+                        "id": batch_ids[j],
+                        "values": dense_embeds[j],
+                        "metadata": combined_metadata
+                    }
+                    vectors_to_upsert.append(vector)
+                
+                await index.upsert(vectors=vectors_to_upsert, namespace=namespace)
+                logger.info(f"Upserted batch {i//doc_batch_size + 1} with {len(vectors_to_upsert)} vectors to namespace '{namespace}'.")
+                all_vector_ids.extend(batch_ids)
+            
+            logger.info(f"Successfully added {len(documents)} documents to namespace '{namespace}'.")
+            return all_vector_ids
+
+        except Exception as e:
+            logger.error(f"Error adding documents to Pinecone Pod: {e}")
+            raise
+        finally:
+            if index:
+                await index.close()
 
     @inject_embedding_qa_async_optimized()
     async def get_chunks_from_repo(self, question_answer: QuestionAnswer, embedding_obj=None, embedding_dimension=None):

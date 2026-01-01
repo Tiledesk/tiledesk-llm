@@ -133,10 +133,10 @@ async def handle_unstructured_loader(urls: list, mode: str, strategy: Optional[s
         docs = await loader.aload()
         return clean_documents_metadata(docs)
     finally:
-        if hasattr(loader, 'close'):
-            loader.close()
-        elif hasattr(loader, 'aclose'):
+        if hasattr(loader, 'aclose'):
             await loader.aclose()
+        elif hasattr(loader, 'close'):
+            loader.close()
 
 async def handle_playwright_scrape(url: str, params: object, browser_headers: Optional[dict] = None) -> list[Document]:
     """Handles scraping with Playwright"""

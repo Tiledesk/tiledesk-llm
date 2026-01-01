@@ -6,12 +6,18 @@ import asyncio
 from typing import List, Optional
 
 import pandas as pd
-import fitz  # PyMuPDF
+try:
+    import fitz  # PyMuPDF
+except ImportError:
+    fitz = None
 import aiohttp
 from fastapi import HTTPException
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
-from pdf2image import convert_from_bytes
+try:
+    from pdf2image import convert_from_bytes
+except ImportError:
+    convert_from_bytes = None
 from PIL import Image
 
 from tilellm.modules.conversion.models.convertion import ConvertedFile

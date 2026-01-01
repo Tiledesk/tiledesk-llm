@@ -14,6 +14,9 @@ Tiledesk LLM is a powerful backend service designed for Retrieval-Augmented Gene
 - [Configuration](#configuration)
 - [Running the Application](#running-the-application)
 - [Running with Docker](#running-with-docker)
+- [Modular Architecture](#modular-architecture)
+- [Configuration-Based Module Loading](#configuration-based-module-loading)
+- [Docker Compose Profiles](#docker-compose-profiles)
 - [API Documentation](#api-documentation)
   - [Scraping & Indexing APIs](#scraping--indexing-apis)
   - [Question & Answer APIs](#question--answer-apis)
@@ -113,10 +116,20 @@ The server will be available at `http://localhost:8000` by default.
 
 ### Build the Image
 
-To build the Docker image, run the following command from the project root:
+To build the base Docker image, run the following command from the project root:
 
 ```bash
 docker build -t tilellm .
+```
+
+For modular builds, use the Dockerfiles in the `docker/` directory:
+
+```bash
+# Build specific module configurations
+docker build -f docker/Dockerfile.base -t tilellm-base .
+docker build -f docker/Dockerfile.graphrag -t tilellm-graph .
+docker build -f docker/Dockerfile.pdfocr -t tilellm-ocr .
+docker build -f docker/Dockerfile.all -t tilellm-all .
 ```
 
 ### Run the Container
@@ -137,22 +150,174 @@ docker run -d -p 8000:8000 \
 
 ### Docker Compose
 
-The project includes multiple `docker-compose` files for different setups (e.g., `docker-compose-vllm.yml`). To run with a specific configuration, use:
+The project uses a modular Docker Compose setup with profiles for different module combinations. All Docker Compose configuration is located in the `docker/` directory.
 
+#### Environment Configuration
+
+1. Navigate to the `docker/` directory:
+   ```bash
+   cd docker
+   ```
+
+2. Copy the environment template and customize:
+   ```bash
+   cp .env.example .env
+   # Edit .env to configure ports, images, and optional features
+   ```
+
+3. Start services using profiles (from within the `docker/` directory):
+   ```bash
+   # Base application
+   docker-compose --profile app-base up --build
+
+   # GraphRAG enabled
+   docker-compose --profile app-graph up --build
+
+   # PDF OCR enabled
+   docker-compose --profile app-ocr up --build
+
+   # All modules
+   docker-compose --profile app-all up --build
+
+   # With TEI services (local ML inference)
+   docker-compose --profile tei --profile app-all up --build
+
+   # With Qdrant vector store
+   docker-compose --profile qdrant --profile app-base up --build
+   ```
+
+#### Available Profiles
+
+| Profile | Description |
+|---------|-------------|
+| `app-base` | Base application (core RAG) |
+| `app-graph` | Base + Knowledge Graph module |
+| `app-ocr` | Base + PDF OCR module |
+| `app-all` | All modules enabled |
+| `tei` | Text Embeddings Inference services (GPU) |
+| `qdrant` | Qdrant vector store |
+
+For other setups (e.g., `docker-compose-vllm.yml`), use:
 ```bash
 docker-compose -f <compose-file-name>.yml up --build -d
 ```
 
 ### Qdrant Vector Store
 
-If you are using Qdrant as your vector store, you can run it via Docker:
+Qdrant can be run either as a standalone container or via the Docker Compose `qdrant` profile.
 
+#### Standalone Container
 ```bash
 docker run -p 6333:6333 -p 6334:6334 \
     --name qdrant \
     -v "$(pwd)/qdrant_storage:/qdrant/storage:z" \
     qdrant/qdrant
 ```
+
+#### Docker Compose Profile
+Using the `qdrant` profile with Docker Compose (recommended for integration):
+
+1. Ensure Qdrant is enabled in your `.env` file (default ports: 6333/6334)
+2. Start with any application profile:
+   ```bash
+   cd docker
+   docker-compose --profile qdrant --profile app-base up --build
+   ```
+
+The Qdrant service will be available at `http://localhost:6333` (or your configured port).
+
+## Modular Architecture
+
+Tiledesk LLM now features a modular architecture that allows you to enable or disable specific features based on your needs. This reduces deployment footprint and resource usage by loading only the modules you require.
+
+### Available Modules
+
+| Module | Description | Optional Dependencies | Docker Profile |
+|--------|-------------|----------------------|----------------|
+| **Base** | Core RAG functionality (scraping, QA, namespace management) | None | `app-base` |
+| **Knowledge Graph (GraphRAG)** | Graph-based retrieval and reasoning with Neo4j and MinIO | `graph` (neo4j, minio, langchain-aws) | `app-graph` |
+| **PDF OCR** | Optical Character Recognition for PDF documents | `ocr` (pdf2image, paddleocr, unstructured) | `app-ocr` |
+| **Conversion** | File format conversion (XLSX↔CSV, PDF→text/images) | Built-in | All profiles |
+| **Tools Registry** | Tool management for LLM interactions | Built-in | All profiles |
+
+## Configuration-Based Module Loading
+
+Modules can be enabled/disabled via the `service_conf.yaml` configuration file:
+
+1. Copy the template:
+   ```bash
+   cp service_conf.yaml.template service_conf.yaml
+   ```
+
+2. Edit `service_conf.yaml` to enable desired modules:
+   ```yaml
+   services:
+     graphrag: true      # Enable Knowledge Graph module
+     pdf_ocr: false      # Disable PDF OCR module
+     conversion: true    # Enable conversion module
+     tools_registry: true
+   ```
+
+3. The application automatically loads only enabled modules at startup.
+
+### Optional Dependencies
+
+Install optional dependencies via Poetry extras:
+```bash
+# Install all modules
+poetry install --extras "all"
+
+# Install specific modules
+poetry install --extras "graph"     # Knowledge Graph
+poetry install --extras "ocr"       # PDF OCR
+```
+
+## Docker Compose Profiles
+
+The project includes a comprehensive Docker Compose setup with profiles for different module combinations:
+
+### Available Profiles
+
+| Profile | Description | Modules Enabled |
+|---------|-------------|-----------------|
+| `app-base` | Base application (core RAG) | Base, Conversion, Tools Registry |
+| `app-graph` | GraphRAG enabled | Base + Knowledge Graph |
+| `app-ocr` | PDF OCR enabled | Base + PDF OCR |
+| `app-all` | All modules | All features |
+| `tei` | Text Embeddings Inference services (GPU) | SPLADE, Reranker, Embedding models |
+| `qdrant` | Qdrant vector store | Vector database for RAG |
+
+### Usage Examples
+
+```bash
+# Start base application
+docker-compose --profile app-base up --build
+
+# Start with Knowledge Graph module
+docker-compose --profile app-graph up --build
+
+# Start with PDF OCR module
+docker-compose --profile app-ocr up --build
+
+# Start all modules
+docker-compose --profile app-all up --build
+
+# Combine with TEI services
+docker-compose --profile tei --profile app-graph up --build
+
+# With Qdrant vector store
+docker-compose --profile qdrant --profile app-base up --build
+```
+
+### Dockerfile Structure
+
+The modular architecture uses separate Dockerfiles in the `docker/` directory:
+- `Dockerfile.base` - Base application
+- `Dockerfile.graphrag` - Knowledge Graph module
+- `Dockerfile.pdfocr` - PDF OCR module
+- `Dockerfile.all` - All modules
+
+Each Dockerfile installs only the required dependencies for its profile.
 
 ---
 

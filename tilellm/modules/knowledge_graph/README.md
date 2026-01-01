@@ -1,106 +1,135 @@
-# Knowledge Graph Module
+# Knowledge Graph (GraphRAG) Module
 
-Modulo per la gestione di un Knowledge Graph basato su Neo4j per RAG (Retrieval Augmented Generation).
+A modular component for Graph-based Retrieval Augmented Generation (GraphRAG) using Neo4j graph database and MinIO object storage.
 
-## Caratteristiche
+## Features
 
-- **Pool di connessioni Neo4j**: Gestione efficiente delle connessioni con pool configurabile
-- **Operazioni CRUD complete**: Create, Read, Update, Delete per nodi e relazioni
-- **API RESTful**: Endpoint FastAPI completamente documentati con OpenAPI/Swagger
-- **Architettura a layer**: Controller → Service → Repository per separazione delle responsabilità
-- **Type-safe**: Modelli Pydantic per validazione automatica
-- **Gestione errori**: Error handling completo con status code HTTP appropriati
+- **Graph-based Retrieval**: Leverage graph structures for enhanced RAG with entity and relationship awareness
+- **Neo4j Integration**: Efficient connection pooling with configurable connection management
+- **MinIO Storage**: Store graph embeddings, community reports, and intermediate results in object storage
+- **Complete CRUD Operations**: Create, Read, Update, Delete for nodes and relationships
+- **Advanced Search Methods**:
+  - Community/Global Search
+  - Integrated Hybrid Search (Global + Parallel Retrieval + RRF + Expansion + Reranking)
+  - Microsoft GraphRAG integration
+- **Clustering Algorithms**: Louvain, Leiden, Hierarchical clustering for community detection
+- **RESTful API**: FastAPI endpoints with OpenAPI/Swagger documentation
+- **Modular Architecture**: Can be enabled/disabled via configuration
+- **Type-safe**: Pydantic models for automatic validation
+- **Error Handling**: Comprehensive error handling with appropriate HTTP status codes
 
-## Configurazione
+## Module Activation
 
-### 1. Installare dipendenze
+The Knowledge Graph module is part of Tiledesk LLM's modular architecture. To enable it:
 
+### 1. Configuration
+Edit `service_conf.yaml`:
+```yaml
+services:
+  graphrag: true  # Enable Knowledge Graph module
+
+# Required dependencies configuration
+minio:
+  endpoint: "localhost:9000"
+  access_key: "minioadmin"
+  secret_key: "minioadmin"
+  secure: false
+
+neo4j:
+  uri: "neo4j://localhost:7687"
+  user: "neo4j"
+  password: "password"
+  database: "neo4j"
+```
+
+### 2. Install Optional Dependencies
 ```bash
-poetry install
+# Install with Poetry extras
+poetry install --extras "graph"
+
+# Or install all modules
+poetry install --extras "all"
 ```
 
-Le dipendenze includono `neo4j` driver per Python.
-
-### 2. Configurare Neo4j
-
-Modifica le credenziali in `modules/knowledge_graph/controllers.py`:
-
-```python
-NEO4J_URI = "bolt://localhost:7687"
-NEO4J_USERNAME = "neo4j"
-NEO4J_PASSWORD = "password"
-NEO4J_POOL_SIZE = 50
-```
-
-**Raccomandazione**: Spostare queste configurazioni in variabili d'ambiente o file di configurazione.
-
-### 3. Avviare Neo4j
-
-Usando Docker:
-
+### 3. Docker Deployment
+Use the GraphRAG Docker profile:
 ```bash
-sudo docker run -d --name neo4j \
-  --publish 7474:7474 --publish 7687:7687 \
-  --env NEO4J_AUTH=neo4j/password\
-  --env NEO4J_ACCEPT_LICENSE_AGREEMENT=yes \
-  --volume=<directory>/neo4j_data:/data \
-  neo4j:latest
+docker-compose --profile app-graph up --build
 ```
 
-## Struttura del Modulo
+## Dependencies
 
-```
-modules/knowledge_graph/
-├── __init__.py           # Export del modulo
-├── controllers.py        # Endpoint FastAPI
-├── models/
-│   ├── __init__.py
-│   └── models.py         # Modelli Pydantic (Node, Relationship, etc.)
-├── services/
-│   ├── __init__.py
-│   └── services.py       # Business logic
-├── repository/
-│   ├── __init__.py
-│   └── repository.py     # Accesso dati Neo4j
-└── README.md
-```
+### Required Services
+- **Neo4j**: Graph database (version 5.x)
+- **MinIO**: Object storage for embeddings and reports
+- **Redis**: For caching and job queues (shared with main application)
+
+### Python Dependencies
+- `neo4j`: Neo4j Python driver
+- `minio`: MinIO Python SDK
+- `langchain-aws`: AWS integrations (for MinIO)
+- `igraph`: Graph analysis library
+- `pandas`: Data processing for community reports
+
+## Configuration
+
+### Environment Variables
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `NEO4J_URI` | Neo4j connection URI | `neo4j://localhost:7687` |
+| `NEO4J_USER` | Neo4j username | `neo4j` |
+| `NEO4J_PASSWORD` | Neo4j password | `password` |
+| `NEO4J_DATABASE` | Neo4j database name | `neo4j` |
+| `MINIO_ENDPOINT` | MinIO endpoint | `localhost:9000` |
+| `MINIO_ACCESS_KEY` | MinIO access key | `minioadmin` |
+| `MINIO_SECRET_KEY` | MinIO secret key | `minioadmin` |
+| `MINIO_SECURE` | Use HTTPS | `false` |
+
+### Service Configuration
+Configuration is centralized in `service_conf.yaml`. See `service_conf.yaml.template` for complete options.
 
 ## API Endpoints
 
 ### Utility
+- `GET /api/kg/health` - Check Neo4j connection health
+- `GET /api/kg/stats` - Get database statistics (node count, relationship count, etc.)
 
-- `GET /api/kg/health` - Verifica connessione Neo4j
-- `GET /api/kg/stats` - Statistiche database
+### Node Management
+- `POST /api/kg/nodes` - Create a new node
+- `GET /api/kg/nodes/{node_id}` - Read node by ID
+- `GET /api/kg/nodes?label=...` - List nodes by label
+- `GET /api/kg/nodes/search?label=...&property_key=...&property_value=...` - Search nodes by property
+- `PUT /api/kg/nodes/{node_id}` - Update node
+- `PATCH /api/kg/nodes/{node_id}` - Partially update node
+- `DELETE /api/kg/nodes/{node_id}` - Delete node
 
-### Nodi
+### Relationship Management
+- `POST /api/kg/relationships` - Create relationship between nodes
+- `GET /api/kg/relationships/{relationship_id}` - Read relationship by ID
+- `GET /api/kg/nodes/{node_id}/relationships?direction=...` - List relationships for a node
+- `PUT /api/kg/relationships/{relationship_id}` - Update relationship
+- `PATCH /api/kg/relationships/{relationship_id}` - Partially update relationship
+- `DELETE /api/kg/relationships/{relationship_id}` - Delete relationship
 
-- `POST /api/kg/nodes` - Crea nodo
-- `GET /api/kg/nodes/{node_id}` - Leggi nodo
-- `GET /api/kg/nodes?label=...` - Lista nodi per label
-- `GET /api/kg/nodes/search?label=...&property_key=...&property_value=...` - Ricerca nodi
-- `PUT /api/kg/nodes/{node_id}` - Aggiorna nodo
-- `PATCH /api/kg/nodes/{node_id}` - Aggiorna parziale nodo
-- `DELETE /api/kg/nodes/{node_id}` - Elimina nodo
+### Graph Operations
+- `POST /api/kg/create` - Create/import knowledge graph from vector store namespace
+- `POST /api/kg/add-document` - Create/import knowledge graph from vector store namespace
+- `POST /api/kg/louvein-cluster` - Perform Louvain clustering with MinIO storage
+- `POST /api/kg/leiden-cluster` - Perform Leiden clustering
+- `POST /api/kg/hierarchical` - Perform Hierarchical Clustering
 
-### Relazioni
+### Search & QA
+- `POST /api/kg/hybrid` - **Primary endpoint**: Integrated hybrid search (Global + Parallel Retrieval + RRF + Expansion + Reranking)
+- `POST /api/kg/qa` - Community/Global search on community reports
 
-- `POST /api/kg/relationships` - Crea relazione
-- `GET /api/kg/relationships/{relationship_id}` - Leggi relazione
-- `GET /api/kg/nodes/{node_id}/relationships?direction=...` - Lista relazioni di un nodo
-- `PUT /api/kg/relationships/{relationship_id}` - Aggiorna relazione
-- `PATCH /api/kg/relationships/{relationship_id}` - Aggiorna parziale relazione
-- `DELETE /api/kg/relationships/{relationship_id}` - Elimina relazione
-
-## Esempi d'Uso
+## Usage Examples
 
 ### 1. Health Check
-
 ```bash
 curl http://localhost:8000/api/kg/health
 ```
 
-### 2. Creare un Nodo
-
+### 2. Create a Node
 ```bash
 curl -X POST http://localhost:8000/api/kg/nodes \
   -H "Content-Type: application/json" \
@@ -114,21 +143,7 @@ curl -X POST http://localhost:8000/api/kg/nodes \
   }'
 ```
 
-Risposta:
-```json
-{
-  "id": "123",
-  "label": "Document",
-  "properties": {
-    "title": "Introduction to RAG",
-    "content": "RAG stands for...",
-    "embedding": [0.1, 0.2, 0.3]
-  }
-}
-```
-
-### 3. Creare una Relazione
-
+### 3. Create a Relationship
 ```bash
 curl -X POST http://localhost:8000/api/kg/relationships \
   -H "Content-Type: application/json" \
@@ -143,106 +158,115 @@ curl -X POST http://localhost:8000/api/kg/relationships \
   }'
 ```
 
-### 4. Cercare Nodi
-
+### 4. Search Nodes
 ```bash
 curl "http://localhost:8000/api/kg/nodes?label=Document&limit=10"
 ```
 
-### 5. Aggiornare un Nodo
-
+### 5. Create Graph from Vector Store
 ```bash
-curl -X PUT http://localhost:8000/api/kg/nodes/123 \
+curl -X POST http://localhost:8000/api/kg/create \
   -H "Content-Type: application/json" \
   -d '{
-    "properties": {
-      "title": "Updated Title",
-      "last_modified": "2025-01-20"
+    "namespace": "my-documents",
+    "engine": {
+      "name": "pinecone",
+      "type": "serverless",
+      "apikey": "your-api-key",
+      "vector_size": 1536,
+      "index_name": "tilellm"
     }
   }'
 ```
 
-### 6. Ottenere le Relazioni di un Nodo
-
+### 6. Hybrid Search
 ```bash
-curl "http://localhost:8000/api/kg/nodes/123/relationships?direction=outgoing"
+curl -X POST http://localhost:8000/api/kg/hybrid \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "What is the relationship between AI and machine learning?",
+    "namespace": "my-documents",
+    "engine": {
+      "name": "pinecone",
+      "type": "serverless",
+      "apikey": "your-api-key",
+      "vector_size": 1536,
+      "index_name": "tilellm"
+    }
+  }'
 ```
 
-### 7. Eliminare un Nodo
-
-```bash
-curl -X DELETE "http://localhost:8000/api/kg/nodes/123?detach=true"
-```
-
-## Modelli Dati
+## Data Models
 
 ### Node
-
 ```python
 {
-  "id": "string",           # Auto-generato da Neo4j
-  "label": "string",        # Tipo di nodo (es: Document, Person)
-  "properties": {           # Proprietà custom
+  "id": "string",           # Auto-generated by Neo4j
+  "label": "string",        # Node type (e.g., Document, Person)
+  "properties": {           # Custom properties
     "key": "value"
   }
 }
 ```
 
 ### Relationship
-
 ```python
 {
-  "id": "string",           # Auto-generato da Neo4j
-  "source_id": "string",    # ID nodo sorgente
-  "target_id": "string",    # ID nodo target
-  "type": "string",         # Tipo relazione (es: REFERENCES)
-  "properties": {           # Proprietà custom
+  "id": "string",           # Auto-generated by Neo4j
+  "source_id": "string",    # Source node ID
+  "target_id": "string",    # Target node ID
+  "type": "string",         # Relationship type (e.g., REFERENCES)
+  "properties": {           # Custom properties
     "key": "value"
   }
 }
 ```
 
-## Convenzioni Neo4j
+## Neo4j Conventions
 
-- **Label dei nodi**: Usare PascalCase (es: `Document`, `Person`)
-- **Tipi di relazioni**: Usare UPPER_SNAKE_CASE (es: `RELATES_TO`, `REFERENCES`)
-- **Properties**: Usare snake_case (es: `created_at`, `document_id`)
+- **Node Labels**: Use PascalCase (e.g., `Document`, `Person`, `Organization`)
+- **Relationship Types**: Use UPPER_SNAKE_CASE (e.g., `RELATES_TO`, `REFERENCES`, `CITES`)
+- **Properties**: Use snake_case (e.g., `created_at`, `document_id`, `embedding_vector`)
 
-## Pool di Connessioni
+## Connection Pooling
 
-Il modulo utilizza un pool di connessioni con le seguenti impostazioni:
+The module uses a connection pool with the following settings:
+- **Max pool size**: 50 connections (configurable)
+- **Acquisition timeout**: 60 seconds
+- **Connection lifetime**: 1 hour
 
-- **Max pool size**: 50 connessioni (configurabile)
-- **Acquisition timeout**: 60 secondi
-- **Connection lifetime**: 1 ora
+The pool is initialized once and reused for all requests, ensuring optimal performance.
 
-Il pool viene inizializzato una sola volta e riutilizzato per tutte le richieste, garantendo performance ottimali.
+## MinIO Storage Structure
+
+GraphRAG uses MinIO for storing:
+- **Community reports** (Parquet format): `community-reports/`
+- **Graph embeddings**: `embeddings/`
+- **Intermediate processing results**: `intermediate/`
+
+Bucket naming follows the pattern: `graphrag-{namespace}`.
 
 ## Error Handling
 
-Il modulo gestisce i seguenti errori:
-
-- **400 Bad Request**: Validazione fallita, dati non validi
-- **404 Not Found**: Risorsa non trovata
-- **500 Internal Server Error**: Errori del database o interni
-- **503 Service Unavailable**: Neo4j non raggiungibile
+The module handles the following errors:
+- **400 Bad Request**: Validation failed, invalid data
+- **404 Not Found**: Resource not found
+- **500 Internal Server Error**: Database or internal errors
+- **503 Service Unavailable**: Neo4j or MinIO unavailable
 
 ## Testing
 
-Per testare il modulo, accedere alla documentazione Swagger:
-
+Access interactive API documentation:
 ```
 http://localhost:8000/docs
 ```
 
-Qui troverai tutti gli endpoint documentati con esempi interattivi.
+All endpoints are documented with interactive examples.
 
-## Best Practices per RAG
+## Best Practices for GraphRAG
 
-### 1. Memorizzare Documenti con Embeddings
-
+### 1. Store Documents with Embeddings
 ```python
-# Creare un nodo documento con embedding
 {
   "label": "Document",
   "properties": {
@@ -253,10 +277,8 @@ Qui troverai tutti gli endpoint documentati con esempi interattivi.
 }
 ```
 
-### 2. Creare Relazioni Semantiche
-
+### 2. Create Semantic Relationships
 ```python
-# Collegare documenti correlati
 {
   "source_id": "doc1",
   "target_id": "doc2",
@@ -267,26 +289,48 @@ Qui troverai tutti gli endpoint documentati con esempi interattivi.
 }
 ```
 
-### 3. Modellare Gerarchia di Conoscenza
-
+### 3. Model Knowledge Hierarchy
 ```python
-# Documento -> Sezioni -> Paragrafi
+# Document -> Sections -> Paragraphs
 doc = create_node(label="Document", properties={...})
 section = create_node(label="Section", properties={...})
 create_relationship(doc.id, section.id, "CONTAINS")
 ```
 
+### 4. Community Detection
+Use clustering endpoints (`/api/kg/cluster`, `/api/kg/clusterms`) to automatically detect and organize related content into communities.
+
+## Integration with Main Application
+
+The Knowledge Graph module integrates seamlessly with Tiledesk LLM:
+- **Authentication**: Uses the same JWT token system
+- **Vector Stores**: Compatible with Pinecone and Qdrant
+- **Configuration**: Centralized via `service_conf.yaml`
+- **Docker**: Available via `app-graph` profile
+
 ## Roadmap
 
-- [ ] Implementare ricerca semantica con vector embeddings
-- [ ] Aggiungere query Cypher personalizzate
-- [ ] Implementare graph traversal per RAG avanzato
-- [ ] Aggiungere caching per query frequenti
-- [ ] Supporto per batch operations
-- [ ] Metriche e monitoring
+- [ ] Semantic search with vector embeddings in graph queries
+- [ ] Custom Cypher query endpoints
+- [ ] Advanced graph traversal for RAG
+- [ ] Caching for frequent queries
+- [ ] Batch operations for large graphs
+- [ ] Metrics and monitoring dashboard
+- [ ] Real-time graph updates
 
-## Risorse
+## Resources
 
 - [Neo4j Python Driver](https://neo4j.com/docs/python-manual/current/)
 - [Neo4j Cypher Query Language](https://neo4j.com/docs/cypher-manual/current/)
+- [MinIO Python SDK](https://min.io/docs/minio/linux/developers/python/API.html)
 - [FastAPI Documentation](https://fastapi.tiangolo.com/)
+- [Microsoft GraphRAG](https://github.com/microsoft/graphrag)
+
+## Support
+
+For issues and questions, refer to the main project repository: https://github.com/Tiledesk/tiledesk-llm
+
+---
+
+**Module Status**: Active  
+**Last Updated**: December 2025

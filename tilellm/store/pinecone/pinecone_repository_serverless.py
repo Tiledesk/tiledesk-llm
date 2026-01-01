@@ -1,5 +1,7 @@
 import datetime
 import uuid
+from abc import ABC
+from typing import List, Optional, Union
 
 from tilellm.models.schemas import (IndexingResult,
                                     RetrievalChunksResult
@@ -9,7 +11,8 @@ from tilellm.models import (MetadataItem,
                             ItemSingle,
                             QuestionAnswer
                             )
-from tilellm.shared.embeddings.embedding_client_manager import inject_embedding_qa_async_optimized
+from tilellm.models.llm import TEIConfig
+from tilellm.shared.embeddings.embedding_client_manager import inject_embedding_qa_async_optimized, inject_embedding_async_optimized
 from tilellm.shared.sparse_util import hybrid_score_norm
 from tilellm.store.vector_store_repository import VectorStoreIndexingError
 
@@ -33,27 +36,72 @@ logger = logging.getLogger(__name__)
 
 
 class PineconeRepositoryServerless(PineconeRepositoryBase):
+    sparse_enabled = True
 
 
     async def perform_hybrid_search(self, question_answer, index, dense_vector, sparse_vector):
-        dense, sparse = hybrid_score_norm(dense_vector, sparse_vector, alpha=question_answer.alpha)
+        import pinecone
+        
+        # Determine index type (hybrid or dense)
+        pc = pinecone.Pinecone(api_key=question_answer.engine.apikey.get_secret_value())
+        index_info = pc.describe_index(question_answer.engine.index_name)
+        metric = index_info.metric  # "cosine" or "dotproduct"
+        is_hybrid = metric == "dotproduct"
+        
+        try:
+            if sparse_vector is None or not is_hybrid:
+                # Dense search only
+                if sparse_vector is not None and not is_hybrid:
+                    logger.warning(f"Index is dense (metric={metric}), ignoring sparse vector.")
+                results = await index.query(
+                    top_k=question_answer.top_k,
+                    vector=dense_vector,
+                    namespace=question_answer.namespace,
+                    include_metadata=True
+                )
+            else:
+                # Hybrid search
+                dense, sparse = hybrid_score_norm(dense_vector, sparse_vector, alpha=question_answer.alpha)
+                results = await index.query(
+                    top_k=question_answer.top_k,
+                    vector=dense,
+                    sparse_vector=sparse,
+                    namespace=question_answer.namespace,
+                    include_metadata=True
+                )
+            return results
+        finally:
+            await index.close()
 
-        results = await index.query(
-            top_k=question_answer.top_k,
-            vector=dense,
-            sparse_vector=sparse,
-            namespace=question_answer.namespace,
-            include_metadata=True
-        )
-        await index.close()
-
-        return results
 
 
-    async def initialize_embeddings_and_index(self, question_answer, llm_embeddings, emb_dimension=None, embedding_config_key=None):
+
+    async def initialize_embeddings_and_index(self, question_answer, llm_embeddings, emb_dimension=None, embedding_config_key=None, cache_suffix=None):
+        import pinecone
+        
         emb_dimension = await self.get_embeddings_dimension(question_answer.embedding)
-        sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
-        vector_store = await self.create_index(question_answer.engine, llm_embeddings, emb_dimension, embedding_config_key)
+        
+        # Determine index type (hybrid or dense)
+        pc = pinecone.Pinecone(api_key=question_answer.engine.apikey.get_secret_value())
+        index_info = pc.describe_index(question_answer.engine.index_name)
+        metric = index_info.metric  # "cosine" or "dotproduct"
+        is_hybrid = metric == "dotproduct"
+        
+        # Normalize sparse_encoder (empty string treated as None)
+        sparse_encoder_param = question_answer.sparse_encoder
+        if sparse_encoder_param == "":
+            sparse_encoder_param = None
+        
+        if is_hybrid and sparse_encoder_param is not None:
+            sparse_encoder = TiledeskSparseEncoders(sparse_encoder_param)
+        else:
+            sparse_encoder = None
+            if is_hybrid and sparse_encoder_param is None:
+                logger.warning("Index is hybrid (dotproduct) but sparse_encoder not provided. Using dense embeddings only.")
+            elif not is_hybrid and sparse_encoder_param is not None:
+                logger.warning(f"Index is dense (metric={metric}), ignoring sparse_encoder parameter.")
+        
+        vector_store = await self.create_index(question_answer.engine, llm_embeddings, emb_dimension, embedding_config_key, cache_suffix)
         index = await vector_store.async_index
 
         return emb_dimension, sparse_encoder, index
@@ -128,7 +176,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             raise ex
 
 
-    @inject_embedding()
+    @inject_embedding_async_optimized()
     async def add_item(self, item:ItemSingle, embedding_obj=None, embedding_dimension=None):
         """
             Add items to name
@@ -227,7 +275,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
 
 
-    @inject_embedding()
+    @inject_embedding_async_optimized()
     async def add_item_hybrid(self, item:ItemSingle, embedding_obj=None, embedding_dimension=None):
         """
         Add item for hybrid search
@@ -479,6 +527,134 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                 await indice.upsert(vectors=vector_tuples,
                               namespace=namespace,
                               async_req=async_req)
+
+    async def search_community_report(self, question_answer, index, dense_vector, sparse_vector):
+        import pinecone
+        
+        # Determine index type (hybrid or dense)
+        pc = pinecone.Pinecone(api_key=question_answer.engine.apikey.get_secret_value())
+        index_info = pc.describe_index(question_answer.engine.index_name)
+        metric = index_info.metric  # "cosine" or "dotproduct"
+        is_hybrid = metric == "dotproduct"
+        
+        try:
+            if sparse_vector is None or not is_hybrid:
+                # Dense search only
+                if sparse_vector is not None and not is_hybrid:
+                    logger.warning(f"Index is dense (metric={metric}), ignoring sparse vector.")
+                results = await index.query(
+                    top_k=question_answer.top_k,
+                    vector=dense_vector,
+                    namespace=question_answer.namespace,
+                    include_metadata=True
+                )
+            else:
+                # Hybrid search
+                dense, sparse = hybrid_score_norm(dense_vector, sparse_vector, alpha=question_answer.alpha)
+                results = await index.query(
+                    top_k=question_answer.top_k,
+                    vector=dense,
+                    sparse_vector=sparse,
+                    namespace=question_answer.namespace,
+                    include_metadata=True
+                )
+            return results
+        finally:
+            await index.close()
+
+
+
+    async def aadd_documents(self, engine: Engine, documents: List[Document], namespace: str, embedding_model: any, sparse_encoder: Union[str, TEIConfig, None] = None, **kwargs):
+        import pinecone
+        
+        # Get index metric to determine if hybrid or dense
+        pc = pinecone.Pinecone(api_key=engine.apikey.get_secret_value())
+        index_info = pc.describe_index(engine.index_name)
+        metric = index_info.metric  # "cosine" or "dotproduct"
+        is_hybrid = metric == "dotproduct"
+        
+        # Normalize sparse_encoder (empty string treated as None)
+        if sparse_encoder == "":
+            sparse_encoder = None
+        
+        if is_hybrid:
+            logger.info(f"Adding {len(documents)} documents to namespace '{namespace}' with hybrid embeddings (Serverless, metric={metric}).")
+            if sparse_encoder is None:
+                logger.warning("Index is hybrid (dotproduct) but sparse_encoder not provided. Using dense embeddings only.")
+                sparse_encoder_obj = None
+            else:
+                sparse_encoder_obj = TiledeskSparseEncoders(sparse_encoder)
+        else:
+            logger.info(f"Adding {len(documents)} documents to namespace '{namespace}' with dense embeddings only (Serverless, metric={metric}).")
+            if sparse_encoder is not None:
+                logger.warning(f"Index is dense (metric={metric}), ignoring sparse_encoder parameter.")
+            sparse_encoder_obj = None
+
+        # 1. Get Pinecone Index
+        emb_dimension = await self.get_embeddings_dimension(embedding_model)
+        vector_store_instance = await self.create_index(engine, embedding_model, emb_dimension)
+        index = await vector_store_instance.async_index
+
+        try:
+            # 2. Clear namespace before adding new documents (handle missing namespace)
+            try:
+                logger.info(f"Clearing namespace '{namespace}' before upserting.")
+                await index.delete(delete_all=True, namespace=namespace)
+            except Exception as e:
+                if "Namespace not found" in str(e):
+                    logger.info(f"Namespace '{namespace}' does not exist, skipping deletion.")
+                else:
+                    raise
+
+            # 3. Prepare data and embeddings in batches
+            doc_batch_size = 50  # Recommended batch size for Pinecone
+            contents = [doc.page_content for doc in documents]
+            metadatas = [doc.metadata for doc in documents]
+            
+            all_vector_ids = []
+            for i in range(0, len(documents), doc_batch_size):
+                batch_contents = contents[i: i + doc_batch_size]
+                batch_metadatas = metadatas[i: i + doc_batch_size]
+                batch_ids = [str(uuid.uuid4()) for _ in batch_contents]
+
+                # Generate dense embeddings
+                dense_embeds = await embedding_model.aembed_documents(batch_contents)
+
+                # Generate sparse embeddings if hybrid index and encoder available
+                sparse_embeds = None
+                if is_hybrid and sparse_encoder_obj is not None:
+                    sparse_embeds = sparse_encoder_obj.encode_documents(batch_contents)
+
+                # 4. Upsert to Pinecone
+                vectors_to_upsert = []
+                for j, content in enumerate(batch_contents):
+                    combined_metadata = {
+                        **batch_metadatas[j],
+                        engine.text_key: content,
+                        "namespace": namespace
+                    }
+                    vector = {
+                        "id": batch_ids[j],
+                        "values": dense_embeds[j],
+                        "metadata": combined_metadata
+                    }
+                    if sparse_embeds is not None:
+                        vector["sparse_values"] = sparse_embeds[j]
+                    vectors_to_upsert.append(vector)
+                
+                await index.upsert(vectors=vectors_to_upsert, namespace=namespace)
+                logger.info(f"Upserted batch {i//doc_batch_size + 1} to namespace '{namespace}'.")
+                all_vector_ids.extend(batch_ids)
+            
+            logger.info(f"Successfully added {len(documents)} documents to namespace '{namespace}'.")
+            return all_vector_ids
+
+        except Exception as e:
+            logger.error(f"Error adding documents to Pinecone Serverless: {e}")
+            raise
+        finally:
+            if index:
+                await index.close()
 
     @staticmethod
     async def upsert_vector_store(vector_store, chunks, metadata_id, namespace):

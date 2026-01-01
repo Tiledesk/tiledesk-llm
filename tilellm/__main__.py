@@ -793,6 +793,7 @@ def register_feature_routers(_app: FastAPI, base_package_dir: str):
     """
     import importlib
     from fastapi import APIRouter
+    from tilellm.shared.utility import get_service_config
 
     base_path = Path(base_package_dir)
 
@@ -804,18 +805,52 @@ def register_feature_routers(_app: FastAPI, base_package_dir: str):
         return
     # -----------------------
 
-    #package_name = base_path.name
+    # Carica la configurazione dei servizi
+    service_config = get_service_config()
+    services_enabled = service_config.get("services", {})
+    
+    # Mappatura directory -> chiave di configurazione
+    module_config_mapping = {
+        "knowledge_graph": "graphrag",
+        "pdf_ocr": "pdf_ocr",
+        "conversion": "conversion",
+        "tools_registry": "tools_registry",
+    }
+    
+    # Se la configurazione non esiste o è vuota, abilita tutti i moduli (compatibilità all'indietro)
+    enable_all = len(services_enabled) == 0
+
     package_name = str(base_path).replace(os.path.sep, '.')
 
     print(f"🔍 Sto cercando i servizi nella directory: '{base_path}'...")
+    if not enable_all:
+        print(f"📋 Configurazione servizi: {services_enabled}")
 
     found_routers = False
     for service_dir in base_path.iterdir():
         if service_dir.is_dir():
+            module_name = service_dir.name
+            config_key = module_config_mapping.get(module_name)
+            
+            # Determina se il modulo deve essere caricato
+            should_load = False
+            if enable_all:
+                should_load = True
+            elif config_key:
+                should_load = services_enabled.get(config_key, False)
+            else:
+                # Modulo non nella mappatura, caricamento di default (disabilitato per sicurezza)
+                should_load = False
+                print(f"⚠️  Modulo '{module_name}' non mappato, verrà saltato. Aggiungilo a module_config_mapping per abilitarlo.")
+            
+            if not should_load:
+                print(f"⏭️  Modulo '{module_name}' disabilitato in configurazione, salto.")
+                continue
+                
             controller_file = service_dir / "controllers.py"
 
             if controller_file.exists():
-                module_path = f"{package_name}.{service_dir.name}.controllers"
+                module_path = f"{package_name}.{module_name}.controllers"
 
                 try:
                     module = importlib.import_module(module_path)
@@ -829,6 +864,8 @@ def register_feature_routers(_app: FastAPI, base_package_dir: str):
 
                 except Exception as e:
                     print(f"❌ Errore durante il caricamento di '{module_path}': {e}")
+            else:
+                print(f"📁 Modulo '{module_name}' non ha controllers.py, salto.")
 
     if not found_routers:
         print("ℹ️  Nessun router valido trovato nei moduli.")

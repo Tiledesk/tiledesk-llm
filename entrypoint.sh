@@ -36,7 +36,7 @@ if [ -z "$environment" ]; then
 
 fi
 if [ -z "$WORKERS" ]; then
-  WORKERS=3
+  WORKERS=1
 fi
 if [ -z "$TIMEOUT" ]; then
   TIMEOUT=240
@@ -51,7 +51,7 @@ if [ -z "$GRACEFULTIMEOUT" ]; then
   GRACEFULTIMEOUT=60
 fi
 
-echo "start gunicorn with $ENVIRON --workers $WORKERS --timeout $TIMEOUT --max-requests $MAXREQUESTS --max-requests-jitter $MAXRJITTER --graceful-timeout $GRACEFULTIMEOUT"
+echo "start gunicorn with workers $WORKERS --timeout $TIMEOUT --max-requests $MAXREQUESTS --max-requests-jitter $MAXRJITTER --graceful-timeout $GRACEFULTIMEOUT"
 
-gunicorn --bind 0.0.0.0:8000  --workers $WORKERS --timeout $TIMEOUT --max-requests $MAXREQUESTS --max-requests-jitter $MAXRJITTER --graceful-timeout $GRACEFULTIMEOUT --log-config-json log_conf.json --worker-class uvicorn.workers.UvicornWorker tilellm.__main__:app
+python -m gunicorn --bind 0.0.0.0:8000  --workers $WORKERS --timeout $TIMEOUT --max-requests $MAXREQUESTS --max-requests-jitter $MAXRJITTER --graceful-timeout $GRACEFULTIMEOUT --log-config-json log_conf.json --worker-class uvicorn.workers.UvicornWorker tilellm.__main__:app
 

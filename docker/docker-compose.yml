@@ -1,0 +1,229 @@
+# This Docker Compose file orchestrates the various services required for the application.
+# It uses profiles to allow for selectively starting different configurations.
+#
+# To start the base application with its essential services (Redis, Worker):
+#   docker-compose --profile base up --build
+#
+# To start the TEI services for local ML inference:
+#   docker-compose --profile tei up
+#
+# To run a specific version of the application, use its profile along with 'app-':
+#   - Base app: docker-compose --profile app-base up --build
+#   - Graph-enabled app: docker-compose --profile app-graph up --build
+#   - OCR-enabled app: docker-compose --profile app-ocr up --build
+#   - Full app: docker-compose --profile app-all up --build
+#
+# You can combine profiles, e.g., to run the full app with local TEI models:
+#   docker-compose --profile tei --profile app-all up --build
+#
+# To include Qdrant vector store (optional):
+#   docker-compose --profile qdrant --profile app-base up --build
+#
+# Environment variables can be configured in the .env file in this directory.
+
+services:
+  # Essential Services (default profile)
+  redis:
+    image: ${REDIS_IMAGE:-redis:latest}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping | grep PONG || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+
+
+  # Application Services (selectable via profiles)
+  app-base:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.base
+    profiles: ["app-base"]
+    environment:
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - TIMEOUT=240
+      - TOKENIZERS_PARALLELISM=false
+    ports:
+      - "${APP_PORT:-8000}:8000"
+      - "${APP_PORT_WORKER:-3009}:3009"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  app-graph:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.graphrag
+    profiles: ["app-graph"]
+    environment:
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - TIMEOUT=240
+      - TOKENIZERS_PARALLELISM=false
+    ports:
+      - "${APP_PORT:-8000}:8000"
+      - "${APP_PORT_WORKER:-3009}:3009"
+    depends_on:
+      neo4j:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: always
+
+  app-ocr:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.pdfocr
+    profiles: ["app-ocr"]
+    environment:
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - TIMEOUT=240
+      - TOKENIZERS_PARALLELISM=false
+    ports:
+      - "${APP_PORT:-8000}:8000"
+      - "${APP_PORT_WORKER:-3009}:3009"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  app-all:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.all
+    profiles: ["app-all"]
+    environment:
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY}
+      - TIMEOUT=240
+      - TOKENIZERS_PARALLELISM=false
+    ports:
+      - "${APP_PORT:-8000}:8000"
+      - "${APP_PORT_WORKER:-3009}:3009"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # TEI Services (selectable via 'tei' profile)
+  tei-splade:
+    image: ghcr.io/huggingface/text-embeddings-inference:1.8
+    profiles: ["tei-splade"]
+    command: >
+      --model-id naver/efficient-splade-VI-BT-large-query
+      --pooling splade
+      --port 80
+      --max-batch-tokens ${MAX_BATCH_TOKENS} 
+      --max-concurrent-requests ${MAX_CONCURRENT_REQUESTS}
+      --api-key ${TEI_SPLADE_API_KEY}
+    ports:
+      - "${TEI_SPLADE_PORT:-7380}:80"
+    volumes:
+      - tei_data:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  tei-reranker:
+    image: ghcr.io/huggingface/text-embeddings-inference:1.8
+    profiles: ["tei-reranker"]
+    command: >
+      --model-id BAAI/bge-reranker-large
+      --port 80
+      --api-key ${TEI_RERANKER_API_KEY}
+    ports:
+      - "${TEI_RERANKER_PORT:-7480}:80"
+    volumes:
+      - tei_data:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  tei-embedding:
+    image: ghcr.io/huggingface/text-embeddings-inference:1.8
+    profiles: ["tei-embedding"]
+    command: >
+      --model-id intfloat/multilingual-e5-large-instruct
+      --auto-truncate
+      --port 80 # default port
+      --api-key ${TEI_EMBEDDING_API_KEY} # Uncomment and replace with your actual key if needed
+    ports:
+      - "${TEI_EMBEDDING_PORT:-7580}:80"
+    volumes:
+      - tei_data:/data
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+  # Qdrant Vector Store (optional - selectable via 'qdrant' profile)
+  qdrant:
+    image: ${QDRANT_IMAGE:-qdrant/qdrant:latest}
+    profiles: ["qdrant"]
+    ports:
+      - "${QDRANT_HTTP_PORT:-6333}:6333"
+      - "${QDRANT_GRPC_PORT:-6334}:6334"
+    volumes:
+      - "~/sviluppo/data/qdrant_data:/qdrant/storage"
+    restart: unless-stopped
+
+  neo4j:
+    container_name: neo4j
+    image: neo4j:latest
+    profiles: ["neo4j"]
+    environment:
+      - NEO4J_AUTH=${NEO4J_AUTH:-neo4j/n3o4j_Mammata}
+      - NEO4J_ACCEPT_LICENSE_AGREEMENT=yes
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    volumes:
+      - "~/sviluppo/data/neo4j_data:/data"
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:7474/ || curl -f http://localhost:7474/ || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    profiles: ["minio"]
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - "~/sviluppo/data/minio_data:/data"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_USER}
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+
+volumes:
+  redis_data:
+  tei_data:
+

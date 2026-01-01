@@ -1,6 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, Union
 
 from tilellm.models.schemas import (RepositoryNamespace,
                                     RepositoryItems,
@@ -10,6 +10,7 @@ from tilellm.models.schemas import (RepositoryNamespace,
 from tilellm.models import (Engine,
                             QuestionAnswer
                             )
+from tilellm.models.llm import TEIConfig
 from tilellm.tools.document_tools import get_content_by_url, load_document
 
 
@@ -22,6 +23,8 @@ class VectorStoreIndexingError(Exception):
         super().__init__(message)
 
 class VectorStoreRepository(ABC):
+
+    sparse_enabled=False
 
     @abstractmethod
     async def add_item(self, item):
@@ -135,13 +138,30 @@ class VectorStoreRepository(ABC):
         """
         pass
 
+    @abstractmethod
+    async def aadd_documents(self, engine: Engine, documents: list, namespace: str, embedding_model: any, sparse_encoder: Union[str, TEIConfig, None] = "splade", **kwargs):
+        """
+        Deletes all documents in a namespace and adds the new ones.
+        Handles dense and sparse vectors for hybrid search.
+        :param engine: The vector store engine configuration.
+        :param documents: A list of LangChain Document objects to add.
+        :param namespace: The target namespace.
+        :param embedding_model: The model to generate dense embeddings.
+        :param sparse_encoder: The model to generate sparse vectors.
+        :return:
+        """
+        pass
 
     @abstractmethod
-    async def initialize_embeddings_and_index(self, question_answer, llm_embeddings):
+    async def initialize_embeddings_and_index(self, question_answer, llm_embeddings, emb_dimension=None, embedding_config_key=None, cache_suffix=None):
         pass
 
     @abstractmethod
     async def perform_hybrid_search(self, question_answer, index, dense_vector, sparse_vector):
+        pass
+
+    @abstractmethod
+    async def search_community_report(self, question_answer, index, dense_vector, sparse_vector):
         pass
 
     @staticmethod

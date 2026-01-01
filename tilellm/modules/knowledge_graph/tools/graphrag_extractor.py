@@ -1,8 +1,3 @@
-"""
-Simplified GraphRAG extractor for entity and relationship extraction from text.
-Adapted from original GraphRAG implementation but without external dependencies.
-"""
-
 import re
 import logging
 from typing import List, Dict, Any, Optional, Tuple

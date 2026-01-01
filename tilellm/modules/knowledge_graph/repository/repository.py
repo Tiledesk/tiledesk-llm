@@ -5,9 +5,19 @@ Provides CRUD operations for nodes and relationships with connection pooling.
 
 import json
 import logging
-import neo4j
+from tilellm.shared.utility import get_service_config
+
+try:
+    import neo4j
+    from neo4j import GraphDatabase, Driver, Session, Query
+except ImportError:
+    neo4j = None
+    GraphDatabase = None
+    Driver = None
+    Session = None
+    Query = None
 from typing import Optional, List, Dict, Any, cast
-from neo4j import GraphDatabase, Driver, Session, Query
+#from neo4j import GraphDatabase, Driver, Session, Query
 from ..models import Node, Relationship
 
 logger = logging.getLogger(__name__)
@@ -23,21 +33,31 @@ class GraphRepository:
     SEARCHABLE_PROPERTIES = ['text', 'content', 'name', 'title', 'description', 'summary', 'label', 'type']
     SEARCHABLE_REL_PROPERTIES = ['type', 'weight', 'context', 'description', 'source', 'target']
 
-    def __init__(self, uri: str, username: str, password: str, max_connection_pool_size: int = 50):
+    def __init__(self):
         """
-        Initialize Neo4j connection with connection pooling.
-
-        Args:
-            uri: Neo4j connection URI (e.g., "bolt://localhost:7687")
-            username: Neo4j username
-            password: Neo4j password
-            max_connection_pool_size: Maximum number of connections in the pool
+        Initialize Neo4j connection using service_conf.yaml.
         """
-        self.max_connection_pool_size = max_connection_pool_size
         if GraphRepository._driver is None:
+            if neo4j is None:
+                raise ImportError("Neo4j drivers not installed. Please install with 'poetry install -E graph'")
+            
+            service_config = get_service_config()
+            neo4j_config = service_config.get("neo4j")
+
+            if not neo4j_config:
+                raise ValueError("Neo4j configuration not found in service_conf.yaml")
+
+            uri = neo4j_config.get("uri")
+            user = neo4j_config.get("user")
+            password = neo4j_config.get("password")
+            max_connection_pool_size = neo4j_config.get("max_connection_pool_size", 50) # Default to 50 if not specified
+
+            if not all([uri, user, password]):
+                raise ValueError("uri, user, and password are required for Neo4j configuration")
+
             GraphRepository._driver = GraphDatabase.driver(
                 uri,
-                auth=(username, password),
+                auth=(user, password),
                 max_connection_pool_size=max_connection_pool_size,
                 connection_acquisition_timeout=60.0,  # 60 seconds timeout
                 max_connection_lifetime=3600,  # 1 hour max connection lifetime
@@ -190,9 +210,28 @@ class GraphRepository:
             raise RuntimeError("Neo4j driver not initialized")
         return self._driver.session()
 
+    def execute_query(self, query: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """
+        Execute a Cypher query and return results.
+
+        Args:
+            query: Cypher query string
+            parameters: Optional query parameters
+
+        Returns:
+            List of result records as dictionaries
+        """
+        with self._get_session() as session:
+            result = session.run(query, **(parameters or {}))
+            # Convert result to list of dicts
+            records = []
+            for record in result:
+                records.append(dict(record))
+            return records
+
     # ==================== NODE OPERATIONS ====================
 
-    def create_node(self, node: Node, namespace: Optional[str] = None, index_name: Optional[str] = None) -> Node:
+    def create_node(self, node: Node, namespace: Optional[str] = None, index_name: Optional[str] = None, engine_name: Optional[str] = None, engine_type: Optional[str] = None, metadata_id: Optional[str] = None) -> Node:
         """
         Create a new node in the graph.
 
@@ -200,6 +239,9 @@ class GraphRepository:
             node: Node object with label and properties
             namespace: Optional namespace to partition the graph
             index_name: Optional index_name (collection name) to partition the graph
+            engine_name: Optional engine name (e.g., 'pinecone', 'qdrant') to partition the graph
+            engine_type: Optional engine type (e.g., 'pod', 'serverless')
+            metadata_id: Optional metadata ID from vector store chunks for cleanup
 
         Returns:
             Created node with generated ID
@@ -210,6 +252,12 @@ class GraphRepository:
             properties["namespace"] = namespace
         if index_name is not None:
             properties["index_name"] = index_name
+        if engine_name is not None:
+            properties["engine_name"] = engine_name
+        if engine_type is not None:
+            properties["engine_type"] = engine_type
+        if metadata_id is not None:
+            properties["metadata_id"] = metadata_id
         
         with self._get_session() as session:
             query = f"""
@@ -417,7 +465,7 @@ class GraphRepository:
 
     # ==================== RELATIONSHIP OPERATIONS ====================
 
-    def create_relationship(self, relationship: Relationship, namespace: Optional[str] = None, index_name: Optional[str] = None) -> Relationship:
+    def create_relationship(self, relationship: Relationship, namespace: Optional[str] = None, index_name: Optional[str] = None, engine_name: Optional[str] = None, engine_type: Optional[str] = None, metadata_id: Optional[str] = None) -> Relationship:
         """
         Create a relationship between two nodes.
 
@@ -425,6 +473,9 @@ class GraphRepository:
             relationship: Relationship object with source, target, type, and properties
             namespace: Optional namespace to partition the graph
             index_name: Optional index_name (collection name) to partition the graph
+            engine_name: Optional engine name (e.g., 'pinecone', 'qdrant') to partition the graph
+            engine_type: Optional engine type (e.g., 'pod', 'serverless')
+            metadata_id: Optional metadata ID from vector store chunks for cleanup
 
         Returns:
             Created relationship with generated ID
@@ -435,6 +486,12 @@ class GraphRepository:
             properties["namespace"] = namespace
         if index_name is not None:
             properties["index_name"] = index_name
+        if engine_name is not None:
+            properties["engine_name"] = engine_name
+        if engine_type is not None:
+            properties["engine_type"] = engine_type
+        if metadata_id is not None:
+            properties["metadata_id"] = metadata_id
         
         with self._get_session() as session:
             query = f"""
@@ -587,7 +644,7 @@ class GraphRepository:
 
     def delete_relationship(self, relationship_id: str) -> bool:
         """
-        Delete a relationship.
+        Delete a relationship from the graph.
 
         Args:
             relationship_id: Internal Neo4j relationship ID
@@ -605,6 +662,144 @@ class GraphRepository:
             result = session.run(query, relationship_id=relationship_id)  # type: ignore
             record = result.single()
             return record["deleted_count"] > 0 if record else False
+
+    def delete_nodes_by_metadata(
+        self,
+        namespace: Optional[str] = None,
+        index_name: Optional[str] = None,
+        engine_name: Optional[str] = None,
+        engine_type: Optional[str] = None,
+        metadata_id: Optional[str] = None
+    ) -> Dict[str, int]:
+        """
+        Delete all nodes (Entity and CommunityReport) that match the specified metadata.
+        Also deletes all relationships connected to those nodes.
+
+        Args:
+            namespace: Namespace to filter nodes
+            index_name: Index name/collection to filter nodes
+            engine_name: Engine name (e.g., 'pinecone', 'qdrant')
+            engine_type: Engine type (e.g., 'pod', 'serverless')
+            metadata_id: Metadata ID from vector store chunks
+
+        Returns:
+            Dictionary with deletion statistics
+        """
+        with self._get_session() as session:
+            # Build WHERE clause dynamically based on provided parameters
+            where_clauses = []
+            parameters = {}
+            
+            if namespace is not None:
+                where_clauses.append("n.namespace = $namespace")
+                parameters["namespace"] = namespace
+            if index_name is not None:
+                where_clauses.append("n.index_name = $index_name")
+                parameters["index_name"] = index_name
+            if engine_name is not None:
+                where_clauses.append("n.engine_name = $engine_name")
+                parameters["engine_name"] = engine_name
+            if engine_type is not None:
+                where_clauses.append("n.engine_type = $engine_type")
+                parameters["engine_type"] = engine_type
+            if metadata_id is not None:
+                where_clauses.append("(exists(n.metadata_id) AND n.metadata_id = $metadata_id)")
+                parameters["metadata_id"] = metadata_id
+            
+            # If no parameters provided, don't delete everything (safety)
+            if not where_clauses:
+                logger.warning("No metadata parameters provided, skipping delete to avoid deleting all nodes")
+                return {"nodes_deleted": 0, "reports_deleted": 0}
+            
+            where_clause = " AND ".join(where_clauses)
+            
+            # Delete nodes and their relationships
+            query = f"""
+            MATCH (n)
+            WHERE {where_clause}
+            WITH n LIMIT 10000
+            DETACH DELETE n
+            RETURN count(n) as deleted_count
+            """
+            
+            result = session.run(query, parameters)
+            record = result.single()
+            deleted_count = record["deleted_count"] if record else 0
+            
+            logger.info(f"Deleted {deleted_count} nodes matching metadata: namespace={namespace}, "
+                       f"index_name={index_name}, engine_name={engine_name}, "
+                       f"engine_type={engine_type}, metadata_id={metadata_id}")
+            
+            return {"nodes_deleted": deleted_count}
+
+    def delete_nodes_by_metadata_id(
+            self,
+            namespace: Optional[str] = None,
+            index_name: Optional[str] = None,
+            engine_name: Optional[str] = None,
+            engine_type: Optional[str] = None,
+            metadata_id: Optional[str] = None
+    ) -> Dict[str, int]:
+        """
+        Delete all nodes (Entity and CommunityReport) that match the specified metadata.
+        Also deletes all relationships connected to those nodes.
+
+        Args:
+            namespace: Namespace to filter nodes
+            index_name: Index name/collection to filter nodes
+            engine_name: Engine name (e.g., 'pinecone', 'qdrant')
+            engine_type: Engine type (e.g., 'pod', 'serverless')
+            metadata_id: Metadata ID from vector store chunks
+
+        Returns:
+            Dictionary with deletion statistics
+        """
+        with self._get_session() as session:
+            # Build WHERE clause dynamically based on provided parameters
+            where_clauses = []
+            parameters = {}
+
+            if namespace is not None:
+                where_clauses.append("n.namespace = $namespace")
+                parameters["namespace"] = namespace
+            if index_name is not None:
+                where_clauses.append("n.index_name = $index_name")
+                parameters["index_name"] = index_name
+            if engine_name is not None:
+                where_clauses.append("n.engine_name = $engine_name")
+                parameters["engine_name"] = engine_name
+            if engine_type is not None:
+                where_clauses.append("n.engine_type = $engine_type")
+                parameters["engine_type"] = engine_type
+            if metadata_id is not None:
+                where_clauses.append("(exists(n.metadata_id) AND n.metadata_id = $metadata_id)")
+                parameters["metadata_id"] = metadata_id
+
+            # If no parameters provided, don't delete everything (safety)
+            if not where_clauses:
+                logger.warning("No metadata parameters provided, skipping delete to avoid deleting all nodes")
+                return {"nodes_deleted": 0, "reports_deleted": 0}
+
+            where_clause = " AND ".join(where_clauses)
+
+            # Delete nodes and their relationships
+            query = f"""
+            MATCH (n)
+            WHERE {where_clause}
+            WITH n LIMIT 10000
+            DETACH DELETE n
+            RETURN count(n) as deleted_count
+            """
+
+            result = session.run(query, parameters)
+            record = result.single()
+            deleted_count = record["deleted_count"] if record else 0
+
+            logger.info(f"Deleted {deleted_count} nodes matching metadata: namespace={namespace}, "
+                        f"index_name={index_name}, engine_name={engine_name}, "
+                        f"engine_type={engine_type}, metadata_id={metadata_id}")
+
+            return {"nodes_deleted": deleted_count}
 
     # ==================== UTILITY OPERATIONS ====================
 
@@ -734,7 +929,7 @@ class GraphRepository:
                    labels(source) as source_labels, labels(target) as target_labels,
                    properties(source) as source_props, properties(target) as target_props
             """
-            result = session.run(Query(query), **params)
+            result = session.run(query, **params)
             
             relationships = []
             for record in result:
@@ -777,7 +972,7 @@ class GraphRepository:
             RETURN elementId(n) as id, labels(n) as labels, properties(n) as properties
             LIMIT $limit
             """
-            result = session.run(Query(query), search_text=search_text, limit=limit)
+            result = session.run(query, search_text=search_text, limit=limit)
             
             nodes = []
             for record in result:
@@ -788,13 +983,15 @@ class GraphRepository:
                 ))
             return nodes
 
-    def get_all_nodes_and_relationships(self, namespace: Optional[str] = None, index_name: Optional[str] = None) -> Dict[str, Any]:
+    def get_all_nodes_and_relationships(self, namespace: Optional[str] = None, index_name: Optional[str] = None, engine_name: Optional[str] = None, engine_type: Optional[str] = None) -> Dict[str, Any]:
         """
-        Fetch the entire graph from Neo4j, optionally filtered by namespace and index_name.
+        Fetch the entire graph from Neo4j, optionally filtered by namespace, index_name, engine_name and engine_type.
         
         Args:
             namespace: Optional namespace to filter nodes
             index_name: Optional index_name (collection name) to filter nodes
+            engine_name: Optional engine name (e.g., 'pinecone', 'qdrant') to filter nodes
+            engine_type: Optional engine type (e.g., 'pod', 'serverless') to filter nodes
             
         Returns:
             Dictionary with filtered nodes and relationships
@@ -809,6 +1006,12 @@ class GraphRepository:
             if index_name is not None:
                 where_clauses.append("n.index_name = $index_name")
                 params["index_name"] = index_name
+            if engine_name is not None:
+                where_clauses.append("n.engine_name = $engine_name")
+                params["engine_name"] = engine_name
+            if engine_type is not None:
+                where_clauses.append("n.engine_type = $engine_type")
+                params["engine_type"] = engine_type
             
             where_clause = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
             
@@ -818,7 +1021,7 @@ class GraphRepository:
             OPTIONAL MATCH (n)-[r]->(m)
             RETURN n, r, m
             """
-            result = session.run(Query(query), **params)
+            result = session.run(query, **params)
             
             nodes = {}
             relationships = []
@@ -869,7 +1072,7 @@ class GraphRepository:
                 "relationships": relationships
             }
 
-    def save_community_report(self, community_id: str, report: Dict[str, Any], level: int) -> Optional[str]:
+    def save_community_report(self, community_id: str, report: Dict[str, Any], level: int, namespace: Optional[str] = None, index_name: Optional[str] = None, engine_name: Optional[str] = None, engine_type: Optional[str] = None, metadata_id: Optional[str] = None) -> Optional[str]:
         """
         Save a community report as a node in Neo4j.
         
@@ -877,6 +1080,11 @@ class GraphRepository:
             community_id: Identifier for the community
             report: The generated report data (title, summary, findings, etc.)
             level: The hierarchy level
+            namespace: Optional namespace to partition the graph
+            index_name: Optional index_name (collection name) to partition the graph
+            engine_name: Optional engine name (e.g., 'pinecone', 'qdrant') to partition the graph
+            engine_type: Optional engine type (e.g., 'pod', 'serverless')
+            metadata_id: Optional metadata ID from vector store chunks for cleanup
             
         Returns:
             The created node ID
@@ -898,8 +1106,18 @@ class GraphRepository:
                 "findings": json.dumps(report.get("findings", [])),
                 "full_report": report.get("full_report", "") # Optional markdown version
             }
+            if namespace is not None:
+                properties["namespace"] = namespace
+            if index_name is not None:
+                properties["index_name"] = index_name
+            if engine_name is not None:
+                properties["engine_name"] = engine_name
+            if engine_type is not None:
+                properties["engine_type"] = engine_type
+            if metadata_id is not None:
+                properties["metadata_id"] = metadata_id
             
-            result = session.run(Query(query), community_id=community_id, level=level, properties=properties)
+            result = session.run(query, community_id=community_id, level=level, properties=properties)
             record = result.single()
             
             report_node_id = str(record["id"]) if record else None
@@ -913,69 +1131,95 @@ class GraphRepository:
                 MATCH (c) WHERE elementId(c) = $report_id
                 MERGE (e)-[:BELONGS_TO_COMMUNITY]->(c)
                 """
-                session.run(Query(link_query), entity_ids=entities, report_id=report_node_id)
+                session.run(link_query, entity_ids=entities, report_id=report_node_id)
                 
             return report_node_id
 
-    def expand_from_nodes(self, node_ids: List[str], max_hops: int = 2, limit: int = 50, namespace: Optional[str] = None, index_name: Optional[str] = None) -> Dict[str, Any]:
+    def expand_from_nodes(self, node_ids: List[str], max_hops: int = 2, limit: int = 50, namespace: Optional[str] = None, index_name: Optional[str] = None, query_type: Optional[str] = None) -> Dict[str, Any]:
         """
         Expand graph from seed nodes, retrieving connected nodes and relationships.
-        
+
         Args:
             node_ids: List of seed node IDs
             max_hops: Maximum number of hops to expand (1 = direct connections)
+                      If query_type is provided, this is overridden by adaptive hop count
             limit: Maximum number of nodes to return
             namespace: Optional namespace to filter connected nodes and relationships
             index_name: Optional index_name (collection name) to filter connected nodes and relationships
-            
+            query_type: Optional query type for adaptive hop count ('technical'=1, 'exploratory'=2, 'relational'=3)
+
         Returns:
-            Dictionary with nodes and relationships found
+            Dictionary with nodes, relationships, and hops_executed
         """
         if not node_ids:
-            return {"nodes": [], "relationships": []}
-        
+            return {"nodes": [], "relationships": [], "hops_executed": 0}
+
+        # Adaptive hop count based on query type
+        HOP_CONFIG = {
+            'technical': 1,
+            'exploratory': 2,
+            'relational': 3
+        }
+
+        if query_type and query_type in HOP_CONFIG:
+            max_hops = HOP_CONFIG[query_type]
+            logger.info(f"Adaptive expansion: query_type={query_type}, max_hops={max_hops}")
+
         with self._get_session() as session:
             # Build WHERE clause for partition filtering
-            where_clauses = ["elementId(start) IN $node_ids"]
+            where_clauses = []
             params: Dict[str, Any] = {"node_ids": node_ids, "limit": limit}
+
             if namespace is not None:
                 where_clauses.append("connected.namespace = $namespace")
                 params["namespace"] = namespace
             if index_name is not None:
                 where_clauses.append("connected.index_name = $index_name")
                 params["index_name"] = index_name
-            
-            where_clause = "WHERE " + " AND ".join(where_clauses)
-            
-            # Simple expansion: get directly connected nodes and relationships
+
+            # Build where clause for connected nodes
+            connected_where = ""
+            if where_clauses:
+                connected_where = "WHERE " + " AND ".join(where_clauses)
+
+            # Use variable-length path pattern for multi-hop expansion
+            # Pattern: (start)-[*1..max_hops]-(connected)
+            hop_pattern = f"*1..{max_hops}" if max_hops > 1 else ""
+
             query = f"""
-            MATCH (start)-[r]-(connected)
-            {where_clause}
-            RETURN DISTINCT 
-                elementId(start) as start_id, 
-                labels(start) as start_labels, 
-                properties(start) as start_props,
-                elementId(connected) as connected_id, 
-                labels(connected) as connected_labels, 
-                properties(connected) as connected_props,
-                elementId(r) as rel_id, 
-                type(r) as rel_type, 
-                properties(r) as rel_props
+            MATCH path = (start)-[{hop_pattern}]-(connected)
+            WHERE elementId(start) IN $node_ids
+            {connected_where}
+            WITH path, start, connected, relationships(path) as rels
             LIMIT $limit
+            RETURN DISTINCT
+                elementId(start) as start_id,
+                labels(start) as start_labels,
+                properties(start) as start_props,
+                elementId(connected) as connected_id,
+                labels(connected) as connected_labels,
+                properties(connected) as connected_props,
+                [r IN rels | {{
+                    id: elementId(r),
+                    type: type(r),
+                    properties: properties(r),
+                    source_id: elementId(startNode(r)),
+                    target_id: elementId(endNode(r))
+                }}] as path_rels
             """
-            
+
             result = session.run(query, **params)  # type: ignore
-            
+
             nodes = []
             relationships = []
             seen_nodes = set()
             seen_rels = set()
-            
+
             for record in result:
                 start_id = record.get("start_id")
                 connected_id = record.get("connected_id")
-                rel_id = record.get("rel_id")
-                
+                path_rels = record.get("path_rels", [])
+
                 # Add start node
                 if start_id and start_id not in seen_nodes:
                     seen_nodes.add(start_id)
@@ -984,7 +1228,7 @@ class GraphRepository:
                         "label": record.get("start_labels")[0] if record.get("start_labels") else "Unknown",
                         "properties": self._convert_properties(record.get("start_props", {}))
                     })
-                
+
                 # Add connected node
                 if connected_id and connected_id not in seen_nodes:
                     seen_nodes.add(connected_id)
@@ -993,29 +1237,34 @@ class GraphRepository:
                         "label": record.get("connected_labels")[0] if record.get("connected_labels") else "Unknown",
                         "properties": self._convert_properties(record.get("connected_props", {}))
                     })
-                
-                # Add relationship
-                if rel_id and rel_id not in seen_rels:
-                    seen_rels.add(rel_id)
-                    relationships.append({
-                        "id": str(rel_id),
-                        "type": record.get("rel_type", "UNKNOWN"),
-                        "properties": self._convert_properties(record.get("rel_props", {})),
-                        "source_id": str(start_id),
-                        "target_id": str(connected_id)
-                    })
-            
+
+                # Add all relationships in the path
+                for rel_data in path_rels:
+                    rel_id = rel_data.get("id")
+                    if rel_id and rel_id not in seen_rels:
+                        seen_rels.add(rel_id)
+                        relationships.append({
+                            "id": str(rel_id),
+                            "type": rel_data.get("type", "UNKNOWN"),
+                            "properties": self._convert_properties(rel_data.get("properties", {})),
+                            "source_id": str(rel_data.get("source_id")),
+                            "target_id": str(rel_data.get("target_id"))
+                        })
+
+            logger.info(f"Expansion complete: {len(nodes)} nodes, {len(relationships)} relationships (max_hops={max_hops})")
+
             return {
                 "nodes": nodes,
                 "relationships": relationships,
                 "total_nodes": len(nodes),
-                "total_relationships": len(relationships)
+                "total_relationships": len(relationships),
+                "hops_executed": max_hops
             }
 
     def find_nodes_by_source_id(self, source_id: str, limit: int = 10, namespace: Optional[str] = None, index_name: Optional[str] = None) -> List[Node]:
         """
         Find nodes that reference a specific source ID (vector store chunk ID).
-        Assumes 'source_ids' is stored as a list property in Neo4j.
+        Checks 'chunk_id', 'metadata_id', and 'source_ids' list property.
         
         Args:
             source_id: The source ID to look for
@@ -1028,7 +1277,10 @@ class GraphRepository:
         """
         with self._get_session() as session:
             # Build WHERE clause
-            where_clauses = ["n.source_ids IS NOT NULL AND $source_id IN n.source_ids"]
+            # Check if source_id matches chunk_id, metadata_id OR is in source_ids list
+            condition = "($source_id IN n.source_ids)"
+            where_clauses = [condition]
+            
             params: Dict[str, Any] = {"source_id": source_id, "limit": limit}
             if namespace is not None:
                 where_clauses.append("n.namespace = $namespace")
@@ -1044,7 +1296,7 @@ class GraphRepository:
             RETURN elementId(n) as id, labels(n) as labels, properties(n) as properties
             LIMIT $limit
             """
-            logger.info(f"Searching for nodes with source_id/chunk_id: {source_id}, namespace: {namespace}, index_name: {index_name}")
+            logger.debug(f"Searching for nodes with source_id: {source_id}, namespace: {namespace}")
             result = session.run(query, **params)  # type: ignore
             
             nodes = []
@@ -1057,6 +1309,5 @@ class GraphRepository:
                     label=label,
                     properties=props  # type: ignore
                 ))
-                logger.info(f"Found node: id={node_id}, label={label}, source_ids={props.get('source_ids', 'N/A')}, chunk_id={props.get('chunk_id', 'N/A')}")
             logger.info(f"Total nodes found for source_id {source_id}: {len(nodes)}")
             return nodes

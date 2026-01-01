@@ -1,9 +1,11 @@
+import uuid
 from abc import abstractmethod
 
 import time
 import asyncio
 
 import pinecone
+from langchain_core.documents import Document
 from langchain_pinecone.vectorstores import PineconeVectorStore
 
 
@@ -20,15 +22,17 @@ from tilellm.models import (Engine,
                             )
 
 
-from typing import Dict
+from typing import Dict, List, Optional, Union
 
 import logging
 
-from tilellm.shared.timed_cache import TimedCache
+from tilellm.models.llm import TEIConfig
 
+from tilellm.shared.timed_cache import TimedCache
+from tilellm.shared.utility import _hash_api_key
 
 from tilellm.store.vector_store_repository import VectorStoreRepository
-
+from tilellm.tools.sparse_encoders import TiledeskSparseEncoders
 
 logger = logging.getLogger(__name__)
 
@@ -149,133 +153,86 @@ class CachedVectorStore:
                 self._loop = None
 
 
-class CachedVectorStore_old:
-    """Wrapper per PineconeVectorStore con gestione intelligente delle connessioni"""
-
-    def __init__(self, engine, embeddings, emb_dimension):
-        self.engine = engine
-        self.embeddings = embeddings
-        self.emb_dimension = emb_dimension
-        self._vector_store = None
-        self._pc_client = None
-        self._index = None
-        self._host = None
-        self._lock = asyncio.Lock()
-
-    async def _ensure_connection(self):
-        async with self._lock:
-            try:
-                if self._pc_client is None:
-                    self._pc_client = pinecone.PineconeAsyncio(
-                        api_key=self.engine.apikey.get_secret_value()
-                    )
-
-                if self._host is None:
-                    existing_indexes = await self._pc_client.list_indexes()
-                    if self.engine.index_name not in existing_indexes.names():
-                        await self._create_index_if_not_exists()
-                    self._host = (await self._pc_client.describe_index(self.engine.index_name)).host
-
-                if self._index is None:
-                    self._index = self._pc_client.IndexAsyncio(
-                        name=self.engine.index_name,
-                        host=self._host
-                    )
-
-                # Crea PineconeVectorStore solo se non esiste o se è cambiato
-                if self._vector_store is None:
-                    # Forza l'iniezione del nostro index invece di lasciare che ne crei uno nuovo
-                    self._vector_store = PineconeVectorStore(
-                        index=self._index,  # Inietta il nostro index
-                        embedding=self.embeddings,
-                        text_key=self.engine.text_key,
-                    )
-                    # Imposta manualmente l'async_index per evitare che ne crei uno nuovo
-                    self._vector_store._async_index = self._index
-
-            except Exception as e:
-                logger.error(f"Error ensuring connection: {e}")
-                await self._reset_connection()
-                raise
-
-    # Aggiungi un metodo per ottenere l'index direttamente
-    async def get_index(self):
-        await self._ensure_connection()
-        return self._index
-
-
-    async def _create_index_if_not_exists(self):
-        """Crea l'indice se non esiste"""
-        logger.info(f'Creating new index {self.engine.index_name}...')
-
-        if self.engine.type == "serverless":
-            await self._pc_client.create_index(
-                name=self.engine.index_name,
-                dimension=self.emb_dimension,
-                metric=self.engine.metric,
-                spec=pinecone.ServerlessSpec(
-                    cloud="aws",
-                    region="us-west-2"
-                )
-            )
-        else:  # Pod type
-            await self._pc_client.create_index(
-                name=self.engine.index_name,
-                dimension=self.emb_dimension,
-                metric=self.engine.metric,
-                spec=pinecone.PodSpec(
-                    pod_type="p1",
-                    pods=1,
-                    environment="us-west4-gpc"
-                )
-            )
-
-        # Attendi che l'indice sia pronto
-        while not (await self._pc_client.describe_index(self.engine.index_name)).status["ready"]:
-            logger.debug(f"Waiting for index {self.engine.index_name} to be ready...")
-            await asyncio.sleep(1)
-
-    async def _reset_connection(self):
-        """Reset della connessione in caso di errori"""
-        self._vector_store = None
-        self._index = None
-        if self._pc_client:
-            try:
-                await self._pc_client.close()
-            except Exception as e:
-                logger.debug(f"Connection test failed for {self.engine.index_name}: {e}")
-                pass
-        self._pc_client = None
-
-    async def get_vector_store(self) -> PineconeVectorStore:
-        """Ottiene il vector store assicurandosi che la connessione sia valida"""
-        await self._ensure_connection()
-        return self._vector_store
-
-    async def test_connection(self) -> bool:
-        """Testa se la connessione è ancora valida"""
-        try:
-            if self._vector_store is None or self._index is None:
-                return False
-
-            # Prova una operazione semplice per testare la connessione
-            # Nota: questo potrebbe variare a seconda dell'API Pinecone
-
-            await self._index.describe_index_stats()
-            return True
-        except Exception as e:
-            logger.warning(f"Connection test failed for {self.engine.index_name}: {e}")
-            return False
-
-    async def close(self):
-        """Chiude esplicitamente la connessione"""
-        await self._reset_connection()
-
 
 class PineconeRepositoryBase(VectorStoreRepository):
+    sparse_enabled = False
+
+
+
+    @abstractmethod
+    async def search_community_report(self, question_answer, index, dense_vector, sparse_vector):
+        pass
+
+    async def aadd_documents(self, engine: Engine, documents: List[Document], namespace: str, embedding_model: any, sparse_encoder: Union[str, TEIConfig, None] = None, **kwargs):
+        logger.info(f"Adding {len(documents)} documents to namespace '{namespace}' with hybrid embeddings.")
+        
+        # Ensure sparse_encoder is initialized if hybrid search is desired
+        if sparse_encoder is None:
+            sparse_encoder = TiledeskSparseEncoders("default") # Initialize with a default sparse encoder
+
+        # 1. Get Pinecone Index
+        emb_dimension = await self.get_embeddings_dimension(embedding_model)
+        vector_store_instance = await self.create_index(engine, embedding_model, emb_dimension) # Using create_index, which handles caching
+        index = await vector_store_instance.async_index # Get the actual async index object
+
+
+        try:
+            # 2. Clear namespace before adding new documents
+            logger.info(f"Clearing namespace '{namespace}' before upserting.")
+            await index.delete(delete_all=True, namespace=namespace)
+
+            # 3. Prepare data and embeddings
+            doc_batch_size = 50 # Pinecone has limits on request size. Adjust as needed.
+            contents = [doc.page_content for doc in documents]
+            metadatas = [doc.metadata for doc in documents]
+            
+            for i in range(0, len(documents), doc_batch_size):
+                batch_contents = contents[i: i + doc_batch_size]
+                batch_metadatas = metadatas[i: i + doc_batch_size]
+                batch_ids = [str(uuid.uuid4()) for _ in batch_contents] # Generate UUIDs for IDs
+
+                # Generate dense embeddings
+                dense_embeds = await embedding_model.aembed_documents(batch_contents)
+
+                # Generate sparse embeddings
+                sparse_embeds = sparse_encoder.encode_documents(batch_contents)
+
+                # 4. Upsert to Pinecone
+                vectors_to_upsert = []
+                for j, content in enumerate(batch_contents):
+                    # Combine original metadata with page_content for text_key and namespace for filtering
+                    combined_metadata = {
+                        **batch_metadatas[j],
+                        engine.text_key: content, # This is crucial for text retrieval
+                        "namespace": namespace # Ensure namespace is in metadata for easy filtering
+                    }
+
+                    vector = {
+                        "id": batch_ids[j],
+                        "values": dense_embeds[j],
+                        "metadata": combined_metadata,
+                        "sparse_values": sparse_embeds[j] # Add sparse vector
+                    }
+                    vectors_to_upsert.append(vector)
+                
+                await index.upsert(vectors=vectors_to_upsert, namespace=namespace)
+                logger.info(f"Upserted batch {i//doc_batch_size + 1} with {len(vectors_to_upsert)} vectors to namespace '{namespace}'.")
+            
+            logger.info(f"Successfully added {len(documents)} documents to namespace '{namespace}'.")
+            # Return generated IDs for traceability
+            return [vec["id"] for vec in vectors_to_upsert]
+
+        except Exception as e:
+            logger.error(f"Error adding documents to Pinecone: {e}")
+            raise
+        finally:
+            if index:
+                await index.close()
+    
     @abstractmethod
     async def add_item(self, item):
         pass
+
 
     @abstractmethod
     async def add_item_hybrid(self, item):
@@ -820,47 +777,6 @@ class PineconeRepositoryBase(VectorStoreRepository):
         return vector_store
 
     @staticmethod
-    async def create_index_cache(engine, embeddings, emb_dimension) -> PineconeVectorStore:
-        """
-        Create or return cached vector_store instance! Per un'inizializzazione lazy si preferisce non usare
-        questo metodo
-        :param engine: Engine configuration object
-        :param embeddings: Embedding model instance
-        :param emb_dimension: Embedding dimension
-        :return: PineconeVectorStore instance (cached or new)
-        """
-
-        # Costruisci una chiave univoca per la cache del vector_store
-        cache_key = (
-            str(engine.apikey)[:20],  # Solo parte dell'API key per sicurezza
-            engine.index_name,
-            engine.type
-        )
-
-        async def _vector_store_creator():
-            """Factory function per creare il wrapper CachedVectorStore"""
-            logger.info(f"Creazione nuovo cached vector_store per index: {engine.index_name}")
-            return await _create_vector_store_instance_cached(engine, embeddings, emb_dimension)
-
-        # Ottieni il wrapper dalla cache
-        cached_vector_store = await TimedCache.async_get(
-            object_type="vector_store",
-            key=cache_key,
-            constructor=_vector_store_creator
-        )
-
-        # Testa la connessione e ricrea se necessario
-        if not await cached_vector_store.test_connection():
-            logger.info(f"Connection invalid for {engine.index_name}, recreating...")
-            await cached_vector_store._reset_connection()
-            await cached_vector_store._ensure_connection()
-
-        # Restituisci il vector_store effettivo
-        vector_store = await cached_vector_store.get_vector_store()
-        logger.debug(f"Vector store ottenuto/creato per index: {engine.index_name}")
-        return vector_store
-
-    @staticmethod
     async def create_index_sync(engine, embeddings, emb_dimension) -> PineconeVectorStore:
         """
         Questo metodo usa Pinecone Sync. Attualmente non usato
@@ -926,13 +842,15 @@ class PineconeRepositoryBase(VectorStoreRepository):
         return cached_vector_store
 
     @staticmethod
-    async def create_index_cache_wrapper(engine, embeddings, emb_dimension, embedding_config_key=None) -> CachedVectorStore:
+    async def create_index_cache_wrapper(engine, embeddings, emb_dimension, embedding_config_key=None, cache_suffix=None) -> CachedVectorStore:
         cache_key = (
-            str(engine.apikey.get_secret_value())[:20],
+            _hash_api_key(engine.apikey.get_secret_value()) ,
             engine.index_name,
             engine.type,
             embedding_config_key if embedding_config_key is not None else "default"
         )
+        if cache_suffix is not None:
+            cache_key = cache_key + (cache_suffix,)
 
         async def _wrapper_creator():
             return await _create_vector_store_instance(engine, embeddings, emb_dimension)
@@ -945,9 +863,9 @@ class PineconeRepositoryBase(VectorStoreRepository):
 
         return wrapper
 
-    async def create_index(self, engine, embeddings, emb_dimension, embedding_config_key=None) -> PineconeVectorStore:
+    async def create_index(self, engine, embeddings, emb_dimension, embedding_config_key=None, cache_suffix=None) -> PineconeVectorStore:
         cached_vs_wrapper = await self.create_index_cache_wrapper(
-            engine, embeddings, emb_dimension, embedding_config_key
+            engine, embeddings, emb_dimension, embedding_config_key, cache_suffix
         )
         return await cached_vs_wrapper.get_vector_store()
 
@@ -959,18 +877,6 @@ async def _create_vector_store_instance(engine, embeddings, emb_dimension) -> Ca
     await cached_vs._ensure_client_and_host()
     return cached_vs
 
-async def _create_vector_store_instance_cached(engine, embeddings, emb_dimension) -> CachedVectorStore_old:
-    """
-    Crea un wrapper CachedVectorStore invece di un PineconeVectorStore diretto
-    """
-    logger.info(f"Creating cached vector store wrapper for index: {engine.index_name}")
-
-    cached_vs = CachedVectorStore_old(engine, embeddings, emb_dimension)
-
-    # Inizializza la connessione
-    await cached_vs._ensure_connection()
-
-#    return cached_vs
 
 
 

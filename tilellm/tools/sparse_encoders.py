@@ -1,11 +1,25 @@
 from threading import Lock
-
-import torch
-from pinecone_text.sparse import SpladeEncoder
-from FlagEmbedding import BGEM3FlagModel
-from typing import Dict, Optional, Union, List
+from typing import Dict, Optional, Union, List, TYPE_CHECKING
 import logging
 from collections import OrderedDict
+
+if TYPE_CHECKING:
+    from tilellm.models.llm import TEIConfig
+
+try:
+    import torch
+except ImportError:
+    torch = None
+
+try:
+    from pinecone_text.sparse import SpladeEncoder
+except ImportError:
+    SpladeEncoder = None
+
+try:
+    from FlagEmbedding import BGEM3FlagModel
+except ImportError:
+    BGEM3FlagModel = None
 
 
 class TiledeskSpladeEncoder:
@@ -87,6 +101,94 @@ class TiledeskBGEM3:
         return self._convert_sparse_vectors(output['lexical_weights'])[0]
 
 
+class TEISparseEncoder:
+    def __init__(self, config: "TEIConfig"):
+        self.logger = logging.getLogger(__name__)
+        self.config = config
+        self.url = config.url.rstrip("/") if config.url else ""
+        self.headers = config.custom_headers if config.custom_headers else {}
+        if config.api_key:
+            self.headers["Authorization"] = f"Bearer {config.api_key.get_secret_value()}"
+        self.logger.info(f"Init of TEISparseEncoder with url: {self.url}")
+
+    def _call_tei(self, texts: List[str]) -> List[Dict[str, List]]:
+        import httpx
+        try:
+            payload = {
+                "inputs": texts,
+            }
+            if self.config.name:
+                 payload["model"] = self.config.name
+            
+            response = httpx.post(f"{self.url}/embed_sparse", json=payload, headers=self.headers, timeout=60)
+            response.raise_for_status()
+            data = response.json()
+            
+            results = []
+            for doc_vector in data:
+                indices = []
+                values = []
+                for item in doc_vector:
+                    indices.append(item["index"])
+                    values.append(item["value"])
+                results.append({"indices": indices, "values": values})
+            return results
+
+        except Exception as e:
+            self.logger.error(f"Error calling TEI: {e}")
+            raise e
+
+    def encode_documents(self, contents: List[str], batch_size: Optional[int] = 8) -> List[Dict[str, List]]:
+        import time
+        import httpx
+        
+        if not batch_size:
+            batch_size = 8
+        
+        results = []
+        i = 0
+        current_batch_size = batch_size
+        while i < len(contents):
+            batch = contents[i:i + current_batch_size]
+            self.logger.info(f"Processing sparse encoding batch {i//current_batch_size + 1}/{(len(contents)-1)//current_batch_size + 1} with {len(batch)} documents (batch size: {current_batch_size})")
+            batch_retry_count = 0
+            max_retries = 3
+            batch_success = False
+            
+            while batch_retry_count < max_retries and not batch_success:
+                try:
+                    batch_results = self._call_tei(batch)
+                    results.extend(batch_results)
+                    batch_success = True
+                    i += current_batch_size
+                    
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 413 and current_batch_size > 1:
+                        # Payload too large, reduce batch size and retry
+                        new_batch_size = max(1, current_batch_size // 2)
+                        self.logger.warning(f"Payload too large (413) for batch size {current_batch_size}. Reducing to {new_batch_size}")
+                        current_batch_size = new_batch_size
+                        batch = contents[i:i + current_batch_size]
+                        batch_retry_count += 1
+                        time.sleep(0.5 * batch_retry_count)  # Exponential backoff
+                        continue
+                    else:
+                        self.logger.error(f"HTTP error calling TEI sparse encoder: {e}")
+                        raise e
+                except Exception as e:
+                    self.logger.error(f"Error calling TEI sparse encoder: {e}")
+                    raise e
+            
+            if not batch_success:
+                raise RuntimeError(f"Failed to process batch after {max_retries} retries")
+        
+        return results
+
+    def encode_queries(self, query: str) -> Dict[str, List]:
+        results = self._call_tei([query])
+        return results[0]
+
+
 class TiledeskSparseEncoders:
     # LRU Cache con dimensione massima di 2 modelli
     _encoder_cache = OrderedDict()
@@ -94,13 +196,19 @@ class TiledeskSparseEncoders:
     _logger = logging.getLogger(__name__)
     _cache_lock = Lock()
 
-    def __init__(self, model_name: str):
-        self.model_name = model_name.lower()
-        self.encoder = self._get_cached_encoder(self.model_name)
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    def __init__(self, model_name: Union[str, "TEIConfig"]):
+        if hasattr(model_name, "provider") and model_name.provider == "tei":
+             self.model_name = "tei_" + model_name.url
+             self.config = model_name
+        else:
+            self.model_name = model_name.lower()
+            self.config = None
+            
+        self.encoder = self._get_cached_encoder(self.model_name, self.config)
+        self.device = 'cuda' if torch and torch.cuda.is_available() else 'cpu'
 
     @classmethod
-    def _get_cached_encoder(cls, model_name: str) -> Union[TiledeskSpladeEncoder, TiledeskBGEM3]:
+    def _get_cached_encoder(cls, model_name: str, config: Optional["TEIConfig"] = None) -> Union[TiledeskSpladeEncoder, TiledeskBGEM3, TEISparseEncoder]:
         with cls._cache_lock:
             # Verifica se il modello è già in cache
             if model_name in cls._encoder_cache:
@@ -111,14 +219,21 @@ class TiledeskSparseEncoders:
                 return encoder
 
             # Crea nuovo encoder se non in cache
-            if model_name == "splade":
+            if config and hasattr(config, "provider") and config.provider == "tei":
+                cls._logger.info("Creating new TEISparseEncoder instance")
+                encoder = TEISparseEncoder(config)
+            elif model_name == "splade":
+                if SpladeEncoder is None:
+                    raise ImportError("Pinecone SpladeEncoder is not available. Install 'ml' extras.")
                 cls._logger.info("Creating new SpladeEncoder instance")
                 encoder = TiledeskSpladeEncoder()
             elif model_name == "bge-m3":
+                if BGEM3FlagModel is None:
+                    raise ImportError("BGEM3FlagModel is not available. Install 'ml' extras.")
                 cls._logger.info("Creating new BGEM3 instance")
                 encoder = TiledeskBGEM3()
             else:
-                raise ValueError(f"Unsupported model: {model_name}. Use 'splade' or 'bge-m3'.")
+                raise ValueError(f"Unsupported model: {model_name}. Use 'splade', 'bge-m3' or TEIConfig.")
 
             # Gestione LRU Cache
             if len(cls._encoder_cache) >= cls._max_cache_size:
@@ -148,5 +263,5 @@ class TiledeskSparseEncoders:
     def clear_cache(cls):
         cls._logger.warning("Clearing encoder cache and GPU memory")
         cls._encoder_cache.clear()
-        if torch.cuda.is_available():
+        if torch and torch.cuda.is_available():
             torch.cuda.empty_cache()
