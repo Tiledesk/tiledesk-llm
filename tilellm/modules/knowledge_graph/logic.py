@@ -9,10 +9,10 @@ from typing import List, Dict, Any, Optional
 
 from tilellm.models.schemas import RepositoryEngine
 from tilellm.models.schemas.multimodal_content import TextContent
-from tilellm.shared.utility import inject_repo_async, inject_llm_chat_async, inject_llm_async
+from tilellm.shared.utility import inject_repo_async, inject_llm_chat_async, inject_llm_async, get_service_config
 from .models import Node, NodeUpdate, Relationship, RelationshipUpdate
 from .models.schemas import (
-    GraphQARequest, GraphCreateRequest, GraphQAAdvancedRequest, GraphClusterRequest, AddChunkRequest
+    GraphQARequest, GraphCreateRequest, GraphQAAdvancedRequest, GraphClusterRequest, AddDocumentRequest
 )
 from .services import GraphService, GraphRAGService
 from tilellm.modules.knowledge_graph.repository.repository import GraphRepository
@@ -37,6 +37,21 @@ graph_rag_service: Optional[GraphRAGService] = None
 def initialize_services():
     """Initializes Graph services and connections."""
     global repository, graph_service, graph_rag_service
+    
+    # Check if graphrag service is enabled in configuration
+    try:
+        service_config = get_service_config()
+        graphrag_enabled = service_config.get("services", {}).get("graphrag", False)
+        if not graphrag_enabled:
+            logger.info("Knowledge Graph service is disabled in configuration (graphrag: false).")
+            repository = None
+            graph_service = GraphService()
+            graph_rag_service = GraphRAGService(graph_service=graph_service)
+            logger.warning("Knowledge Graph services are DISABLED. API endpoints will fail if used.")
+            return
+    except Exception as e:
+        logger.warning(f"Failed to read service configuration: {e}. Assuming graphrag is enabled.")
+    
     try:
         repository = GraphRepository()
         if not repository.verify_connection():
@@ -136,12 +151,13 @@ def delete_relationship(relationship_id: str) -> bool:
 
 # ==================== ADVANCED LOGIC (DI WRAPPERS) ====================
 
-@inject_llm_async
+@inject_llm_chat_async
 @inject_repo_async
 async def add_document_to_graph(
-    request: AddChunkRequest,
+    request: AddDocumentRequest,
     repo=None,
-    chat_model=None,
+    llm=None,
+    llm_embeddings=None,
     **kwargs
 ) -> Dict[str, Any]:
     """
@@ -150,7 +166,7 @@ async def add_document_to_graph(
     This enables incremental graph updates when a new document is added to the knowledge base,
     without regenerating the entire namespace graph.
     """
-    if chat_model is None:
+    if llm is None:
         raise ValueError("LLM configuration is required for entity extraction.")
 
     if repo is None:
@@ -159,14 +175,42 @@ async def add_document_to_graph(
     if request.engine is None:
         raise ValueError("Engine configuration is required for vector store access")
 
-    return await graph_rag_service.add_chunk_to_graph(
+    # Call GraphRAG service to add document
+    result = await graph_rag_service.add_document_to_graph(
         metadata_id=request.metadata_id,
         namespace=request.namespace,
         engine=request.engine,
         vector_store_repo=repo,
-        llm=chat_model,
+        llm=llm,
         deduplicate_entities=request.deduplicate_entities if request.deduplicate_entities is not None else True
     )
+    
+    # If document added successfully, update community reports
+    if result.get("status") == "success" and COMMUNITY_GRAPH_AVAILABLE and CommunityGraphService is not None:
+        try:
+            community_service = CommunityGraphService(
+                graph_service=graph_service,
+                graph_rag_service=graph_rag_service
+            )
+            # Update community reports (overwrite existing)
+            report_stats = await community_service.generate_hierarchical_reports(
+                namespace=request.namespace,
+                index_name=request.engine.index_name if hasattr(request.engine, 'index_name') else None,
+                sparse_encoder=request.sparse_encoder,
+                llm=llm,
+                vector_store_repo=repo,
+                llm_embeddings=llm_embeddings,  # Could be injected separately
+                engine=request.engine,
+                overwrite=True
+            )
+            result["community_reports_updated"] = True
+            result["report_stats"] = report_stats
+        except Exception as e:
+            logger.warning(f"Failed to update community reports after adding document: {e}")
+            result["community_reports_updated"] = False
+            result["report_error"] = str(e)
+    
+    return result
 
 
 # ==================== COMMUNITY GRAPH LOGIC ====================

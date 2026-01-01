@@ -114,7 +114,7 @@ class GraphQAAdvancedResponse(BaseModel):
     chat_history_dict: Optional[Dict[str, Any]] = None
 
 
-class AddChunkRequest(QuestionAnswer):
+class AddDocumentRequest(QuestionAnswer):
     """
     Request model for adding a document to the knowledge graph by metadata_id.
     Retrieves all chunks of the document from vector store and extracts entities/relationships.
@@ -129,7 +129,7 @@ class AddChunkRequest(QuestionAnswer):
     question: Optional[Union[str, List[MultimodalContent]]] = Field(default="", description="Not used for chunk addition")
 
 
-class AddChunkResponse(BaseModel):
+class AddDocumentResponse(BaseModel):
     """Response model for add chunk endpoint"""
     metadata_id: str
     chunks_processed: int

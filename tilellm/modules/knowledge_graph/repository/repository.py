@@ -10,12 +10,17 @@ from tilellm.shared.utility import get_service_config
 try:
     import neo4j
     from neo4j import GraphDatabase, Driver, Session, Query
+    from neo4j.time import DateTime, Date, Time, Duration
 except ImportError:
     neo4j = None
     GraphDatabase = None
     Driver = None
     Session = None
     Query = None
+    DateTime = None
+    Date = None
+    Time = None
+    Duration = None
 from typing import Optional, List, Dict, Any, cast
 #from neo4j import GraphDatabase, Driver, Session, Query
 from ..models import Node, Relationship
@@ -74,20 +79,69 @@ class GraphRepository:
         """
         if value is None:
             return None
-        # Check for Neo4j temporal types
+        
+        # Check for Neo4j temporal types using isinstance (if types are available)
+        # Only check if DateTime is not None (import succeeded)
+        if DateTime is not None:
+            # Create tuple of only non-None types (should be all if import succeeded)
+            neo4j_types = tuple(t for t in (DateTime, Date, Time, Duration) if t is not None)
+            if neo4j_types and isinstance(value, neo4j_types):
+                try:
+                    # Try iso_format first (most Neo4j temporal types have this)
+                    if hasattr(value, 'iso_format'):
+                        return value.iso_format()
+                    # Try to_native as fallback
+                    if hasattr(value, 'to_native'):
+                        return value.to_native()
+                    # Last resort: string representation
+                    return str(value)
+                except Exception:
+                    # If all conversion methods fail, return string representation
+                    return str(value)
+        
+        # Detect any Neo4j-specific type by module name
+        if hasattr(value, '__class__') and hasattr(value.__class__, '__module__'):
+            module = value.__class__.__module__
+            if module.startswith('neo4j.'):
+                # Generic Neo4j type conversion
+                try:
+                    if hasattr(value, 'iso_format'):
+                        return value.iso_format()
+                    if hasattr(value, 'to_native'):
+                        return value.to_native()
+                    if hasattr(value, 'isoformat'):
+                        return value.isoformat()
+                    if hasattr(value, 'strftime'):
+                        # Try common datetime format
+                        import datetime
+                        if isinstance(value, datetime.datetime):
+                            return value.isoformat()
+                except Exception:
+                    pass
+                # Fallback to string representation
+                return str(value)
+        
+        # Legacy detection for older drivers or other Neo4j types
         if hasattr(value, 'iso_format'):
             # Neo4j DateTime, Date, Time, Duration
             try:
                 return value.iso_format()
-            except AttributeError:
+            except (AttributeError, Exception):
                 pass
         if hasattr(value, 'to_native'):
             # Convert to native Python type
-            return value.to_native()
+            try:
+                return value.to_native()
+            except Exception:
+                pass
+        
+        # Recursively handle containers
         if isinstance(value, dict):
             return {k: self._convert_neo4j_value(v) for k, v in value.items()}
         if isinstance(value, list):
             return [self._convert_neo4j_value(v) for v in value]
+        
+        # Return unchanged for other types
         return value
 
     def _convert_properties(self, props_dict) -> Dict[str, Any]:
@@ -223,10 +277,13 @@ class GraphRepository:
         """
         with self._get_session() as session:
             result = session.run(query, **(parameters or {}))
-            # Convert result to list of dicts
+            # Convert result to list of dicts with Neo4j type conversion
             records = []
             for record in result:
-                records.append(dict(record))
+                record_dict = {}
+                for key, value in record.items():
+                    record_dict[key] = self._convert_neo4j_value(value)
+                records.append(record_dict)
             return records
 
     # ==================== NODE OPERATIONS ====================

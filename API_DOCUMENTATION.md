@@ -627,6 +627,52 @@ Detect communities in the knowledge graph and generate reports.
 }
 ```
 
+#### `POST /api/kg/add-document`
+Add a single document to an existing knowledge graph and update community reports.
+
+**Request Body** (`AddDocumentRequest`):
+```json
+{
+  "metadata_id": "doc_12345_uuid",
+  "namespace": "my-documents",
+  "engine": {
+    "name": "pinecone",
+    "type": "serverless",
+    "apikey": "your-api-key",
+    "index_name": "tilellm"
+  },
+  "deduplicate_entities": true,
+  "sparse_encoder": "splade",
+  "llm_key": "my-llm-key",
+  "model": "gpt-4"
+}
+```
+
+**Response** (`AddDocumentResponse`):
+```json
+{
+  "metadata_id": "doc_12345_uuid",
+  "chunks_processed": 15,
+  "entities_extracted": 25,
+  "entities_new": 20,
+  "entities_reused": 5,
+  "relationships_created": 30,
+  "status": "success",
+  "community_reports_updated": true,
+  "report_stats": {
+    "communities_detected": 12,
+    "reports_created": 36,
+    "status": "success"
+  }
+}
+```
+
+**Note**: This endpoint performs incremental graph updates by:
+1. Retrieving all chunks of the document from vector store using `metadata_id`
+2. Extracting entities and relationships using GraphRAG
+3. Adding new nodes and relationships to Neo4j (with optional deduplication)
+4. **Automatically regenerating community reports** to keep summaries up-to-date
+
 ### Search & QA Endpoints
 
 #### `POST /api/kg/hybrid` (Primary endpoint)

@@ -912,7 +912,7 @@ class GraphRAGService:
             "status": "simple_documents"
         }
 
-    async def add_chunk_to_graph(
+    async def add_document_to_graph(
         self,
         metadata_id: str,
         namespace: str,

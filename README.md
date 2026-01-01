@@ -240,6 +240,11 @@ Tiledesk LLM now features a modular architecture that allows you to enable or di
 | **Conversion** | File format conversion (XLSX↔CSV, PDF→text/images) | Built-in | All profiles |
 | **Tools Registry** | Tool management for LLM interactions | Built-in | All profiles |
 
+**Recent enhancements to Knowledge Graph module:**
+- **Incremental document addition**: Add single documents to existing graphs via `/api/kg/add-document`
+- **Automatic community report updates**: Community reports are automatically regenerated after document addition
+- **Sparse encoder support**: Full support for hybrid search with SPLADE and BGE-M3 sparse encoders
+
 ## Configuration-Based Module Loading
 
 Modules can be enabled/disabled via the `service_conf.yaml` configuration file:

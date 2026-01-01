@@ -13,7 +13,7 @@ from .models.schemas import (
     GraphCreateRequest, GraphCreateResponse,
     GraphQAAdvancedRequest, GraphQAAdvancedResponse,
     GraphClusterRequest, GraphClusterResponse, CommunityQAResponse,
-    AddChunkRequest, AddChunkResponse,
+    AddDocumentRequest, AddDocumentResponse,
     GraphNetworkResponse
 )
 
@@ -224,8 +224,8 @@ async def graph_create(request: GraphCreateRequest):
 
 
 
-@router.post("/add-document", response_model=AddChunkResponse)
-async def add_document(request: AddChunkRequest):
+@router.post("/add-document", response_model=AddDocumentResponse)
+async def add_document(request: AddDocumentRequest):
     """
     Add a document to the knowledge graph by retrieving chunks from vector store.
 
@@ -275,7 +275,7 @@ async def add_document(request: AddChunkRequest):
     try:
         logger.info(f"Add document to graph: metadata_id={request.metadata_id}, namespace={request.namespace}")
         result = await kg_logic.add_document_to_graph(request)
-        return AddChunkResponse(**result)
+        return AddDocumentResponse(**result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:

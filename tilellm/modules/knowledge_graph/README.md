@@ -113,7 +113,7 @@ Configuration is centralized in `service_conf.yaml`. See `service_conf.yaml.temp
 
 ### Graph Operations
 - `POST /api/kg/create` - Create/import knowledge graph from vector store namespace
-- `POST /api/kg/add-document` - Create/import knowledge graph from vector store namespace
+- `POST /api/kg/add-document` - Add a single document to existing knowledge graph and update community reports
 - `POST /api/kg/louvein-cluster` - Perform Louvain clustering with MinIO storage
 - `POST /api/kg/leiden-cluster` - Perform Leiden clustering
 - `POST /api/kg/hierarchical` - Perform Hierarchical Clustering
@@ -179,7 +179,27 @@ curl -X POST http://localhost:8000/api/kg/create \
   }'
 ```
 
-### 6. Hybrid Search
+### 6. Add Document to Graph (Incremental Update)
+```bash
+curl -X POST http://localhost:8000/api/kg/add-document \
+  -H "Content-Type: application/json" \
+  -d '{
+    "metadata_id": "doc_12345_uuid",
+    "namespace": "my-documents",
+    "engine": {
+      "name": "pinecone",
+      "type": "serverless",
+      "apikey": "your-api-key",
+      "index_name": "tilellm"
+    },
+    "deduplicate_entities": true,
+    "sparse_encoder": "splade",
+    "llm_key": "my-llm-key",
+    "model": "gpt-4"
+  }'
+```
+
+### 7. Hybrid Search
 ```bash
 curl -X POST http://localhost:8000/api/kg/hybrid \
   -H "Content-Type: application/json" \
