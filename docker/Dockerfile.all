@@ -2,19 +2,24 @@
 FROM python:3.12-slim AS python-builder
 
 # Install poetry
-ENV POETRY_VERSION=2.1.2
+ENV POETRY_VERSION=2.1.2 \
+    POETRY_VIRTUALENVS_IN_PROJECT=true \
+    POETRY_NO_INTERACTION=1
+
 RUN pip install "poetry==$POETRY_VERSION"
 
 WORKDIR /build
 
 # Copy dependency definition files
 COPY pyproject.toml poetry.lock ./
-COPY ./tilellm ./tilellm
-COPY log_conf.json .
+
+#COPY ./tilellm ./tilellm
+#COPY log_conf.json .
 
 # Install 'all' optional dependencies
-RUN poetry install --no-root --no-interaction --no-ansi --only main --extras all
+RUN poetry install --no-root --no-interaction --no-ansi --without dev --only main --extras all
 RUN poetry run pip install "uvicorn[standard]" gunicorn
+RUN poetry run pip install playwright
 
 # --- STAGE 2: Builder (Node.js) ---
 FROM node:16-slim AS node-builder
@@ -34,7 +39,8 @@ ENV REDIS_HOST=redis \
     REDIS_URL=redis://redis:6379/0 \
     TOKENIZERS_PARALLELISM=false \
     PYTHONPATH=/tiledesk-llm \
-    PATH="/root/.local/bin:$PATH"
+    VIRTUAL_ENV=/tiledesk-llm/.venv \
+    PATH="/tiledesk-llm/.venv/bin:$PATH"
 
 WORKDIR /tiledesk-llm
 
@@ -46,7 +52,10 @@ RUN apt update && apt install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy Python virtual environment from builder
-COPY --from=python-builder /root/.cache/pypoetry/virtualenvs/tilellm-*/ /root/.cache/pypoetry/virtualenvs/tilellm/
+COPY --from=python-builder /build/.venv /tiledesk-llm/.venv
+
+# Install Playwright browsers and system dependencies
+RUN python -m playwright install chromium --with-deps
 
 # Copy Node.js application
 COPY --from=node-builder /usr/src/app /usr/src/app
@@ -56,7 +65,6 @@ COPY . .
 
 # NLTK and Playwright (Chromium only to save space)
 RUN python -m nltk.downloader punkt punkt_tab averaged_perceptron_tagger averaged_perceptron_tagger_eng stopwords
-RUN pip install playwright && playwright install chromium --with-deps
 
 # Download Models (always for 'all' configuration)
 RUN python -c "from transformers import AutoModelForSequenceClassification; AutoModelForSequenceClassification.from_pretrained('naver/splade-cocondenser-ensembledistil');"

@@ -445,7 +445,7 @@ class GraphService:
                 nodes.extend(label_nodes)
         else:
             # Get all nodes (no label filter)
-            all_labels = ["PERSON", "ORGANIZATION", "LOCATION", "EVENT", "ENTITY", "Document"]
+            all_labels = ["PERSON", "ORGANIZATION", "LOCATION", "EVENT", "ENTITY", "Document", "GEO"]
             for label in all_labels:
                 try:
                     label_nodes = repo.find_nodes_by_label(

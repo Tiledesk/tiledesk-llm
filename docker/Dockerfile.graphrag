@@ -12,9 +12,6 @@ WORKDIR /build
 
 # Copy dependency definition files
 COPY pyproject.toml poetry.lock ./
-# Pre-install dependencies
-# COPY ./tilellm ./tilellm
-# COPY log_conf.json .
 
 # Install 'graph' optional dependencies
 RUN poetry install --no-root --no-interaction --no-ansi --without dev --only main --extras graph
@@ -41,7 +38,6 @@ ENV REDIS_HOST=redis \
     PYTHONPATH=/tiledesk-llm \
     VIRTUAL_ENV=/tiledesk-llm/.venv \
     PATH="/tiledesk-llm/.venv/bin:$PATH"
-    # PATH="/root/.local/bin:$PATH"
 
 WORKDIR /tiledesk-llm
 
@@ -53,7 +49,6 @@ RUN apt update && apt install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy Python virtual environment from builder
-# COPY --from=python-builder /root/.cache/pypoetry/virtualenvs/tilellm-*/ /root/.cache/pypoetry/virtualenvs/tilellm/
 COPY --from=python-builder /build/.venv /tiledesk-llm/.venv
 
 # Install Playwright browsers and system dependencies
@@ -64,9 +59,6 @@ COPY --from=node-builder /usr/src/app /usr/src/app
 
 # Copy application source code
 COPY . .
-
-# NLTK and Playwright (Chromium only to save space)
-# RUN python -m nltk.downloader punkt punkt_tab averaged_perceptron_tagger averaged_perceptron_tagger_eng stopwords
 
 
 EXPOSE 8000 3009

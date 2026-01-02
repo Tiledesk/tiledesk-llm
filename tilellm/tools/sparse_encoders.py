@@ -22,6 +22,46 @@ except ImportError:
     BGEM3FlagModel = None
 
 
+def _chunk_text(text: str) -> List[str]:
+    if not text:
+        return [""]
+    
+    # Generic word splitting (conservative approach)
+    # Assuming avg 1.3 tokens per word, 300 words ~ 390 tokens < 512
+    words = text.split()
+    chunk_size = 300 
+    
+    if len(words) <= chunk_size:
+        return [text]
+        
+    chunks = []
+    for i in range(0, len(words), chunk_size):
+        chunks.append(" ".join(words[i:i+chunk_size]))
+    return chunks
+
+def _merge_sparse_vectors(vectors: List[Dict[str, List]]) -> Dict[str, List]:
+    if not vectors:
+        return {"indices": [], "values": []}
+    
+    merged = {}
+    for vec in vectors:
+        if not vec or 'indices' not in vec or 'values' not in vec:
+            continue
+        for idx, val in zip(vec['indices'], vec['values']):
+            # Max pooling
+            if idx in merged:
+                if val > merged[idx]:
+                    merged[idx] = val
+            else:
+                merged[idx] = val
+    
+    sorted_indices = sorted(merged.keys())
+    return {
+        "indices": sorted_indices,
+        "values": [merged[idx] for idx in sorted_indices]
+    }
+
+
 class TiledeskSpladeEncoder:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
@@ -30,7 +70,7 @@ class TiledeskSpladeEncoder:
         self.splade = SpladeEncoder(device=self.device)
         self.logger.info("SpladeEncoder loaded")
 
-    def encode_documents(self, contents: List[str], batch_size: Optional[int] = 10) -> List[Dict[str, List]]:
+    def encode_documents_with_batch(self, contents: List[str], batch_size: Optional[int] = 10) -> List[Dict[str, List]]:
         if not batch_size:
             self.logger.info(f"Encoding {len(contents)} documents with SpladeEncoder")
             return self.splade.encode_documents(contents)
@@ -49,6 +89,28 @@ class TiledeskSpladeEncoder:
                 torch.cuda.empty_cache()
                 self.logger.debug("Freed GPU memory after batch processing")
 
+        return results
+
+    def encode_documents(self, contents: List[str], batch_size: Optional[int] = 10) -> List[Dict[str, List]]:
+        if not contents:
+            return []
+            
+        all_chunks = []
+        doc_map = [] # (start_index, length)
+        
+        for text in contents:
+            chunks = _chunk_text(text)
+            doc_map.append((len(all_chunks), len(chunks)))
+            all_chunks.extend(chunks)
+            
+        # Use old method to encode chunks (handles batching on GPU)
+        chunk_results = self.encode_documents_with_batch(all_chunks, batch_size=batch_size)
+        
+        results = []
+        for start, length in doc_map:
+            doc_vectors = chunk_results[start : start + length]
+            results.append(_merge_sparse_vectors(doc_vectors))
+            
         return results
 
     def encode_queries(self, query: str) -> Dict[str, List]:
@@ -138,7 +200,7 @@ class TEISparseEncoder:
             self.logger.error(f"Error calling TEI: {e}")
             raise e
 
-    def encode_documents(self, contents: List[str], batch_size: Optional[int] = 8) -> List[Dict[str, List]]:
+    def encode_documents_with_batch(self, contents: List[str], batch_size: Optional[int] = 8) -> List[Dict[str, List]]:
         import time
         import httpx
         
@@ -182,6 +244,29 @@ class TEISparseEncoder:
             if not batch_success:
                 raise RuntimeError(f"Failed to process batch after {max_retries} retries")
         
+        return results
+
+    def encode_documents(self, contents: List[str], batch_size: Optional[int] = 8) -> List[Dict[str, List]]:
+        if not contents:
+            return []
+
+        all_chunks = []
+        doc_map = [] 
+        
+        for text in contents:
+            # We don't use transformers here to keep it optional.
+            # _chunk_text will fallback to tiktoken or word split.
+            chunks = _chunk_text(text)
+            doc_map.append((len(all_chunks), len(chunks)))
+            all_chunks.extend(chunks)
+            
+        chunk_results = self.encode_documents_with_batch(all_chunks, batch_size=batch_size)
+        
+        results = []
+        for start, length in doc_map:
+            doc_vectors = chunk_results[start : start + length]
+            results.append(_merge_sparse_vectors(doc_vectors))
+            
         return results
 
     def encode_queries(self, query: str) -> Dict[str, List]:

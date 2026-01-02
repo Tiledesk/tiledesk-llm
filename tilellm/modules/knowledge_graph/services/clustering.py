@@ -30,7 +30,11 @@ class ClusterService:
 
     async def perform_clustering(self, level: int = 0, namespace: str = "default", index_name: Optional[str] = None, engine_name: Optional[str] = None, engine_type: Optional[str] = None):
         logger.info("Fetching graph data from Neo4j...")
-        graph_data = self.repository.get_all_nodes_and_relationships(namespace=namespace, index_name=index_name, engine_name=engine_name, engine_type=engine_type)
+        graph_data = self.repository.get_all_nodes_and_relationships(
+            namespace=namespace,
+            index_name=index_name,
+            engine_name=engine_name,
+            engine_type=engine_type)
 
         # Trasformiamo in DataFrame per usare DuckDB come motore di supporto
         df_nodes = pd.DataFrame(graph_data["nodes"])

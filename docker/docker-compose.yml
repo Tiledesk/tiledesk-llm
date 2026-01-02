@@ -106,6 +106,13 @@ services:
     ports:
       - "${APP_PORT:-8000}:8000"
       - "${APP_PORT_WORKER:-3009}:3009"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
     depends_on:
       redis:
         condition: service_healthy
@@ -116,12 +123,13 @@ services:
     image: ghcr.io/huggingface/text-embeddings-inference:1.8
     profiles: ["tei-splade"]
     command: >
-      --model-id naver/efficient-splade-VI-BT-large-query
+      --model-id ${TEI_SPLADE_MODEL_ID}
       --pooling splade
       --port 80
       --max-batch-tokens ${MAX_BATCH_TOKENS} 
       --max-concurrent-requests ${MAX_CONCURRENT_REQUESTS}
       --api-key ${TEI_SPLADE_API_KEY}
+      --auto-truncate
     ports:
       - "${TEI_SPLADE_PORT:-7380}:80"
     volumes:
@@ -139,7 +147,7 @@ services:
     image: ghcr.io/huggingface/text-embeddings-inference:1.8
     profiles: ["tei-reranker"]
     command: >
-      --model-id BAAI/bge-reranker-large
+      --model-id ${TEI_RERANKER_MODEL_ID}
       --port 80
       --api-key ${TEI_RERANKER_API_KEY}
     ports:

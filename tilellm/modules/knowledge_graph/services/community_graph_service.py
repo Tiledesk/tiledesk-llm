@@ -21,7 +21,7 @@ from pydantic import Field
 
 from tilellm.models import Engine, ChatEntry
 from tilellm.models.llm import TEIConfig
-from tilellm.models.schemas import RepositoryItems
+from tilellm.models.schemas import RepositoryItems, RepositoryNamespace
 from tilellm.models import QuestionAnswer # Aggiunto per Hybrid Search
 from tilellm.controller.controller_utils import fetch_question_vectors # Aggiunto per Hybrid Search
 from tilellm.tools.sparse_encoders import TiledeskSparseEncoders
@@ -302,7 +302,12 @@ class CommunityGraphService:
         for level, resolution in levels_config.items():
             logger.info(f"Generating reports for Level {level} (Resolution {resolution})")
             stats = await cluster_service.perform_clustering_leiden(
-                level=level, namespace=namespace, index_name=index_name, resolution=resolution
+                level=level,
+                namespace=namespace,
+                index_name=index_name,
+                engine_name=engine.name,
+                engine_type=engine.type if engine.name=="pinecone" else engine.deployment,
+                resolution=resolution
             )
             if stats.get("reports"):
                 all_reports.extend(stats["reports"])
@@ -397,15 +402,17 @@ class CommunityGraphService:
         report_namespace = f"{namespace}-reports"
         logger.info(f"Clearing existing reports from namespace: {report_namespace}")
 
+        namespace_to_delete = RepositoryNamespace(
+            namespace=report_namespace,
+            engine=engine
+        )
+
         try:
             # Attempt to delete all documents from the report namespace
             # Different vector stores have different methods, so we try common approaches
             if hasattr(vector_store_repo, 'delete_namespace'):
-                await vector_store_repo.delete_namespace(engine=engine, namespace=report_namespace)
+                await vector_store_repo.delete_namespace(namespace_to_delete=namespace_to_delete)
                 logger.info(f"Successfully deleted namespace: {report_namespace}")
-            elif hasattr(vector_store_repo, 'delete_by_namespace'):
-                await vector_store_repo.delete_by_namespace(engine=engine, namespace=report_namespace)
-                logger.info(f"Successfully deleted documents from namespace: {report_namespace}")
             else:
                 logger.warning(f"Vector store repository does not support namespace deletion. "
                              f"Old reports in '{report_namespace}' may remain.")
@@ -466,7 +473,10 @@ class CommunityGraphService:
         # Perform clustering
         cluster_stats = await cluster_service.perform_clustering(
             level=0,  # Top-level communities
-            namespace=namespace
+            namespace=namespace,
+            index_name= index_name,
+            engine_name=engine.name,
+            engine_type=engine.type if engine.name=="pinecone" else engine.deployment
         )
         
         return await self._process_reports_and_export(
@@ -520,7 +530,10 @@ class CommunityGraphService:
         cluster_stats = await cluster_service.perform_clustering_leiden(
             level=0,
             namespace=namespace,
-            index_name=index_name
+            index_name=index_name,
+            engine_name=engine.name,
+            engine_type=engine.type if engine.name =="pinecone" else engine.deployment
+
         )
         
         return await self._process_reports_and_export(

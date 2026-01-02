@@ -1053,6 +1053,7 @@ class GraphRepository:
         Returns:
             Dictionary with filtered nodes and relationships
         """
+        logger.info(f"get_all_nodes_and_relationships -> query with namespace: {namespace}, index_name: {index_name}, engine_name: {engine_name}, engine_type: {engine_type}")
         with self._get_session() as session:
             # Build WHERE clause based on provided filters
             where_clauses = []

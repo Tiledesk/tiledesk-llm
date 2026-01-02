@@ -346,6 +346,18 @@ The Knowledge Graph module integrates seamlessly with Tiledesk LLM:
 - [FastAPI Documentation](https://fastapi.tiangolo.com/)
 - [Microsoft GraphRAG](https://github.com/microsoft/graphrag)
 
+## Technical Documentation
+
+For detailed technical documentation on how the Knowledge Graph module works, including:
+- Creation process (`/api/kg/create`)
+- Global Search (`/api/kg/qa`) 
+- Integrated Hybrid Search (`/api/kg/hybrid`)
+- Role of LLMs, embeddings, reranking, and adaptive graph expansion
+
+See the following reports:
+- [REPORT.md](REPORT.md) (Italian)
+- [REPORT_en.md](REPORT_en.md) (English)
+
 ## Support
 
 For issues and questions, refer to the main project repository: https://github.com/Tiledesk/tiledesk-llm

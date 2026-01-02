@@ -278,7 +278,7 @@ async def cluster_graph_louvain(
     
     return await community_service.generate_community_reports(
         namespace=request.namespace,
-        index_name=request.index_name,
+        index_name=request.engine.index_name if hasattr(request.engine, "index_name") else None,
         llm=chat_model,
         vector_store_repo=repo,
         llm_embeddings=llm_embeddings,
@@ -312,7 +312,7 @@ async def cluster_graph_leiden(
     
     return await community_service.generate_community_reports_leiden(
         namespace=request.namespace,
-        index_name=request.index_name,
+        index_name=request.engine.index_name if hasattr(request.engine, "index_name") else None,
         llm=chat_model,
         vector_store_repo=repo,
         llm_embeddings=llm_embeddings,
@@ -346,7 +346,7 @@ async def cluster_graph_hierarchical(
     
     return await community_service.generate_hierarchical_reports(
         namespace=request.namespace,
-        index_name=request.index_name,
+        index_name=request.engine.index_name if hasattr(request.engine, 'index_name') else None,
         sparse_encoder=request.sparse_encoder,
         llm=llm,
         vector_store_repo=repo,
