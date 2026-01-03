@@ -1130,6 +1130,66 @@ class GraphRepository:
                 "relationships": relationships
             }
 
+    def get_community_network(self, namespace: str, index_name: str, limit: int = 1000) -> Dict[str, Any]:
+        """
+        Fetch the community graph (nodes + BELONGS_TO_COMMUNITY relationships).
+        
+        Args:
+            namespace: Namespace to filter
+            index_name: index_name to filter
+            limit: Maximum number of paths to return
+            
+        Returns:
+            Dictionary with nodes and relationships
+        """
+        logger.info(f"get_community_network -> namespace: {namespace}, index_name: {index_name}, limit: {limit}")
+        with self._get_session() as session:
+            query = """
+            MATCH p=(n)-[r:BELONGS_TO_COMMUNITY]->(m)
+            WHERE n.namespace = $namespace AND m.namespace = $namespace 
+              AND n.index_name = $index_name AND m.index_name = $index_name
+            RETURN p
+            LIMIT $limit
+            """
+            result = session.run(query, namespace=namespace, index_name=index_name, limit=limit)
+            
+            nodes = {}
+            relationships = []
+            seen_nodes = set()
+            seen_rels = set()
+            
+            for record in result:
+                path = record.get("p")
+                if path:
+                    # Process nodes in path
+                    for node in path.nodes:
+                        n_id = node.element_id
+                        if n_id not in seen_nodes:
+                            seen_nodes.add(n_id)
+                            nodes[n_id] = {
+                                "id": n_id,
+                                "label": list(node.labels)[0] if node.labels else "Unknown",
+                                "properties": self._convert_properties(dict(node.items()))
+                            }
+                    
+                    # Process relationships in path
+                    for rel in path.relationships:
+                        r_id = rel.element_id
+                        if r_id not in seen_rels:
+                            seen_rels.add(r_id)
+                            relationships.append({
+                                "id": r_id,
+                                "type": rel.type,
+                                "properties": self._convert_properties(dict(rel.items())),
+                                "source_id": rel.start_node.element_id,
+                                "target_id": rel.end_node.element_id
+                            })
+            
+            return {
+                "nodes": list(nodes.values()),
+                "relationships": relationships
+            }
+
     def save_community_report(self, community_id: str, report: Dict[str, Any], level: int, namespace: Optional[str] = None, index_name: Optional[str] = None, engine_name: Optional[str] = None, engine_type: Optional[str] = None, metadata_id: Optional[str] = None) -> Optional[str]:
         """
         Save a community report as a node in Neo4j.

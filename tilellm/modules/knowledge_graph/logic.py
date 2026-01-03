@@ -91,7 +91,8 @@ def get_graph_network(
     index_name: Optional[str] = None,
     node_limit: int = 1000,
     relationship_limit: int = 5000,
-    node_labels: Optional[List[str]] = None
+    node_labels: Optional[List[str]] = None,
+    community: bool = False
 ) -> Dict[str, Any]:
     """
     Get graph network (nodes + relationships) for visualization.
@@ -102,6 +103,7 @@ def get_graph_network(
         node_limit: Maximum nodes to return
         relationship_limit: Maximum relationships to return
         node_labels: Optional list of node labels to filter
+        community: If True, returns community BELONGS_TO relationships
 
     Returns:
         Dictionary with nodes, relationships, and stats
@@ -111,7 +113,8 @@ def get_graph_network(
         index_name=index_name,
         node_limit=node_limit,
         relationship_limit=relationship_limit,
-        node_labels=node_labels
+        node_labels=node_labels,
+        community=community
     )
 
 # ==================== NODE & RELATIONSHIP LOGIC ====================

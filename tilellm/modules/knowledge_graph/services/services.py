@@ -405,7 +405,8 @@ class GraphService:
         index_name: Optional[str] = None,
         node_limit: int = 1000,
         relationship_limit: int = 5000,
-        node_labels: Optional[List[str]] = None
+        node_labels: Optional[List[str]] = None,
+        community: bool = False
     ) -> Dict[str, Any]:
         """
         Retrieve the graph network (nodes + relationships) for visualization.
@@ -416,6 +417,7 @@ class GraphService:
             node_limit: Maximum number of nodes to return (default: 1000)
             relationship_limit: Maximum number of relationships to return (default: 5000)
             node_labels: Optional list of node labels to filter (e.g., ["PERSON", "ORGANIZATION"])
+            community: If True, returns the community graph (BELONGS_TO_COMMUNITY)
 
         Returns:
             Dictionary with:
@@ -429,7 +431,31 @@ class GraphService:
         repo = self._get_repository()
 
         logger.info(f"Retrieving graph network - namespace: {namespace}, index_name: {index_name}, "
-                   f"node_limit: {node_limit}, node_labels: {node_labels}")
+                   f"node_limit: {node_limit}, node_labels: {node_labels}, community: {community}")
+
+        if community:
+            # Check if namespace and index_name are provided, as they are required for community query
+            if not namespace or not index_name:
+                logger.warning("Namespace and index_name are required for community network query.")
+                # Fall back to normal behavior or return empty?
+                # User query requires them: where n.namespace=$namesapce and m.namespace=$namesapce and n.index_name=$index_name and m.index_name=$index_name
+            
+            result = repo.get_community_network(
+                namespace=namespace or "",
+                index_name=index_name or "",
+                limit=relationship_limit
+            )
+            
+            result["stats"] = {
+                "node_count": len(result["nodes"]),
+                "relationship_count": len(result["relationships"]),
+                "filtered_by": {
+                    "namespace": namespace,
+                    "index_name": index_name,
+                    "community": True
+                }
+            }
+            return result
 
         # Retrieve nodes
         nodes = []
@@ -445,7 +471,7 @@ class GraphService:
                 nodes.extend(label_nodes)
         else:
             # Get all nodes (no label filter)
-            all_labels = ["PERSON", "ORGANIZATION", "LOCATION", "EVENT", "ENTITY", "Document", "GEO"]
+            all_labels = ["PERSON", "ORGANIZATION", "CATEGORY", "LOCATION", "EVENT", "ENTITY", "Document", "GEO"]
             for label in all_labels:
                 try:
                     label_nodes = repo.find_nodes_by_label(

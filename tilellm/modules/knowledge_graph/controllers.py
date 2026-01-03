@@ -374,7 +374,9 @@ def get_graph_network(
     index_name: str = Query(None, description="Filter by index_name"),
     node_limit: int = Query(1000, ge=1, le=10000, description="Maximum number of nodes to return"),
     relationship_limit: int = Query(5000, ge=1, le=50000, description="Maximum number of relationships to return"),
-    node_labels: List[str] = Query(None, description="Filter nodes by labels (e.g., PERSON, ORGANIZATION)")
+    node_labels: List[str] = Query(None, description="Filter nodes by labels (e.g., PERSON, ORGANIZATION)"),
+    community: bool = Query(False, description="If true, returns only BELONGS_TO_COMMUNITY relationships")
+
 ):
     """
     Get the graph network (nodes + relationships) for visualization.
@@ -409,6 +411,7 @@ def get_graph_network(
     **Example Usage:**
     - Get all entities: `GET /api/kg/network?namespace=bancaitalia&node_limit=500`
     - Get only people and organizations: `GET /api/kg/network?namespace=economia&node_labels=PERSON&node_labels=ORGANIZATION`
+    - Get community graph: `GET /api/kg/network?namespace=economia&index_name=my_index&community=true`
     """
     try:
         result = kg_logic.get_graph_network(
@@ -416,7 +419,8 @@ def get_graph_network(
             index_name=index_name,
             node_limit=node_limit,
             relationship_limit=relationship_limit,
-            node_labels=node_labels
+            node_labels=node_labels,
+            community=community
         )
         return GraphNetworkResponse(**result)
     except Exception as e:
