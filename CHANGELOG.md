@@ -14,9 +14,9 @@
 - Added: Global search capability on community reports.
 
 ---
-[2025-12-23]
-0.7.3-rc2
-Updated: tiledesk-train-jobworker to version 0.0.41
+## [2025-12-23]
+### 0.7.3-rc2
+- Updated: tiledesk-train-jobworker to version 0.0.41
 ---
 
 ## [2025-12-23]
