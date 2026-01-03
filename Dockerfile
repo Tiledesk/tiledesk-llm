@@ -65,8 +65,8 @@ RUN python -m nltk.downloader punkt punkt_tab averaged_perceptron_tagger average
 RUN pip install playwright && playwright install chromium --with-deps
 
 # Download Modelli (condizionale)
-ARG IMAGICLE=false
-RUN if [ "$IMAGICLE" != "true" ]; then \
+ARG DOWLOADMODEL=false
+RUN if [ "$DOWLOADMODEL" != "true" ]; then \
     python -c "from transformers import AutoModelForSequenceClassification; AutoModelForSequenceClassification.from_pretrained('naver/splade-cocondenser-ensembledistil');" && \
     python -c "from sentence_transformers import CrossEncoder; CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2');"; \
     fi

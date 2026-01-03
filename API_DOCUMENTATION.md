@@ -588,44 +588,67 @@ Get all relationships connected to a node.
 ### Graph Operations
 
 #### `POST /api/kg/create`
-Create/import a knowledge graph from documents in a vector store namespace.
+Create/import a knowledge graph from documents in a vector store namespace. It retrieves chunks from the vector store and uses an LLM to extract entities and relationships (GraphRAG).
 
 **Request Body** (`GraphCreateRequest`):
 ```json
 {
   "namespace": "my-documents",
+  "index_name": "tilellm",
   "engine": {
     "name": "pinecone",
     "type": "serverless",
     "apikey": "your-api-key",
     "vector_size": 1536,
     "index_name": "tilellm"
-  }
+  },
+  "limit": 100,
+  "overwrite": false
 }
 ```
 
 **Response**:
 ```json
 {
-  "message": "Graph creation started",
-  "job_id": "job-123",
+  "namespace": "my-documents",
+  "chunks_processed": 100,
   "nodes_created": 150,
-  "relationships_created": 300
+  "relationships_created": 300,
+  "status": "success"
 }
 ```
 
-#### `POST /api/kg/cluster`
-Detect communities in the knowledge graph and generate reports.
+#### `POST /api/kg/hierarchical`
+Perform Hierarchical Clustering (Levels 0, 1, 2) using the Leiden algorithm. Generates community reports at multiple levels of granularity, enabling global search.
 
 **Request Body** (`GraphClusterRequest`):
 ```json
 {
   "namespace": "my-documents",
   "engine": { /* engine config */ },
-  "algorithm": "louvain",
-  "min_community_size": 3
+  "overwrite": true
 }
 ```
+
+**Response** (`GraphClusterResponse`):
+```json
+{
+  "status": "success",
+  "communities_detected": 15,
+  "reports_created": 15,
+  "message": "Hierarchical clustering completed"
+}
+```
+
+#### `POST /api/kg/louvain-cluster`
+Perform Louvain clustering and generate community reports.
+
+**Request Body**: Same as `/hierarchical`
+
+#### `POST /api/kg/leiden-cluster`
+Perform Leiden clustering (flat) and generate community reports.
+
+**Request Body**: Same as `/hierarchical`
 
 #### `POST /api/kg/add-document`
 Add a single document to an existing knowledge graph and update community reports.
@@ -675,8 +698,33 @@ Add a single document to an existing knowledge graph and update community report
 
 ### Search & QA Endpoints
 
-#### `POST /api/kg/hybrid` (Primary endpoint)
-Integrated hybrid search with global + parallel retrieval + RRF + expansion + reranking.
+#### `POST /api/kg/qa`
+**METHOD 1: Community/Global Search**
+Performs global search ONLY on community reports. Efficient for high-level questions ("What are the main themes?").
+
+**Request Body** (`GraphQARequest`):
+```json
+{
+  "question": "Summarize the main topics",
+  "namespace": "my-documents",
+  "engine": { /* engine config */ },
+  "max_results": 10
+}
+```
+
+**Response** (`CommunityQAResponse`):
+```json
+{
+  "answer": "The main topics are...",
+  "reports_used": 5,
+  "chat_history_dict": null
+}
+```
+
+#### `POST /api/kg/hybrid`
+**METHOD 2: Integrated Hybrid Search**
+Unified pipeline: Global Search (Community Reports) + Parallel Retrieval (Vector + Keyword from Vector Store) + RRF + Graph Expansion (from Neo4j) + Reranking.
+Best for complex queries requiring specific details and broader context.
 
 **Request Body** (`GraphQAAdvancedRequest`):
 ```json
@@ -685,7 +733,11 @@ Integrated hybrid search with global + parallel retrieval + RRF + expansion + re
   "namespace": "my-documents",
   "engine": { /* engine config */ },
   "retrieval_strategy": "integrated_hybrid",
-  "top_k": 10
+  "top_k": 10,
+  "vector_weight": 1.0,
+  "keyword_weight": 1.0,
+  "graph_weight": 1.0,
+  "query_type": "exploratory"
 }
 ```
 
@@ -710,29 +762,24 @@ Integrated hybrid search with global + parallel retrieval + RRF + expansion + re
   ],
   "retrieval_strategy": "integrated_hybrid",
   "scores": {
-    "global_search": 0.85,
-    "community_search": 0.92
-  }
+    "vector_weight": 1.0,
+    "graph_weight": 1.0
+  },
+  "expanded_nodes": [],
+  "expanded_relationships": []
 }
 ```
 
-#### `POST /api/kg/qams`
-Community/Global search on community reports (Microsoft GraphRAG).
+#### `GET /api/kg/network`
+Get the graph network (nodes + relationships) for visualization.
 
-#### `POST /api/kg/clusterms`
-Perform Louvain clustering with MinIO storage.
-
-#### `POST /api/kg/leidenms`
-Perform Leiden clustering.
-
-#### `POST /api/kg/hierarchicalms`
-Perform Hierarchical Clustering (Levels 0, 1, 2) using Leiden.
-
-### Deprecated Endpoints
-
-- `POST /api/kg/qa` - Use `/api/kg/hybrid`
-- `POST /api/kg/graphqa` - Use `/api/kg/hybrid`
-- `POST /api/kg/hybridms` - Use `/api/kg/hybrid`
+**Query Parameters**:
+- `namespace`: Filter by namespace
+- `index_name`: Filter by index name
+- `node_limit`: Max nodes (default 1000)
+- `relationship_limit`: Max relationships (default 5000)
+- `node_labels`: Filter by labels (e.g. `PERSON`)
+- `community`: If `true`, returns the community graph (`BELONGS_TO_COMMUNITY` relationships) instead of entity graph.
 
 ---
 
