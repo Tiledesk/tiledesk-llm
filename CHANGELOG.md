@@ -7,14 +7,18 @@
 
 ---
 ## [2026-01-03]
-### 0.8.0-rc1
+### 0.8.0-rc2
 - Added: Docker management in the `docker` folder.
 - Added: Knowledge Graph creation from vector store chunks via `/api/kg/create`.
 - Added: Hierarchical clustering using Leiden algorithm.
 - Added: Global search capability on community reports.
----
 
 ---
+[2025-12-23]
+0.7.3-rc2
+Updated: tiledesk-train-jobworker to version 0.0.41
+---
+
 ## [2025-12-23]
 ### 0.7.3-rc1
 - Fixed: Correct error messages and set response status to 400 on error.
