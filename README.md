@@ -27,6 +27,9 @@ Tiledesk LLM is a powerful backend service designed for Retrieval-Augmented Gene
 - [Advanced Features](#advanced-features)
   - [Hybrid Search](#hybrid-search)
   - [Semantic Chunks](#semantic-chunks)
+  - [Reranker](#reranker)
+  - [Structured Output](#structured-output)
+  - [MCP (Model Context Protocol) Integration](#mcp-model-context-protocol-integration)
 
 ## Supported Models
 
@@ -55,10 +58,38 @@ The system supports multiple embedding providers through a flexible factory patt
 | **Cohere** | Cohere embedding models | 1024 | Cohere API embeddings |
 | **VoyageAI** | `voyage-multilingual-2` | 1024 | Voyage AI multilingual embeddings |
 | **vLLM** | vLLM OpenAI-compatible models | 3072 | vLLM server embeddings |
+| **TEI** | Any TEI-compatible model (e.g., `intfloat/multilingual-e5-large-instruct`) | Varies | Text Embeddings Inference server |
+
+### TEI (Text Embeddings Inference) Models
+
+For sparse encoding, reranking, and dense embeddings, you can use models served by [Text Embeddings Inference (TEI)](https://github.com/huggingface/text-embeddings-inference) from Hugging Face. TEI provides an efficient API for inference of embedding, sparse encoding, and reranking models.
+
+- **Dense Embeddings**: Any TEI-compatible embedding model (e.g., `intfloat/multilingual-e5-large-instruct`) can be served via TEI and configured in the `tei.embedding` section of `service_conf.yaml`.
+- **Sparse Encoder**: The `splade` model (e.g., `naver/efficient-splade-VI-BT-large-query`) can be served via TEI and configured in the `tei.sparse_encoder` section.
+- **Reranker**: The `bge-reranker` model (e.g., `BAAI/bge-reranker-large`) can be served via TEI and configured in the `tei.reranker` section.
+
+To use them, ensure you have started TEI services (e.g., via the Docker Compose `tei` profile) and configured the correct URLs in the configuration file.
+
+Example configuration in `service_conf.yaml`:
+
+```yaml
+tei:
+  embedding:
+    url: "http://localhost:7580"
+    model: "intfloat/multilingual-e5-large-instruct"
+  sparse_encoder:
+    url: "http://localhost:7380"
+    model: "naver/efficient-splade-VI-BT-large-query"
+  reranker:
+    url: "http://localhost:7480"
+    model: "BAAI/bge-reranker-large"
+```
 
 #### Sparse Encoders (Hybrid Search)
 - **SPLADE** (`splade`): Sparse lexical encoder via Pinecone Text
 - **BGE-M3** (`bge-m3`): Sparse+dense encoder from FlagEmbedding
+
+Both SPLADE and BGE-M3 sparse encoders can also be served via TEI (Text Embeddings Inference) for improved performance (see [TEI Models](#tei-text-embeddings-inference-models) section).
 
 #### Configuration
 Embedding models can be specified in API requests via the `embedding` parameter. The system automatically handles:
@@ -462,7 +493,7 @@ Reranking improves search relevance by reordering retrieved documents based on t
 - **Configuration**:
   - `reranking_multiplier` (default: `3`): Retrieve `top_k * multiplier` documents, then rerank to select best `top_k`.
   - `reranker_model` (default: `"cross‑encoder/ms‑marco‑MiniLM‑L‑6‑v2"`): Hugging Face cross‑encoder model for reranking.
-- **Supported Models**: Cross‑encoder models from Hugging Face (e.g., Microsoft MARCO models, BGE rerankers).
+- **Supported Models**: Cross‑encoder models from Hugging Face (e.g., Microsoft MARCO models, BGE rerankers). You can also use TEI-served reranker models (e.g., `BAAI/bge-reranker-large`) by configuring the TEI service (see [TEI Models](#tei-text-embeddings-inference-models) section).
 - **Integration**: Works with both hybrid search (`search_type="hybrid"`) and similarity/MMR search (`search_type="similarity"` or `"mmr"`).
 
 **Example** (QA with reranking):
@@ -477,6 +508,82 @@ Reranking improves search relevance by reordering retrieved documents based on t
   "search_type": "hybrid"
 }
 ```
+
+### Structured Output
+
+The `/api/ask`, `/api/thinking`, and `/api/qa` endpoints support structured output generation, which forces the LLM to return responses in a specific JSON format defined by a JSON schema. This is useful for extracting structured data from text, building APIs with guaranteed response shapes, or integrating with type‑safe systems.
+
+- **Enable**: Set `"structured_output": true` in the request.
+- **Schema Definition**: Provide an `output_schema` field containing the JSON Schema of the desired output structure.
+- **Supported Endpoints**: Works with `/api/ask` (direct LLM queries), `/api/thinking` (reasoning models), and `/api/qa` (RAG‑based answers).
+
+**Example** (Structured output with a custom schema):
+
+First, define your JSON Schema:
+
+```json
+{
+    "name": "courses",
+    "strict": true,
+    "schema": 
+
+{
+    "type": "object",
+    "properties": {
+      "name": {"type": "string","description": " your description" },
+      "age": {"type": "integer", "description": "your description"},
+      "is_student": {"type": "boolean", "description":  "your description"},
+      "courses": {"type": "array", "description":  "list of courses", "items": {"type": "string"}}
+      }
+    },
+    "additionalProperties": false,
+    "required": ["name", "age", "is_student", "courses"],
+  }
+```
+
+Then, make a request to `/api/ask` with the schema:
+
+```json
+{
+  "question": "Extract information about John Doe, a 30-year-old student studying Math and Science.",
+  "llm": "openai",
+  "model": "gpt-4o",
+  "llm_key": "sk-...",
+  "structured_output": true,
+  "output_schema": {
+    "type": "object",
+    "properties": {
+      "name": {"type": "string"},
+      "age": {"type": "integer"},
+      "is_student": {"type": "boolean"},
+      "courses": {"type": "array", "items": {"type": "string"}}
+    },
+    "required": ["name", "age", "is_student", "courses"],
+    "additionalProperties": false
+  }
+}
+```
+
+**Response**:
+```json
+{
+  "answer": {
+    "name": "John Doe",
+    "age": 30,
+    "is_student": true,
+    "courses": ["Math", "Science"]
+  },
+  "chat_history_dict": { ... },
+  "prompt_token_info": { ... }
+}
+```
+
+**Notes**:
+- The LLM's raw output is automatically parsed and validated against the provided schema.
+- If the LLM fails to produce a valid JSON object conforming to the schema, an error is returned.
+- Structured output works with both streaming and non‑streaming requests.
+- For `/api/thinking` and `/api/qa`, the structured answer is returned in the `answer` field, while reasoning content (if any) is placed in `reasoning_content`.
+- Requires LLM providers that support structured output (OpenAI, Anthropic, Google Gemini, and other compatible providers).
 
 ### MCP (Model Context Protocol) Integration
 The `/api/ask` endpoint supports integration with MCP servers, enabling the LLM to use external tools and data sources.
