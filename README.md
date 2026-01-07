@@ -545,7 +545,7 @@ Then, make a request to `/api/ask` with the schema:
 
 ```json
 {
-  "question": "Extract information about John Doe, a 30-year-old student studying Math and Science.",
+  "question": "Extract information about John Doe, a 31-year-old student studying Math and Science.",
   "llm": "openai",
   "model": "gpt-4o",
   "llm_key": "sk-...",
@@ -569,7 +569,7 @@ Then, make a request to `/api/ask` with the schema:
 {
   "answer": {
     "name": "John Doe",
-    "age": 30,
+    "age": 31,
     "is_student": true,
     "courses": ["Math", "Science"]
   },
