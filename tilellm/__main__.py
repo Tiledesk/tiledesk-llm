@@ -811,6 +811,7 @@ def register_feature_routers(_app: FastAPI, base_package_dir: str):
     
     # Mappatura directory -> chiave di configurazione
     module_config_mapping = {
+        "task_executor": "task_executor",
         "knowledge_graph": "graphrag",
         "pdf_ocr": "pdf_ocr",
         "conversion": "conversion",

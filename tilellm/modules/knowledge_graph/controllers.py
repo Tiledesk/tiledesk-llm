@@ -5,7 +5,8 @@ Provides RESTful API for managing nodes and relationships in Neo4j.
 
 import logging
 from fastapi import APIRouter, HTTPException, status, Query
-from typing import List
+from typing import List, Union
+from pydantic import SecretStr
 
 from .models import Node, NodeUpdate, Relationship, RelationshipUpdate
 from .models.schemas import (
@@ -14,13 +15,38 @@ from .models.schemas import (
     GraphQAAdvancedRequest, GraphQAAdvancedResponse,
     GraphClusterRequest, GraphClusterResponse, CommunityQAResponse,
     AddDocumentRequest, AddDocumentResponse,
-    GraphNetworkResponse
+    GraphNetworkResponse, AsyncTaskResponse, TaskPollResponse
 )
 
 # Import business logic
 import tilellm.modules.knowledge_graph.logic as kg_logic
 
+import os
+# Import Taskiq tasks if available
+try:
+    from tilellm.modules.task_executor.tasks import (
+        task_graph_create, task_add_document,
+        task_louvain_cluster, task_leiden_cluster,
+        task_hierarchical_cluster
+    )
+    from tilellm.modules.task_executor.broker import broker
+    TASKIQ_AVAILABLE = True
+except ImportError:
+    TASKIQ_AVAILABLE = False
+
+ENABLE_TASKIQ = os.environ.get("ENABLE_TASKIQ", "false").lower() == "true"
+
 logger = logging.getLogger(__name__)
+
+def serialize_with_secrets(obj):
+    """Recursively convert Pydantic models/dicts revealing SecretStr values."""
+    if isinstance(obj, SecretStr):
+        return obj.get_secret_value()
+    if isinstance(obj, dict):
+        return {k: serialize_with_secrets(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [serialize_with_secrets(v) for v in obj]
+    return obj
 
 # ==================== ROUTER SETUP ====================
 router = APIRouter(
@@ -29,6 +55,42 @@ router = APIRouter(
 )
 
 # ==================== UTILITY ENDPOINTS ====================
+
+@router.get("/tasks/{task_id}", response_model=TaskPollResponse)
+async def get_task_status(task_id: str):
+    """
+    Check the status of an asynchronous task.
+    """
+    if not (ENABLE_TASKIQ and TASKIQ_AVAILABLE):
+        raise HTTPException(status_code=501, detail="Async tasks not enabled")
+    
+    try:
+        # Check if task is ready
+        result_backend = broker.result_backend
+        is_ready = await result_backend.is_result_ready(task_id)
+        
+        if not is_ready:
+            return TaskPollResponse(task_id=task_id, status="in_progress")
+            
+        result = await result_backend.get_result(task_id)
+        
+        if result.is_err:
+             # Extract error message properly
+             return TaskPollResponse(
+                 task_id=task_id, 
+                 status="failed", 
+                 error=str(result.error) if hasattr(result, 'error') else str(result.return_value)
+             )
+             
+        return TaskPollResponse(
+            task_id=task_id, 
+            status="success", 
+            result=result.return_value
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to get task status: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve task status: {str(e)}")
 
 @router.get("/health", status_code=status.HTTP_200_OK)
 def health_check():
@@ -210,21 +272,28 @@ def delete_relationship(relationship_id: str):
 
 # ==================== GRAPH CREATE ENDPOINT ====================
 
-@router.post("/create", response_model=GraphCreateResponse)
+@router.post("/create", response_model=Union[AsyncTaskResponse, GraphCreateResponse])
 async def graph_create(request: GraphCreateRequest):
     """Create/import a community graph using existing GraphRAG extraction and clustering."""
     try:
+        if ENABLE_TASKIQ and TASKIQ_AVAILABLE:
+            payload = serialize_with_secrets(request.model_dump(mode='python'))
+            task = await task_graph_create.kiq(payload)
+            return AsyncTaskResponse(task_id=task.task_id)
+
         result = await kg_logic.create_graph(request)
         return GraphCreateResponse(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=501, detail=str(e))
     except Exception as e:
-        logger.error(f"Community graph creation failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Community graph creation failed: {str(e)}")
+        logger.error(f"Add document to graph failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to add document to graph: {str(e)}")
 
 
 
-@router.post("/add-document", response_model=AddDocumentResponse)
+@router.post("/add-document", response_model=Union[AsyncTaskResponse, AddDocumentResponse])
 async def add_document(request: AddDocumentRequest):
     """
     Add a document to the knowledge graph by retrieving chunks from vector store.
@@ -274,6 +343,11 @@ async def add_document(request: AddDocumentRequest):
     """
     try:
         logger.info(f"Add document to graph: metadata_id={request.metadata_id}, namespace={request.namespace}")
+        if ENABLE_TASKIQ and TASKIQ_AVAILABLE:
+            payload = serialize_with_secrets(request.model_dump(mode='python'))
+            task = await task_add_document.kiq(payload)
+            return AsyncTaskResponse(task_id=task.task_id)
+
         result = await kg_logic.add_document_to_graph(request)
         return AddDocumentResponse(**result)
     except ValueError as e:
@@ -284,10 +358,15 @@ async def add_document(request: AddDocumentRequest):
         logger.error(f"Add document to graph failed: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to add document to graph: {str(e)}")
 
-@router.post("/louvain-cluster", response_model=GraphClusterResponse)
+@router.post("/louvain-cluster", response_model=Union[AsyncTaskResponse, GraphClusterResponse])
 async def graph_cluster_louvain(request: GraphClusterRequest):
     """Perform Louvain clustering and generate community reports (Parquet/MinIO)."""
     try:
+        if ENABLE_TASKIQ and TASKIQ_AVAILABLE:
+            payload = serialize_with_secrets(request.model_dump(mode='python'))
+            task = await task_louvain_cluster.kiq(payload)
+            return AsyncTaskResponse(task_id=task.task_id)
+
         result = await kg_logic.cluster_graph_louvain(request)
         return GraphClusterResponse(**result)
     except RuntimeError as e:
@@ -297,10 +376,15 @@ async def graph_cluster_louvain(request: GraphClusterRequest):
         raise HTTPException(status_code=500, detail=f"Cluster MS failed: {str(e)}")
 
 
-@router.post("/leiden-cluster", response_model=GraphClusterResponse)
+@router.post("/leiden-cluster", response_model=Union[AsyncTaskResponse, GraphClusterResponse])
 async def graph_cluster_leiden(request: GraphClusterRequest):
     """Perform Leiden clustering (via igraph) and generate community reports."""
     try:
+        if ENABLE_TASKIQ and TASKIQ_AVAILABLE:
+            payload = serialize_with_secrets(request.model_dump(mode='python'))
+            task = await task_leiden_cluster.kiq(payload)
+            return AsyncTaskResponse(task_id=task.task_id)
+
         result = await kg_logic.cluster_graph_leiden(request)
         return GraphClusterResponse(**result)
     except RuntimeError as e:
@@ -310,10 +394,15 @@ async def graph_cluster_leiden(request: GraphClusterRequest):
         raise HTTPException(status_code=500, detail=f"Leiden MS failed: {str(e)}")
 
 
-@router.post("/hierarchical", response_model=GraphClusterResponse)
+@router.post("/hierarchical", response_model=Union[AsyncTaskResponse, GraphClusterResponse])
 async def graph_cluster_hierarchical(request: GraphClusterRequest):
     """Perform Hierarchical Clustering (Levels 0, 1, 2) using Leiden."""
     try:
+        if ENABLE_TASKIQ and TASKIQ_AVAILABLE:
+            payload = serialize_with_secrets(request.model_dump(mode='python'))
+            task = await task_hierarchical_cluster.kiq(payload)
+            return AsyncTaskResponse(task_id=task.task_id)
+
         result = await kg_logic.cluster_graph_hierarchical(request)
         return GraphClusterResponse(**result)
     except RuntimeError as e:

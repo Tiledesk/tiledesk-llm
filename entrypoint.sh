@@ -51,6 +51,11 @@ if [ -z "$GRACEFULTIMEOUT" ]; then
   GRACEFULTIMEOUT=60
 fi
 
+if [ "$ENABLE_TASKIQ" = "true" ]; then
+    echo "Starting taskiq worker..."
+    python -m taskiq worker tilellm.modules.task_executor.broker:broker tilellm.modules.task_executor.tasks &
+fi
+
 echo "start gunicorn with workers $WORKERS --timeout $TIMEOUT --max-requests $MAXREQUESTS --max-requests-jitter $MAXRJITTER --graceful-timeout $GRACEFULTIMEOUT"
 
 python -m gunicorn --bind 0.0.0.0:8000  --workers $WORKERS --timeout $TIMEOUT --max-requests $MAXREQUESTS --max-requests-jitter $MAXRJITTER --graceful-timeout $GRACEFULTIMEOUT --log-config-json log_conf.json --worker-class uvicorn.workers.UvicornWorker tilellm.__main__:app

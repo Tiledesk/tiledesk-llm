@@ -250,7 +250,7 @@ async def create_graph(
         llm_embeddings=llm_embeddings,
         sparse_encoder=request.sparse_encoder,
         limit=request.limit or 100,
-        index_name=request.index_name,
+        index_name=request.engine.index_name,
         overwrite=request.overwrite or False,
         import_to_neo4j=True
     )

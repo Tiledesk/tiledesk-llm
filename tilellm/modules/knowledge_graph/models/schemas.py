@@ -38,6 +38,7 @@ class GraphCreateRequest(QuestionAnswer):
     engine: Optional[Engine] = None  # Engine configuration for vector store
     limit: Optional[int] = 100
     overwrite: Optional[bool] = False
+    webhook_url: Optional[str] = Field(default=None, description="URL to call when task is finished")
     
     # Keep same type as parent but with default empty string (not needed for creation)
     question: Optional[Union[str, List[MultimodalContent]]] = Field(default="", description="Optional prompt for extraction guidance")
@@ -54,6 +55,21 @@ class GraphCreateResponse(BaseModel):
     status: str
 
 
+class AsyncTaskResponse(BaseModel):
+    """Response model for Async Task submission"""
+    task_id: str
+    status: str = "queued"
+    message: str = "Task submitted successfully"
+
+
+class TaskPollResponse(BaseModel):
+    """Response model for Task Polling"""
+    task_id: str
+    status: str  # queued, in_progress, success, failed
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
 class GraphClusterRequest(QuestionAnswer):
     """
     Request model for Graph clustering endpoint.
@@ -68,6 +84,7 @@ class GraphClusterRequest(QuestionAnswer):
         default=True,
         description="If True, removes existing community reports before regeneration (default: True)"
     )
+    webhook_url: Optional[str] = Field(default=None, description="URL to call when task is finished")
 
 
 class GraphClusterResponse(BaseModel):
@@ -124,9 +141,11 @@ class AddDocumentRequest(QuestionAnswer):
     namespace: str = Field(..., description="Namespace for the graph (e.g., 'bancaitalia')")
     engine: Engine = Field(..., description="Engine configuration (must include name, index_name, and type/deployment)")
     deduplicate_entities: Optional[bool] = Field(default=True, description="If True, reuses existing entity nodes")
+    webhook_url: Optional[str] = Field(default=None, description="URL to call when task is finished")
 
     # Keep same type as parent but with default empty string (not needed for chunk addition)
     question: Optional[Union[str, List[MultimodalContent]]] = Field(default="", description="Not used for chunk addition")
+
 
 
 class AddDocumentResponse(BaseModel):
