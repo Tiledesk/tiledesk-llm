@@ -11,7 +11,8 @@ from langchain_community.document_loaders import (
     UnstructuredURLLoader,
     PyPDFLoader,
     Docx2txtLoader,
-    TextLoader
+    TextLoader,
+    UnstructuredMarkdownLoader
 )
 
 from langchain_community.document_transformers import BeautifulSoupTransformer, Html2TextTransformer
@@ -28,7 +29,7 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
     If scrape_type=0 Unstructured analyze the page and extract some useful information about page, like UL, Title etc.
     If scrape_type=1, extract all the content.
     If scape_type=2 is used playwright and BS4 in order to select the html element to extract.
-    If scape_type=3 is used AsyncChromiumLoader and the html is transformed in text
+    If scape_type=3 is used AsyncChromiumLoader and the html is transforme@inject_llm_chat_asyncd in text
     If scape_type=4 is used AsyncChromiumLoader and BS4 in order to select the html element to extract
     If scape_type=5 is used playwright and BS4 in order to select the html element to extract and class.
     :param url: str representing url
@@ -55,6 +56,14 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
     if scrape_type in [2, 5] and params_type_4 is None:
         raise ValueError("parameters_scrape_type_4 is required for scrape_type=2 or 5")
 
+    # Check if the URL is a markdown file
+    if url.lower().endswith('.md'):
+        logger.info(f"Detected .md file, using handle_unstructured_loader for: {url}")
+        return await handle_unstructured_loader(
+            urls,
+            mode="single",
+            browser_headers=browser_headers
+        )
 
     try:
         if scrape_type == 0:
@@ -686,6 +695,9 @@ def load_document(url: str, type_source: str):
     elif type_source == 'txt':
         logger.info(f'Loading {url}')
         loader = TextLoader(url)
+    elif type_source == 'md':
+        logger.info(f'Loading {url}')
+        loader = UnstructuredMarkdownLoader(url)
     else:
         logger.info('Document format is not supported!')
         return None
@@ -762,7 +774,7 @@ def clean_metadata(dictionary):
 
 
 async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers):
-    if type_source in ['url', 'txt']:
+    if type_source in ['url', 'txt', 'md']:
         documents = await get_content_by_url(source,
                                         scrape_type,
                                         parameters_scrape_type_4=parameters_scrape_type_4,

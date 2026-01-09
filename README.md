@@ -276,6 +276,8 @@ Tiledesk LLM now features a modular architecture that allows you to enable or di
 - **Automatic community report updates**: Community reports are automatically regenerated after document addition
 - **Sparse encoder support**: Full support for hybrid search with SPLADE and BGE-M3 sparse encoders
 
+Note: For more in-depth information regarding the architecture and module specifics, check the KG [README](tilellm/modules/knowledge_graph/README.md) and the [Architecture Report](tilellm/modules/knowledge_graph/REPORT.md).
+
 ## Configuration-Based Module Loading
 
 Modules can be enabled/disabled via the `service_conf.yaml` configuration file:

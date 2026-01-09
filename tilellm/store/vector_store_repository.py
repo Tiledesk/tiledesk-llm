@@ -176,7 +176,7 @@ class VectorStoreRepository(ABC):
 
     @staticmethod
     async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers):
-        if type_source in ['url', 'txt']:
+        if type_source in ['url', 'txt', 'md']:
             documents = await get_content_by_url(source,
                                                  scrape_type,
                                                  parameters_scrape_type_4=parameters_scrape_type_4,

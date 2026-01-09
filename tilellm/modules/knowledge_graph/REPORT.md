@@ -1,21 +1,21 @@
 # REPORT - Knowledge Graph (GraphRAG) Module
 
-## 1. Introduzione
+## 1. Introduction
 
-Il modulo **Knowledge Graph** di Tiledesk LLM implementa un'architettura **GraphRAG** (Graph-based Retrieval Augmented Generation) che combina:
-- **Knowledge Graph** (Neo4j) per memorizzare entità e relazioni estratte dai documenti
-- **Vector Store** (Pinecone/Qdrant) per la ricerca semantica sui chunk e sui report
-- **MinIO** per l'archiviazione di report Parquet
-- **LLM** per l'estrazione di entità, la generazione di report e la sintesi delle risposte
+The **Knowledge Graph** module of Tiledesk LLM implements a **GraphRAG** (Graph-based Retrieval Augmented Generation) architecture that combines:
+- **Knowledge Graph** (Neo4j) to store entities and relationships extracted from documents
+- **Vector Store** (Pinecone/Qdrant) for semantic search on chunks and reports
+- **MinIO** for storing Parquet reports
+- **LLM** for entity extraction, report generation, and answer synthesis
 
-Il sistema offre tre principali modalità di interrogazione:
-1. **Global Search** (`/api/kg/qa`): ricerca solo sui report delle community
-2. **Integrated Hybrid Search** (`/api/kg/hybrid`): pipeline completa che unisce global search, local search e graph expansion
-3. **Creazione del grafo** (`/api/kg/create`): importazione dei documenti, estrazione GraphRAG, clustering e generazione report
+The system offers three main query modes:
+1. **Global Search** (`/api/kg/qa`): search only on community reports
+2. **Integrated Hybrid Search** (`/api/kg/hybrid`): complete pipeline combining global search, local search, and graph expansion
+3. **Graph creation** (`/api/kg/create`): document import, GraphRAG extraction, clustering, and report generation
 
-Questo documento descrive nel dettaglio il funzionamento di ciascun componente e il flusso dati end-to-end.
+This document describes in detail the operation of each component and the end-to-end data flow.
 
-## 2. Architettura del modulo
+## 2. Module Architecture
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
@@ -42,299 +42,299 @@ Questo documento descrive nel dettaglio il funzionamento di ciascun componente e
             └─────────────────┘
 ```
 
-**Componenti principali:**
-- **`CommunityGraphService`** (`services/community_graph_service.py`): orchestratore della creazione dei report e delle ricerche globali/ibride
-- **`GraphRAGService`** (`services/services.py`): estrazione di entità e relazioni dai chunk, import in Neo4j
-- **`ClusterService`** (`services/clustering.py`): clustering Louvain/Leiden per la detection delle community
-- **`GraphExpander`** (`utils/graph_expansion.py`): espansione adattiva del grafo a partire da nodi seed
-- **`TileReranker`** (`tilellm/tools/reranker.py`): cross-encoder per il reranking dei risultati
-- **`GraphRepository`** (`repository/repository.py`): astrazione CRUD per Neo4j
+**Main components:**
+- **`CommunityGraphService`** (`services/community_graph_service.py`): orchestrator for report creation and global/hybrid searches
+- **`GraphRAGService`** (`services/services.py`): extraction of entities and relationships from chunks, import to Neo4j
+- **`ClusterService`** (`services/clustering.py`): Louvain/Leiden clustering for community detection
+- **`GraphExpander`** (`utils/graph_expansion.py`): adaptive graph expansion from seed nodes
+- **`TileReranker`** (`tilellm/tools/reranker.py`): cross‑encoder for result reranking
+- **`GraphRepository`** (`repository/repository.py`): CRUD abstraction for Neo4j
 
-## 3. Creazione del Knowledge Graph (`/api/kg/create`)
+## 3. Knowledge Graph Creation (`/api/kg/create`)
 
 **Endpoint:** `POST /api/kg/create`  
-**Scopo:** importare i chunk da un namespace del vector store, estrarre entità e relazioni, salvarle in Neo4j, generare report delle community e indicizzarli per la ricerca semantica.
+**Purpose:** import chunks from a vector store namespace, extract entities and relationships, save them to Neo4j, generate community reports, and index them for semantic search.
 
-### 3.1 Flusso dettagliato
+### 3.1 Detailed Flow
 
 ```
-1. Recupero chunk dal vector store
+1. Retrieve chunks from vector store
    ↓
-2. Estrazione GraphRAG (entità + relazioni) per ogni chunk
+2. GraphRAG extraction (entities + relationships) for each chunk
    ↓
-3. Import in Neo4j (nodi + archi)
+3. Import to Neo4j (nodes + edges)
    ↓
-4. Clustering gerarchico (Leiden, 3 livelli)
+4. Hierarchical clustering (Leiden, 3 levels)
    ↓
-5. Generazione report di community (LLM)
+5. Community report generation (LLM)
    ↓
-6. Arricchimento con domande sintetiche (LLM)
+6. Enrichment with synthetic questions (LLM)
    ↓
-7. Indexing dei report nel vector store (embedding)
+7. Report indexing in vector store (embedding)
    ↓
-8. Esportazione Parquet + upload MinIO (opzionale)
+8. Parquet export + MinIO upload (optional)
 ```
 
-#### **1. Recupero dei chunk** (`community_graph_service.py:144`)
-Il servizio interroga il vector store (configurato via `engine`) nel `namespace` specificato, con un limite opzionale di chunk (`limit`).
+#### **1. Chunk retrieval** (`community_graph_service.py:144`)
+The service queries the vector store (configured via `engine`) in the specified `namespace`, with an optional chunk limit (`limit`).
 
-#### **2. Estrazione GraphRAG** (`services/services.py`)
-Per ogni chunk, un LLM viene invocato con un prompt specializzato per identificare:
-- **Entità** (es. `PERSON`, `ORGANIZATION`, `LOCATION`) con proprietà (nome, descrizione, tipo)
-- **Relazioni** (es. `WORKED_FOR`, `LOCATED_IN`, `PART_OF`) tra le entità identificate
+#### **2. GraphRAG extraction** (`services/services.py`)
+For each chunk, an LLM is invoked with a specialized prompt to identify:
+- **Entities** (e.g., `PERSON`, `ORGANIZATION`, `LOCATION`) with properties (name, description, type)
+- **Relationships** (e.g., `WORKED_FOR`, `LOCATED_IN`, `PART_OF`) between identified entities
 
-Le entità sono deduplicate: se un'entità con lo stesso nome e tipo esiste già, viene riutilizzata.
+Entities are deduplicated: if an entity with the same name and type already exists, it is reused.
 
-#### **3. Import in Neo4j** (`repository/repository.py`)
-- Ogni entità diventa un **nodo** con label corrispondente al tipo e proprietà `name`, `description`, `namespace`, `index_name`, `source_id` (riferimento al chunk)
-- Ogni relazione diventa un **arco** tra i nodi, con tipo e proprietà (es. `weight`, `context`)
+#### **3. Import to Neo4j** (`repository/repository.py`)
+- Each entity becomes a **node** with a label corresponding to its type and properties `name`, `description`, `namespace`, `index_name`, `source_id` (reference to the source chunk)
+- Each relationship becomes an **edge** between nodes, with type and properties (e.g., `weight`, `context`)
 
-#### **4. Clustering gerarchico** (`services/clustering.py`)
-Il `ClusterService` applica l'algoritmo **Leiden** con tre livelli di risoluzione:
-- **Livello 0** (risoluzione 1.2): community grandi, panoramica generale
-- **Livello 1** (risoluzione 0.8): community medie
-- **Livello 2** (risoluzione 0.5): community piccole, altamente specifiche
+#### **4. Hierarchical clustering** (`services/clustering.py`)
+The `ClusterService` applies the **Leiden** algorithm with three resolution levels:
+- **Level 0** (resolution 1.2): large communities, general overview
+- **Level 1** (resolution 0.8): medium communities
+- **Level 2** (resolution 0.5): small, highly specific communities
 
-Ogni community è identificata da un `community_id` univoco.
+Each community is identified by a unique `community_id`.
 
-#### **5. Generazione report di community** (`services/clustering.py`)
-Per ogni community, un LLM genera un report strutturato con:
-- **Titolo**: sintesi del topic della community
-- **Sommario**: panoramica dei contenuti
-- **Rating** (0-5): valutazione della coesione e rilevanza
-- **Full report**: descrizione dettagliata con elenco delle entità principali
+#### **5. Community report generation** (`services/clustering.py`)
+For each community, an LLM generates a structured report with:
+- **Title**: summary of the community topic
+- **Summary**: overview of contents
+- **Rating** (0-5): assessment of cohesion and relevance
+- **Full report**: detailed description with list of main entities
 
-#### **6. Arricchimento con domande sintetiche** (`utils/synthetic_qa.py`)
-Ogni report è arricchito con **3 domande sintetiche** generate dallo stesso LLM, che migliorano la retrievability semantica (es. "Cosa fa l'organizzazione X?").
+#### **6. Enrichment with synthetic questions** (`utils/synthetic_qa.py`)
+Each report is enriched with **3 synthetic questions** generated by the same LLM, improving semantic retrievability (e.g., "What does organization X do?").
 
-#### **7. Indexing dei report nel vector store** (`community_graph_service.py:313`)
-I report (contenuto completo + domande sintetiche) sono convertiti in `Document` LangChain e inseriti in un namespace dedicato (`{namespace}-reports`) dello stesso vector store, utilizzando gli embedding forniti (`llm_embeddings`). Questo abilita la successiva ricerca semantica sui report.
+#### **7. Report indexing in vector store** (`community_graph_service.py:313`)
+Reports (full content + synthetic questions) are converted into LangChain `Document` objects and inserted into a dedicated namespace (`{namespace}-reports`) of the same vector store, using the provided embeddings (`llm_embeddings`). This enables subsequent semantic search on reports.
 
-#### **8. Esportazione Parquet + MinIO** (`community_graph_service.py:330`)
-I report, le entità e le relazioni sono scritti in file Parquet e, se configurato, caricati su MinIO per analisi batch o riutilizzo offline.
+#### **8. Parquet export + MinIO** (`community_graph_service.py:330`)
+Reports, entities, and relationships are written to Parquet files and, if configured, uploaded to MinIO for batch analysis or offline reuse.
 
-### 3.2 Ruolo degli LLM
-- **Estrazione entità/relazioni**: prompt di GraphRAG per identificare entità e collegamenti
-- **Generazione report**: sintesi della community in linguaggio naturale
-- **Domande sintetiche**: creazione di query esemplificative per migliorare la ricerca
+### 3.2 Role of LLMs
+- **Entity/relationship extraction**: GraphRAG prompt to identify entities and connections
+- **Report generation**: synthesis of the community in natural language
+- **Synthetic questions**: creation of example queries to improve search
 
-### 3.3 Ruolo degli embedding
-- I chunk originali sono già embedded nel vector store
-- I report vengono a loro volta embedded (con lo stesso modello) per abilitare la ricerca semantica
+### 3.3 Role of embeddings
+- Original chunks are already embedded in the vector store
+- Reports are also embedded (with the same model) to enable semantic search
 
-**File di riferimento:**
+**Source file references:**
 - `tilellm/modules/knowledge_graph/controllers.py:213` – endpoint `/create`
-- `tilellm/modules/knowledge_graph/logic.py:216` – logica `create_graph`
+- `tilellm/modules/knowledge_graph/logic.py:216` – logic `create_graph`
 - `tilellm/modules/knowledge_graph/services/community_graph_service.py:144` – `create_community_graph`
-- `tilellm/modules/knowledge_graph/services/clustering.py` – clustering e generazione report
-- `tilellm/modules/knowledge_graph/utils/synthetic_qa.py` – domande sintetiche
+- `tilellm/modules/knowledge_graph/services/clustering.py` – clustering and report generation
+- `tilellm/modules/knowledge_graph/utils/synthetic_qa.py` – synthetic questions
 
-## 4. Interrogazione: Global Search (`/api/kg/qa`)
+## 4. Querying: Global Search (`/api/kg/qa`)
 
 **Endpoint:** `POST /api/kg/qa`  
-**Scopo:** rispondere a una domanda cercando **solo** nei report delle community, senza accedere ai chunk originali. Ideale per domande ad alto livello che richiedono una visione d'insieme.
+**Purpose:** answer a question by searching **only** in community reports, without accessing original chunks. Ideal for high‑level questions requiring an overview.
 
-### 4.1 Flusso dettagliato
+### 4.1 Detailed Flow
 
 ```
-1. Ricerca semantica ibrida sui report
+1. Hybrid semantic search on reports
    ↓
-2. RRF (Reciprocal Rank Fusion) [opzionale]
+2. RRF (Reciprocal Rank Fusion) [optional]
    ↓
-3. Reranking con cross‑encoder
+3. Cross‑encoder reranking
    ↓
-4. Map‑Reduce con LLM:
-   - MAP: analisi singoli report
-   - REDUCE: sintesi finale
+4. Map‑Reduce with LLM:
+   - MAP: single‑report analysis
+   - REDUCE: final synthesis
    ↓
-5. Aggiornamento chat history
+5. Chat history update
 ```
 
-#### **1. Ricerca semantica ibrida** (`community_graph_service.py:864`)
-- La domanda è convertita in **embedding denso** tramite `llm_embeddings`
-- Se configurato, viene generato anche un **vettore sparse** (encoder SPLADE) per la ricerca keyword
-- Viene eseguita una ricerca ibrida (densa + sparse) nel namespace `{namespace}-reports` del vector store
+#### **1. Hybrid semantic search** (`community_graph_service.py:864`)
+- The question is converted into a **dense embedding** via `llm_embeddings`
+- If configured, a **sparse vector** (SPLADE encoder) is also generated for keyword search
+- A hybrid search (dense + sparse) is executed in the `{namespace}-reports` namespace of the vector store
 
 #### **2. RRF (Reciprocal Rank Fusion)** (`utils/rrf.py`)
-I risultati delle due ricerche (densa e sparse) sono fusi tramite **Reciprocal Rank Fusion**, che bilancia recall e precisione producendo una ranked list robusta.
+Results from the two searches (dense and sparse) are fused via **Reciprocal Rank Fusion**, balancing recall and precision to produce a robust ranked list.
 
-#### **3. Reranking con cross‑encoder** (`community_graph_service.py:884`)
-I documenti risultanti sono **rerankati** da un cross‑encoder (`TileReranker`) che valuta direttamente la pertinenza query‑documento, selezionando i top‑k più rilevanti.
+#### **3. Cross‑encoder reranking** (`community_graph_service.py:884`)
+Resulting documents are **reranked** by a cross‑encoder (`TileReranker`) that directly evaluates query‑document relevance, selecting the top‑k most relevant.
 
-#### **4. Map‑Reduce con LLM** (`community_graph_service.py:950`)
-- **MAP**: ogni report selezionato viene analizzato da un LLM con un prompt che chiede di estrarre le informazioni rilevanti per la domanda (nella lingua originale dell'utente). I report irrilevanti restituiscono `NOT_RELEVANT`.
-- **REDUCE**: le risposte parziali sono combinate da un'altra invocazione LLM che sintetizza una risposta finale, tenendo conto della history della conversazione.
+#### **4. Map‑Reduce with LLM** (`community_graph_service.py:950`)
+- **MAP**: each selected report is analyzed by an LLM with a prompt asking to extract information relevant to the question (in the user's original language). Irrelevant reports return `NOT_RELEVANT`.
+- **REDUCE**: partial answers are combined by another LLM invocation that synthesizes a final answer, taking conversation history into account.
 
-#### **5. Aggiornamento chat history** (`community_graph_service.py:1032`)
-La domanda e la risposta sono aggiunte al dizionario `chat_history_dict` per mantenere il contesto dialogico.
+#### **5. Chat history update** (`community_graph_service.py:1032`)
+The question and answer are added to the `chat_history_dict` dictionary to maintain dialog context.
 
-### 4.2 Ruolo degli LLM
-- **Fase MAP**: estrazione mirata dal singolo report
-- **Fase REDUCE**: sintesi coesa e multilingue
+### 4.2 Role of LLMs
+- **MAP phase**: targeted extraction from individual reports
+- **REDUCE phase**: cohesive, multilingual synthesis
 
-### 4.3 Ruolo degli embedding e del reranking
-- Embedding densi e sparse per la retrieval ibrida
-- Cross‑encoder per il reranking, che migliora drasticamente la precisione
+### 4.3 Role of embeddings and reranking
+- Dense and sparse embeddings for hybrid retrieval
+- Cross‑encoder for reranking, dramatically improving precision
 
-**File di riferimento:**
+**Source file references:**
 - `tilellm/modules/knowledge_graph/controllers.py:327` – endpoint `/qa`
-- `tilellm/modules/knowledge_graph/logic.py:358` – logica `query_graph`
+- `tilellm/modules/knowledge_graph/logic.py:358` – logic `query_graph`
 - `tilellm/modules/knowledge_graph/services/community_graph_service.py:864` – `query_with_global_search`
-- `tilellm/modules/knowledge_graph/utils/rrf.py` – implementazione RRF
+- `tilellm/modules/knowledge_graph/utils/rrf.py` – RRF implementation
 
-## 5. Interrogazione: Integrated Hybrid Search (`/api/kg/hybrid`)
+## 5. Querying: Integrated Hybrid Search (`/api/kg/hybrid`)
 
 **Endpoint:** `POST /api/kg/hybrid`  
-**Scopo:** eseguire una pipeline completa che combina **global search** (sui report), **local search** (sui chunk originali) e **graph expansion** (espansione adattiva dal knowledge graph), seguita da reranking e sintesi LLM. È il "cuore" del sistema GraphRAG.
+**Purpose:** execute a complete pipeline that combines **global search** (on reports), **local search** (on original chunks), and **graph expansion** (adaptive expansion from the knowledge graph), followed by reranking and LLM synthesis. This is the "heart" of the GraphRAG system.
 
-### 5.1 Flusso dettagliato
+### 5.1 Detailed Flow
 
 ```
-1. Analisi della query (tipo detection)
+1. Query analysis (type detection)
    ↓
 2. Parallel retrieval:
-   - Task A: Global search (report)
-   - Task B: Local search (chunk)
+   - Task A: Global search (reports)
+   - Task B: Local search (chunks)
    ↓
 3. Graph expansion (adaptive multi‑hop)
    ↓
-4. Reranking finale (cross‑encoder)
+4. Final reranking (cross‑encoder)
    ↓
-5. Sintesi LLM con contesto unificato
+5. LLM synthesis with unified context
    ↓
-6. Aggiornamento chat history
+6. Chat history update
 ```
 
-#### **1. Analisi della query** (`services/services.py`)
-Il `GraphRAGService` classifica la domanda in uno di tre tipi:
-- **Technical**: richiede precisione, poca espansione (es. "Qual è la formula di...")
-- **Exploratory**: richiede esplorazione, media espansione (es. "Parlami di...")
-- **Relational**: richiede profondità delle relazioni, massima espansione (es. "Quali sono le connessioni tra X e Y?")
+#### **1. Query analysis** (`services/services.py`)
+The `GraphRAGService` classifies the question into one of three types:
+- **Technical**: requires precision, little expansion (e.g., "What is the formula for...")
+- **Exploratory**: requires exploration, medium expansion (e.g., "Tell me about...")
+- **Relational**: requires depth of relationships, maximum expansion (e.g., "What are the connections between X and Y?")
 
-I pesi tra ricerca vettoriale, keyword e grafo sono regolati di conseguenza.
+Weights between vector, keyword, and graph search are adjusted accordingly.
 
 #### **2. Parallel retrieval** (`community_graph_service.py:1286`)
-Vengono lanciate **in parallelo** due ricerche:
+Two searches are launched **in parallel**:
 
 - **Task A: Global search**  
-  Identico a `/api/kg/qa`, ma limitato ai top‑5 report.
+  Same as `/api/kg/qa`, but limited to top‑5 reports.
 
 - **Task B: Local search**  
-  Ricerca ibrida (densa + keyword) sul namespace originale dei chunk, con alpha determinato dai pesi. I risultati sono fusi con RRF.
+  Hybrid search (dense + keyword) on the original chunk namespace, with alpha determined by weights. Results are fused with RRF.
 
 #### **3. Graph expansion (adaptive multi‑hop)** (`utils/graph_expansion.py:39`)
-Dai chunk locali più rilevanti si estraggono gli ID dei **nodi seed** collegati. Il servizio `GraphExpander` esegue un'espansione **adattiva**:
+From the most relevant local chunks, **seed node** IDs linked to them are extracted. The `GraphExpander` service performs **adaptive** expansion:
 
-- **Numero di hop dinamico**:  
-  `technical=1`, `exploratory=2`, `relational=3` (configurabile in `HOP_CONFIG`)
+- **Dynamic hop count**:  
+  `technical=1`, `exploratory=2`, `relational=3` (configurable in `HOP_CONFIG`)
 
 - **Early stopping**:  
-  Se un hop produce pochi nuovi nodi (< `MIN_NEW_NODES_PER_HOP`) o si raggiunge il limite assoluto di nodi (`MAX_NODES_ABSOLUTE`), l'espansione si ferma.
+  If a hop produces few new nodes (< `MIN_NEW_NODES_PER_HOP`) or the absolute node limit (`MAX_NODES_ABSOLUTE`) is reached, expansion stops.
 
-- **Cypher query ottimizzata**:  
-  Recupera nodi e relazioni filtrando per `namespace`/`index_name` e ordinando per peso delle relazioni.
+- **Optimized Cypher query**:  
+  Retrieves nodes and relationships filtering by `namespace`/`index_name` and ordering by relationship weight.
 
-L'espansione trasforma i frammenti isolati in una **narrazione coerente**, catturando le connessioni tra entità.
+Expansion transforms isolated fragments into a **coherent narrative**, capturing connections between entities.
 
-#### **4. Reranking finale** (`community_graph_service.py:1480`)
-Tutti i contesti (report globali, chunk locali, entità del grafo) sono uniti in una lista di `Document` LangChain e **rerankati** da un cross‑encoder, selezionando i 20 più pertinenti.
+#### **4. Final reranking** (`community_graph_service.py:1480`)
+All contexts (global reports, local chunks, graph entities) are merged into a list of LangChain `Document` objects and **reranked** by a cross‑encoder, selecting the 20 most relevant.
 
-#### **5. Sintesi LLM** (`community_graph_service.py:1496`)
-Il contesto finale viene passato a un LLM insieme alla history della conversazione, con l'istruzione di produrre una risposta nella lingua dell'utente, integrando le diverse fonti (report, documenti, grafo).
+#### **5. LLM synthesis** (`community_graph_service.py:1496`)
+The final context is passed to an LLM together with conversation history, with instructions to produce an answer in the user's language, integrating the different sources (reports, documents, graph).
 
-#### **6. Aggiornamento chat history** (`community_graph_service.py:1535`)
-La domanda e la risposta sono aggiunte alla history per mantenere il contesto.
+#### **6. Chat history update** (`community_graph_service.py:1535`)
+The question and answer are added to the history to maintain context.
 
-### 5.2 Ruolo degli LLM
-- **Classificazione del tipo di query**
-- **Sintesi finale del contesto** (integrazione delle tre fonti)
-- (Opzionale) generazione di domande sintetiche durante la creazione dei report
+### 5.2 Role of LLMs
+- **Query type classification**
+- **Final context synthesis** (integration of the three sources)
+- (Optional) synthetic question generation during report creation
 
-### 5.3 Ruolo degli embedding
-- **Embedding densi** per la ricerca vettoriale
-- **Embedding sparse** (SPLADE) per la ricerca keyword
-- **Embedding dei report** per la global search
+### 5.3 Role of embeddings
+- **Dense embeddings** for vector search
+- **Sparse embeddings** (SPLADE) for keyword search
+- **Report embeddings** for global search
 
-### 5.4 Ruolo del reranking
-- **Cross‑encoder** (es. `TileReranker`) migliora l'ordinamento dei risultati prima della sintesi LLM.
+### 5.4 Role of reranking
+- **Cross‑encoder** (e.g., `TileReranker`) improves result ordering before LLM synthesis.
 
-### 5.5 Ruolo del knowledge graph (Neo4j)
-- Memorizza entità e relazioni estratte
-- Fornisce il meccanismo di **adaptive graph expansion** per recuperare connessioni rilevanti a partire dai seed
+### 5.5 Role of the knowledge graph (Neo4j)
+- Stores extracted entities and relationships
+- Provides the **adaptive graph expansion** mechanism to retrieve relevant connections from seeds
 
-**File di riferimento:**
+**Source file references:**
 - `tilellm/modules/knowledge_graph/controllers.py:344` – endpoint `/hybrid`
-- `tilellm/modules/knowledge_graph/logic.py:407` – logica `context_fusion_graph_search`
+- `tilellm/modules/knowledge_graph/logic.py:407` – logic `context_fusion_graph_search`
 - `tilellm/modules/knowledge_graph/services/community_graph_service.py:1206` – `context_fusion_search`
 - `tilellm/modules/knowledge_graph/utils/graph_expansion.py:39` – `expand_from_seeds` (adaptive expansion)
 
-## 6. Componenti chiave
+## 6. Key Components
 
 ### 6.1 Adaptive Graph Expansion (`utils/graph_expansion.py`)
-**Definizione:** espansione multi‑hop che adatta il numero di hop in base al tipo di query.
+**Definition:** multi‑hop expansion that adapts the number of hops based on query type.
 
-**Configurazione hop:**
+**Hop configuration:**
 ```python
 HOP_CONFIG = {
-    'technical': 1,      # Query precise → 1 hop (contesto focalizzato)
-    'exploratory': 2,    # Query esplorative → 2 hop (contesto ampio)
-    'relational': 3      # Query relazionali → 3 hop (profondità connessioni)
+    'technical': 1,      # Precise queries → 1 hop (focused context)
+    'exploratory': 2,    # Exploratory queries → 2 hops (broad context)
+    'relational': 3      # Relational queries → 3 hops (connection depth)
 }
 ```
 
 **Early stopping:**
-- Se un hop produce meno di `MIN_NEW_NODES_PER_HOP` (default: 3) nuovi nodi, l'espansione si ferma
-- Limite assoluto: `MAX_NODES_ABSOLUTE` (default: 200) nodi totali
+- If a hop produces fewer than `MIN_NEW_NODES_PER_HOP` (default: 3) new nodes, expansion stops
+- Absolute limit: `MAX_NODES_ABSOLUTE` (default: 200) total nodes
 
-**Cypher query ottimizzata:** filtra per namespace, index_name e ordina per peso delle relazioni.
+**Optimized Cypher query:** filters by namespace, index_name and orders by relationship weight.
 
 ### 6.2 Reciprocal Rank Fusion (RRF) (`utils/rrf.py`)
-**Scopo:** fondere le ranked list di ricerca densa e sparse in una lista unica robusta.
+**Purpose:** fuse the ranked lists from dense and sparse search into a single robust list.
 
-**Formula:** `score = 1 / (k + rank)` per ciascun risultato, somma dei punteggi tra le liste.
+**Formula:** `score = 1 / (k + rank)` for each result, summing scores across lists.
 
-**Vantaggi:** bilancia recall (sparse) e precisione (dense), migliorando la qualità complessiva della retrieval.
+**Advantages:** balances recall (sparse) and precision (dense), improving overall retrieval quality.
 
 ### 6.3 Synthetic QA Enrichment (`utils/synthetic_qa.py`)
-**Scopo:** arricchire i report delle community con domande sintetiche generate da LLM.
+**Purpose:** enrich community reports with synthetic questions generated by an LLM.
 
-**Flusso:**
-1. Per ogni report, l'LLM genera 3 domande esemplificative
-2. Le domande sono incluse nel metadata del report
-3. Durante l'indexing, il contenuto del report + domande viene embedded
+**Flow:**
+1. For each report, the LLM generates 3 example questions
+2. Questions are included in the report metadata
+3. During indexing, the report content + questions are embedded
 
-**Effetto:** migliora la retrievability semantica, soprattutto per query formulate in modo diverso dal contenuto del report.
+**Effect:** improves semantic retrievability, especially for queries phrased differently from the report content.
 
 ### 6.4 Query Type Detection (`utils/query_analysis.py`)
-**Scopo:** classificare la query per regolare pesi di ricerca e strategia di espansione.
+**Purpose:** classify the query to adjust search weights and expansion strategy.
 
-**Metodi:**
-- **LLM‑based:** prompt all'LLM per classificazione
-- **Heuristic fallback:** analisi lessicale (parole chiave tecniche, interrogativi, ecc.)
+**Methods:**
+- **LLM‑based:** prompt to LLM for classification
+- **Heuristic fallback:** lexical analysis (technical keywords, interrogatives, etc.)
 
-**Pesi regolati:**
-- **Technical:** più peso a ricerca vettoriale, meno a grafo
-- **Exploratory:** bilanciato tra vettoriale, keyword e grafo
-- **Relational:** più peso al grafo, espansione profonda
+**Adjusted weights:**
+- **Technical:** more weight to vector search, less to graph
+- **Exploratory:** balanced between vector, keyword, and graph
+- **Relational:** more weight to graph, deep expansion
 
-## 7. Diagrammi di flusso
+## 7. Flow Diagrams
 
-### 7.1 Creazione Knowledge Graph
+### 7.1 Knowledge Graph Creation
 ```
 [Vector Store]
-    ↓ (recupera chunk)
+    ↓ (retrieve chunks)
 [GraphRAG Service]
-    ↓ (estrai entità/relazioni)
+    ↓ (extract entities/relationships)
 [Neo4j Import]
-    ↓ (salva nodi+archi)
+    ↓ (save nodes+edges)
 [Cluster Service]
     ↓ (Leiden clustering)
 [LLM Report Generation]
-    ↓ (genera report)
+    ↓ (generate reports)
 [Synthetic QA]
-    ↓ (aggiungi domande)
+    ↓ (add questions)
 [Vector Store Indexing]
-    ↓ (embedding report)
+    ↓ (embedding reports)
 [Parquet Export]
     ↓ (upload MinIO)
 ```
@@ -346,23 +346,23 @@ HOP_CONFIG = {
 [Query Type Detection] → (technical/exploratory/relational)
     ↓
 [Parallel Retrieval]
-├─ Global Search (report) → [RRF] → [Reranking]
-└─ Local Search (chunk) → [RRF] → [Reranking]
+├─ Global Search (reports) → [RRF] → [Reranking]
+└─ Local Search (chunks) → [RRF] → [Reranking]
     ↓
 [Graph Expansion] → (adaptive multi‑hop)
     ↓
-[Context Fusion] → (unisci report+chunk+graph)
+[Context Fusion] → (merge reports+chunks+graph)
     ↓
-[Cross‑Encoder Reranking] → (top‑20 pertinenti)
+[Cross‑Encoder Reranking] → (top‑20 relevant)
     ↓
-[LLM Synthesis] → (risposta finale)
+[LLM Synthesis] → (final answer)
     ↓
 [Update Chat History]
 ```
 
-## 8. Esempi di utilizzo
+## 8. Usage Examples
 
-### 8.1 Creazione grafo
+### 8.1 Graph creation
 ```bash
 curl -X POST http://localhost:8000/api/kg/create \
   -H "Content-Type: application/json" \
@@ -386,7 +386,7 @@ curl -X POST http://localhost:8000/api/kg/create \
 curl -X POST http://localhost:8000/api/kg/hybrid \
   -H "Content-Type: application/json" \
   -d '{
-    "question": "Quali sono le relazioni tra Mario Draghi e la BCE?",
+    "question": "What are the relationships between Mario Draghi and the ECB?",
     "namespace": "bancaitalia",
     "engine": {
       "name": "pinecone",
@@ -401,35 +401,35 @@ curl -X POST http://localhost:8000/api/kg/hybrid \
   }'
 ```
 
-## 9. Riferimenti ai file sorgente
+## 9. Source File References
 
-| Componente | File | Righe rilevanti |
-|------------|------|-----------------|
+| Component | File | Relevant Lines |
+|-----------|------|----------------|
 | **Endpoint `/create`** | `controllers.py` | 213-224 |
-| **Logica `create_graph`** | `logic.py` | 216-254 |
+| **Logic `create_graph`** | `logic.py` | 216-254 |
 | **`create_community_graph`** | `community_graph_service.py` | 144-245 |
-| **Clustering & report** | `clustering.py` | varie |
-| **Synthetic QA** | `synthetic_qa.py` | tutte |
+| **Clustering & reports** | `clustering.py` | various |
+| **Synthetic QA** | `synthetic_qa.py` | all |
 | **Endpoint `/qa`** | `controllers.py` | 327-341 |
 | **`query_with_global_search`** | `community_graph_service.py` | 864-1048 |
-| **RRF** | `rrf.py` | tutte |
+| **RRF** | `rrf.py` | all |
 | **Endpoint `/hybrid`** | `controllers.py` | 344-369 |
 | **`context_fusion_search`** | `community_graph_service.py` | 1206-1561 |
 | **`GraphExpander`** | `graph_expansion.py` | 39-208 |
-| **Query analysis** | `query_analysis.py` | tutte |
+| **Query analysis** | `query_analysis.py` | all |
 
-## 10. Conclusioni
+## 10. Conclusions
 
-Il modulo **Knowledge Graph** di Tiledesk LLM realizza un'architettura GraphRAG completa e modulare che:
-1. **Costruisce automaticamente** un knowledge graph da documenti esistenti nel vector store
-2. **Genera report di community** gerarchici arricchiti con domande sintetiche
-3. **Offre tre modalità di interrogazione** progressive (global, hybrid, full expansion)
-4. **Adatta dinamicamente** la strategia di retrieval in base al tipo di query
-5. **Integra multiple tecniche** di IR: embedding densi/sparsi, RRF, cross‑encoder reranking, adaptive graph expansion
+The **Knowledge Graph** module of Tiledesk LLM implements a complete, modular GraphRAG architecture that:
+1. **Automatically builds** a knowledge graph from existing documents in the vector store
+2. **Generates hierarchical community reports** enriched with synthetic questions
+3. **Offers three progressive query modes** (global, hybrid, full expansion)
+4. **Dynamically adapts** retrieval strategy based on query type
+5. **Integrates multiple IR techniques**: dense/sparse embeddings, RRF, cross‑encoder reranking, adaptive graph expansion
 
-Il sistema è progettato per essere estensibile con nuovi algoritmi di clustering, strategie di expansion e modelli di reranking, mantenendo l'integrazione con l'ecosistema Tiledesk LLM (Pinecone, Qdrant, OpenAI, Azure, ecc.).
+The system is designed to be extensible with new clustering algorithms, expansion strategies, and reranking models, while maintaining integration with the Tiledesk LLM ecosystem (Pinecone, Qdrant, OpenAI, Azure, etc.).
 
 ---
 
-*Documento aggiornato al: 02 Gennaio 2026*  
-*Modulo: `tilellm/modules/knowledge_graph`*
+*Document updated: January 02, 2026*  
+*Module: `tilellm/modules/knowledge_graph`*

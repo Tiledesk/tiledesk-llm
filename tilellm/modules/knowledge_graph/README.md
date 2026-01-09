@@ -11,7 +11,6 @@ A modular component for Graph-based Retrieval Augmented Generation (GraphRAG) us
 - **Advanced Search Methods**:
   - Community/Global Search
   - Integrated Hybrid Search (Global + Parallel Retrieval + RRF + Expansion + Reranking)
-  - Microsoft GraphRAG integration
 - **Clustering Algorithms**: Louvain, Leiden, Hierarchical clustering for community detection
 - **RESTful API**: FastAPI endpoints with OpenAPI/Swagger documentation
 - **Modular Architecture**: Can be enabled/disabled via configuration
@@ -318,7 +317,7 @@ create_relationship(doc.id, section.id, "CONTAINS")
 ```
 
 ### 4. Community Detection
-Use clustering endpoints (`/api/kg/cluster`, `/api/kg/clusterms`) to automatically detect and organize related content into communities.
+Use clustering endpoints (`/api/kg/hierarchical`) to automatically detect and organize related content into communities.
 
 ## Integration with Main Application
 
@@ -328,23 +327,12 @@ The Knowledge Graph module integrates seamlessly with Tiledesk LLM:
 - **Configuration**: Centralized via `service_conf.yaml`
 - **Docker**: Available via `app-graph` profile
 
-## Roadmap
-
-- [ ] Semantic search with vector embeddings in graph queries
-- [ ] Custom Cypher query endpoints
-- [ ] Advanced graph traversal for RAG
-- [ ] Caching for frequent queries
-- [ ] Batch operations for large graphs
-- [ ] Metrics and monitoring dashboard
-- [ ] Real-time graph updates
-
 ## Resources
 
 - [Neo4j Python Driver](https://neo4j.com/docs/python-manual/current/)
 - [Neo4j Cypher Query Language](https://neo4j.com/docs/cypher-manual/current/)
 - [MinIO Python SDK](https://min.io/docs/minio/linux/developers/python/API.html)
 - [FastAPI Documentation](https://fastapi.tiangolo.com/)
-- [Microsoft GraphRAG](https://github.com/microsoft/graphrag)
 
 ## Technical Documentation
 
@@ -355,8 +343,8 @@ For detailed technical documentation on how the Knowledge Graph module works, in
 - Role of LLMs, embeddings, reranking, and adaptive graph expansion
 
 See the following reports:
-- [REPORT.md](REPORT.md) (Italian)
-- [REPORT_en.md](REPORT_en.md) (English)
+- [REPORT_it.md](REPORT_it.md) (Italian)
+- [REPORT.md](REPORT.md) (English)
 
 ## Support
 

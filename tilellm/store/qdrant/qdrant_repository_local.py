@@ -461,7 +461,7 @@ class QdrantRepository(VectorStoreRepository):
                 else:
                     logger.error(f"Could not create payload index (it might already exist or another error): {e}")
 
-            if item.type in ['url', 'pdf', 'docx', 'txt']:
+            if item.type in ['url', 'pdf', 'docx', 'txt', 'md']:
                 documents = await fetch_documents(type_source=item.type,
                                                   source=item.source,
                                                   scrape_type=item.scrape_type,
@@ -581,7 +581,7 @@ class QdrantRepository(VectorStoreRepository):
                 else:
                     logger.error(f"Could not create payload index (it might already exist or another error): {e}")
 
-            if item.type in ['url', 'pdf', 'docx', 'txt']:
+            if item.type in ['url', 'pdf', 'docx', 'txt', 'md']:
                 documents = await self.fetch_documents(type_source=item.type,
                                                        source=item.source,
                                                        scrape_type=item.scrape_type,

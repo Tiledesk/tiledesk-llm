@@ -306,7 +306,7 @@ class CommunityGraphService:
                 namespace=namespace,
                 index_name=index_name,
                 engine_name=engine.name,
-                engine_type=engine.type if engine.name=="pinecone" else engine.deployment,
+                engine_type=engine.type, #if engine.name=="pinecone" else engine.deployment,
                 resolution=resolution
             )
             if stats.get("reports"):
@@ -476,7 +476,7 @@ class CommunityGraphService:
             namespace=namespace,
             index_name= index_name,
             engine_name=engine.name,
-            engine_type=engine.type if engine.name=="pinecone" else engine.deployment
+            engine_type=engine.type #if engine.name=="pinecone" else engine.deployment
         )
         
         return await self._process_reports_and_export(
@@ -532,7 +532,7 @@ class CommunityGraphService:
             namespace=namespace,
             index_name=index_name,
             engine_name=engine.name,
-            engine_type=engine.type if engine.name =="pinecone" else engine.deployment
+            engine_type=engine.type #if engine.name =="pinecone" else engine.deployment
 
         )
         
@@ -617,12 +617,14 @@ class CommunityGraphService:
                         if upload_index_name is None:
                             upload_index_name = engine.index_name
                         # Determine index_type based on engine type
-                        if engine.name == "pinecone":
-                            upload_index_type = engine.type  # "serverless" or "pod"
-                        elif engine.name == "qdrant":
-                            upload_index_type = engine.deployment  # "local" or "cloud"
-                        else:
-                            logger.warning(f"Unsupported engine name: {engine.name}, using legacy structure")
+                        # MODIFIED -
+                        upload_index_type = engine.type
+                        #if engine.name == "pinecone":
+                        #    upload_index_type = engine.type  # "serverless" or "pod"
+                        #elif engine.name == "qdrant":
+                        #    upload_index_type = engine.deployment  # "local" or "cloud"
+                        #else:
+                        #    logger.warning(f"Unsupported engine name: {engine.name}, using legacy structure")
                     
                     for file_name, file_path in parquet_files.items():
                         object_key = self.minio_storage_service.upload_parquet_file(

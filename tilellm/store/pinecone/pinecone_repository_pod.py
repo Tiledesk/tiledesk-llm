@@ -110,13 +110,10 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
         cost = 0
 
         try:
-            if (type_source == 'url' or
-                    type_source == 'pdf' or
-                    type_source == 'docx' or
-                    type_source == 'txt'):
+            if type_source in ['url', 'pdf', 'docx','txt', 'md']:
 
                 documents = []
-                if type_source in ['url', 'txt']:
+                if type_source in ['url', 'txt', 'md']:
                     documents = await get_content_by_url(source,
                                                          scrape_type,
                                                          parameters_scrape_type_4=parameters_scrape_type_4,

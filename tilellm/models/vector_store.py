@@ -26,6 +26,8 @@ class Engine(BaseModel):
             if not self.deployment:
                 raise ValueError("Deployment is required for Qdrant (local/cloud)")
 
+            self.type = self.deployment
+
             if self.deployment == "local" or self.deployment == "cloud":
                 if not (self.host and self.port):
                     raise ValueError("Host and port are required for local Qdrant")

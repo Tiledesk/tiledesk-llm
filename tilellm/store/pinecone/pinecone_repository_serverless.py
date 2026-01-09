@@ -206,7 +206,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
         try:
 
-            if item.type in ['url', 'pdf', 'docx', 'txt']:
+            if item.type in ['url', 'pdf', 'docx', 'txt', 'md']:
                 documents = await self.fetch_documents(type_source=item.type,
                                                        source=item.source,
                                                        scrape_type=item.scrape_type,
@@ -306,7 +306,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
         cost = 0
 
         try:
-            if item.type in ['url', 'pdf', 'docx', 'txt']:
+            if item.type in ['url', 'pdf', 'docx', 'txt', 'md']:
                 documents = await self.fetch_documents(type_source = item.type,
                                                        source=item.source,
                                                        scrape_type=item.scrape_type,
@@ -418,7 +418,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
     @staticmethod
     async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers):
-        if type_source in ['url', 'txt']:
+        if type_source in ['url', 'txt', 'md']:
             documents = await get_content_by_url(source,
                                                  scrape_type,
                                                  parameters_scrape_type_4=parameters_scrape_type_4,
