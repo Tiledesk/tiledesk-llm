@@ -297,7 +297,7 @@ class GraphRepository:
             namespace: Optional namespace to partition the graph
             index_name: Optional index_name (collection name) to partition the graph
             engine_name: Optional engine name (e.g., 'pinecone', 'qdrant') to partition the graph
-            engine_type: Optional engine type (e.g., 'pod', 'serverless')
+            engine_type: Optional engine type (e.g., 'pod', 'serverless', 'local', 'cloud')
             metadata_id: Optional metadata ID from vector store chunks for cleanup
 
         Returns:
