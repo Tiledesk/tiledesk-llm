@@ -154,3 +154,5 @@ dmypy.json
 /tests_impl.md
 /vLLM.md
 /poetry.lock
+/tilellm/modules/pdf_ocr/PDF_GRAPHRAG_INTEGRATION_PROPOSAL.md
+/tilellm/modules/pdf_ocr/PDF_OCR_IMPLEMENTATION_STATUS.md
