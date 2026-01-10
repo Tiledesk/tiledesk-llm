@@ -15,19 +15,24 @@ from .models.schemas import (
     GraphQAAdvancedRequest, GraphQAAdvancedResponse,
     GraphClusterRequest, GraphClusterResponse, CommunityQAResponse,
     AddDocumentRequest, AddDocumentResponse,
-    GraphNetworkResponse, AsyncTaskResponse, TaskPollResponse
+    GraphNetworkResponse, AsyncTaskResponse, TaskPollResponse, MultimodalSearchResponse
 )
 
 # Import business logic
 import tilellm.modules.knowledge_graph.logic as kg_logic
 
 import os
+
+from ...shared.llm_config import serialize_with_secrets
+
+from tilellm.shared.utility import get_service_config
+
 # Import Taskiq tasks if available
 try:
     from tilellm.modules.task_executor.tasks import (
         task_graph_create, task_add_document,
         task_louvain_cluster, task_leiden_cluster,
-        task_hierarchical_cluster
+        task_hierarchical_cluster, task_community_analysis
     )
     from tilellm.modules.task_executor.broker import broker
     TASKIQ_AVAILABLE = True
@@ -35,18 +40,11 @@ except ImportError:
     TASKIQ_AVAILABLE = False
 
 ENABLE_TASKIQ = os.environ.get("ENABLE_TASKIQ", "false").lower() == "true"
+ENABLE_TASKIQ = ENABLE_TASKIQ and TASKIQ_AVAILABLE
 
 logger = logging.getLogger(__name__)
 
-def serialize_with_secrets(obj):
-    """Recursively convert Pydantic models/dicts revealing SecretStr values."""
-    if isinstance(obj, SecretStr):
-        return obj.get_secret_value()
-    if isinstance(obj, dict):
-        return {k: serialize_with_secrets(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [serialize_with_secrets(v) for v in obj]
-    return obj
+
 
 # ==================== ROUTER SETUP ====================
 router = APIRouter(
@@ -516,3 +514,49 @@ def get_graph_network(
         logger.error(f"Failed to retrieve graph network: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to retrieve graph network: {str(e)}")
 
+
+@router.post("/multimodal-search", response_model=MultimodalSearchResponse, tags=["Search Methods"])
+async def multimodal_search(request: GraphQAAdvancedRequest):
+    """
+    **METHOD 3: Multimodal Search**
+    Combines Text (Vector/Graph), Tables (Semantic), and Images (Semantic).
+    """
+    try:
+        result = await kg_logic.multimodal_search(request)
+        return MultimodalSearchResponse(
+            answer=result.get("answer", ""),
+            sources=result.get("sources", {}),
+            query_used=request.question if isinstance(request.question, str) else request.question[0].text
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        logger.error(f"Multimodal search failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Multimodal search failed: {str(e)}")
+
+
+@router.post("/community-analysis", response_model=Union[AsyncTaskResponse, GraphClusterResponse])
+async def community_analysis(request: GraphClusterRequest):
+    """
+    **Analysis: Document Community Detection**
+    Analyzes collection to find communities. Runs as async task.
+    """
+    try:
+        if ENABLE_TASKIQ and TASKIQ_AVAILABLE:
+            payload = serialize_with_secrets(request.model_dump(mode='python'))
+            task = await task_community_analysis.kiq(payload)
+            return AsyncTaskResponse(task_id=task.task_id)
+
+        result = await kg_logic.analyze_community(request)
+        # Map result to response model
+        return GraphClusterResponse(
+            status=result.get("status", "success"),
+            communities_detected=result.get("communities", 0),
+            reports_created=result.get("reports", 0),
+            message="Analysis completed"
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        logger.error(f"Community analysis failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Community analysis failed: {str(e)}")

@@ -44,11 +44,13 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.base
     profiles: ["app-base"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - TIMEOUT=240
       - TOKENIZERS_PARALLELISM=false
-      - ENABLE_TASKIQ=true
+      - ENABLE_TASKIQ=${ENABLE_TASKIQ}
     ports:
       - "${APP_PORT:-8000}:8000"
       - "${APP_PORT_WORKER:-3009}:3009"
@@ -68,15 +70,11 @@ services:
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - TIMEOUT=240
       - TOKENIZERS_PARALLELISM=false
-      - ENABLE_TASKIQ=true
+      - ENABLE_TASKIQ=${ENABLE_TASKIQ}
     ports:
       - "${APP_PORT:-8000}:8000"
       - "${APP_PORT_WORKER:-3009}:3009"
     depends_on:
-      neo4j:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
       redis:
         condition: service_healthy
     restart: always
@@ -86,14 +84,23 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.pdfocr
     profiles: ["app-ocr"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - TIMEOUT=240
       - TOKENIZERS_PARALLELISM=false
-      - ENABLE_TASKIQ=true
+      - ENABLE_TASKIQ=${ENABLE_TASKIQ}
     ports:
       - "${APP_PORT:-8000}:8000"
       - "${APP_PORT_WORKER:-3009}:3009"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [ gpu ]
     depends_on:
       redis:
         condition: service_healthy
@@ -104,11 +111,13 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.all
     profiles: ["app-all"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - TIMEOUT=240
       - TOKENIZERS_PARALLELISM=false
-      - ENABLE_TASKIQ=true
+      - ENABLE_TASKIQ=${ENABLE_TASKIQ}
     ports:
       - "${APP_PORT:-8000}:8000"
       - "${APP_PORT_WORKER:-3009}:3009"

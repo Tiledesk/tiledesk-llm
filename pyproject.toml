@@ -93,7 +93,7 @@ pyarrow = {version = "22.0.0", optional = true}
 [tool.poetry.extras]
 ml = ["torch", "FlagEmbedding", "pinecone-text"]
 graph = ["neo4j", "minio", "langchain-aws", "duckdb", "parquet", "igraph", "networkx", "pyarrow", "taskiq", "taskiq-redis"]
-ocr = ["minio", "docling", "pillow", "duckdb", "neo4j", "redis"]
+ocr = ["neo4j", "minio", "langchain-aws",  "docling", "pillow", "duckdb", "parquet", "igraph", "networkx", "pyarrow", "taskiq", "taskiq-redis"]
 all = ["torch", "FlagEmbedding", "pinecone-text", "neo4j", "minio", "PyMuPdf", "pdf2image", "langchain-aws", "duckdb", "parquet", "igraph", "networkx", "pyarrow", "taskiq", "taskiq-redis", "docling", "pillow"]
 
 [tool.poetry.dependencies.uvicorn]

@@ -5,6 +5,8 @@ Ogni provider ha regole specifiche su quali parametri accettare.
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
 
+from pydantic import SecretStr
+
 
 @dataclass
 class LLMProviderConfig:
@@ -165,3 +167,14 @@ def should_include_param(provider: str, param_name: str) -> bool:
     }
 
     return param_map.get(param_name, True)
+
+
+def serialize_with_secrets(obj):
+    """Recursively convert Pydantic models/dicts revealing SecretStr values."""
+    if isinstance(obj, SecretStr):
+        return obj.get_secret_value()
+    if isinstance(obj, dict):
+        return {k: serialize_with_secrets(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [serialize_with_secrets(v) for v in obj]
+    return obj

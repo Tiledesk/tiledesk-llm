@@ -65,6 +65,9 @@ class MinIOStorageService:
         self.secret_key = minio_config.get("secret_key")
         self.secure = minio_config.get("secure", False)
         self.bucket_name = minio_config.get("bucket_name", "graphrag") # Default bucket name if not specified
+        self.bucket_tables = minio_config.get("bucket_tables", "document-tables")
+        self.bucket_images = minio_config.get("bucket_images", "document-images")
+        self.bucket_pdfs = minio_config.get("bucket_pdfs", "tiledesk-ocr-pdfs")
         
         if not all([self.endpoint, self.access_key, self.secret_key]):
             raise ValueError("endpoint, access_key, and secret_key are required for MinIO configuration")
@@ -102,6 +105,64 @@ class MinIOStorageService:
         assert self._client is not None, "MinIO client failed to initialize"
         return self._client
     
+    def upload_file(
+        self,
+        bucket_name: str,
+        object_name: str,
+        file_path: str,
+        content_type: str = 'application/octet-stream'
+    ) -> str:
+        """Upload a file to a specific bucket."""
+        try:
+            if not self.client.bucket_exists(bucket_name):
+                self.client.make_bucket(bucket_name)
+            
+            self.client.fput_object(
+                bucket_name=bucket_name,
+                object_name=object_name,
+                file_path=file_path,
+                content_type=content_type
+            )
+            logger.info(f"Uploaded {file_path} to {bucket_name}/{object_name}")
+            return object_name
+        except S3Error as e:
+            logger.error(f"Failed to upload to {bucket_name}: {e}")
+            raise
+
+    def upload_data(
+        self,
+        bucket_name: str,
+        object_name: str,
+        data: bytes,
+        content_type: str = 'application/octet-stream'
+    ) -> str:
+        """Upload raw data to a specific bucket."""
+        try:
+            if not self.client.bucket_exists(bucket_name):
+                self.client.make_bucket(bucket_name)
+            
+            data_stream = io.BytesIO(data)
+            self.client.put_object(
+                bucket_name=bucket_name,
+                object_name=object_name,
+                data=data_stream,
+                length=len(data),
+                content_type=content_type
+            )
+            logger.info(f"Uploaded data to {bucket_name}/{object_name}")
+            return object_name
+        except S3Error as e:
+            logger.error(f"Failed to upload data to {bucket_name}: {e}")
+            raise
+
+    def get_object(self, bucket_name: str, object_name: str):
+        """Get an object from a specific bucket."""
+        try:
+            return self.client.get_object(bucket_name, object_name)
+        except S3Error as e:
+            logger.error(f"Failed to get object {object_name} from {bucket_name}: {e}")
+            raise
+
     def upload_parquet_file(
         self,
         namespace: str,

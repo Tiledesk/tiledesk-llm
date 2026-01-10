@@ -29,6 +29,10 @@ except ImportError as e:
     COMMUNITY_GRAPH_AVAILABLE = False
     CommunityGraphService = None
 
+# New Services
+from .services.multimodal_search import MultimodalPDFSearch
+from .services.community_analyzer import DocumentCommunityAnalyzer
+
 # Global Service Instances
 repository: Optional[GraphRepository] = None
 graph_service: Optional[GraphService] = None
@@ -443,4 +447,80 @@ async def context_fusion_graph_search(
         llm_embeddings=llm_embeddings,
         query_type=request.query_type,
         chat_history_dict=request.chat_history_dict
+    )
+
+# ==================== MULTIMODAL & ANALYSIS LOGIC ====================
+
+@inject_llm_chat_async
+@inject_repo_async
+async def multimodal_search(
+    request: GraphQAAdvancedRequest,
+    repo=None,
+    llm=None,
+    llm_embeddings=None,
+    **kwargs
+) -> Dict[str, Any]:
+    """
+    Perform multimodal search (Text + Table + Image).
+    """
+    if not COMMUNITY_GRAPH_AVAILABLE or CommunityGraphService is None:
+        raise RuntimeError("Community Graph service not available")
+
+    if request.engine is None:
+         raise ValueError("Engine configuration is required")
+
+    community_service = CommunityGraphService(
+        graph_service=graph_service,
+        graph_rag_service=graph_rag_service
+    )
+    
+    search_service = MultimodalPDFSearch(community_service=community_service, llm=llm)
+    
+    question_text = request.question if isinstance(request.question, str) else request.question[0].text
+    
+    # Determine search types based on request or default
+    search_types = ["text"] # Default
+    # You might want to add a field to GraphQAAdvancedRequest for search_types
+    
+    return await search_service.search(
+        query=question_text,
+        namespace=request.namespace,
+        engine=request.engine,
+        vector_store_repo=repo,
+        llm=llm,
+        llm_embeddings=llm_embeddings,
+        search_types=search_types
+    )
+
+@inject_repo_async
+async def analyze_community(
+    request: GraphClusterRequest,
+    repo=None,
+    **kwargs
+) -> Dict[str, Any]:
+    """
+    Analyze document collection to find communities.
+    """
+    if not COMMUNITY_GRAPH_AVAILABLE:
+        raise RuntimeError("Community Graph service not available")
+        
+    # We need a ClusterService instance
+    from .services.clustering import ClusterService
+    
+    # Access the graph repository from the global graph_service
+    graph_repo = graph_service._get_repository() if graph_service else None
+    
+    # We need an LLM for the ClusterService (it uses it for summaries)
+    # We can inject it or get it from GraphRAGService
+    llm = graph_rag_service.llm if graph_rag_service else None
+    
+    if not graph_repo or not llm:
+         raise RuntimeError("Graph dependencies not ready")
+
+    cluster_service = ClusterService(repository=graph_repo, llm=llm)
+    analyzer = DocumentCommunityAnalyzer(cluster_service=cluster_service)
+    
+    return await analyzer.analyze_collection(
+        namespace=request.namespace,
+        engine=request.engine
     )

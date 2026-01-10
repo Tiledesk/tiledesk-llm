@@ -164,3 +164,8 @@ class GraphNetworkResponse(BaseModel):
     nodes: List[Dict[str, Any]] = Field(description="List of nodes with id, label, properties")
     relationships: List[Dict[str, Any]] = Field(description="List of relationships with source_id, target_id, type")
     stats: Dict[str, Any] = Field(description="Network statistics and filter info")
+class MultimodalSearchResponse(BaseModel):
+    """Response model for Multimodal Search"""
+    answer: str
+    sources: Dict[str, Any]
+    query_used: str
