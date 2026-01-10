@@ -17,29 +17,36 @@ Questo documento descrive nel dettaglio il funzionamento di ciascun componente e
 
 ## 2. Architettura del modulo
 
-```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Vector Store  │◄──►│  GraphRAG       │◄──►│   Neo4j         │
-│   (Pinecone/    │    │  Service        │    │   Knowledge     │
-│   Qdrant)       │    │                 │    │   Graph         │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-         │                       │                       │
-         │                       │                       │
-         ▼                       ▼                       ▼
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Community     │    │   Hybrid        │    │   Graph         │
-│   Reports       │    │   Search        │    │   Expansion     │
-│   (Parquet)     │    │   Service       │    │   (Adaptive)    │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-         │                       │                       │
-         │                       │                       │
-         └───────────┬───────────┴───────────────────────┘
-                     │
-                     ▼
-            ┌─────────────────┐
-            │   LLM Synthesis │
-            │   & Reranking   │
-            └─────────────────┘
+```mermaid
+flowchart TD
+    %% Nodi
+    VS["Vector Store<br/>(Pinecone/Qdrant)"]
+    GS["GraphRAG<br/>Service"]
+    NJ["Neo4j<br/>Knowledge Graph"]
+    CR["Community Reports<br/>(Vector Store)"]
+    HS["Hybrid Search<br/>Service"]
+    GE["Graph Expansion<br/>(Adaptive)"]
+    LLM["LLM Synthesis<br/>& Reranking"]
+
+    %% Relazioni orizzontali
+    VS <--> GS
+    GS <--> NJ
+
+    %% Relazioni verticali
+    VS --> CR
+    GS --> HS
+    NJ --> GE
+
+    %% Confluenza finale
+    CR --> LLM
+    HS --> LLM
+    GE --> LLM
+
+    %% Styling per PyCharm
+    classDef storage fill:#2d333b,stroke:#adbac7,color:#adbac7
+    classDef logic fill:#1e4273,stroke:#539bf5,color:#fff
+    class VS,NJ,CR storage
+    class GS,HS,GE,LLM logic
 ```
 
 **Componenti principali:**
