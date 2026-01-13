@@ -331,3 +331,95 @@ class GraphRAGExtractor:
             })
         
         return merged_entities, merged_relationships
+        
+        
+        
+        
+        
+        async def extract_entities(text: str, llm: Any, entity_types: Optional[List[str]] = None) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        
+            """
+        
+            Standalone function to extract entities and relationships from a text chunk.
+        
+            Compatible with PDFEntityExtractor.
+        
+            
+        
+            Args:
+        
+                text: Input text
+        
+                llm: LLM invoker
+        
+                entity_types: List of entity types
+        
+                
+        
+            Returns:
+        
+                Tuple of (entities_list, relationships_list)
+        
+            """
+        
+        extractor = GraphRAGExtractor(llm_invoker=llm, entity_types=entity_types)
+        
+            
+        
+        # We use a dummy ID as we are processing a single text block
+        
+        nodes, edges, _ = await extractor.extract_chunk("temp_id", text)
+
+        # Convert nodes dict to list
+        
+        entities_list = []
+        
+        for entity_name, entity_list in nodes.items():
+            if not entity_list:
+        
+                continue
+        
+            # Use the first occurrence for type and description
+        
+            first_entity = entity_list[0]
+        
+            entities_list.append({
+                   "name": first_entity["entity_name"],
+        
+                    "type": first_entity["entity_type"],
+        
+                    "description": first_entity["description"]
+        
+                })
+        
+                
+        
+        # Convert edges dict to list
+        
+        relationships_list = []
+        
+        for (src, tgt), rel_list in edges.items():
+        
+            if not rel_list:
+        
+                continue
+        
+            first_rel = rel_list[0]
+        
+            relationships_list.append({
+        
+                "source": first_rel["src_id"],
+        
+                "target": first_rel["tgt_id"],
+        
+                "description": first_rel["description"],
+        
+                "strength": first_rel.get("weight", 1.0)
+        
+            })
+        
+                
+        
+        return entities_list, relationships_list
+        
+        

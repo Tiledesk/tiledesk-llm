@@ -10,6 +10,7 @@
 #   - conversion: conversion module (XLSX/PDF conversion, optional PDF libraries)
 #   - tools_registry: tools_registry module (no external dependencies)
 services:
+  task_executor: true
   graphrag: false
   pdf_ocr: false
   conversion: true
@@ -42,6 +43,10 @@ minio:
   access_key: "minioadmin"
   secret_key: "minioadmin"
   secure: false
+  bucket_name: "graphrag"
+  bucket_tables: "document-tables"
+  bucket_images: "document-images"
+  bucket_pdfs: "ocr-pdfs"
 
 # Configuration for Neo4j graph database (used by knowledge_graph)
 neo4j:

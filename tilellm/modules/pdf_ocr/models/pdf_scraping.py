@@ -28,6 +28,8 @@ class PDFScrapingRequest(ItemSingle):
     include_tables: bool = Field(True, description="Whether to include table extraction.")
     include_text: bool = Field(True, description="Whether to include text extraction.")
     include_formulas: bool = Field(True, description="Whether to include formula extraction.")
+    index_tables_to_vector_store: bool = Field(True, description="Whether to index table descriptions to vector store.")
+    index_images_to_vector_store: bool = Field(True, description="Whether to index image captions to vector store.")
     max_batch_size: Optional[int] = Field(16, description="Maximum batch size for processing elements.")
     webhook_url: Optional[str] = Field(None, description="URL to notify when processing is complete.")
     callback_token: Optional[str] = Field(None, description="Token for webhook authentication.")

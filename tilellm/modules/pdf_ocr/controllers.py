@@ -2,6 +2,7 @@ import io
 import os
 import base64
 import requests
+from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import SecretStr
 
@@ -167,3 +168,124 @@ async def health_check():
             "status": "unhealthy",
             "message": f"PDF queuing service is not available: {e}"
         }
+
+
+@router.get("/sections/{doc_id}", tags=["PDF OCR"])
+async def get_document_sections(doc_id: str):
+    """
+    Get document structure (sections) for a processed PDF.
+    
+    Args:
+        doc_id: Document identifier returned from /scrape endpoint
+    
+    Returns:
+        Document structure including sections, hierarchy, and metadata
+    """
+    try:
+        from tilellm.modules.knowledge_graph.repository.repository import GraphRepository
+        from tilellm.modules.pdf_ocr.services.document_structure_extractor import DocumentStructureExtractor
+        
+        # Initialize graph repository
+        graph_repo = GraphRepository()
+        
+        # Query for Document node
+        query = """
+        MATCH (d:Document {id: $doc_id})
+        OPTIONAL MATCH (d)-[:CONTAINS_SECTION]->(s:Section)
+        OPTIONAL MATCH (s)-[:HAS_SUBSECTION]->(sub:Section)
+        OPTIONAL MATCH (s)-[:CONTAINS]->(e)
+        WITH d, s, sub, e
+        ORDER BY s.level, sub.level, s.page
+        RETURN d.id as doc_id,
+               s.id as section_id,
+               s.title as title,
+               s.level as level,
+               s.page as page,
+               collect(DISTINCT sub.id) as subsections,
+               collect(DISTINCT e.id) as elements
+        """
+        
+        try:
+            result = graph_repo.execute_query(query, {'doc_id': doc_id})
+            
+            if not result:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Document {doc_id} not found or not processed"
+                )
+            
+            # Build hierarchical structure
+            sections = []
+            for row in result:
+                section = {
+                    'section_id': row.get('section_id'),
+                    'title': row.get('title'),
+                    'level': row.get('level'),
+                    'page': row.get('page'),
+                    'subsections': row.get('subsections', []),
+                    'elements': row.get('elements', [])
+                }
+                sections.append(section)
+            
+            return {
+                'doc_id': doc_id,
+                'sections': sections,
+                'metadata': {
+                    'total_sections': len(sections)
+                }
+            }
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error retrieving document structure: {str(e)}"
+            )
+            
+    except Exception as e:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Knowledge graph service unavailable: {str(e)}"
+        )
+
+
+@router.get("/search", tags=["PDF OCR"])
+async def search_document_elements(
+    doc_id: str,
+    query: str,
+    element_type: Optional[str] = None,
+    top_k: int = 5
+):
+    """
+    Search for elements within a document using vector similarity.
+    
+    Args:
+        doc_id: Document identifier
+        query: Search query text
+        element_type: Filter by element type (text, table, image)
+        top_k: Number of results to return
+    
+    Returns:
+        List of matching elements with scores
+    """
+    try:
+        from tilellm.modules.pdf_ocr.logic import process_pdf_document_with_embeddings
+        
+        # For now, return a placeholder response
+        # Full implementation would use vector store search with doc_id filter
+        
+        return {
+            'doc_id': doc_id,
+            'query': query,
+            'results': [],
+            'message': 'Search functionality requires vector store integration'
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error searching document elements: {str(e)}"
+        )

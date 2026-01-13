@@ -8,6 +8,16 @@ import re
 from typing import Dict, Any, List, Optional, Tuple
 from collections import defaultdict
 
+try:
+    from tilellm.modules.knowledge_graph.repository.repository import GraphRepository
+    from tilellm.modules.knowledge_graph.models import Node, Relationship
+    KNOWLEDGE_GRAPH_AVAILABLE = True
+except ImportError:
+    KNOWLEDGE_GRAPH_AVAILABLE = False
+    GraphRepository = None
+    Node = None
+    Relationship = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -52,12 +62,20 @@ class DocumentStructureExtractor:
     3. Identify reading order
     4. Extract cross-references (Figure X, Table Y, Section Z)
     5. Map elements to sections
+    6. Create Section nodes in Neo4j
     """
 
-    def __init__(self):
+    def __init__(self, graph_repository: Optional[Any] = None):
         self.sections: Dict[str, DocumentSection] = {}
         self.cross_references: Dict[str, List[str]] = defaultdict(list)
         self.reading_order: List[str] = []
+        self.element_neo4j_ids: Dict[str, str] = {}
+        self.graph_repository = graph_repository
+        if not self.graph_repository and KNOWLEDGE_GRAPH_AVAILABLE:
+            try:
+                self.graph_repository = GraphRepository()
+            except Exception as e:
+                logger.warning(f"Could not initialize GraphRepository in DocumentStructureExtractor: {e}")
 
     def extract_hierarchy(
         self,
@@ -79,6 +97,14 @@ class DocumentStructureExtractor:
             - reading_order: List of element IDs in reading order
         """
         logger.info(f"Extracting structure for document {doc_id}")
+
+        # 0. Collect Neo4j IDs if available
+        for key in ['text_elements', 'tables', 'images', 'formulas']:
+            for item in structured_content.get(key, []):
+                item_id = item.get('id')
+                neo4j_id = item.get('neo4j_id')
+                if item_id and neo4j_id:
+                    self.element_neo4j_ids[item_id] = neo4j_id
 
         # 1. Extract sections from text elements
         text_elements = structured_content.get('text_elements', [])
@@ -113,6 +139,238 @@ class DocumentStructureExtractor:
             }
         }
 
+    async def create_section_nodes_in_graph(
+        self,
+        doc_id: str,
+        doc_neo4j_id: Optional[str] = None
+    ) -> Dict[str, int]:
+        """
+        Create Section nodes and relationships in Neo4j.
+        
+        Creates:
+        - Document node (if not exists)
+        - Section nodes for all sections
+        - Document -[:CONTAINS_SECTION]-> Section relationships
+        - Parent -[:HAS_SUBSECTION]-> Child relationships
+        
+        Returns:
+            Dict with counts: sections_created, relationships_created
+        """
+        if not self.graph_repository or not KNOWLEDGE_GRAPH_AVAILABLE:
+            logger.warning("Graph repository not available, skipping section node creation")
+            return {"sections_created": 0, "relationships_created": 0}
+        
+        stats = {"sections_created": 0, "relationships_created": 0}
+        section_neo4j_ids = {} # Map section_id -> neo4j_id
+        
+        try:
+            # Resolve Document Node ID
+            if not doc_neo4j_id:
+                doc_nodes = self.graph_repository.find_nodes_by_property("Document", "id", doc_id)
+                if doc_nodes:
+                    doc_neo4j_id = doc_nodes[0].id
+                else:
+                    # Create Document node if missing (fallback)
+                    doc_node = Node(
+                        id=doc_id,
+                        label="Document",
+                        properties={"id": doc_id}
+                    )
+                    created_doc = self.graph_repository.create_node(doc_node)
+                    doc_neo4j_id = created_doc.id
+            
+            # Create Section nodes and relationships
+            for section_id, section in self.sections.items():
+                # Create Section node
+                section_node = Node(
+                    id=section_id,
+                    label="Section",
+                    properties={
+                        "title": section.title,
+                        "level": section.level,
+                        "page": section.page,
+                        "doc_id": doc_id
+                    }
+                )
+                created_section = self.graph_repository.create_node(section_node)
+                section_neo4j_ids[section_id] = created_section.id
+                self.element_neo4j_ids[section_id] = created_section.id
+                stats["sections_created"] += 1
+                
+                # Create Document -[:CONTAINS_SECTION]-> Section
+                doc_to_section = Relationship(
+                    source_id=doc_neo4j_id,
+                    target_id=created_section.id,
+                    type="CONTAINS_SECTION"
+                )
+                self.graph_repository.create_relationship(doc_to_section)
+                stats["relationships_created"] += 1
+                
+                # Create Parent -[:HAS_SUBSECTION]-> Child if parent exists
+                if section.parent_id and section.parent_id in section_neo4j_ids:
+                    parent_neo4j_id = section_neo4j_ids[section.parent_id]
+                    parent_child = Relationship(
+                        source_id=parent_neo4j_id,
+                        target_id=created_section.id,
+                        type="HAS_SUBSECTION"
+                    )
+                    self.graph_repository.create_relationship(parent_child)
+                    stats["relationships_created"] += 1
+            
+            # Create Section -[:CONTAINS]-> Element relationships
+            for section_id, section in self.sections.items():
+                if section_id not in section_neo4j_ids: continue
+                sec_nid = section_neo4j_ids[section_id]
+                
+                for element_id in section.elements:
+                    # Get Neo4j ID for element
+                    elem_nid = self.element_neo4j_ids.get(element_id)
+                    
+                    # If element is a section (subsection in element list?), skip or handle
+                    # Usually elements are text/table/image
+                    if not elem_nid:
+                        # Fallback: maybe element is a child section?
+                        # Or maybe we need to lookup?
+                        # For now, skip if not found
+                        continue
+
+                    section_element = Relationship(
+                        source_id=sec_nid,
+                        target_id=elem_nid,
+                        type="CONTAINS"
+                    )
+                    self.graph_repository.create_relationship(section_element)
+                    stats["relationships_created"] += 1
+            
+            logger.info(f"Created {stats['sections_created']} section nodes and {stats['relationships_created']} relationships")
+            return stats
+            
+        except Exception as e:
+            logger.error(f"Error creating section nodes in graph: {e}")
+            return stats
+
+    async def create_cross_reference_relationships(
+        self,
+        doc_id: str,
+        structured_content: Dict[str, Any]
+    ) -> int:
+        """
+        Create cross-reference relationships in Neo4j.
+        
+        Creates relationships like:
+        - Paragraph -[:REFERENCES]-> Table
+        - Paragraph -[:REFERENCES]-> Image
+        - Paragraph -[:REFERENCES]-> Section
+        
+        Returns:
+            Number of relationships created
+        """
+        if not self.graph_repository or not KNOWLEDGE_GRAPH_AVAILABLE:
+            logger.warning("Graph repository not available, skipping cross-reference creation")
+            return 0
+        
+        # Build element ID mappings
+        element_ids = {}
+        
+        # Add tables
+        for table in structured_content.get('tables', []):
+            table_id = table.get('id')
+            if table_id:
+                element_ids[table_id] = table_id
+        
+        # Add images
+        for image in structured_content.get('images', []):
+            image_id = image.get('id')
+            if image_id:
+                element_ids[image_id] = image_id
+        
+        # Add sections
+        for section_id, section in self.sections.items():
+            element_ids[section_id] = section_id
+        
+        count = 0
+        
+        try:
+            # Process cross-references
+            for element_id, ref_list in self.cross_references.items():
+                source_nid = self.element_neo4j_ids.get(element_id)
+                if not source_nid: continue
+
+                for ref_target in ref_list:
+                    # Try to find matching element ID
+                    target_id = self._find_element_id_by_reference(
+                        ref_target,
+                        structured_content,
+                        element_ids
+                    )
+                    
+                    if target_id and target_id != element_id:
+                        target_nid = self.element_neo4j_ids.get(target_id)
+                        if not target_nid: continue
+
+                        # Create REFERENCES relationship
+                        ref_rel = Relationship(
+                            source_id=source_nid,
+                            target_id=target_nid,
+                            type="REFERENCES",
+                            properties={"doc_id": doc_id, "ref_type": ref_target.split('_')[0]}
+                        )
+                        self.graph_repository.create_relationship(ref_rel)
+                        count += 1
+            
+            logger.info(f"Created {count} cross-reference relationships")
+            return count
+            
+        except Exception as e:
+            logger.error(f"Error creating cross-reference relationships: {e}")
+            return count
+
+    def _find_element_id_by_reference(
+        self,
+        ref_target: str,
+        structured_content: Dict[str, Any],
+        element_ids: Dict[str, str]
+    ) -> Optional[str]:
+        """
+        Find the actual element ID from a reference string like "table_2" or "figure_1".
+        
+        Args:
+            ref_target: Reference string like "table_2", "figure_1", "section_4.2"
+            structured_content: Full structured content with tables/images
+            element_ids: Dict of known element IDs
+            
+        Returns:
+            Actual element ID or None
+        """
+        ref_type, ref_num = ref_target.split('_', 1) if '_' in ref_target else (None, ref_target)
+        
+        if ref_type == 'table':
+            # Find table by number
+            for table in structured_content.get('tables', []):
+                table_id = table.get('id', '')
+                if f'_table_{ref_num}' in table_id or table_id.endswith(f'table_{ref_num}'):
+                    return table_id
+        elif ref_type == 'figure':
+            # Find image by number
+            for image in structured_content.get('images', []):
+                image_id = image.get('id', '')
+                if f'_image_{ref_num}' in image_id or image_id.endswith(f'image_{ref_num}'):
+                    return image_id
+        elif ref_type == 'section':
+            # Find section by number or title
+            num_parts = ref_num.split('.')
+            for section_id, section in self.sections.items():
+                # Check numbering in title
+                if ref_num in section.title or f"{ref_num}." in section.title:
+                    return section_id
+                
+                # Check level-based matching
+                if len(num_parts) == 1 and section.level == 1:
+                    if ref_num in section.title:
+                        return section_id
+        
+        return None
+
     def _extract_sections(
         self,
         text_elements: List[Dict],
@@ -120,26 +378,30 @@ class DocumentStructureExtractor:
     ):
         """
         Extract sections by identifying headings.
-
+        
         Heuristics:
         1. Element type == 'heading' or 'title'
         2. Numbering pattern (1., 1.1, 1.1.1)
         3. Font size/weight (if available in bbox metadata)
         4. All caps short text
         """
+        logger.info(f"Extracting sections from {len(text_elements)} text elements")
+        
         current_section_stack: List[Tuple[int, str]] = []  # [(level, section_id)]
-
+        
         for idx, element in enumerate(text_elements):
             text = element.get('text', '').strip()
             element_type = element.get('type', 'text')
-
+            
+            logger.debug(f"Processing element {idx}: type={element_type}, text='{text[:50]}...'")
+            
             # Check if this is a heading
             is_heading, level = self._is_heading(text, element_type)
-
+            
             if is_heading:
                 section_id = element.get('id', f"{doc_id}_section_{idx}")
                 page = element.get('page', 0)
-
+                
                 # Determine parent based on level
                 parent_id = None
                 if level > 1:
@@ -148,7 +410,7 @@ class DocumentStructureExtractor:
                         if stack_level < level:
                             parent_id = stack_section_id
                             break
-
+                
                 # Create section
                 section = DocumentSection(
                     section_id=section_id,
@@ -157,21 +419,44 @@ class DocumentStructureExtractor:
                     page=page,
                     parent_id=parent_id
                 )
-
+                
                 self.sections[section_id] = section
-
+                
                 # Update parent's children
                 if parent_id and parent_id in self.sections:
                     self.sections[parent_id].children.append(section_id)
-
+                
                 # Update stack
                 # Remove sections at same or lower level
                 current_section_stack = [
                     (l, sid) for l, sid in current_section_stack if l < level
                 ]
                 current_section_stack.append((level, section_id))
-
+                
                 logger.debug(f"Found section: {text} (level={level}, parent={parent_id})")
+        
+        # Fallback: If no sections were found, create a "Root" section containing all elements
+        if not self.sections:
+            logger.warning(f"No sections found in document {doc_id}, creating fallback Root section")
+            
+            # Create a single "Root" section containing all text elements
+            root_section_id = f"{doc_id}_section_root"
+            root_section = DocumentSection(
+                section_id=root_section_id,
+                title="Document Content",
+                level=0,
+                page=0,
+                parent_id=None
+            )
+            
+            # Assign all text elements to root section
+            for element in text_elements:
+                element_id = element.get('id')
+                if element_id and element.get('type') == 'text':
+                    root_section.elements.append(element_id)
+            
+            self.sections[root_section_id] = root_section
+            logger.info(f"Created fallback Root section with {len(root_section.elements)} text elements")
 
     def _is_heading(
         self,

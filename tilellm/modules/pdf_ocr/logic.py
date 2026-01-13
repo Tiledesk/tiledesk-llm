@@ -4,7 +4,7 @@ Handles service initialization, dependency injection, and core operations.
 """
 
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union
 
 from tilellm.shared.utility import inject_llm_chat_async, inject_repo_async, inject_llm_async
 from tilellm.modules.pdf_ocr.models.pdf_scraping import PDFScrapingRequest
@@ -13,6 +13,7 @@ from .services.pdf_entity_extractor import PDFEntityExtractor
 from .services.context_aware_chunker import ContextAwareChunker
 from .services.table_semantic_linker import TableSemanticLinker
 from .services.image_semantic_linker import ImageSemanticLinker
+from ...models.llm import TEIConfig
 
 try:
     from tilellm.modules.knowledge_graph.repository.repository import GraphRepository
@@ -25,6 +26,38 @@ except ImportError:
     Relationship = None
 
 logger = logging.getLogger(__name__)
+
+
+async def _invoke_llm_chat(
+    system_prompt: str,
+    human_prompt: str,
+    llm
+) -> str:
+    """
+    Helper for invoking LLM chat with system and human messages.
+    
+    Args:
+        system_prompt: System message content
+        human_prompt: Human message content  
+        llm: Injected LLM instance
+    
+    Returns:
+        Response content as string
+    """
+    if llm is None:
+        raise ValueError("LLM instance is required")
+    
+    from langchain_core.messages import SystemMessage, HumanMessage
+    
+    messages = [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)]
+    
+    try:
+        response = await llm.ainvoke(messages)
+        return response.content if hasattr(response, 'content') else str(response)
+    except Exception as e:
+        logger.error(f"Error invoking LLM: {e}", exc_info=True)
+        raise
+
 
 @inject_llm_chat_async
 @inject_repo_async
@@ -87,8 +120,8 @@ async def process_pdf_document_with_embeddings(
         # Generate captions for images if include_images is True
         if question.include_images and result and 'images' in result:
             await _generate_image_captions(
-                images=result['images'], 
-                llm=llm, 
+                images=result['images'],
+                llm=llm,
                 doc_id=question.id,
                 text_elements=result.get('text_elements')
             )
@@ -96,10 +129,36 @@ async def process_pdf_document_with_embeddings(
         # Generate descriptions for tables if include_tables is True
         if question.include_tables and result and 'tables' in result:
             await _generate_table_descriptions(
-                tables=result['tables'], 
-                llm=llm, 
+                tables=result['tables'],
+                llm=llm,
                 doc_id=question.id,
                 text_elements=result.get('text_elements')
+            )
+        
+        # Index tables to vector store if requested
+        if question.index_tables_to_vector_store and question.include_tables and result and 'tables' in result:
+            namespace = question.namespace or "default"
+            await _index_tables_to_vector_store(
+                repo=repo,
+                llm_embeddings=llm_embeddings,
+                tables=result['tables'],
+                doc_id=question.id,
+                namespace=namespace,
+                engine=question.engine,
+                sparse_encoder = question.sparse_encoder
+            )
+        
+        # Index images to vector store if requested
+        if question.index_images_to_vector_store and question.include_images and result and 'images' in result:
+            namespace = question.namespace or "default"
+            await _index_images_to_vector_store(
+                repo=repo,
+                llm_embeddings=llm_embeddings,
+                images=result['images'],
+                doc_id=question.id,
+                namespace=namespace,
+                engine=question.engine,
+                sparse_encoder=question.sparse_encoder
             )
         
         # Extract entities using GraphRAG if requested
@@ -109,7 +168,8 @@ async def process_pdf_document_with_embeddings(
                 entity_stats = await entity_extractor.process_text_elements(
                     text_elements=result['text_elements'],
                     doc_id=question.id,
-                    llm=llm
+                    llm=llm,
+                    hierarchy=result.get('hierarchy')
                 )
                 logger.info(f"Entity extraction stats: {entity_stats}")
             except Exception as e:
@@ -125,6 +185,7 @@ async def process_pdf_document_with_embeddings(
                 doc_id=question.id,
                 namespace=namespace,
                 engine=question.engine,
+                sparse_encoder=question.sparse_encoder,
                 hierarchy=result.get('hierarchy')
             )
         
@@ -260,8 +321,6 @@ async def generate_table_description(
     if llm is None:
         raise ValueError("LLM configuration is required for table description")
     
-    from langchain_core.messages import HumanMessage, SystemMessage
-    
     df = table_data.get('data')
     caption = table_data.get('caption', '')
     surrounding_text = table_data.get('surrounding_text', '')
@@ -280,11 +339,11 @@ async def generate_table_description(
     sample_rows = df.head(5).to_dict('records')
     
     # Build prompt
-    prompt = f"""Analyze this table and provide a concise but informative description.
+    human_prompt = f"""Analyze this table and provide a concise but informative description.
 
-{"Caption: " + caption if caption else ""}
+ {"Caption: " + caption if caption else ""}
 
-{"Context: " + surrounding_text if surrounding_text else ""}
+ {"Context: " + surrounding_text if surrounding_text else ""}
 
 Table Statistics:
 - Rows: {stats['shape'][0]}, Columns: {stats['shape'][1]}
@@ -305,11 +364,8 @@ Keep the description under 200 words and focus on semantic meaning, not just tec
     system_prompt = """You are a helpful AI assistant specialized in analyzing tabular data from documents.
 Extract and summarize the semantic meaning of tables accurately."""
     
-    messages = [SystemMessage(content=system_prompt), HumanMessage(content=prompt)]
-    
     try:
-        response = await llm.ainvoke(messages)
-        description = response.content if hasattr(response, 'content') else str(response)
+        description = await _invoke_llm_chat(system_prompt, human_prompt, llm)
         logger.info(f"Generated table description: {description[:100]}...")
         return description.strip()
     except Exception as e:
@@ -442,6 +498,7 @@ async def _index_text_chunks(
     doc_id: str,
     namespace: str,
     engine,
+    sparse_encoder: Union[str, TEIConfig, None] = None,
     hierarchy: Optional[Dict[str, Any]] = None
 ):
     """
@@ -487,7 +544,127 @@ async def _index_text_chunks(
         documents=documents,
         namespace=namespace,
         embedding_model=llm_embeddings,
-        sparse_encoder=None  # Can be configured from request if needed
+        sparse_encoder=sparse_encoder  # Can be configured from request if needed
     )
     
     logger.info(f"Successfully indexed {len(documents)} text chunks")
+
+
+async def _index_tables_to_vector_store(
+    repo,
+    llm_embeddings,
+    tables: list,
+    doc_id: str,
+    namespace: str,
+    engine,
+    sparse_encoder: Union[str, TEIConfig, None] = None,
+):
+    """
+    Index table semantic descriptions to vector store.
+    """
+    from langchain_core.documents import Document
+    
+    if not tables:
+        return
+    
+    documents = []
+    for table_data in tables:
+        table_id = table_data.get('id')
+        
+        # Use semantic description if available, otherwise fallback to basic description
+        semantic_desc = table_data.get('semantic_description') or table_data.get('description')
+        
+        if not semantic_desc:
+            continue
+        
+        # Create document for vector store
+        doc = Document(
+            page_content=semantic_desc,
+            metadata={
+                'doc_id': doc_id,
+                'table_id': table_id,
+                'type': 'table',
+                'chunk_type': 'table_description',
+                'page': table_data.get('page', 0),
+                'answerable_questions': table_data.get('answerable_questions', []),
+                'columns': table_data.get('columns', []),
+                'source': f"docling_{doc_id}"
+            }
+        )
+        documents.append(doc)
+    
+    if not documents:
+        logger.warning(f"No table descriptions to index for document {doc_id}")
+        return
+    
+    logger.info(f"Indexing {len(documents)} table descriptions to vector store for doc {doc_id}")
+    
+    # Index to vector store
+    await repo.aadd_documents(
+        engine=engine,
+        documents=documents,
+        namespace=namespace,
+        embedding_model=llm_embeddings,
+        sparse_encoder=sparse_encoder
+    )
+    
+    logger.info(f"Successfully indexed {len(documents)} table descriptions")
+
+
+async def _index_images_to_vector_store(
+    repo,
+    llm_embeddings,
+    images: list,
+    doc_id: str,
+    namespace: str,
+    engine,
+    sparse_encoder: Union[str, TEIConfig, None] = None
+):
+    """
+    Index image captions to vector store.
+    """
+    from langchain_core.documents import Document
+    
+    if not images:
+        return
+    
+    documents = []
+    for image_data in images:
+        image_id = image_data.get('id')
+        caption = image_data.get('caption')
+        
+        if not caption:
+            continue
+        
+        # Create document for vector store
+        doc = Document(
+            page_content=caption,
+            metadata={
+                'doc_id': doc_id,
+                'image_id': image_id,
+                'type': 'image',
+                'chunk_type': 'image_caption',
+                'page': image_data.get('page', 0),
+                'surrounding_text': image_data.get('surrounding_text', ''),
+                'path': image_data.get('path'),
+                'source': f"docling_{doc_id}"
+            }
+        )
+        documents.append(doc)
+    
+    if not documents:
+        logger.warning(f"No image captions to index for document {doc_id}")
+        return
+    
+    logger.info(f"Indexing {len(documents)} image captions to vector store for doc {doc_id}")
+    
+    # Index to vector store
+    await repo.aadd_documents(
+        engine=engine,
+        documents=documents,
+        namespace=namespace,
+        embedding_model=llm_embeddings,
+        sparse_encoder=sparse_encoder
+    )
+    
+    logger.info(f"Successfully indexed {len(documents)} image captions")

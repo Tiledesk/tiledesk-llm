@@ -106,10 +106,15 @@ class TableSemanticLinker:
 
     async def _generate_table_questions(self, df: pd.DataFrame, context: str, llm: Any) -> List[str]:
         """Generate questions that can be answered by the table."""
+        from langchain_core.messages import HumanMessage, SystemMessage
+        
         # Convert first few rows to string for prompt
         table_snippet = df.head(10).to_string()
         
-        prompt = f"""Analyze this table and generate 5 specific questions that can be answered by the data.
+        system_prompt = """You are a helpful AI assistant specialized in analyzing tabular data from documents.
+Generate specific questions that can be answered by table data."""
+        
+        human_prompt = f"""Analyze this table and generate 5 specific questions that can be answered by the data.
 
 Context from document: {context}
 
@@ -123,13 +128,15 @@ Generate questions that:
 
 Return only a JSON list of strings."""
 
+        messages = [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)]
+
         try:
-            response = await llm.ainvoke(prompt)
+            response = await llm.ainvoke(messages)
             content = response.content if hasattr(response, 'content') else str(response)
             
             # Try to parse JSON from response
             import re
-            json_match = re.search(r'[[.*]]', content, re.DOTALL)
+            json_match = re.search(r'\[.*\]', content, re.DOTALL)
             if json_match:
                 return json.loads(json_match.group(0))
             else:
@@ -142,23 +149,30 @@ Return only a JSON list of strings."""
 
     async def _generate_enhanced_description(self, df: pd.DataFrame, context: str, questions: List[str], llm: Any) -> str:
         """Generate a rich semantic description of the table."""
+        from langchain_core.messages import HumanMessage, SystemMessage
+        
         table_snippet = df.head(5).to_string()
         cols = ", ".join(df.columns.tolist())
         
-        prompt = f"""Provide a comprehensive semantic description of this table.        
+        system_prompt = """You are a helpful AI assistant specialized in analyzing tabular data from documents.
+Provide comprehensive semantic descriptions that explain table purpose and structure."""
+        
+        human_prompt = f"""Provide a comprehensive semantic description of this table.        
 Context: {context}
 Columns: {cols}
 Sample Data:
 {table_snippet}
 
 Sample questions it answers:
-{chr(10).join(questions)}
+{chr(10).join([str(q) for q in questions])}
 
 The description should explain the table's purpose, what the rows and columns represent, and why it's important in the context of the document.
 Keep it under 150 words."""
 
+        messages = [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)]
+
         try:
-            response = await llm.ainvoke(prompt)
+            response = await llm.ainvoke(messages)
             return response.content.strip() if hasattr(response, 'content') else str(response).strip()
         except Exception as e:
             logger.error(f"Error generating enhanced table description: {e}")

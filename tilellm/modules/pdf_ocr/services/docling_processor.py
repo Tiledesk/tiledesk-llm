@@ -52,8 +52,10 @@ class ProductionDocumentProcessor:
         # 3. Initialize Models (Lazy loaded usually, but we set up factories)
         self.embedding_factory = AsyncEmbeddingFactory()
         
-        # 4. Initialize Structure Extractor
-        self.structure_extractor = DocumentStructureExtractor()
+        # 4. Initialize Structure Extractor with graph repository
+        self.structure_extractor = DocumentStructureExtractor(
+            graph_repository=self.graph_repository
+        )
         
         # Redis for cache (e.g., CLIP embeddings)
         self._init_redis()
@@ -202,6 +204,29 @@ class ProductionDocumentProcessor:
         if not self.pdf_converter:
             raise RuntimeError("Docling converter not initialized")
 
+        # 0. Create Document node once at the beginning
+        doc_node_id = None
+        if self.graph_repository:
+            try:
+                from tilellm.modules.knowledge_graph.models import Node
+                
+                # Check if exists
+                existing = self.graph_repository.find_nodes_by_property("Document", "id", doc_id)
+                if existing:
+                    doc_node_id = existing[0].id
+                    logger.debug(f"Document node {doc_id} already exists with Neo4j ID {doc_node_id}")
+                else:
+                    doc_node = Node(
+                        id=doc_id,
+                        label="Document",
+                        properties={"id": doc_id}
+                    )
+                    created_doc = self.graph_repository.create_node(doc_node)
+                    doc_node_id = created_doc.id
+                    logger.debug(f"Created Document node {doc_id} with ID {doc_node_id}")
+            except Exception as e:
+                logger.warning(f"Error checking/creating Document node: {e}")
+
         # 1. Convert with Docling (blocking call, run in executor)
         loop = asyncio.get_event_loop()
         result = await loop.run_in_executor(None, self.pdf_converter.convert, file_path)
@@ -218,87 +243,126 @@ class ProductionDocumentProcessor:
             }
         }
         
-        for page_idx, page in enumerate(result.pages):
-            # Page number is usually 1-based in UI, but we track 0-based idx internally or consistent 1-based
-            _page_num = page_idx + 1 
-            
-            # Iterate over elements if available
-            # Note: Docling API structure might vary slightly by version.
-            # Assuming `page.assembled.body.elements` or similar iteration
-            
-            # Using the export_to_dict or similar might be easier, but let's try iterating elements
-            # Adapting from prompt code which assumes `page.elements`
-            
-            # Modern Docling might put everything in document.export_to_dict()
-            # Let's assume we can iterate page items
-            
-            # Text/Structure
-            # (Simplified: we might want to iterate `result.document.export_to_markdown()` but to get objects we need internal model)
-            
-            # For this implementation, we will try to use the `export_to_dataframe` for tables
-            # and iterate document structure.
-            
-            pass # Placeholder for granular iteration logic which depends on exact docling version
-        
-        # Since I cannot verify exact Docling API version installed, I will assume the structure from the prompt is correct for the user's version.
-        # Re-implementing the prompt's loop:
-        
-        for page_idx, page in enumerate(result.pages):
-             # Depending on docling version, elements might be directly on page or under `page.predictions` or similar.
-             # The prompt code: `for element in page.elements:`
-             # I will follow the prompt's lead.
-             
-             if hasattr(page, 'elements'):
-                 elements = page.elements
-             else:
-                 # Fallback/Empty
-                 elements = []
+        # robust extraction logic handling both Docling v2 (document-centric) and v1 (page-centric)
+        doc = getattr(result, 'document', None)
+        extracted_something = False
 
-             for element in elements:
-                # BBox normalization if needed
-                bbox = element.bbox if hasattr(element, 'bbox') else None
+        if doc:
+            logger.info("Using Docling v2 document-centric extraction")
+            
+            # TEXTS
+            texts = getattr(doc, 'texts', [])
+            for item in texts:
+                text_content = getattr(item, 'text', '')
+                if not text_content: continue
                 
-                label = getattr(element, 'label', '').lower()
+                # Provenance
+                prov = getattr(item, 'prov', None)
+                if isinstance(prov, list) and prov: prov = prov[0]
                 
-                if label == 'text':
-                    structured_content['text_elements'].append({
-                        'id': f"{doc_id}_text_{page_idx}_{getattr(element, 'id', 0)}",
-                        'text': getattr(element, 'text', ''),
-                        'page': page_idx,
-                        'bbox': bbox,
-                        'type': getattr(element, 'type', 'text')
-                    })
-                elif label == 'table':
-                    # Export dataframe
-                    df = element.export_to_dataframe() if hasattr(element, 'export_to_dataframe') else pd.DataFrame()
-                    structured_content['tables'].append({
-                        'id': f"{doc_id}_table_{page_idx}_{getattr(element, 'id', 0)}",
-                        'data': df,
-                        'page': page_idx,
-                        'bbox': bbox,
-                        'caption': getattr(element, 'text', None)
-                    })
-                elif label == 'picture':
-                    structured_content['images'].append({
-                        'id': f"{doc_id}_image_{page_idx}_{getattr(element, 'id', 0)}",
-                        'image_data': getattr(element, 'image', None), # PIL Image
-                        'page': page_idx,
-                        'bbox': bbox
-                    })
-                elif label == 'formula':
-                    structured_content['formulas'].append({
-                        'id': f"{doc_id}_formula_{page_idx}_{getattr(element, 'id', 0)}",
-                        'latex': getattr(element, 'latex', ''),
-                        'text': getattr(element, 'text', ''),
-                        'page': page_idx,
-                        'bbox': bbox
-                    })
+                page_no = getattr(prov, 'page_no', 1)
+                bbox = getattr(prov, 'bbox', None)
+                if bbox and hasattr(bbox, 'as_tuple'): bbox = bbox.as_tuple()
+                
+                structured_content['text_elements'].append({
+                    'id': f"{doc_id}_text_{getattr(item, 'self_ref', len(structured_content['text_elements']))}",
+                    'text': text_content,
+                    'page': page_no - 1,
+                    'bbox': bbox,
+                    'type': getattr(item, 'label', 'text')
+                })
+                extracted_something = True
+
+            # TABLES
+            tables = getattr(doc, 'tables', [])
+            for item in tables:
+                df = item.export_to_dataframe(doc) if hasattr(item, 'export_to_dataframe') else pd.DataFrame()
+                
+                prov = getattr(item, 'prov', None)
+                if isinstance(prov, list) and prov: prov = prov[0]
+                page_no = getattr(prov, 'page_no', 1)
+                bbox = getattr(prov, 'bbox', None)
+                if bbox and hasattr(bbox, 'as_tuple'): bbox = bbox.as_tuple()
+
+                structured_content['tables'].append({
+                    'id': f"{doc_id}_table_{getattr(item, 'self_ref', len(structured_content['tables']))}",
+                    'data': df,
+                    'page': page_no - 1,
+                    'bbox': bbox,
+                    'caption': getattr(item, 'caption', None)
+                })
+                extracted_something = True
+
+            # PICTURES
+            pictures = getattr(doc, 'pictures', [])
+            for item in pictures:
+                image_data = item.get_image(doc) if hasattr(item, 'get_image') else getattr(item, 'image', None)
+                
+                prov = getattr(item, 'prov', None)
+                if isinstance(prov, list) and prov: prov = prov[0]
+                page_no = getattr(prov, 'page_no', 1)
+                bbox = getattr(prov, 'bbox', None)
+                if bbox and hasattr(bbox, 'as_tuple'): bbox = bbox.as_tuple()
+
+                structured_content['images'].append({
+                    'id': f"{doc_id}_image_{getattr(item, 'self_ref', len(structured_content['images']))}",
+                    'image_data': image_data,
+                    'page': page_no - 1,
+                    'bbox': bbox
+                })
+                extracted_something = True
+
+        # Fallback to page-based iteration if nothing extracted
+        if not extracted_something:
+            logger.info("Falling back to Docling page-centric extraction")
+            for page_idx, page in enumerate(result.pages):
+                 if hasattr(page, 'elements'):
+                     elements = page.elements
+                 else:
+                     elements = []
+
+                 for element in elements:
+                    bbox = element.bbox if hasattr(element, 'bbox') else None
+                    label = getattr(element, 'label', '').lower()
+                    
+                    if label == 'text':
+                        structured_content['text_elements'].append({
+                            'id': f"{doc_id}_text_{page_idx}_{getattr(element, 'id', 0)}",
+                            'text': getattr(element, 'text', ''),
+                            'page': page_idx,
+                            'bbox': bbox,
+                            'type': getattr(element, 'type', 'text')
+                        })
+                    elif label == 'table':
+                        df = element.export_to_dataframe() if hasattr(element, 'export_to_dataframe') else pd.DataFrame()
+                        structured_content['tables'].append({
+                            'id': f"{doc_id}_table_{page_idx}_{getattr(element, 'id', 0)}",
+                            'data': df,
+                            'page': page_idx,
+                            'bbox': bbox,
+                            'caption': getattr(element, 'text', None)
+                        })
+                    elif label == 'picture':
+                        structured_content['images'].append({
+                            'id': f"{doc_id}_image_{page_idx}_{getattr(element, 'id', 0)}",
+                            'image_data': getattr(element, 'image', None),
+                            'page': page_idx,
+                            'bbox': bbox
+                        })
+                    elif label == 'formula':
+                        structured_content['formulas'].append({
+                            'id': f"{doc_id}_formula_{page_idx}_{getattr(element, 'id', 0)}",
+                            'latex': getattr(element, 'latex', ''),
+                            'text': getattr(element, 'text', ''),
+                            'page': page_idx,
+                            'bbox': bbox
+                        })
 
         # 3. Process batches
         await asyncio.gather(
             self._process_tables_batch(doc_id, structured_content['tables']),
             self._process_images_batch(doc_id, structured_content['images']),
-            # Text processing would go here (embedding and vector store)
+            self._process_text_batch(doc_id, structured_content['text_elements'])
         )
         
         # 4. Build Spatial Graph
@@ -309,6 +373,11 @@ class ProductionDocumentProcessor:
             hierarchy = self.structure_extractor.extract_hierarchy(doc_id, structured_content)
             structured_content['hierarchy'] = hierarchy
             logger.info(f"Successfully extracted hierarchy for {doc_id} with {hierarchy['metadata']['num_sections']} sections")
+            
+            # 6. Create Section nodes in Neo4j
+            if self.graph_repository:
+                await self.structure_extractor.create_section_nodes_in_graph(doc_id, doc_neo4j_id=doc_node_id)
+                await self.structure_extractor.create_cross_reference_relationships(doc_id, structured_content)
         except Exception as e:
             logger.error(f"Failed to extract hierarchy for {doc_id}: {e}")
             structured_content['hierarchy'] = None
@@ -385,23 +454,23 @@ class ProductionDocumentProcessor:
                     }
                 )
                 
-                # Create Document node if not exists
-                doc_node = Node(
-                    id=doc_id,
-                    label="Document",
-                    properties={"id": doc_id}
-                )
+                created_table = self.graph_repository.create_node(table_node)
+                table_data['neo4j_id'] = created_table.id
                 
-                self.graph_repository.create_node(doc_node)
-                self.graph_repository.create_node(table_node)
-                
-                # Create relationship with correct format
-                rel = Relationship(
-                    source_id=doc_id,
-                    target_id=table_id,
-                    type="CONTAINS_TABLE"
-                )
-                self.graph_repository.create_relationship(rel)
+                # Find document node to link
+                doc_nodes = self.graph_repository.find_nodes_by_property("Document", "id", doc_id)
+                if doc_nodes:
+                    doc_neo4j_id = doc_nodes[0].id
+                    
+                    # Create relationship with correct format
+                    rel = Relationship(
+                        source_id=doc_neo4j_id,
+                        target_id=created_table.id,
+                        type="CONTAINS_TABLE"
+                    )
+                    self.graph_repository.create_relationship(rel)
+                else:
+                    logger.warning(f"Could not find Document node {doc_id} to link table {table_id}")
                 
             except Exception as e:
                 logger.error(f"Error creating graph nodes for table: {e}")
@@ -409,6 +478,62 @@ class ProductionDocumentProcessor:
     async def _process_images_batch(self, doc_id: str, images: list):
         tasks = [self._process_single_image(doc_id, img) for img in images]
         return await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _process_text_batch(self, doc_id: str, text_elements: list):
+        """
+        Create Text nodes for each text element and link to Document.
+        """
+        if not self.graph_repository or not text_elements:
+            return
+
+        # Find document node to link
+        doc_neo4j_id = None
+        try:
+            doc_nodes = self.graph_repository.find_nodes_by_property("Document", "id", doc_id)
+            if doc_nodes:
+                doc_neo4j_id = doc_nodes[0].id
+        except Exception as e:
+            logger.error(f"Error looking up document node: {e}")
+            return
+
+        if not doc_neo4j_id:
+            logger.warning(f"Skipping text node creation: Document {doc_id} not found in graph")
+            return
+
+        from tilellm.modules.knowledge_graph.models import Node, Relationship
+
+        for element in text_elements:
+            try:
+                text_id = element.get('id')
+                text_content = element.get('text', '')
+                
+                if not text_id: 
+                    continue
+                    
+                text_node = Node(
+                    id=text_id,
+                    label="Text",
+                    properties={
+                        "doc_id": doc_id,
+                        "text": text_content[:1000], # Truncate for graph property
+                        "page": element.get('page', 0),
+                        "type": element.get('type', 'text')
+                    }
+                )
+                
+                created_node = self.graph_repository.create_node(text_node)
+                element['neo4j_id'] = created_node.id
+                
+                # Link to Document
+                rel = Relationship(
+                    source_id=doc_neo4j_id,
+                    target_id=created_node.id,
+                    type="CONTAINS_TEXT"
+                )
+                self.graph_repository.create_relationship(rel)
+                
+            except Exception as e:
+                logger.error(f"Error creating text node {element.get('id')}: {e}")
 
     async def _process_single_image(self, doc_id: str, image_data: dict):
         image_id = image_data['id']
@@ -447,7 +572,7 @@ class ProductionDocumentProcessor:
         # Neo4J Node via GraphRepository
         if self.graph_repository:
             try:
-                from tilellm.modules.knowledge_graph.models import Node
+                from tilellm.modules.knowledge_graph.models import Node, Relationship
                 
                 image_node = Node(
                     id=image_id,
@@ -460,24 +585,23 @@ class ProductionDocumentProcessor:
                     }
                 )
                 
-                # Create Document node if not exists
-                doc_node = Node(
-                    id=doc_id,
-                    label="Document",
-                    properties={"id": doc_id}
-                )
+                created_image = self.graph_repository.create_node(image_node)
+                image_data['neo4j_id'] = created_image.id
                 
-                self.graph_repository.create_node(doc_node)
-                self.graph_repository.create_node(image_node)
+                # Find document node to link
+                doc_nodes = self.graph_repository.find_nodes_by_property("Document", "id", doc_id)
+                if doc_nodes:
+                    doc_neo4j_id = doc_nodes[0].id
                 
-                # Create relationship with correct format
-                from tilellm.modules.knowledge_graph.models import Relationship
-                rel = Relationship(
-                    source_id=doc_id,
-                    target_id=image_id,
-                    type="CONTAINS_IMAGE"
-                )
-                self.graph_repository.create_relationship(rel)
+                    # Create relationship with correct format
+                    rel = Relationship(
+                        source_id=doc_neo4j_id,
+                        target_id=created_image.id,
+                        type="CONTAINS_IMAGE"
+                    )
+                    self.graph_repository.create_relationship(rel)
+                else:
+                    logger.warning(f"Could not find Document node {doc_id} to link image {image_id}")
                 
             except Exception as e:
                 logger.error(f"Error creating graph nodes for image: {e}")
@@ -526,13 +650,17 @@ class ProductionDocumentProcessor:
                 source = all_elements[i]
                 target = all_elements[i+1]
                 
-                rel = Relationship(
-                    source_id=source.get('id'),
-                    target_id=target.get('id'),
-                    type="FOLLOWS",
-                    properties={"doc_id": doc_id}
-                )
-                self.graph_repository.create_relationship(rel)
+                source_nid = source.get('neo4j_id')
+                target_nid = target.get('neo4j_id')
+                
+                if source_nid and target_nid:
+                    rel = Relationship(
+                        source_id=source_nid,
+                        target_id=target_nid,
+                        type="FOLLOWS",
+                        properties={"doc_id": doc_id}
+                    )
+                    self.graph_repository.create_relationship(rel)
 
             # 3. Create NEAR_TO relationships (spatial proximity on same page)
             # We group by page to limit comparisons
@@ -547,6 +675,12 @@ class ProductionDocumentProcessor:
                         el1 = page_elements[i]
                         el2 = page_elements[j]
                         
+                        nid1 = el1.get('neo4j_id')
+                        nid2 = el2.get('neo4j_id')
+                        
+                        if not nid1 or not nid2:
+                            continue
+                        
                         # Simple Euclidean distance between centers of bboxes
                         dist = self._calculate_bbox_distance(
                             el1.get('bbox'), 
@@ -557,8 +691,8 @@ class ProductionDocumentProcessor:
                         # Assuming coordinates are normalized 0-1000 or points
                         if dist < 200: 
                             rel = Relationship(
-                                source_id=el1.get('id'),
-                                target_id=el2.get('id'),
+                                source_id=nid1,
+                                target_id=nid2,
                                 type="NEAR_TO",
                                 properties={"distance": float(dist), "doc_id": doc_id}
                             )

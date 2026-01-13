@@ -16,6 +16,7 @@ class ContextAwareChunker:
     - Document hierarchy (Section > Subsection)
     - Reading order
     - Cross-references to tables, images, and other sections
+    - Token limits with overlap
     """
 
     def __init__(self, max_tokens: int = 512, overlap: int = 50):
@@ -30,6 +31,8 @@ class ContextAwareChunker:
     ) -> List[Document]:
         """
         Create enriched chunks from text elements and document structure.
+        Chunks are created by combining elements within the same section
+        until max_tokens limit is reached.
         """
         chunks = []
         
@@ -37,7 +40,6 @@ class ContextAwareChunker:
         sections = structure.get('sections', {})
         
         def get_path(element_id: str) -> str:
-            # Find which section contains this element
             containing_section_id = None
             for sid, sec in sections.items():
                 if element_id in sec.get('elements', []) or element_id == sid:
@@ -60,53 +62,112 @@ class ContextAwareChunker:
         # Get cross references
         all_cross_refs = structure.get('cross_refs', {})
 
+        # Group elements by section
+        sections_elements = {}
         for element in text_elements:
             element_id = element.get('id')
-            text = element.get('text', '').strip()
+            section_id = self._find_containing_section(element_id, sections)
             
-            if not text:
-                continue
-                
-            # Get structural context
-            section_path = get_path(element_id)
-            
-            # Get explicit cross-references from structure
-            element_cross_refs = all_cross_refs.get(element_id, [])
-            
-            # Detect new cross-references in text (regex)
-            text_refs = self._extract_cross_refs(text)
-            combined_refs = list(set(element_cross_refs + text_refs))
-            
-            # Separate refs by type
-            tables = [r for r in combined_refs if 'table' in r.lower()]
-            images = [r for r in combined_refs if 'figure' in r.lower() or 'image' in r.lower()]
-            other_sections = [r for r in combined_refs if 'section' in r.lower()]
+            if section_id not in sections_elements:
+                sections_elements[section_id] = []
+            sections_elements[section_id].append(element)
 
-            # Create Document object
-            # Note: For very long elements, we might still need to split them, 
-            # but Docling usually gives us reasonably sized paragraphs.
-            
-            metadata = {
+        # Process each section
+        chunk_idx = 0
+        for section_id, elements in sections_elements.items():
+            section_path = get_path(section_id)
+            section_text_parts = []
+            section_metadata = {
                 "doc_id": doc_id,
-                "element_id": element_id,
-                "page": element.get('page', 0),
-                "type": element.get('type', 'text'),
+                "section_id": section_id,
                 "section_path": section_path,
-                "related_tables": tables,
-                "related_images": images,
-                "related_sections": other_sections,
-                "bbox": element.get('bbox'),
+                "type": "text",
+                "related_tables": [],
+                "related_images": [],
+                "related_sections": [],
                 "chunk_type": "context_aware"
             }
             
-            chunk = Document(
-                page_content=text,
-                metadata=metadata
-            )
-            chunks.append(chunk)
+            current_tokens = 0
+            current_elements = []
+            
+            for element in elements:
+                element_id = element.get('id')
+                text = element.get('text', '').strip()
+                if not text:
+                    continue
+                
+                # Estimate tokens (rough approximation: ~4 chars per token)
+                element_tokens = len(text) // 4
+                
+                # Check if adding this element would exceed max_tokens
+                if current_tokens + element_tokens > self.max_tokens and current_elements:
+                    # Create chunk from accumulated elements
+                    chunk_text = "\n\n".join(current_elements)
+                    chunk = Document(
+                        page_content=chunk_text,
+                        metadata={
+                            **section_metadata,
+                            "chunk_index": chunk_idx,
+                            "element_ids": [e.get('id') for e in section_text_parts],
+                            "page": section_text_parts[0].get('page', 0) if section_text_parts else 0
+                        }
+                    )
+                    chunks.append(chunk)
+                    chunk_idx += 1
+                    
+                    # Start new chunk with overlap
+                    current_elements = []
+                    current_tokens = 0
+                    section_text_parts = []
+                
+                # Add element to current chunk
+                current_elements.append(text)
+                current_tokens += element_tokens
+                section_text_parts.append(element)
+                
+                # Collect cross-references
+                element_cross_refs = all_cross_refs.get(element_id, [])
+                text_refs = self._extract_cross_refs(text)
+                combined_refs = list(set(element_cross_refs + text_refs))
+                
+                section_metadata["related_tables"].extend([r for r in combined_refs if 'table' in r.lower()])
+                section_metadata["related_images"].extend([r for r in combined_refs if 'figure' in r.lower() or 'image' in r.lower()])
+                section_metadata["related_sections"].extend([r for r in combined_refs if 'section' in r.lower()])
+            
+            # Create final chunk for this section
+            if current_elements:
+                chunk_text = "\n\n".join(current_elements)
+                # Deduplicate and limit related elements
+                section_metadata["related_tables"] = list(set(section_metadata["related_tables"]))[:10]
+                section_metadata["related_images"] = list(set(section_metadata["related_images"]))[:10]
+                section_metadata["related_sections"] = list(set(section_metadata["related_sections"]))[:10]
+                
+                chunk = Document(
+                    page_content=chunk_text,
+                    metadata={
+                        **section_metadata,
+                        "chunk_index": chunk_idx,
+                        "element_ids": [e.get('id') for e in section_text_parts],
+                        "page": section_text_parts[0].get('page', 0) if section_text_parts else 0
+                    }
+                )
+                chunks.append(chunk)
+                chunk_idx += 1
 
         logger.info(f"Created {len(chunks)} context-aware chunks for document {doc_id}")
         return chunks
+
+    def _find_containing_section(
+        self,
+        element_id: str,
+        sections: Dict[str, Any]
+    ) -> Optional[str]:
+        """Find the section that contains this element."""
+        for sid, sec in sections.items():
+            if element_id in sec.get('elements', []):
+                return sid
+        return None
 
     def _extract_cross_refs(self, text: str) -> List[str]:
         """

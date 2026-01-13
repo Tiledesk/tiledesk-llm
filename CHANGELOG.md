@@ -6,6 +6,11 @@
 ### **Copyright**: Tiledesk SRL
 
 ---
+## [2026-01-13]
+### 0.8.0-rc3
+- Fixed: Correctly display errors in `/api/ask`.
+
+---
 ## [2026-01-03]
 ### 0.8.0-rc2
 - Added: Docker management in the `docker` folder.
