@@ -476,8 +476,8 @@ def inject_llm_async(func: Callable) -> Callable:
             return await func(question, *args, **kwargs)
 
         except Exception as e:
-            logger.error(f"Errore nel decorator inject_llm per {func.__name__}: {e}", exc_info=True)
-            raise LLMInjectionError(f"LLM injection failed: {e}") from e
+            logger.error(f"Errore nel decorator inject_llm_async per {func.__name__}: {e}", exc_info=True)
+            raise LLMInjectionError(f"LLM injection failed: {str(e)}")
 
     return async_wrapper
 
@@ -1219,7 +1219,7 @@ def inject_reason_llm_async(func: Callable) -> Callable:
 
         except Exception as e:
             logger.error(f"Errore nel decorator inject_reason_llm per {func.__name__}: {e}", exc_info=True)
-            raise LLMInjectionError(f"Reasoning LLM injection failed: {e}") from e
+            raise LLMInjectionError(f"Reasoning LLM injection failed: {e}")
 
     return async_wrapper
 

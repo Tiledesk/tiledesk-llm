@@ -44,7 +44,7 @@ from tilellm.models import (
     )
 
 from tilellm.shared.utility import inject_repo_async, \
-    inject_llm_chat_async, inject_llm_async, inject_reason_llm_async
+    inject_llm_chat_async, inject_llm_async, inject_reason_llm_async, LLMInjectionError
 
 from tilellm.shared.mcp_prompt import MCP_BASE64_MANAGEMENT_TEMPLATE, \
     MCP_DOC_HEADER_TEMPLATE, MCP_DOC_INSTRUCTIONS_TEMPLATE, MCP_INTERNAL_TOOL_TEMPLATE
@@ -464,14 +464,15 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None):
         import traceback
         traceback.print_exc()
         result_to_return = SimpleAnswer(
-            answer=repr(e),
+            answer=str(e),
             chat_history_dict={},
             prompt_token_info=None
         )
-        raise fastapi.exceptions.HTTPException(
+        return JSONResponse(
             status_code=400,
-            detail=result_to_return.model_dump()
+            content=result_to_return.model_dump()
         )
+
 
 
 async def _process_history_messages(
@@ -930,7 +931,10 @@ async def ask_to_llm_1(question: QuestionToLLM, chat_model=None) :
         result_to_return = SimpleAnswer(answer=repr(e),
                                         chat_history_dict={},
                                         prompt_token_info=None)
-        raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
+        return JSONResponse(
+            status_code=400,
+            content=result_to_return.model_dump()
+        )
 
 
 @inject_llm_async

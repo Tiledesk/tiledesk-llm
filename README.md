@@ -192,7 +192,7 @@ The project uses a modular Docker Compose setup with profiles for different modu
 
 2. Copy the environment template and customize:
    ```bash
-   cp .env.example .env
+   cp docker/.env.example .env
    # Edit .env to configure ports, images, and optional features
    ```
 
