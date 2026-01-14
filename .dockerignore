@@ -1,2 +1,2 @@
-.environ
-.environ.prod
+.env
+.env.prod
