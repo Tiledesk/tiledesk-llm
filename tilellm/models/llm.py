@@ -22,6 +22,15 @@ class TEIConfig(BaseModel):
     custom_headers: Optional[Dict[str, Any]] = None
 
 
+class PineconeRerankerConfig(BaseModel):
+    provider: Literal["pinecone"] = "pinecone"
+    api_key: SecretStr
+    name: str = Field(default="bge-reranker-v2-m3")
+    top_n: Optional[int] = Field(default=None)
+    rank_fields: Optional[List[str]] = Field(default_factory=lambda: ["chunk_text"])
+    parameters: Optional[Dict[str, Any]] = Field(default_factory=lambda: {"truncate": "END"})
+
+
 class ItemSingle(BaseModel):
     id: str
     source: str | None = None
@@ -97,7 +106,7 @@ class QuestionAnswer(BaseModel):
     system_context: Optional[str] = None
     search_type: str = Field(default_factory=lambda: "similarity")
     chunks_only: Optional[bool] = Field(default_factory=lambda: False)
-    reranking : Union[bool, TEIConfig] = Field(default_factory=lambda: False)
+    reranking : Union[bool, TEIConfig, PineconeRerankerConfig] = Field(default_factory=lambda: False)
     reranking_multiplier: int = 3  # moltiplicatore per top_k
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     contextualize_prompt: Optional[bool] = Field(default=False, description="Enable/disable contextualize_q_system_prompt usage")

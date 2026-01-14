@@ -22,7 +22,7 @@ from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResp
 from typing import Callable
 
 from tilellm.controller.controller_utils import preprocess_chat_history, \
-    fetch_question_vectors, retrieve_documents, create_chains, get_or_create_session_history, \
+    fetch_question_vectors, retrieve_documents, aretrieve_documents, create_chains, get_or_create_session_history, \
     generate_answer_with_history, handle_exception, initialize_retrievers, _create_event, extract_conversation_flow, \
     create_contextualize_query, get_all_filtered_tools
 from tilellm.controller.helpers import _get_question_list
@@ -177,7 +177,7 @@ async def ask_hybrid_with_memory(question_answer, repo=None, llm=None, callback_
         else:
             contextualize_query= question_answer.question
 
-        retriever = retrieve_documents(question_answer, results,contextualize_query)
+        retriever = await aretrieve_documents(question_answer, results,contextualize_query)
 
         # Create chains for contextualization and Q&A
         history_aware_retriever, question_answer_chain, qa_prompt = await create_chains(llm, question_answer, retriever)

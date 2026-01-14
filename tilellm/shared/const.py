@@ -4,11 +4,7 @@ STREAM_NAME = "stream:single"
 STREAM_CONSUMER_NAME = "llmconsumer"
 STREAM_CONSUMER_GROUP = "llmconsumergroup"
 
-PINECONE_API_KEY = None
-PINECONE_INDEX = None
-PINECONE_TEXT_KEY = None
-VOYAGEAI_API_KEY = None
-JWT_SECRET_KEY = None
+
 
 
 rephrase_qa_prompt ="""
@@ -344,14 +340,8 @@ Reply to previous question and give me the Citations from the given sources that
 
 
 
-def populate_constant():
-    global JWT_SECRET_KEY
-    JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY")
-    #global PINECONE_API_KEY, PINECONE_INDEX, PINECONE_TEXT_KEY, VOYAGEAI_API_KEY
-    #PINECONE_API_KEY = os.environ.get("PINECONE_API_KEY")
-    #PINECONE_INDEX = os.environ.get("PINECONE_INDEX")
-    #PINECONE_TEXT_KEY = os.environ.get("PINECONE_TEXT_KEY")
-    #VOYAGEAI_API_KEY = os.environ.get("VOYAGEAI_API_KEY")
+
+
 
 
 

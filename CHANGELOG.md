@@ -6,6 +6,11 @@
 ### **Copyright**: Tiledesk SRL
 
 ---
+## [2026-01-14]
+### 0.8.1-rc1
+- Added: Pinecone reranker profile for reranking.
+
+---
 ## [2026-01-13]
 ### 0.8.0-rc3
 - Fixed: Correctly display errors in `/api/ask`.

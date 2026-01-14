@@ -36,7 +36,7 @@ if [ -z "$environment" ]; then
 
 fi
 if [ -z "$WORKERS" ]; then
-  WORKERS=1
+  WORKERS=3
 fi
 if [ -z "$TIMEOUT" ]; then
   TIMEOUT=240

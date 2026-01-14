@@ -40,7 +40,7 @@ class GraphRepository:
 
     def __init__(self):
         """
-        Initialize Neo4j connection using service_conf.yaml.
+        Initialize Neo4j connection using environment variables.
         """
         if GraphRepository._driver is None:
             if neo4j is None:
@@ -50,7 +50,7 @@ class GraphRepository:
             neo4j_config = service_config.get("neo4j")
 
             if not neo4j_config:
-                raise ValueError("Neo4j configuration not found in service_conf.yaml")
+                raise ValueError("Neo4j configuration not found in environment variables")
 
             uri = neo4j_config.get("uri")
             user = neo4j_config.get("user")

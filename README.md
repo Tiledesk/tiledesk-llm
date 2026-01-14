@@ -64,13 +64,13 @@ The system supports multiple embedding providers through a flexible factory patt
 
 For sparse encoding, reranking, and dense embeddings, you can use models served by [Text Embeddings Inference (TEI)](https://github.com/huggingface/text-embeddings-inference) from Hugging Face. TEI provides an efficient API for inference of embedding, sparse encoding, and reranking models.
 
-- **Dense Embeddings**: Any TEI-compatible embedding model (e.g., `intfloat/multilingual-e5-large-instruct`) can be served via TEI and configured in the `tei.embedding` section of `service_conf.yaml`.
-- **Sparse Encoder**: The `splade` model (e.g., `naver/efficient-splade-VI-BT-large-query`) can be served via TEI and configured in the `tei.sparse_encoder` section.
-- **Reranker**: The `bge-reranker` model (e.g., `BAAI/bge-reranker-large`) can be served via TEI and configured in the `tei.reranker` section.
+- **Dense Embeddings**: Any TEI-compatible embedding model (e.g., `intfloat/multilingual-e5-large-instruct`) can be served via TEI and configured using environment variables (e.g., `TEI_EMBEDDING_URL`, `TEI_EMBEDDING_MODEL`).
+- **Sparse Encoder**: The `splade` model (e.g., `naver/efficient-splade-VI-BT-large-query`) can be served via TEI and configured using environment variables (e.g., `TEI_SPARSE_ENCODER_URL`, `TEI_SPARSE_ENCODER_MODEL`).
+- **Reranker**: The `bge-reranker` model (e.g., `BAAI/bge-reranker-large`) can be served via TEI and configured using environment variables (e.g., `TEI_RERANKER_URL`, `TEI_RERANKER_MODEL`).
 
-To use them, ensure you have started TEI services (e.g., via the Docker Compose `tei` profile) and configured the correct URLs in the configuration file.
+To use them, ensure you have started TEI services (e.g., via the Docker Compose `tei` profile) and configured the correct URLs via environment variables.
 
-Example configuration in `service_conf.yaml`:
+Example environment variables in `.env.example`:
 
 ```yaml
 tei:
@@ -280,20 +280,23 @@ Note: For more in-depth information regarding the architecture and module specif
 
 ## Configuration-Based Module Loading
 
-Modules can be enabled/disabled via the `service_conf.yaml` configuration file:
+Modules can be enabled/disabled via environment variables (e.g., `TILELLM_PROFILE` or individual `ENABLE_*` flags):
 
 1. Copy the template:
    ```bash
-   cp service_conf.yaml.template service_conf.yaml
+   cp .env.example .env
    ```
 
-2. Edit `service_conf.yaml` to enable desired modules:
-   ```yaml
-   services:
-     graphrag: true      # Enable Knowledge Graph module
-     pdf_ocr: false      # Disable PDF OCR module
-     conversion: true    # Enable conversion module
-     tools_registry: true
+2. Edit `.env` to enable desired modules:
+   ```bash
+   # Use a profile to enable a predefined set of modules
+   TILELLM_PROFILE="app-graph"
+   
+   # Or enable modules individually
+   ENABLE_GRAPHRAG="true"
+   ENABLE_PDF_OCR="false"
+   ENABLE_CONVERSION="true"
+   ENABLE_TOOLS_REGISTRY="true"
    ```
 
 3. The application automatically loads only enabled modules at startup.
@@ -495,10 +498,15 @@ Reranking improves search relevance by reordering retrieved documents based on t
 - **Configuration**:
   - `reranking_multiplier` (default: `3`): Retrieve `top_k * multiplier` documents, then rerank to select best `top_k`.
   - `reranker_model` (default: `"cross‑encoder/ms‑marco‑MiniLM‑L‑6‑v2"`): Hugging Face cross‑encoder model for reranking.
-- **Supported Models**: Cross‑encoder models from Hugging Face (e.g., Microsoft MARCO models, BGE rerankers). You can also use TEI-served reranker models (e.g., `BAAI/bge-reranker-large`) by configuring the TEI service (see [TEI Models](#tei-text-embeddings-inference-models) section).
+- **Supported Models**:
+  - **Cross‑encoder models** from Hugging Face (e.g., Microsoft MARCO models, BGE rerankers)
+  - **TEI‑served reranker models** (e.g., `BAAI/bge-reranker-large`) by configuring the TEI service (see [TEI Models](#tei-text-embeddings-inference-models) section)
+  - **Pinecone Inference API** (`bge-reranker-v2-m3` and other models) - managed reranking service
 - **Integration**: Works with both hybrid search (`search_type="hybrid"`) and similarity/MMR search (`search_type="similarity"` or `"mmr"`).
 
-**Example** (QA with reranking):
+#### Configuration Examples
+
+**1. Default Cross‑encoder (local/transformers):**
 ```json
 {
   "question": "Your question",
@@ -508,6 +516,72 @@ Reranking improves search relevance by reordering retrieved documents based on t
   "reranking_multiplier": 3,
   "reranker_model": "BAAI/bge-reranker-v2-m3",
   "search_type": "hybrid"
+}
+```
+
+**2. TEI‑served reranker:**
+```json
+{
+  "question": "Your question",
+  "namespace": "your-namespace",
+  "top_k": 5,
+  "reranking": {
+    "provider": "tei",
+    "name": "bge-reranker-large",
+    "url": "http://localhost:7480"
+  },
+  "reranking_multiplier": 3,
+  "search_type": "hybrid"
+}
+```
+
+**3. Pinecone Inference API:**
+```json
+{
+  "question": "Your question",
+  "namespace": "your-namespace",
+  "top_k": 5,
+  "reranking": {
+    "provider": "pinecone",
+    "api_key": "your-pinecone-api-key",
+    "model": "bge-reranker-v2-m3"
+  },
+  "reranking_multiplier": 3,
+  "search_type": "hybrid"
+}
+```
+
+**Note**: When using Pinecone reranker, the `reranker_model` parameter is ignored. The Pinecone Inference API automatically handles token limits and provides managed infrastructure for reranking operations.
+
+#### Pinecone Model Specifications & Adaptive Features
+
+The Pinecone reranker integration includes adaptive optimizations based on model capabilities:
+
+| Model | Max Tokens per Pair | Max Documents | Max Rank Fields | Supports `truncate` | Requires Max-P Strategy | Notes |
+|-------|---------------------|---------------|-----------------|-------------------|------------------------|-------|
+| `cohere-rerank-3.5` | 40,000 | 200 | Unlimited | ❌ No | ❌ Disabled | High token limit, supports multiple rank fields, `truncate` parameter filtered out |
+| `bge-reranker-v2-m3` | 1,024 | 100 | 1 | ✅ Yes | ✅ Enabled | Single rank field only, `truncate: "END"` default |
+| `pinecone-rerank-v0` | 512 | 100 | 1 | ✅ Yes | ✅ Enabled | Single rank field only, `truncate: "END"` default |
+
+**Adaptive Features**:
+- **Max-P Strategy**: Automatically enabled for models with low token limits (`bge-reranker-v2-m3`, `pinecone-rerank-v0`) to chunk long documents while preserving relevance. Disabled for `cohere-rerank-3.5` due to high token limit.
+- **Parameter Filtering**: Unsupported parameters are automatically filtered (e.g., `truncate` is removed for `cohere-rerank-3.5`).
+- **Rank Field Validation**: Models limited to single rank field automatically use the first specified field.
+- **Batch Processing**: Documents exceeding `max_documents` limit are automatically split into batches.
+
+**Example with multiple rank fields (cohere model)**:
+```json
+{
+  "reranking": {
+    "provider": "pinecone",
+    "api_key": "your-pinecone-api-key",
+    "model": "cohere-rerank-3.5",
+    "rank_fields": ["chunk_text", "title", "summary"],
+    "parameters": {
+      "return_scores": true
+      // Note: 'truncate' parameter is automatically filtered for cohere model
+    }
+  }
 }
 ```
 

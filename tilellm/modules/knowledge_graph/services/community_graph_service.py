@@ -20,7 +20,7 @@ from langchain_core.documents import Document
 from pydantic import Field
 
 from tilellm.models import Engine, ChatEntry
-from tilellm.models.llm import TEIConfig
+from tilellm.models.llm import TEIConfig, PineconeRerankerConfig
 from tilellm.models.schemas import RepositoryItems, RepositoryNamespace
 from tilellm.models import QuestionAnswer # Aggiunto per Hybrid Search
 from tilellm.controller.controller_utils import fetch_question_vectors # Aggiunto per Hybrid Search
@@ -887,7 +887,7 @@ class CommunityGraphService:
             llm_embeddings=None,
             engine: Optional[Engine] = None,
             chat_history_dict: Optional[Dict[str, Any]] = None,
-            reranking_config: Optional[Union[str, TEIConfig]] = None,
+            reranking_config: Optional[Union[str, TEIConfig, PineconeRerankerConfig]] = None,
             use_rrf: bool = True,
             use_reranking: bool = True,
             top_k_initial: int = 20,

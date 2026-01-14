@@ -45,7 +45,7 @@ def initialize_services():
     # Check if graphrag service is enabled in configuration
     try:
         service_config = get_service_config()
-        graphrag_enabled = service_config.get("services", {}).get("graphrag", False)
+        graphrag_enabled = service_config.get("services", {}).get("graphrag", False) if service_config.get("services") else False
         if not graphrag_enabled:
             logger.info("Knowledge Graph service is disabled in configuration (graphrag: false).")
             repository = None

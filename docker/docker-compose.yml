@@ -51,6 +51,13 @@ services:
       - TIMEOUT=240
       - TOKENIZERS_PARALLELISM=false
       - ENABLE_TASKIQ=${ENABLE_TASKIQ}
+      - ENABLE_PROFILER=${ENABLE_PROFILER}
+      - ENABLE_TASKIQ=${ENABLE_TASKIQ}
+      - ENABLE_GRAPHRAG=${ENABLE_GRAPHRAG}
+      - ENABLE_PDF_OCR=${ENABLE_PDF_OCR}
+      - ENABLE_CONVERSION=${ENABLE_CONVERSION}
+      - ENABLE_TOOLS_REGISTRY=${ENABLE_TOOLS_REGISTRY}
+      - LOG_LEVEL=${LOG_LEVEL}
     ports:
       - "${APP_PORT:-8000}:8000"
       - "${APP_PORT_WORKER:-3009}:3009"
@@ -70,7 +77,21 @@ services:
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - TIMEOUT=240
       - TOKENIZERS_PARALLELISM=false
+      - ENABLE_PROFILER=${ENABLE_PROFILER}
       - ENABLE_TASKIQ=${ENABLE_TASKIQ}
+      - ENABLE_GRAPHRAG=${ENABLE_GRAPHRAG}
+      - ENABLE_PDF_OCR=${ENABLE_PDF_OCR}
+      - ENABLE_CONVERSION=${ENABLE_CONVERSION}
+      - ENABLE_TOOLS_REGISTRY=${ENABLE_TOOLS_REGISTRY}
+      - NEO4J_URI=${NEO4J_URI}
+      - NEO4J_USERNAME=${NEO4J_USERNAME}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
+      - NEO4J_DATABASE=${NEO4J_DATABASE}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_SECURE=${MINIO_SECURE}
+      - MINIO_GRAPHRAG_BUCKET=${MINIO_GRAPHRAG_BUCKET}
     ports:
       - "${APP_PORT:-8000}:8000"
       - "${APP_PORT_WORKER:-3009}:3009"
@@ -90,7 +111,21 @@ services:
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - TIMEOUT=240
       - TOKENIZERS_PARALLELISM=false
+      - ENABLE_PROFILER=${ENABLE_PROFILER}
       - ENABLE_TASKIQ=${ENABLE_TASKIQ}
+      - ENABLE_GRAPHRAG=${ENABLE_GRAPHRAG}
+      - ENABLE_PDF_OCR=${ENABLE_PDF_OCR}
+      - ENABLE_CONVERSION=${ENABLE_CONVERSION}
+      - ENABLE_TOOLS_REGISTRY=${ENABLE_TOOLS_REGISTRY}
+      - NEO4J_URI=${NEO4J_URI}
+      - NEO4J_USERNAME=${NEO4J_USERNAME}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
+      - NEO4J_DATABASE=${NEO4J_DATABASE}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_SECURE=${MINIO_SECURE}
+      - MINIO_GRAPHRAG_BUCKET=${MINIO_GRAPHRAG_BUCKET}
     ports:
       - "${APP_PORT:-8000}:8000"
       - "${APP_PORT_WORKER:-3009}:3009"
@@ -117,7 +152,21 @@ services:
       - JWT_SECRET_KEY=${JWT_SECRET_KEY}
       - TIMEOUT=240
       - TOKENIZERS_PARALLELISM=false
+      - ENABLE_PROFILER=${ENABLE_PROFILER}
       - ENABLE_TASKIQ=${ENABLE_TASKIQ}
+      - ENABLE_GRAPHRAG=${ENABLE_GRAPHRAG}
+      - ENABLE_PDF_OCR=${ENABLE_PDF_OCR}
+      - ENABLE_CONVERSION=${ENABLE_CONVERSION}
+      - ENABLE_TOOLS_REGISTRY=${ENABLE_TOOLS_REGISTRY}
+      - NEO4J_URI=${NEO4J_URI}
+      - NEO4J_USERNAME=${NEO4J_USERNAME}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD}
+      - NEO4J_DATABASE=${NEO4J_DATABASE}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
+      - MINIO_SECURE=${MINIO_SECURE}
+      - MINIO_GRAPHRAG_BUCKET=${MINIO_GRAPHRAG_BUCKET}
     ports:
       - "${APP_PORT:-8000}:8000"
       - "${APP_PORT_WORKER:-3009}:3009"
@@ -141,8 +190,8 @@ services:
       --model-id ${TEI_SPLADE_MODEL_ID}
       --pooling splade
       --port 80
-      --max-batch-tokens ${MAX_BATCH_TOKENS} 
-      --max-concurrent-requests ${MAX_CONCURRENT_REQUESTS}
+      --max-batch-tokens ${TEI_SPLADE_MAX_BATCH_TOKENS} 
+      --max-concurrent-requests ${TEI_SPLADE_MAX_CONCURRENT_REQUESTS}
       --api-key ${TEI_SPLADE_API_KEY}
       --auto-truncate
     ports:
@@ -182,7 +231,7 @@ services:
     image: ghcr.io/huggingface/text-embeddings-inference:1.8
     profiles: ["tei-embedding"]
     command: >
-      --model-id intfloat/multilingual-e5-large-instruct
+      --model-id ${TEI_EMBEDDING_MODEL_ID}
       --auto-truncate
       --port 80 # default port
       --api-key ${TEI_EMBEDDING_API_KEY} # Uncomment and replace with your actual key if needed
@@ -215,7 +264,7 @@ services:
     image: neo4j:latest
     profiles: ["neo4j"]
     environment:
-      - NEO4J_AUTH=${NEO4J_AUTH:-neo4j/n3o4j_Mammata}
+      - NEO4J_AUTH=${NEO4J_USERNAME}/${NEO4J_PASSWORD}
       - NEO4J_ACCEPT_LICENSE_AGREEMENT=yes
       - NEO4J_server_jvm_additional=-XX:+UnlockDiagnosticVMOptions -XX:+UnlockExperimentalVMOptions --add-modules=jdk.incubator.vector
     ports:
@@ -238,8 +287,8 @@ services:
     volumes:
       - "~/sviluppo/data/minio_data:/data"
     environment:
-      - MINIO_ROOT_USER=${MINIO_ROOT_USER}
-      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_USER}
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY}
     command: server /data --console-address ":9001"
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]

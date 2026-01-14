@@ -15,7 +15,7 @@ import aiohttp
 import json
 from dotenv import load_dotenv
 
-from tilellm.shared.const import populate_constant
+
 from tilellm.shared.timed_cache import TimedCache
 from tilellm.shared.utility import decode_jwt
 from tilellm.models import (ItemSingle,
@@ -53,7 +53,6 @@ import logging
 import sys
 from pathlib import Path
 
-# --- AGGIUNGI QUESTO BLOCCO ALL'INIZIO DEL FILE ---
 # 1. Trova il percorso del file corrente (__main__.py)
 current_file_path = Path(__file__).resolve()
 
@@ -68,23 +67,12 @@ project_root = current_file_path
 sys.path.append(str(project_root))
 
 
-ENVIRONMENTS = {
-    'serverless': '.environ',
-    'pod': '.environ.prod',
-}
-
 expiration_in_seconds = 48 * 60 * 60
 
 logger = logging.getLogger(__name__)
 
-
-environment = os.environ.get("PINECONE_TYPE", "serverless")
-# environment = "serverless"
-load_dotenv(ENVIRONMENTS.get(environment) or '.environ')
-
-
-# print(os.environ.get("PINECONE_API_KEY"))
-# os.environ.__setitem__("ENVIRON", environment)
+# Load environment variables from .env file (if present)
+load_dotenv('.env')
 
 redis_url = os.environ.get("REDIS_URL")
 tilellm_role = os.environ.get("TILELLM_ROLE")
@@ -240,7 +228,7 @@ async def redis_consumer(app: FastAPI):
 
 
 
-populate_constant()
+
 app = FastAPI(lifespan=redis_consumer)
 
 
@@ -443,7 +431,6 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
 
     logger.debug(result)
     return result
-
 
 
 @app.post("/api/ask", response_model=SimpleAnswer, tags=["Question & Answer"])
@@ -823,9 +810,9 @@ def register_feature_routers(_app: FastAPI, base_package_dir: str):
 
     package_name = str(base_path).replace(os.path.sep, '.')
 
-    print(f"🔍 Sto cercando i servizi nella directory: '{base_path}'...")
+    logger.info(f"🔍 Sto cercando i servizi nella directory: '{base_path}'...")
     if not enable_all:
-        print(f"📋 Configurazione servizi: {services_enabled}")
+        logger.info(f"📋 Configurazione servizi: {services_enabled}")
 
     found_routers = False
     for service_dir in base_path.iterdir():
@@ -842,10 +829,10 @@ def register_feature_routers(_app: FastAPI, base_package_dir: str):
             else:
                 # Modulo non nella mappatura, caricamento di default (disabilitato per sicurezza)
                 should_load = False
-                print(f"⚠️  Modulo '{module_name}' non mappato, verrà saltato. Aggiungilo a module_config_mapping per abilitarlo.")
+                logger.info(f"⚠️  Modulo '{module_name}' non mappato, verrà saltato. Aggiungilo a module_config_mapping per abilitarlo.")
             
             if not should_load:
-                print(f"⏭️  Modulo '{module_name}' disabilitato in configurazione, salto.")
+                logger.info(f"⏭️  Modulo '{module_name}' disabilitato in configurazione, salto.")
                 continue
                 
             controller_file = service_dir / "controllers.py"
@@ -857,26 +844,25 @@ def register_feature_routers(_app: FastAPI, base_package_dir: str):
                     module = importlib.import_module(module_path)
 
                     if hasattr(module, "router") and isinstance(module.router, APIRouter):
-                        print(f"✅ Trovato e registrato il router da: '{module_path}'")
+                        logger.info(f"✅ Trovato e registrato il router da: '{module_path}'")
                         _app.include_router(module.router)
                         found_routers = True
                     else:
-                        print(f"⚠️  Nel modulo '{module_path}' non è stato trovato un APIRouter chiamato 'router'.")
+                        logger.info(f"⚠️  Nel modulo '{module_path}' non è stato trovato un APIRouter chiamato 'router'.")
 
                 except Exception as e:
-                    print(f"❌ Errore durante il caricamento di '{module_path}': {e}")
+                    logger.info(f"❌ Errore durante il caricamento di '{module_path}': {e}")
             else:
-                print(f"📁 Modulo '{module_name}' non ha controllers.py, salto.")
+                logger.info(f"📁 Modulo '{module_name}' non ha controllers.py, salto.")
 
     if not found_routers:
-        print("ℹ️  Nessun router valido trovato nei moduli.")
+        logger.info("ℹ️  Nessun router valido trovato nei moduli.")
 
 
 register_feature_routers(app, "tilellm/modules")
 
 
 def main():
-    logger.debug(f"Environment: {environment}")
     import uvicorn
     uvicorn.run("tilellm.__main__:app", host="0.0.0.0", port=8000, reload=True, log_level="info")#, log_config=args.log_path
 

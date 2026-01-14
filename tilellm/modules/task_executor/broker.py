@@ -3,7 +3,7 @@ from taskiq import TaskiqEvents, TaskiqState
 from taskiq_redis import ListQueueBroker, RedisAsyncResultBackend
 from tilellm.shared.utility import get_service_config
 
-# Get config from service_conf.yaml
+# Get config from environment variables
 config = get_service_config()
 redis_conf = config.get("redis", {})
 

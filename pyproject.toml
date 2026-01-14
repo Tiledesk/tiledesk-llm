@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "tilellm"
-version = "0.8.0-rc3"
+version = "0.8.1-rc1"
 description = "tiledesk for RAG"
 authors = ["Gianluca Lorenzo <gianluca.lorenzo@gmail.com>"]
 repository = "https://github.com/Tiledesk/tiledesk-llm"
@@ -74,6 +74,7 @@ taskiq = {version = "^0.11.0", optional = true}
 taskiq-redis = {version = "^1.0.0", optional = true}
 torch = {version = "2.9.1", optional = true}
 FlagEmbedding= {version = "1.3.5", optional = true}
+sentence-transformers = {version = "4.1.0", optional = true}
 
 docling = {version = "2.66.0", optional = true}
 pillow = {version = "^10.0.0", optional = true}
@@ -91,10 +92,10 @@ networkx = {version = "3.6.1", optional = true}
 pyarrow = {version = "22.0.0", optional = true}
 
 [tool.poetry.extras]
-ml = ["torch", "FlagEmbedding", "pinecone-text"]
+ml = ["torch", "FlagEmbedding", "pinecone-text", "sentence-transformers"]
 graph = ["neo4j", "minio", "langchain-aws", "duckdb", "parquet", "igraph", "networkx", "pyarrow", "taskiq", "taskiq-redis"]
 ocr = ["neo4j", "minio", "langchain-aws",  "docling", "pillow", "duckdb", "parquet", "igraph", "networkx", "pyarrow", "taskiq", "taskiq-redis"]
-all = ["torch", "FlagEmbedding", "pinecone-text", "neo4j", "minio", "PyMuPdf", "pdf2image", "langchain-aws", "duckdb", "parquet", "igraph", "networkx", "pyarrow", "taskiq", "taskiq-redis", "docling", "pillow"]
+all = ["torch", "FlagEmbedding", "pinecone-text", "sentence-transformers", "neo4j", "minio", "PyMuPdf", "pdf2image", "langchain-aws", "duckdb", "parquet", "igraph", "networkx", "pyarrow", "taskiq", "taskiq-redis", "docling", "pillow"]
 
 [tool.poetry.dependencies.uvicorn]
 version = "0.38.0"

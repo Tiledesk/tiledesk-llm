@@ -184,26 +184,60 @@ def retrieve_documents_old(question_answer, results):
 
 # Function to retrieve documents based on search results
 def retrieve_documents(question_answer, results, contextualized_query=None):
-    #Aggiunto
+    # Aggiunto
     retrieval_k = question_answer.top_k * question_answer.reranking_multiplier if question_answer.reranking else question_answer.top_k
 
     # Get all available result or retrieval_k
     matches_to_use = results["matches"][:retrieval_k] if len(results["matches"]) >= retrieval_k else results["matches"]
 
-    documents = [Document(page_content=match["metadata"]["text"], metadata=match["metadata"]) for match in matches_to_use]
+    documents = [Document(page_content=match["metadata"]["text"], metadata=match["metadata"]) for match in
+                 matches_to_use]
     # Applica re-ranking se necessario
     if question_answer.reranking and len(documents) > question_answer.top_k:
         # Per l'hybrid search, dobbiamo applicare il re-ranking manualmente
         ranking_query = contextualized_query if contextualized_query else question_answer.question
-        
+
         # Determine model config
-        if isinstance(question_answer.reranking, bool): # True
-             model_config = question_answer.reranker_model
+        if isinstance(question_answer.reranking, bool):  # True
+            model_config = question_answer.reranker_model
         else:
-             model_config = question_answer.reranking
+            model_config = question_answer.reranking
 
         reranker = TileReranker(model_name=model_config)
         reranked_docs = reranker.rerank_documents(ranking_query, documents, question_answer.top_k)
+        retriever = HybridRetriever(documents=reranked_docs, k=question_answer.top_k)
+    else:
+        retriever = HybridRetriever(documents=documents, k=question_answer.top_k)
+    return retriever
+
+
+# Async version of retrieve_documents for use in async contexts
+async def aretrieve_documents(question_answer, results, contextualized_query=None):
+    """
+    Async version of retrieve_documents that uses async reranking when available.
+    """
+    # Aggiunto
+    retrieval_k = question_answer.top_k * question_answer.reranking_multiplier if question_answer.reranking else question_answer.top_k
+
+    # Get all available result or retrieval_k
+    matches_to_use = results["matches"][:retrieval_k] if len(results["matches"]) >= retrieval_k else results["matches"]
+
+    documents = [Document(page_content=match["metadata"]["text"], metadata=match["metadata"]) for match in
+                 matches_to_use]
+    # Applica re-ranking se necessario
+    if question_answer.reranking and len(documents) > question_answer.top_k:
+        # Per l'hybrid search, dobbiamo applicare il re-ranking manualmente
+        ranking_query = contextualized_query if contextualized_query else question_answer.question
+
+        # Determine model config
+        if isinstance(question_answer.reranking, bool):  # True
+            model_config = question_answer.reranker_model
+        else:
+            model_config = question_answer.reranking
+
+        reranker = TileReranker(model_name=model_config)
+        # Use async reranking if available
+        reranked_docs = await reranker.arerank_documents(ranking_query, documents, question_answer.top_k)
         retriever = HybridRetriever(documents=reranked_docs, k=question_answer.top_k)
     else:
         retriever = HybridRetriever(documents=documents, k=question_answer.top_k)

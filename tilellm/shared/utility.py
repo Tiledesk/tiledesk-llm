@@ -1,6 +1,6 @@
 import asyncio
 import json
-import yaml
+import os
 from functools import lru_cache
 
 from functools import wraps
@@ -28,22 +28,134 @@ from tilellm.models.llm import LlmEmbeddingModel # Need this import
 
 logger = logging.getLogger(__name__)
 
-@lru_cache(maxsize=1)
+def _str_to_bool(value: str) -> bool:
+    """
+    Convert a string to boolean.
+    Accepts: 'true', '1', 'yes', 'on' (case-insensitive) -> True
+    All other values -> False
+    """
+    return str(value).lower() in ('true', '1', 'yes', 'on')
+
+
 def get_service_config():
     """
-    Loads the service_conf.yaml file and caches the result.
+    Loads service configuration from environment variables.
     Returns:
-        A dictionary with the service configuration, or an empty dict if not found.
+        A dictionary with the service configuration.
     """
+    config = {}
+
+    # Profile-based service configuration
+    tilellm_profile = os.environ.get("TILELLM_PROFILE", "").lower()
+
+    # Define service profiles
+    service_profiles = {
+        "app-base": {
+            "task_executor": True,
+            "graphrag": False,
+            "pdf_ocr": False,
+            "conversion": True,
+            "tools_registry": True
+        },
+        "app-graph": {
+            "task_executor": True,
+            "graphrag": True,
+            "pdf_ocr": False,
+            "conversion": True,
+            "tools_registry": True
+        },
+        "app-ocr": {
+            "task_executor": True,
+            "graphrag": True,
+            "pdf_ocr": True,
+            "conversion": True,
+            "tools_registry": True
+        },
+        "app-all": {
+            "task_executor": True,
+            "graphrag": True,
+            "pdf_ocr": True,
+            "conversion": True,
+            "tools_registry": True
+        }
+    }
+
+    if tilellm_profile in service_profiles:
+        config["services"] = service_profiles[tilellm_profile]
+        logger.info(f"Using TILELLM_PROFILE '{tilellm_profile}': {config['services']}")
+    else:
+        config["services"] = {
+            "task_executor": _str_to_bool(os.environ.get("ENABLE_TASKIQ", "true")),
+            "graphrag": _str_to_bool(os.environ.get("ENABLE_GRAPHRAG", "false")),
+            "pdf_ocr": _str_to_bool(os.environ.get("ENABLE_PDF_OCR", "false")),
+            "conversion": _str_to_bool(os.environ.get("ENABLE_CONVERSION", "true")),
+            "tools_registry": _str_to_bool(os.environ.get("ENABLE_TOOLS_REGISTRY", "true"))
+        }
+
+    # TEI Configuration
+    config["tei"] = {
+        "embedding": {
+            "url": os.environ.get("TEI_EMBEDDING_URL", "http://localhost:7580"),
+            "api_key": os.environ.get("TEI_EMBEDDING_API_KEY", ""),
+            "model": os.environ.get("TEI_EMBEDDING_MODEL", "intfloat/multilingual-e5-large-instruct")
+        },
+        "sparse_encoder": {
+            "url": os.environ.get("TEI_SPARSE_ENCODER_URL", "http://localhost:7380"),
+            "api_key": os.environ.get("TEI_SPARSE_ENCODER_API_KEY", ""),
+            "model": os.environ.get("TEI_SPARSE_ENCODER_MODEL", "naver/efficient-splade-VI-BT-large-query")
+        },
+        "reranker": {
+            "url": os.environ.get("TEI_RERANKER_URL", "http://localhost:7480"),
+            "api_key": os.environ.get("TEI_RERANKER_API_KEY", ""),
+            "model": os.environ.get("TEI_RERANKER_MODEL", "BAAI/bge-reranker-large")
+        }
+    }
+
+    # MinIO Configuration
+    config["minio"] = {
+        "endpoint": os.environ.get("MINIO_ENDPOINT", "localhost:9000"),
+        "access_key": os.environ.get("MINIO_ACCESS_KEY", "minioadmin"),
+        "secret_key": os.environ.get("MINIO_SECRET_KEY", "minioadmin"),
+        "secure": _str_to_bool(os.environ.get("MINIO_SECURE", "False")),
+        "bucket_name": os.environ.get("MINIO_GRAPHRAG_BUCKET", "graphrag"),
+        "bucket_tables": os.environ.get("MINIO_TABLES_BUCKET", "document-tables"),
+        "bucket_images": os.environ.get("MINIO_IMAGES_BUCKET", "document-images"),
+        "bucket_pdfs": os.environ.get("MINIO_PDFS_BUCKET", "ocr-pdfs")
+    }
+
+    # Neo4j Configuration
+    config["neo4j"] = {
+        "uri": os.environ.get("NEO4J_URI", "bolt://localhost:7687"),
+        "user": os.environ.get("NEO4J_USERNAME", "neo4j"),
+        "password": os.environ.get("NEO4J_PASSWORD", "password"),
+        "database": os.environ.get("NEO4J_DATABASE", "neo4j")
+    }
+
+    # Redis Configuration
+    redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
     try:
-        with open("service_conf.yaml", "r") as f:
-            return yaml.safe_load(f)
-    except FileNotFoundError:
-        logger.warning("service_conf.yaml not found. Module-specific configurations will be ignored.")
-        return {}
-    except Exception as e:
-        logger.error(f"Error loading service_conf.yaml: {e}")
-        return {}
+        parsed = redis_url.replace("redis://", "").split(":")
+        redis_host = parsed[0].split("/")[0] if "/" in parsed[0] else parsed[0]
+        redis_port = int(parsed[1].split("/")[0]) if len(parsed) > 1 else 6379
+        redis_db = int(parsed[2]) if len(parsed) > 2 else 0
+    except Exception:
+        redis_host = "localhost"
+        redis_port = 6379
+        redis_db = 0
+
+    config["redis"] = {
+        "host": redis_host,
+        "port": redis_port,
+        "db": redis_db,
+        "queue_name": os.environ.get("REDIS_QUEUE_NAME", "tiledesk_ocr_queue")
+    }
+
+    # JWT Configuration
+    config["jwt"] = {
+        "secret_key": os.environ.get("JWT_SECRET_KEY")
+    }
+
+    return config
 
 
 def _hash_api_key(api_key: str) -> str:
@@ -1343,6 +1455,9 @@ async def _create_reasoning_llm_instance(question) -> Any:
 
 def decode_jwt(token:str):
     import jwt
-    jwt_secret_key = const.JWT_SECRET_KEY
+    config = get_service_config()
+    jwt_secret_key = config["jwt"]["secret_key"]
+    if not jwt_secret_key:
+        raise ValueError("JWT_SECRET_KEY not configured")
     return jwt.decode(jwt=token, key=jwt_secret_key, algorithms=['HS256'])
 

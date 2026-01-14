@@ -36,65 +36,86 @@ class TestUtilityFunctions:
         expected = hashlib.sha256("".encode()).hexdigest()
         assert result == expected
     
-    def test_get_service_config_file_exists(self):
-        """Test loading service config from existing file."""
-        test_config = {
-            "modules": {
-                "conversion": {"enabled": True},
-                "knowledge_graph": {"enabled": False}
-            }
-        }
+    @patch.dict(os.environ, {"TILELLM_PROFILE": "app-base"})
+    def test_get_service_config_profile_base(self):
+        """Test loading service config from TILELLM_PROFILE environment variable."""
+        result = get_service_config()
         
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-            yaml.dump(test_config, f)
-            temp_path = f.name
-        
-        try:
-            # Temporarily change to the temp directory
-            original_dir = os.getcwd()
-            temp_dir = os.path.dirname(temp_path)
-            os.chdir(temp_dir)
-            
-            result = get_service_config()
-            assert result == test_config
-            
-            # Test caching - second call should return same object
-            result2 = get_service_config()
-            assert result is result2  # Same object due to lru_cache
-            
-            os.chdir(original_dir)
-        finally:
-            os.unlink(temp_path)
+        assert "services" in result
+        assert result["services"]["task_executor"] is True
+        assert result["services"]["graphrag"] is False
+        assert result["services"]["pdf_ocr"] is False
+        assert result["services"]["conversion"] is True
+        assert result["services"]["tools_registry"] is True
     
-    def test_get_service_config_file_not_found(self):
-        """Test loading service config when file doesn't exist."""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            original_dir = os.getcwd()
-            os.chdir(temp_dir)
-            
-            result = get_service_config()
-            assert result == {}  # Should return empty dict
-            
-            os.chdir(original_dir)
-    
-    def test_get_service_config_invalid_yaml(self):
-        """Test loading invalid YAML file."""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-            f.write("invalid: yaml: : :")
-            temp_path = f.name
+    @patch.dict(os.environ, {"TILELLM_PROFILE": "app-graph"})
+    def test_get_service_config_profile_graph(self):
+        """Test loading service config with graphrag enabled."""
+        result = get_service_config()
         
-        try:
-            original_dir = os.getcwd()
-            temp_dir = os.path.dirname(temp_path)
-            os.chdir(temp_dir)
-            
-            result = get_service_config()
-            # Should return empty dict on error
-            assert result == {}
-            
-            os.chdir(original_dir)
-        finally:
-            os.unlink(temp_path)
+        assert "services" in result
+        assert result["services"]["graphrag"] is True
+        assert result["services"]["pdf_ocr"] is False
+    
+    @patch.dict(os.environ, {"TILELLM_PROFILE": "app-ocr"})
+    def test_get_service_config_profile_ocr(self):
+        """Test loading service config with PDF OCR enabled."""
+        result = get_service_config()
+        
+        assert "services" in result
+        assert result["services"]["pdf_ocr"] is True
+        assert result["services"]["graphrag"] is False
+    
+    @patch.dict(os.environ, {"TILELLM_PROFILE": "app-all"})
+    def test_get_service_config_profile_all(self):
+        """Test loading service config with all modules enabled."""
+        result = get_service_config()
+        
+        assert "services" in result
+        assert result["services"]["task_executor"] is True
+        assert result["services"]["graphrag"] is True
+        assert result["services"]["pdf_ocr"] is True
+        assert result["services"]["conversion"] is True
+        assert result["services"]["tools_registry"] is True
+    
+    @patch.dict(os.environ, {}, clear=True)
+    def test_get_service_config_no_profile(self):
+        """Test loading service config with no profile (uses individual flags)."""
+        result = get_service_config()
+        
+        assert "services" in result
+        # Default values should be used
+        assert result["services"]["task_executor"] is True
+        assert result["services"]["graphrag"] is False
+        assert result["services"]["pdf_ocr"] is False
+    
+    @patch.dict(os.environ, {"ENABLE_GRAPHRAG": "true", "ENABLE_PDF_OCR": "yes"})
+    def test_get_service_config_individual_flags(self):
+        """Test loading service config with individual enable flags."""
+        result = get_service_config()
+        
+        assert "services" in result
+        assert result["services"]["graphrag"] is True
+        assert result["services"]["pdf_ocr"] is True
+    
+    def test_str_to_bool(self):
+        """Test string to boolean conversion."""
+        from tilellm.shared.utility import _str_to_bool
+        
+        assert _str_to_bool("true") is True
+        assert _str_to_bool("True") is True
+        assert _str_to_bool("TRUE") is True
+        assert _str_to_bool("1") is True
+        assert _str_to_bool("yes") is True
+        assert _str_to_bool("on") is True
+        
+        assert _str_to_bool("false") is False
+        assert _str_to_bool("False") is False
+        assert _str_to_bool("0") is False
+        assert _str_to_bool("no") is False
+        assert _str_to_bool("off") is False
+        assert _str_to_bool("") is False
+        assert _str_to_bool("random") is False
 
 
 class TestInjectDecorators:

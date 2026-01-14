@@ -49,7 +49,7 @@ class MinIOStorageService:
     
     def __init__(self):
         """
-        Initialize MinIO storage service using service_conf.yaml.
+        Initialize MinIO storage service using environment variables.
         """
         if Minio is None:
             raise ImportError("Minio client not installed. Please install with 'poetry install -E graph'")
@@ -58,7 +58,7 @@ class MinIOStorageService:
         minio_config = service_config.get("minio")
         
         if not minio_config:
-            raise ValueError("MinIO configuration not found in service_conf.yaml")
+            raise ValueError("MinIO configuration not found in environment variables")
         
         self.endpoint = minio_config.get("endpoint")
         self.access_key = minio_config.get("access_key")

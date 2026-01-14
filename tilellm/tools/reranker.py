@@ -1,4 +1,4 @@
-from typing import List, Any, Union, Optional, TYPE_CHECKING, Tuple
+from typing import List, Any, Union, Optional, TYPE_CHECKING, Tuple, Dict
 from collections import OrderedDict
 
 from langchain_core.callbacks import CallbackManagerForRetrieverRun, AsyncCallbackManagerForRetrieverRun
@@ -11,7 +11,7 @@ from threading import Lock
 import re
 
 if TYPE_CHECKING:
-    from tilellm.models.llm import TEIConfig
+    from tilellm.models.llm import TEIConfig, PineconeRerankerConfig
 
 try:
     from sentence_transformers import CrossEncoder
@@ -22,6 +22,63 @@ try:
     import torch
 except ImportError:
     torch = None
+
+try:
+    from pinecone import Pinecone, PineconeAsyncio
+except ImportError:
+    Pinecone = None
+
+
+# ============================================================================
+# Pinecone Model Specifications
+# ============================================================================
+
+PINEONE_MODEL_SPECS = {
+    "cohere-rerank-3.5": {
+        "max_tokens_per_pair": 40000,  # 40k token limit
+        "max_documents": 200,
+        "supports_truncate": False,
+        "supports_max_chunks_per_doc": True,
+        "max_rank_fields": None,  # Multiple fields supported
+        "default_parameters": {},
+        "requires_maxp": False,  # 40k tokens is huge, Max-P likely not needed
+        "recommended_batch_size": 50,  # Can handle larger batches
+    },
+    "bge-reranker-v2-m3": {
+        "max_tokens_per_pair": 1024,
+        "max_documents": 100,
+        "supports_truncate": True,
+        "supports_max_chunks_per_doc": False,
+        "max_rank_fields": 1,  # Only single field
+        "default_parameters": {"truncate": "END"},
+        "requires_maxp": True,  # 1024 token limit may require chunking
+        "recommended_batch_size": 20,
+    },
+    "pinecone-rerank-v0": {
+        "max_tokens_per_pair": 512,
+        "max_documents": 100,
+        "supports_truncate": True,
+        "supports_max_chunks_per_doc": False,
+        "max_rank_fields": 1,  # Only single field
+        "default_parameters": {"truncate": "END"},
+        "requires_maxp": True,  # 512 token limit definitely requires chunking
+        "recommended_batch_size": 15,
+    }
+}
+
+def get_pinecone_model_spec(model_name: str) -> dict:
+    """Get specification for a Pinecone reranker model."""
+    # Try exact match first
+    if model_name in PINEONE_MODEL_SPECS:
+        return PINEONE_MODEL_SPECS[model_name]
+    
+    # Try partial match (e.g., with version suffix)
+    for key in PINEONE_MODEL_SPECS:
+        if model_name.startswith(key):
+            return PINEONE_MODEL_SPECS[key]
+    
+    # Default to bge-reranker-v2-m3 specs (most common)
+    return PINEONE_MODEL_SPECS["bge-reranker-v2-m3"]
 
 
 # ============================================================================
@@ -388,6 +445,231 @@ class TEIReranker:
         return [doc for doc, score in aggregated_docs[:top_k]]
 
 
+class PineconeReranker:
+    def __init__(self, config: "PineconeRerankerConfig", max_tokens: int = 300, overlap_tokens: int = 40):
+        """
+        Initialize Pinecone Reranker with adaptive strategy based on model specifications.
+
+        Args:
+            config: Pinecone reranker configuration
+            max_tokens: Maximum tokens per chunk for Max-P strategy (default: 300, conservativo)
+            overlap_tokens: Overlap tokens between chunks (default: 40)
+        """
+        if Pinecone is None:
+            raise ImportError("Pinecone is not available. Install 'pinecone-client'.")
+        self.config = config
+        self.api_key = config.api_key.get_secret_value()
+        self.name = config.name
+        self.top_n = config.top_n
+        self.rank_fields = config.rank_fields
+        self.parameters = config.parameters
+        self.logger = logging.getLogger(__name__)
+        self.client = Pinecone(api_key=self.api_key)
+        
+        # Get model specifications
+        self.model_spec = get_pinecone_model_spec(self.name)
+        
+        # Adjust Max-P strategy based on model capabilities
+        if self.model_spec["requires_maxp"]:
+            # Models with lower token limits need Max-P
+            self.max_tokens = max_tokens
+            self.overlap_tokens = overlap_tokens
+            self.use_maxp = True
+        else:
+            # Models with high token limits (cohere-rerank-3.5) don't need Max-P
+            # Set max_tokens to model limit for safety
+            self.max_tokens = min(max_tokens, self.model_spec["max_tokens_per_pair"] // 2)
+            self.overlap_tokens = overlap_tokens
+            self.use_maxp = False
+            self.logger.info(f"Model {self.name} has high token limit ({self.model_spec['max_tokens_per_pair']}), Max-P strategy disabled")
+        
+        # Validate and adjust rank_fields based on model limitations
+        if self.model_spec["max_rank_fields"] is not None:
+            if self.rank_fields and len(self.rank_fields) > self.model_spec["max_rank_fields"]:
+                self.logger.warning(f"Model {self.name} supports only {self.model_spec['max_rank_fields']} rank field(s), "
+                                  f"using first {self.model_spec['max_rank_fields']} from {self.rank_fields}")
+                self.rank_fields = self.rank_fields[:self.model_spec["max_rank_fields"]]
+        
+        # Filter parameters based on model support
+        self.filtered_parameters = self._filter_parameters(self.parameters)
+        
+        # Set recommended batch size for logging
+        self.recommended_batch_size = self.model_spec["recommended_batch_size"]
+
+        #apc = PineconeAsyncio(api_key=self.api_key)
+        #await apc.inference.rerank()
+
+    def _filter_parameters(self, parameters: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Filter parameters based on model support."""
+        if parameters is None:
+            parameters = {}
+        
+        filtered = {}
+        for key, value in parameters.items():
+            # Check if parameter is supported by the model
+            if key == "truncate" and not self.model_spec["supports_truncate"]:
+                self.logger.warning(f"Parameter '{key}' not supported for model {self.name}, skipping")
+                continue
+            elif key == "max_chunks_per_doc" and not self.model_spec["supports_max_chunks_per_doc"]:
+                self.logger.warning(f"Parameter '{key}' not supported for model {self.name}, skipping")
+                continue
+            
+            filtered[key] = value
+        
+        # Apply default parameters if not specified
+        for key, value in self.model_spec["default_parameters"].items():
+            if key not in filtered:
+                filtered[key] = value
+        
+        return filtered
+
+    def rerank_documents(self, query: str, documents: List[Document], top_k: int, batch_size: int = 8) -> List[Document]:
+        if not documents:
+            return []
+
+        # ===== STEP 1: Apply Adaptive Strategy =====
+        if self.use_maxp:
+            # Apply Max-P chunking for models with low token limits
+            chunked_docs, doc_indices = apply_maxp_chunking(
+                documents,
+                max_tokens=self.max_tokens,
+                overlap_tokens=self.overlap_tokens
+            )
+            
+            num_chunks = len(chunked_docs)
+            num_originals = len(documents)
+            
+            if num_chunks > num_originals:
+                self.logger.info(f"Max-P Strategy: Split {num_originals} documents into {num_chunks} chunks "
+                               f"(max_tokens={self.max_tokens}, overlap={self.overlap_tokens})")
+        else:
+            # For models with high token limits (cohere-rerank-3.5), use original documents
+            chunked_docs = documents
+            doc_indices = list(range(len(documents)))  # Each doc maps to itself
+        
+        # ===== STEP 2: Prepare documents for Pinecone API =====
+        pinecone_docs = []
+        for idx, doc in enumerate(chunked_docs):
+            # Use document metadata id if available, otherwise generate a unique id
+            doc_id = doc.metadata.get("id", f"doc_{hash(doc.page_content) & 0xFFFFFFFF}")
+            
+            # Prepare document fields for reranking
+            doc_dict = {"id": doc_id}
+            
+            # Add rank fields with appropriate content
+            if self.rank_fields:
+                for field in self.rank_fields:
+                    if field == "chunk_text" or field == "text":
+                        doc_dict[field] = doc.page_content
+                    else:
+                        # Try to get field from metadata
+                        doc_dict[field] = doc.metadata.get(field, "")
+            else:
+                # Default field
+                doc_dict["text"] = doc.page_content
+            
+            pinecone_docs.append(doc_dict)
+        
+        # Determine top_n: if not set, use top_k or number of documents
+        top_n = self.top_n if self.top_n is not None else top_k
+        
+        # ===== STEP 3: Batch processing if documents exceed model limit =====
+        max_docs_per_call = self.model_spec["max_documents"]
+        all_scored_chunks = []
+        
+        if len(pinecone_docs) <= max_docs_per_call:
+            # Single batch processing
+            self.logger.info(f"Pinecone rerank with model {self.name}: "
+                           f"documents={len(pinecone_docs)}, top_n={top_n}, "
+                           f"rank_fields={self.rank_fields}, parameters={self.filtered_parameters}")
+            
+            try:
+                ranked_results = self.client.inference.rerank(
+                    model=self.name,
+                    query=query,
+                    documents=pinecone_docs,
+                    top_n=min(top_n, len(pinecone_docs)),
+                    rank_fields=self.rank_fields if self.rank_fields else ["text"],
+                    return_documents=True,
+                    parameters=self.filtered_parameters
+                )
+            except Exception as e:
+                self.logger.error(f"Error calling Pinecone rerank: {e}")
+                raise e
+            
+            # Process results
+            for item in ranked_results.data:
+                idx = item.index
+                score = item.score
+                all_scored_chunks.append((chunked_docs[idx], score))
+        else:
+            # Batch processing - split into multiple API calls
+            num_batches = (len(pinecone_docs) + max_docs_per_call - 1) // max_docs_per_call
+            self.logger.info(f"Pinecone rerank with model {self.name}: "
+                           f"documents={len(pinecone_docs)} exceeds limit {max_docs_per_call}, "
+                           f"splitting into {num_batches} batches")
+            
+            for batch_idx in range(num_batches):
+                start = batch_idx * max_docs_per_call
+                end = min(start + max_docs_per_call, len(pinecone_docs))
+                batch_docs = pinecone_docs[start:end]
+                batch_chunked_docs = chunked_docs[start:end]
+                
+                self.logger.debug(f"Processing batch {batch_idx + 1}/{num_batches} with {len(batch_docs)} documents")
+                
+                try:
+                    # For batch processing, we want all results from each batch
+                    batch_top_n = min(top_n, len(batch_docs))
+                    ranked_results = self.client.inference.rerank(
+                        model=self.name,
+                        query=query,
+                        documents=batch_docs,
+                        top_n=batch_top_n,
+                        rank_fields=self.rank_fields if self.rank_fields else ["text"],
+                        return_documents=True,
+                        parameters=self.filtered_parameters
+                    )
+                except Exception as e:
+                    self.logger.error(f"Error calling Pinecone rerank on batch {batch_idx + 1}: {e}")
+                    raise e
+                
+                # Process batch results
+                for item in ranked_results.data:
+                    idx = item.index
+                    score = item.score
+                    # Adjust index to global chunked_docs
+                    global_idx = start + idx
+                    all_scored_chunks.append((chunked_docs[global_idx], score))
+        
+        # ===== STEP 4: Aggregate and rank results =====
+        if self.use_maxp:
+            # Aggregate scores using Max-P strategy
+            aggregated_docs = aggregate_maxp_scores(all_scored_chunks, doc_indices)
+            # Sort by score (descending)
+            aggregated_docs.sort(key=lambda x: x[1], reverse=True)
+            return [doc for doc, _ in aggregated_docs[:top_k]]
+        else:
+            # For non-Max-P, we already have original documents
+            # Sort by score (descending) and take top_k
+            all_scored_chunks.sort(key=lambda x: x[1], reverse=True)
+            return [doc for doc, _ in all_scored_chunks[:top_k]]
+
+    async def arerank_documents(self, query: str, documents: List[Document], top_k: int, batch_size: int = 8) -> List[Document]:
+        """
+        Asynchronous version of rerank_documents.
+        Pinecone SDK currently does not support async natively, so we run in thread pool.
+        """
+
+        import asyncio
+        return await asyncio.to_thread(
+            self.rerank_documents,
+            query=query,
+            documents=documents,
+            top_k=top_k,
+            batch_size=batch_size
+        )
+
+
 class TileReranker:
     # Cache LRU con dimensione massima di 2 modelli
 
@@ -397,7 +679,7 @@ class TileReranker:
     _logger = logging.getLogger(__name__)
     _cache_lock = Lock()
 
-    def __init__(self, model_name: Union[str, "TEIConfig"] = "BAAI/bge-reranker-v2-m3",
+    def __init__(self, model_name: Union[str, "TEIConfig", "PineconeRerankerConfig"] = "BAAI/bge-reranker-v2-m3",
                  max_tokens: int = 300, overlap_tokens: int = 40):
         """
         Initialize TileReranker with Max-P strategy support.
@@ -407,9 +689,16 @@ class TileReranker:
             max_tokens: Maximum tokens per chunk for Max-P strategy (default: 300, conservativo)
             overlap_tokens: Overlap tokens between chunks (default: 40)
         """
-        if hasattr(model_name, "provider") and model_name.provider == "tei":
-             self.model_name = "tei_" + model_name.url
-             self.config = model_name
+        if not isinstance(model_name, str) and hasattr(model_name, "provider"):
+            if model_name.provider == "tei":
+                self.model_name = f"tei_{model_name.name}"
+                self.config = model_name
+            elif model_name.provider == "pinecone":
+                self.model_name = f"pinecone_{model_name.name}"
+                self.config = model_name
+            else:
+                self.model_name = str(model_name)
+                self.config = None
         else:
             self.model_name = model_name
             self.config = None
@@ -419,7 +708,7 @@ class TileReranker:
         self.model = self._get_cached_model(self.model_name, self.config, max_tokens, overlap_tokens)
 
     @classmethod
-    def _get_cached_model(cls, model_name: str, config: Optional["TEIConfig"] = None,
+    def _get_cached_model(cls, model_name: str, config: Optional[Union["TEIConfig", "PineconeRerankerConfig"]] = None,
                          max_tokens: int = 300, overlap_tokens: int = 40):
 
         with cls._cache_lock:
@@ -431,12 +720,20 @@ class TileReranker:
                     cls._logger.info(f"Removing old reranker from cache: {oldest}")
                     cls._model_cache.pop(oldest)
 
-                if config and hasattr(config, "provider") and config.provider == "tei":
-                    cls._logger.info("Loading new TEIReranker instance")
-                    cls._model_cache[model_name] = TEIReranker(config, max_tokens, overlap_tokens)
+                if config and hasattr(config, "provider"):
+                    if config.provider == "tei":
+                        cls._logger.info("Loading new TEIReranker instance")
+                        cls._model_cache[model_name] = TEIReranker(config, max_tokens, overlap_tokens)
+                    elif config.provider == "pinecone":
+                        if Pinecone is None:
+                            raise ImportError("Pinecone is not available. Install 'pinecone-client'.")
+                        cls._logger.info("Loading new PineconeReranker instance")
+                        cls._model_cache[model_name] = PineconeReranker(config, max_tokens, overlap_tokens)
+                    else:
+                        raise ValueError(f"Unknown provider: {config.provider}")
                 else:
                     if CrossEncoder is None:
-                        raise ImportError("CrossEncoder is not available. Install 'ml' extras.")
+                        raise ImportError("CrossEncoder is not available. Install 'sentence-transformers' package or 'ml' extras.")
                     cls._logger.info(f"Loading new Reranker model: {model_name}")
                     cls._model_cache[model_name] = CrossEncoder(model_name, device=cls._device)
             else:
@@ -450,6 +747,8 @@ class TileReranker:
 
     def rerank_documents(self, query: str, documents: List[Document], top_k: int, batch_size: int = 8) -> List[Document]:
         if isinstance(self.model, TEIReranker):
+             return self.model.rerank_documents(query, documents, top_k, batch_size)
+        if isinstance(self.model, PineconeReranker):
              return self.model.rerank_documents(query, documents, top_k, batch_size)
 
         if not documents:
@@ -478,11 +777,14 @@ class TileReranker:
 
         # Calcola i punteggi con context no_grad
         # Disabilita il calcolo dei gradienti durante l'inferenza, riducendo il consumo di memoria.
-        with torch.no_grad():
+        if torch is not None:
+            with torch.no_grad():
+                scores_tensor = self.model.predict(query_doc_pairs)
+        else:
             scores_tensor = self.model.predict(query_doc_pairs)
 
         # Converti immediatamente in lista Python e rilascia il tensore
-        if isinstance(scores_tensor, torch.Tensor):
+        if torch is not None and isinstance(scores_tensor, torch.Tensor):
             scores = scores_tensor.cpu().numpy().tolist()  # Sposta su CPU e converte
             del scores_tensor  # Rilascia esplicitamente il riferimento al tensore
         else:
@@ -496,7 +798,7 @@ class TileReranker:
         aggregated_docs.sort(key=lambda x: x[1], reverse=True)
 
         # Liberazione esplicita della cache GPU se necessario
-        if self._device == 'cuda':
+        if torch is not None and self._device == 'cuda':
             torch.cuda.empty_cache()
             self._logger.info("Freed GPU memory after tensor conversion")
 
@@ -527,6 +829,14 @@ class TileReranker:
                 top_k=top_k,
                 batch_size=batch_size
             )
+        # If using Pinecone, delegate to its async method
+        if isinstance(self.model, PineconeReranker):
+            return await self.model.arerank_documents(
+                query=query,
+                documents=documents,
+                top_k=top_k,
+                batch_size=batch_size
+            )
 
         # For CrossEncoder (CPU/GPU), run in thread pool
         return await asyncio.to_thread(
@@ -537,6 +847,7 @@ class TileReranker:
             batch_size=batch_size
         )
 
+    @classmethod
     def clear_cache(cls):
         """Clear the model cache and free up memory"""
         cls._logger.info("Clearing BGE Reranker cache")
