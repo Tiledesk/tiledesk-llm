@@ -111,8 +111,8 @@ celerybeat.pid
 # Environments
 .env
 .venv
-.environ
-.environ.prod
+.env
+.env.prod
 deploy_old.sh
 docker-compose-test.yml
 docker-compose.yml
