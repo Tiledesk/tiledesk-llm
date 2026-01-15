@@ -115,4 +115,4 @@ extras = ["standard"]
 
 [tool.poetry.scripts]
 tilellm = "tilellm.__main__:main"
-test = "pytest tests/"
+# test = "pytest tests/"

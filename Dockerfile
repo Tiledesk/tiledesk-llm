@@ -1,7 +1,7 @@
 # --- STAGE 1: Builder (Python) ---
 FROM python:3.12-slim AS python-builder
 
-ARG EXTRAS="all"
+ARG EXTRAS='all'
 
 WORKDIR /build
 RUN apt update && apt install -y --no-install-recommends \
