@@ -1,6 +1,6 @@
 import datetime
 import uuid
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 
 from fastapi import HTTPException
 
@@ -15,6 +15,7 @@ from tilellm.models.llm import TEIConfig
 
 from tilellm.shared.embedding_factory import inject_embedding
 from tilellm.shared.embeddings.embedding_client_manager import inject_embedding_qa_async_optimized, inject_embedding_async_optimized
+from tilellm.shared.tags_query_parser import build_tags_filter
 from tilellm.store.vector_store_repository import VectorStoreIndexingError
 from tilellm.tools.document_tools import (get_content_by_url,
                                           get_content_by_url_with_bs,
@@ -36,7 +37,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
 
 
 
-    async def perform_hybrid_search(self, question_answer, index, dense_vector, sparse_vector):
+    async def perform_hybrid_search(self, question_answer, index, dense_vector, sparse_vector, filter: Optional[Dict] = None):
         # Pinecone Pod indices are always dense only
         if sparse_vector is not None:
             logger.warning("Pinecone Pod indices are dense only, ignoring sparse vector.")
@@ -46,7 +47,8 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 top_k=question_answer.top_k,
                 vector=dense_vector,
                 namespace=question_answer.namespace,
-                include_metadata=True
+                include_metadata=True,
+                filter=filter
             )
             return results
         finally:
@@ -139,6 +141,8 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                     single_document.metadata["source"] = source
                     single_document.metadata["type"] = type_source
                     single_document.metadata["embedding"] = embedding_name
+                    if item.tags:
+                        single_document.metadata["tags"] = item.tags
 
                     for key, value in single_document.metadata.items():
                         if isinstance(value, list) and all(item is None for item in value):
@@ -177,8 +181,10 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 doc_array = get_content_by_url_with_bs(source)
                 chunks = list()
                 for doc in doc_array:
-                    metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding_name)
-                    document = Document(page_content=doc, metadata=metadata.model_dump(exclude_none=True))
+                    metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding_name).model_dump(exclude_none=True)
+                    if item.tags:
+                        metadata["tags"] = item.tags
+                    document = Document(page_content=doc, metadata=metadata)
                     chunks.append(document)
  
                 if len(chunks) == 0:
@@ -191,8 +197,10 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 logger.debug(f"ids: {ids}")
 
             else:
-                metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding_name)
-                document = Document(page_content=content, metadata=metadata.model_dump(exclude_none=True))
+                metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding_name).model_dump(exclude_none=True)
+                if item.tags:
+                    metadata["tags"] = item.tags
+                document = Document(page_content=content, metadata=metadata)
 
                 chunks.extend(self.chunk_data_extended(data=[document],
                                                        chunk_size=chunk_size,
@@ -340,6 +348,11 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
 
             start_time = datetime.datetime.now() if question_answer.debug else 0
 
+            # AGIUNTA: build filter from tags
+            filter_dict = None
+            if question_answer.tags:
+                filter_dict = build_tags_filter(question_answer.tags, field="tags")
+
             if question_answer.search_type == 'hybrid':
                 raise HTTPException(
                     status_code=403,
@@ -350,7 +363,8 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 results = await vector_store.asearch(query=question_answer.question,
                                                      search_type=question_answer.search_type,
                                                      k=question_answer.top_k,
-                                                     namespace=question_answer.namespace
+                                                     namespace=question_answer.namespace,
+                                                     filter=filter_dict
                                                      )
 
             end_time = datetime.datetime.now() if question_answer.debug else 0

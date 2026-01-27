@@ -1,6 +1,6 @@
 import logging
 from abc import ABC, abstractmethod
-from typing import Optional, Union
+from typing import Optional, Union, Dict, Any
 
 from tilellm.models.schemas import (RepositoryNamespace,
                                     RepositoryItems,
@@ -25,6 +25,16 @@ class VectorStoreIndexingError(Exception):
 class VectorStoreRepository(ABC):
 
     sparse_enabled=False
+
+    def build_filter(self, namespace: str, filter_dict: Optional[Dict] = None) -> Any:
+        """
+        Build store-specific filter from namespace and optional Pinecone-style filter dict.
+        Default implementation returns the filter_dict unchanged (suitable for Pinecone).
+        Subclasses should override to convert to store-specific filter format.
+        """
+        # For Pinecone, namespace is separate parameter, filter_dict is Pinecone filter
+        # Return filter_dict as-is; namespace will be handled separately
+        return filter_dict
 
     @abstractmethod
     async def add_item(self, item):

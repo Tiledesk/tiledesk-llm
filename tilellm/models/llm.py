@@ -47,6 +47,7 @@ class ItemSingle(BaseModel):
         default_factory=lambda: {'user-agent': 'Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36'}
     )
     namespace: str | None = None
+    tags: Optional[List[str]] = None
     webhook: str = Field(default_factory=lambda: "")
     semantic_chunk: Optional[bool] = Field(default=False)
     breakpoint_threshold_type: Optional[str] = Field(default="percentile")
@@ -84,11 +85,12 @@ class MetadataItem(BaseModel):
     embedding: Union[str,LlmEmbeddingModel] = Field(default_factory=lambda: "text-embedding-ada-002")
     date: str = Field(default_factory=lambda: datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f"))
     namespace: Optional[str] = None
-
+    tags: Optional[list[str]] = None
 
 class QuestionAnswer(BaseModel):
     question: str
     namespace: str
+    tags: Optional[Union[str, List[str]]] = None
     llm: Optional[str] = Field(default="openai")
     gptkey: Optional[SecretStr] = "sk"
     model: Union[str, LlmEmbeddingModel] = Field(default="gpt-3.5-turbo")

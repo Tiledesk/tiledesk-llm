@@ -16,6 +16,7 @@ Complete REST API documentation for Tiledesk LLM server.
 - [Question & Answer APIs](#question--answer-apis)
 - [Namespace Management APIs](#namespace-management-apis)
 - [Conversion APIs](#conversion-apis)
+- [Tag Filtering](#tag-filtering)
 - [Tools Registry APIs](#tools-registry-apis)
 - [Knowledge Graph APIs](#knowledge-graph-apis)
 - [Authentication](#authentication)
@@ -35,6 +36,7 @@ Indexes a single document.
   "source": "string",
   "content": "string",
   "namespace": "string",
+  "tags": ["string"] (optional),
   "webhook": "string (optional)",
   "hybrid": false,
   "semantic_chunk": false,
@@ -117,6 +119,7 @@ Query with conversation history on knowledge base.
 {
   "question": "string",
   "namespace": "string",
+  "tags": ["string"] (optional),
   "gptkey": "string",
   "llm": "openai",
   "model": "gpt-4o",
@@ -153,6 +156,7 @@ Query with conversation history on knowledge base.
 - `search_type`: `"similarity"` | `"hybrid"` | `"mmr"`
 - `chunks_only`: If true, returns only chunks without generating answer
 - `citations`: If true, includes source citations (requires `max_tokens >= 1024`)
+- `tags`: Optional tag filter. Can be a list of strings (`["python", "api"]`) or a boolean expression (`"(python|javascript)&!legacy"`). See [Tag Filtering](#tag-filtering) for details.
 
 ---
 
@@ -783,6 +787,45 @@ Get the graph network (nodes + relationships) for visualization.
 
 ---
 
+## Tag Filtering
+
+Tag filtering allows you to filter documents by tags during indexing and querying. Tags can be assigned when indexing documents and used as filters during retrieval using boolean expressions or simple lists.
+
+### Tag Grammar
+
+- Single tag: `"python"`
+- OR operator: `"python|api"` (matches documents tagged with either "python" OR "api")
+- AND operator: `"python&api"` (matches documents tagged with both "python" AND "api")
+- NOT operator: `"!legacy"` (excludes documents tagged with "legacy")
+- Parentheses: `"(python|javascript)&(api|rest)&!legacy"` (complex nested expressions)
+- List syntax: `["python", "api"]` (equivalent to `"python&api"`)
+
+### Usage Examples
+
+**Indexing with tags** (in `/api/scrape/single` or `/api/scrape/hybrid`):
+```json
+{
+  "id": "doc-001",
+  "source": "https://example.com",
+  "content": "Document content...",
+  "namespace": "my-docs",
+  "tags": ["python", "api", "latest"]
+}
+```
+
+**Querying with tag filter** (in `/api/qa`):
+```json
+{
+  "question": "How to use the API?",
+  "namespace": "my-docs",
+  "tags": "(python|javascript)&api&!legacy"
+}
+```
+
+**Supported Vector Stores**: Pinecone (Serverless and Pod) and Qdrant fully support tag filtering. Redis vector store is not affected (used only for caching/streaming).
+
+**Implementation Details**: Tags are stored in vector store metadata under the `"tags"` field. Filter conversion happens automatically for different vector stores (Pinecone native filters, Qdrant via `build_filter()`). Works with all search types (`similarity`, `hybrid`, `mmr`) and reranking.
+
 ## Tools Registry APIs
 
 ### GET `/api/tools`
@@ -954,6 +997,7 @@ curl -X POST "http://localhost:8000/api/scrape/single" \
     "source": "https://example.com/doc.pdf",
     "content": "Document content to index...",
     "namespace": "my-docs",
+    "tags": ["python", "api"],
     "embedding": "text-embedding-ada-002",
     "engine": {
       "name": "pinecone",
@@ -975,6 +1019,7 @@ curl -X POST "http://localhost:8000/api/qa" \
   -d '{
     "question": "What is RAG?",
     "namespace": "my-docs",
+    "tags": "python",
     "gptkey": "your-openai-key",
     "model": "gpt-4o",
     "embedding": "text-embedding-ada-002",

@@ -27,6 +27,7 @@ from langchain_classic.retrievers.document_compressors import DocumentCompressor
 from langchain_classic.retrievers import ContextualCompressionRetriever
 
 import tilellm.shared.const as const
+from tilellm.shared.tags_query_parser import build_tags_filter
 
 from langchain_classic.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
@@ -110,10 +111,24 @@ async def initialize_retrievers(question_answer, repo, llm_embeddings, embedding
     retrieval_k = question_answer.top_k * question_answer.reranking_multiplier if question_answer.reranking and question_answer.top_k > 0 else question_answer.top_k
     # TODO Bisogna cercare una soluzione più elegante
 
+    # Build tags filter if tags are provided
+    filter_dict = None
+    if question_answer.tags:
+        filter_dict = build_tags_filter(question_answer.tags, field="tags")
+
     if question_answer.engine.name == "qdrant":
         search_kwargs = {'k': retrieval_k}
+        # For Qdrant, build store-specific filter that includes namespace
+        if filter_dict:
+            search_kwargs['filter'] = repo.build_filter(question_answer.namespace, filter_dict)
+        else:
+            # Still need namespace filter for Qdrant
+            search_kwargs['filter'] = repo.build_filter(question_answer.namespace, None)
     else:
         search_kwargs = {'k': retrieval_k, 'namespace': question_answer.namespace}
+        # Add filter to search_kwargs if present (Pinecone-style)
+        if filter_dict:
+            search_kwargs['filter'] = filter_dict
 
     vs_retriever = vector_store.as_retriever(
         search_type=question_answer.search_type,

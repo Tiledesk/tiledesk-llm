@@ -25,6 +25,7 @@ from tilellm.controller.controller_utils import preprocess_chat_history, \
     fetch_question_vectors, retrieve_documents, aretrieve_documents, create_chains, get_or_create_session_history, \
     generate_answer_with_history, handle_exception, initialize_retrievers, _create_event, extract_conversation_flow, \
     create_contextualize_query, get_all_filtered_tools
+from tilellm.shared.tags_query_parser import build_tags_filter
 from tilellm.controller.helpers import _get_question_list
 from tilellm.models.schemas import (
     RetrievalResult,
@@ -160,12 +161,17 @@ async def ask_hybrid_with_memory(question_answer, repo=None, llm=None, callback_
         # Perform hybrid search - modifica per recuperare più documenti se necessario
         search_top_k = question_answer.top_k * question_answer.reranking_multiplier if question_answer.reranking else question_answer.top_k
 
+        # Build tags filter if tags are provided
+        filter_dict = None
+        if question_answer.tags:
+            filter_dict = build_tags_filter(question_answer.tags, field="tags")
+
         # Temporaneamente modifica top_k per la ricerca
         original_top_k = question_answer.top_k
         question_answer.top_k = search_top_k
 
-        # Perform hybrid search
-        results = await repo.perform_hybrid_search(question_answer, index, dense_vector, sparse_vector)
+        # Perform hybrid search with filter
+        results = await repo.perform_hybrid_search(question_answer, index, dense_vector, sparse_vector, filter=filter_dict)
 
         # Ripristina il valore originale
         question_answer.top_k = original_top_k

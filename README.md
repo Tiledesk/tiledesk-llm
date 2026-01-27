@@ -29,6 +29,7 @@ Tiledesk LLM is a powerful backend service designed for Retrieval-Augmented Gene
   - [Semantic Chunks](#semantic-chunks)
   - [Reranker](#reranker)
   - [Structured Output](#structured-output)
+  - [Tag Filtering](#tag-filtering)
   - [MCP (Model Context Protocol) Integration](#mcp-model-context-protocol-integration)
 
 ## Supported Models
@@ -660,6 +661,73 @@ Then, make a request to `/api/ask` with the schema:
 - Structured output works with both streaming and non‑streaming requests.
 - For `/api/thinking` and `/api/qa`, the structured answer is returned in the `answer` field, while reasoning content (if any) is placed in `reasoning_content`.
 - Requires LLM providers that support structured output (OpenAI, Anthropic, Google Gemini, and other compatible providers).
+
+### Tag Filtering
+Tag filtering allows you to filter documents by tags during indexing and querying. You can assign tags to documents when indexing and use boolean expressions or simple lists to filter results during retrieval.
+
+- **Indexing**: Add a `tags` field to the `ItemSingle` model when calling `/api/scrape/single` or `/api/scrape/hybrid`. Tags can be a list of strings or a single string.
+- **Querying**: Add a `tags` field to the `QuestionAnswer` model when calling `/api/qa`. The tags field can be:
+  - A list of strings: `["python", "api"]` (treated as AND condition)
+  - A boolean expression: `"(python|javascript)&!legacy"` (supports `&` (AND), `|` (OR), `!` (NOT), parentheses)
+- **Supported Vector Stores**: Pinecone (Serverless and Pod) and Qdrant fully support tag filtering. Redis vector store is not affected (used only for caching/streaming).
+
+**Tag Grammar**:
+- Single tag: `"python"`
+- OR operator: `"python|api"` (matches documents tagged with either "python" OR "api")
+- AND operator: `"python&api"` (matches documents tagged with both "python" AND "api")
+- NOT operator: `"!legacy"` (excludes documents tagged with "legacy")
+- Parentheses: `"(python|javascript)&(api|rest)&!legacy"` (complex nested expressions)
+- List syntax: `["python", "api"]` (equivalent to `"python&api"`)
+
+**Examples**:
+
+1. **Indexing with tags**:
+```json
+{
+  "id": "doc-001",
+  "source": "https://example.com",
+  "content": "Document content...",
+  "namespace": "my-docs",
+  "tags": ["python", "api", "latest"],
+  "engine": { ... }
+}
+```
+
+2. **Querying with simple tag filter**:
+```json
+{
+  "question": "How to use the API?",
+  "namespace": "my-docs",
+  "tags": "python",
+  "engine": { ... }
+}
+```
+
+3. **Querying with boolean expression**:
+```json
+{
+  "question": "Find documentation about Python or JavaScript APIs",
+  "namespace": "my-docs",
+  "tags": "(python|javascript)&api&!legacy",
+  "engine": { ... }
+}
+```
+
+4. **Querying with list (AND condition)**:
+```json
+{
+  "question": "Find latest Python API documentation",
+  "namespace": "my-docs",
+  "tags": ["python", "api", "latest"],
+  "engine": { ... }
+}
+```
+
+**Implementation Details**:
+- Tags are stored in vector store metadata under the `"tags"` field
+- Filter conversion happens automatically for different vector stores (Pinecone native filters, Qdrant via `build_filter()`)
+- Works with all search types (`similarity`, `hybrid`, `mmr`) and reranking
+- Compatible with hybrid search sparse encoders (SPLADE, BGE-M3)
 
 ### MCP (Model Context Protocol) Integration
 The `/api/ask` endpoint supports integration with MCP servers, enabling the LLM to use external tools and data sources.

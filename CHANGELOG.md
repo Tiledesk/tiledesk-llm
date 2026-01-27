@@ -6,6 +6,11 @@
 ### **Copyright**: Tiledesk SRL
 
 ---
+## [2026-01-27]
+### 0.8.2-rc1
+- Added: tags field to the `ItemSingle` and `QuestionAnswer` model in order to allow filter documents by tags during querying.
+
+---
 ## [2026-01-14]
 ### 0.8.1-rc1
 - Added: Pinecone reranker profile for reranking.

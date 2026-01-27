@@ -1,7 +1,7 @@
 import datetime
 import uuid
 from abc import ABC
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 
 from tilellm.models.schemas import (IndexingResult,
                                     RetrievalChunksResult
@@ -14,6 +14,7 @@ from tilellm.models import (MetadataItem,
 from tilellm.models.llm import TEIConfig
 from tilellm.shared.embeddings.embedding_client_manager import inject_embedding_qa_async_optimized, inject_embedding_async_optimized
 from tilellm.shared.sparse_util import hybrid_score_norm
+from tilellm.shared.tags_query_parser import build_tags_filter
 from tilellm.store.vector_store_repository import VectorStoreIndexingError
 
 from tilellm.tools.document_tools import (get_content_by_url,
@@ -39,7 +40,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
     sparse_enabled = True
 
 
-    async def perform_hybrid_search(self, question_answer, index, dense_vector, sparse_vector):
+    async def perform_hybrid_search(self, question_answer, index, dense_vector, sparse_vector, filter: Optional[Dict] = None):
         import pinecone
         
         # Determine index type (hybrid or dense)
@@ -57,7 +58,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                     top_k=question_answer.top_k,
                     vector=dense_vector,
                     namespace=question_answer.namespace,
-                    include_metadata=True
+                    include_metadata=True,
+                    filter=filter
                 )
             else:
                 # Hybrid search
@@ -67,7 +69,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                     vector=dense,
                     sparse_vector=sparse,
                     namespace=question_answer.namespace,
-                    include_metadata=True
+                    include_metadata=True,
+                    filter=filter
                 )
             return results
         finally:
@@ -122,6 +125,11 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
             start_time = datetime.datetime.now() if question_answer.debug else 0
 
+            # AGIUNTA: build filter from tags
+            filter_dict = None
+            if question_answer.tags:
+                filter_dict = build_tags_filter(question_answer.tags, field="tags")
+
             if question_answer.search_type == 'hybrid':
                 emb_dimension = await self.get_embeddings_dimension(question_answer.embedding)
                 logger.debug(f"emb dimension {emb_dimension}")
@@ -133,7 +141,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                 #async with index as index:
                     # Perform hybrid search
 
-                query_response = await self.perform_hybrid_search(question_answer, index, dense_vector, sparse_vector)
+                query_response = await self.perform_hybrid_search(question_answer, index, dense_vector, sparse_vector, filter=filter_dict)
 
                 for doc in query_response.matches:
                     doc_id = doc['id']
@@ -153,12 +161,12 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                 results = await vector_store.asearch(query=question_answer.question,
                                                      search_type=question_answer.search_type,
                                                      k=question_answer.top_k,
-                                                     namespace=question_answer.namespace
+                                                     namespace=question_answer.namespace,
+                                                     filter=filter_dict
                                                      )
 
             end_time = datetime.datetime.now() if question_answer.debug else 0
             duration = (end_time - start_time).total_seconds() if question_answer.debug else 0.0
-
 
             retrieval = RetrievalChunksResult(success=True,
                                               namespace=question_answer.namespace,
@@ -170,9 +178,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
             return retrieval
         except Exception as ex:
-
             logger.error(ex)
-
             raise ex
 
 
@@ -322,6 +328,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                                         source=item.source,
                                         type=item.type,
                                         embedding=str(item.embedding)).model_dump()
+                if item.tags:
+                    metadata["tags"] = item.tags
                 documents = await self.process_contents(type_source=item.type,
                                                         source=item.source,
                                                         metadata=metadata,
@@ -457,11 +465,12 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
         logger.debug(f"in chunk_documents item: {item} \n documents {documents} emb: {embeddings}")
         chunks = []
         for document in documents:
-
             document.metadata["id"] = item.id
             document.metadata["source"] = item.source
             document.metadata["type"] = item.type
             document.metadata["embedding"] = str(item.embedding)
+            if item.tags:
+                document.metadata["tags"] = item.tags
             processed_document = self.process_document_metadata(document, document.metadata)
             chunks.extend(self.chunk_data_extended(
                 data=[processed_document],
@@ -471,8 +480,6 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                 embeddings=embeddings,
                 breakpoint_threshold_type=item.breakpoint_threshold_type)
             )
-        #from pprint import pprint
-        #pprint(chunks)
         return chunks
 
     @staticmethod
@@ -528,7 +535,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                               namespace=namespace,
                               async_req=async_req)
 
-    async def search_community_report(self, question_answer, index, dense_vector, sparse_vector):
+    async def search_community_report(self, question_answer, index, dense_vector, sparse_vector, filter: Optional[Dict] = None):
         import pinecone
         
         # Determine index type (hybrid or dense)
@@ -546,7 +553,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                     top_k=question_answer.top_k,
                     vector=dense_vector,
                     namespace=question_answer.namespace,
-                    include_metadata=True
+                    include_metadata=True,
+                    filter=filter
                 )
             else:
                 # Hybrid search
@@ -556,7 +564,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                     vector=dense,
                     sparse_vector=sparse,
                     namespace=question_answer.namespace,
-                    include_metadata=True
+                    include_metadata=True,
+                    filter=filter
                 )
             return results
         finally:

@@ -89,7 +89,8 @@ def get_service_config():
             "graphrag": _str_to_bool(os.environ.get("ENABLE_GRAPHRAG", "false")),
             "pdf_ocr": _str_to_bool(os.environ.get("ENABLE_PDF_OCR", "false")),
             "conversion": _str_to_bool(os.environ.get("ENABLE_CONVERSION", "true")),
-            "tools_registry": _str_to_bool(os.environ.get("ENABLE_TOOLS_REGISTRY", "true"))
+            "tools_registry": _str_to_bool(os.environ.get("ENABLE_TOOLS_REGISTRY", "true")),
+            "api_v2": _str_to_bool(os.environ.get("ENABLE_API_V2", "true"))
         }
 
     # TEI Configuration

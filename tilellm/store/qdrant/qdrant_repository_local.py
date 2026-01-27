@@ -194,6 +194,72 @@ class CachedVectorStore:
 class QdrantRepository(VectorStoreRepository):
     sparse_enabled = True
 
+    def build_filter(self, namespace: str, filter_dict: Optional[Dict] = None) -> models.Filter:
+        """
+        Build Qdrant Filter from namespace and optional Pinecone-style filter dict.
+        The filter dict is produced by build_tags_filter in tags_query_parser.
+        """
+        from qdrant_client import models
+        
+        # Start with namespace condition
+        namespace_condition = models.FieldCondition(
+            key="metadata.namespace",
+            match=models.MatchValue(value=namespace)
+        )
+        
+        if not filter_dict:
+            return models.Filter(must=[namespace_condition])
+        
+        def convert_to_condition(filter_dict: Dict) -> models.Condition:
+            """Recursively convert Pinecone filter dict to Qdrant Condition."""
+            # Handle $and
+            if "$and" in filter_dict:
+                sub_conditions = [convert_to_condition(sub) for sub in filter_dict["$and"]]
+                return models.Filter(must=sub_conditions)
+            
+            # Handle $or
+            if "$or" in filter_dict:
+                sub_conditions = [convert_to_condition(sub) for sub in filter_dict["$or"]]
+                return models.Filter(should=sub_conditions)
+            
+            # Handle $not
+            if "$not" in filter_dict:
+                sub_condition = convert_to_condition(filter_dict["$not"])
+                return models.Filter(must_not=[sub_condition])
+            
+            # Handle tags field condition
+            if "tags" in filter_dict:
+                tag_cond = filter_dict["tags"]
+                if "$in" in tag_cond:
+                    tags = tag_cond["$in"]
+                    return models.FieldCondition(
+                        key="metadata.tags",
+                        match=models.MatchAny(any=tags)
+                    )
+                elif "$nin" in tag_cond:
+                    tags = tag_cond["$nin"]
+                    return models.FieldCondition(
+                        key="metadata.tags",
+                        match=models.MatchExcept(except_=tags)
+                    )
+                else:
+                    logger.warning(f"Unsupported tag condition: {tag_cond}")
+                    # Fallback: treat as empty filter (no tag constraint)
+                    return models.Filter()
+            
+            # Unknown structure - log warning and return empty filter
+            logger.warning(f"Unsupported filter structure: {filter_dict}")
+            return models.Filter()
+        
+        tag_condition = convert_to_condition(filter_dict)
+        
+        # Combine namespace with tag condition using AND
+        # If tag_condition is empty Filter (no constraints), just return namespace filter
+        if isinstance(tag_condition, models.Filter) and not tag_condition.model_dump().get("must") and not tag_condition.model_dump().get("should") and not tag_condition.model_dump().get("must_not"):
+            return models.Filter(must=[namespace_condition])
+        
+        return models.Filter(must=[namespace_condition, tag_condition])
+
     async def aadd_documents(self, engine: Engine, documents: List[Document], namespace: str, embedding_model: any, sparse_encoder: Union[str, TEIConfig, None] = None, **kwargs):
         logger.info(f"Adding {len(documents)} documents to namespace '{namespace}' with hybrid embeddings.")
 
@@ -335,22 +401,13 @@ class QdrantRepository(VectorStoreRepository):
         return results
 
 
-    async def perform_hybrid_search(self, question_answer, index, dense_vector, sparse_vector):
+    async def perform_hybrid_search(self, question_answer, index, dense_vector, sparse_vector, filter=None):
         if question_answer.alpha ==0.5:
             dense = dense_vector
             sparse = sparse_vector
         else:
             dense, sparse = hybrid_score_norm(dense_vector, sparse_vector, alpha=question_answer.alpha)
-        filter_qdrant = models.Filter(
-            should=[
-                models.FieldCondition(
-                    key="metadata.namespace",
-                    match=models.MatchValue(
-                        value=question_answer.namespace
-                    ),
-                ),
-            ]
-        )
+        filter_qdrant = self.build_filter(question_answer.namespace, filter)
 
         search_result = index.query_points(
             collection_name=question_answer.engine.index_name,
@@ -479,6 +536,8 @@ class QdrantRepository(VectorStoreRepository):
                                         type=item.type,
                                         embedding=item.embedding,
                                         namespace=item.namespace).model_dump()
+                if item.tags:
+                    metadata["tags"] = item.tags
                 documents = await self.process_contents(type_source=item.type,
                                                         source=item.source,
                                                         metadata=metadata,
@@ -599,6 +658,8 @@ class QdrantRepository(VectorStoreRepository):
                                         source=item.source,
                                         type=item.type,
                                         embedding=str(item.embedding)).model_dump()
+                if item.tags:
+                    metadata["tags"] = item.tags
                 documents = await self.process_contents(type_source=item.type,
                                                         source=item.source,
                                                         metadata=metadata,
@@ -661,23 +722,15 @@ class QdrantRepository(VectorStoreRepository):
                                                embeddings=embedding_obj,
                                                emb_dimension=embedding_dimension)
 
-            filter_qdrant = models.Filter(
-                should=[
-                    models.FieldCondition(
-                        key="metadata.namespace",
-                        match=models.MatchValue(
-                            value=question_answer.namespace
-                        ),
-                    ),
-                ]
-            )
+            from tilellm.shared.tags_query_parser import build_tags_filter
+            pinecone_filter = build_tags_filter(question_answer.tags) if question_answer.tags else None
+            filter_qdrant = self.build_filter(question_answer.namespace, pinecone_filter)
 
             start_time = datetime.datetime.now() if question_answer.debug else 0
 
             if question_answer.search_type == 'hybrid':
                 emb_dimension = await self.get_embeddings_dimension(question_answer.embedding)
                 logger.debug(f"emb_dimension: {emb_dimension}")
-                filter_qdrant = models.Filter()
                 sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
                 index = vector_store.client
                 sparse_vector = sparse_encoder.encode_queries(question_answer.question)
@@ -1419,12 +1472,13 @@ class QdrantRepository(VectorStoreRepository):
     #    print(f"in chunk_documents item: {item} \n documents {documents} emb: {embeddings}")
         chunks = []
         for document in documents:
-
             document.metadata["id"] = item.id
             document.metadata["source"] = item.source
             document.metadata["type"] = item.type
             document.metadata["embedding"] = item.embedding
             document.metadata["namespace"] = item.namespace
+            if item.tags:
+                document.metadata["tags"] = item.tags
             processed_document = self.process_document_metadata(document, document.metadata)
             chunks.extend(self.chunk_data_extended(
                 data=[processed_document],
