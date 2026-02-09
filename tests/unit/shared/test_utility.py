@@ -44,6 +44,7 @@ class TestUtilityFunctions:
         assert "services" in result
         assert result["services"]["task_executor"] is True
         assert result["services"]["graphrag"] is False
+        assert result["services"]["graphrag_falkor"] is False
         assert result["services"]["pdf_ocr"] is False
         assert result["services"]["conversion"] is True
         assert result["services"]["tools_registry"] is True
@@ -55,6 +56,7 @@ class TestUtilityFunctions:
         
         assert "services" in result
         assert result["services"]["graphrag"] is True
+        assert result["services"]["graphrag_falkor"] is False
         assert result["services"]["pdf_ocr"] is False
     
     @patch.dict(os.environ, {"TILELLM_PROFILE": "app-ocr"})
@@ -64,7 +66,8 @@ class TestUtilityFunctions:
         
         assert "services" in result
         assert result["services"]["pdf_ocr"] is True
-        assert result["services"]["graphrag"] is False
+        assert result["services"]["graphrag"] is True
+        assert result["services"]["graphrag_falkor"] is False
     
     @patch.dict(os.environ, {"TILELLM_PROFILE": "app-all"})
     def test_get_service_config_profile_all(self):
@@ -74,6 +77,7 @@ class TestUtilityFunctions:
         assert "services" in result
         assert result["services"]["task_executor"] is True
         assert result["services"]["graphrag"] is True
+        assert result["services"]["graphrag_falkor"] is False
         assert result["services"]["pdf_ocr"] is True
         assert result["services"]["conversion"] is True
         assert result["services"]["tools_registry"] is True
@@ -87,6 +91,7 @@ class TestUtilityFunctions:
         # Default values should be used
         assert result["services"]["task_executor"] is True
         assert result["services"]["graphrag"] is False
+        assert result["services"]["graphrag_falkor"] is False
         assert result["services"]["pdf_ocr"] is False
     
     @patch.dict(os.environ, {"ENABLE_GRAPHRAG": "true", "ENABLE_PDF_OCR": "yes"})
@@ -96,6 +101,7 @@ class TestUtilityFunctions:
         
         assert "services" in result
         assert result["services"]["graphrag"] is True
+        assert result["services"]["graphrag_falkor"] is False
         assert result["services"]["pdf_ocr"] is True
     
     def test_str_to_bool(self):

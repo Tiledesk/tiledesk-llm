@@ -91,20 +91,20 @@ def estimate_tokens(text: str) -> int:
     Approssimazione: ~1.8 token per word (conservativa per sicurezza)
 
     Note: Usiamo 1.8 invece di 1.3 per essere più conservativi e evitare
-    che chunk stimati come <350 token superino effettivamente il limite di 512.
+    che chunk stimati come <200 token superino effettivamente il limite di 512 del reranker.
     """
     # Split by whitespace and common punctuation
     words = re.findall(r'\w+|[^\w\s]', text)
     return int(len(words) * 1.8)
 
 
-def chunk_text_with_overlap(text: str, max_tokens: int = 300, overlap_tokens: int = 40) -> List[str]:
+def chunk_text_with_overlap(text: str, max_tokens: int = 200, overlap_tokens: int = 40) -> List[str]:
     """
     Divide il testo in chunk con overlap usando strategia Max-P.
 
     Args:
         text: Testo da dividere
-        max_tokens: Dimensione massima del chunk in token (default: 300 per sicurezza)
+        max_tokens: Dimensione massima del chunk in token (default: 200 per evitare 413)
         overlap_tokens: Numero di token di overlap tra chunk consecutivi (default: 40)
 
     Returns:
@@ -146,13 +146,13 @@ def chunk_text_with_overlap(text: str, max_tokens: int = 300, overlap_tokens: in
     return chunks
 
 
-def apply_maxp_chunking(documents: List[Document], max_tokens: int = 300, overlap_tokens: int = 40) -> Tuple[List[Document], List[int]]:
+def apply_maxp_chunking(documents: List[Document], max_tokens: int = 200, overlap_tokens: int = 40) -> Tuple[List[Document], List[int]]:
     """
     Applica la strategia Max-P ai documenti, dividendo quelli troppo lunghi in chunk.
 
     Args:
         documents: Lista di documenti originali
-        max_tokens: Limite massimo di token per chunk
+        max_tokens: Limite massimo di token per chunk (default: 200 per evitare 413)
         overlap_tokens: Token di overlap tra chunk
 
     Returns:
@@ -226,13 +226,13 @@ def aggregate_maxp_scores(chunked_scores: List[Tuple[Document, float]], doc_indi
     return result
 
 class TEIReranker:
-    def __init__(self, config: "TEIConfig", max_tokens: int = 300, overlap_tokens: int = 40):
+    def __init__(self, config: "TEIConfig", max_tokens: int = 200, overlap_tokens: int = 40):
         """
         Initialize TEI Reranker with Max-P strategy support.
 
         Args:
             config: TEI configuration
-            max_tokens: Maximum tokens per chunk for Max-P strategy (default: 300, conservativo)
+            max_tokens: Maximum tokens per chunk for Max-P strategy (default: 200, molto conservativo per evitare 413)
             overlap_tokens: Overlap tokens between chunks (default: 40)
         """
         self.config = config
@@ -446,13 +446,13 @@ class TEIReranker:
 
 
 class PineconeReranker:
-    def __init__(self, config: "PineconeRerankerConfig", max_tokens: int = 300, overlap_tokens: int = 40):
+    def __init__(self, config: "PineconeRerankerConfig", max_tokens: int = 200, overlap_tokens: int = 40):
         """
         Initialize Pinecone Reranker with adaptive strategy based on model specifications.
 
         Args:
             config: Pinecone reranker configuration
-            max_tokens: Maximum tokens per chunk for Max-P strategy (default: 300, conservativo)
+            max_tokens: Maximum tokens per chunk for Max-P strategy (default: 200, molto conservativo)
             overlap_tokens: Overlap tokens between chunks (default: 40)
         """
         if Pinecone is None:
@@ -680,15 +680,19 @@ class TileReranker:
     _cache_lock = Lock()
 
     def __init__(self, model_name: Union[str, "TEIConfig", "PineconeRerankerConfig"] = "BAAI/bge-reranker-v2-m3",
-                 max_tokens: int = 300, overlap_tokens: int = 40):
+                 max_tokens: int = 200, overlap_tokens: int = 40):
         """
         Initialize TileReranker with Max-P strategy support.
 
         Args:
-            model_name: Model name or TEIConfig instance
-            max_tokens: Maximum tokens per chunk for Max-P strategy (default: 300, conservativo)
+            model_name: Model name or TEIConfig instance (or True to use default)
+            max_tokens: Maximum tokens per chunk for Max-P strategy (default: 200, molto conservativo)
             overlap_tokens: Overlap tokens between chunks (default: 40)
         """
+        # Handle boolean True: use default model
+        #if model_name is True:
+        #    model_name = "BAAI/bge-reranker-v2-m3"
+
         if not isinstance(model_name, str) and hasattr(model_name, "provider"):
             if model_name.provider == "tei":
                 self.model_name = f"tei_{model_name.name}"

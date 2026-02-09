@@ -168,14 +168,21 @@ docker build -f docker/Dockerfile.all -t tilellm-all .
 
 You can run the application as a container, linking it to a Redis container for storage.
 
-```bash
-docker run -d -p 8000:8000 \
+```bash 
+  docker run -d -p 8000:8000 \
   --name tilellm \
-  --link your-redis-container:redis \
-  -e JWT_SECRET_KEY="yourkey-256-bit" \
-  -e REDIS_URL="redis://redis:6379/0" \
+  --add-host=host.docker.internal:host-gateway \
+  --network your-docker-network \
+  -e JWT_SECRET_KEY="your-key-256" \
+  -e REDIS_URL="redis://your-redis-container:6379/0" \
   -e TOKENIZERS_PARALLELISM=false \
   -e WORKERS=3 \
+  -e ENABLE_TASKIQ=True|False \
+  -e ENABLE_GRAPHRAG=True|False \
+  -e ENABLE_PDF_OCR=True|False \
+  -e ENABLE_CONVERSION=True|False \
+  -e ENABLE_TOOLS_REGISTRY=True|False \
+  -e ENABLE_API_V2=True|False \
   tilellm
 ```
 *Replace `your-redis-container` with the name of your running Redis container.*
@@ -258,6 +265,129 @@ Using the `qdrant` profile with Docker Compose (recommended for integration):
 
 The Qdrant service will be available at `http://localhost:6333` (or your configured port).
 
+### Milvus Vector Store
+
+Milvus is a cloud-native vector database that supports both dense and sparse vectors, enabling hybrid search capabilities. It can be deployed locally or using managed cloud services.
+
+#### Standalone Container
+
+Run Milvus standalone using Docker:
+
+```bash
+docker run -d \
+  --name milvus-standalone \
+  -p 19530:19530 \
+  -p 9091:9091 \
+  -v /path/to/milvus/data:/var/lib/milvus \
+  milvusdb/milvus:v2.6.7
+```
+
+The Milvus service will be available at `http://localhost:19530` (gRPC) and `http://localhost:9091` (HTTP).
+
+#### Configuration
+
+To use Milvus as your vector store, configure the engine in your JWT token with the following parameters:
+
+- `name`: `"milvus"`
+- `deployment`: `"local"` (for local deployment) or `"cloud"` (for Zilliz Cloud)
+- `host`: `"localhost"` (or your Milvus server host)
+- `port`: `19530` (default gRPC port) or `9091` (HTTP port)
+- `index_name`: Your collection name
+- `apikey`: Optional API key for cloud deployments
+- `database`: Optional database name (default: "default")
+- `metric`: Optional distance metric (`"L2"`, `"IP"`, `"COSINE"`), defaults to `"L2"`
+
+Example engine configuration for local Milvus:
+
+```json
+{
+  "name": "milvus",
+  "deployment": "local",
+  "host": "localhost",
+  "port": 19530,
+  "index_name": "my-collection",
+  "metric": "COSINE"
+}
+```
+
+#### Features
+
+- **Hybrid Search**: Supports both dense and sparse vectors (requires Milvus 2.4+)
+- **Namespace Support**: Uses metadata filtering for namespace isolation
+- **Tag Filtering**: Full support for tag filtering expressions
+- **Scalability**: Horizontal scaling for large-scale vector search
+
+### FalkorDB Graph Database
+
+FalkorDB is a Redis-based graph database that brings native graph capabilities to Redis. It's the recommended choice for the Knowledge Graph (GraphRAG) module, offering superior performance and scalability.
+
+#### Standalone Container
+
+Run FalkorDB using Docker:
+
+```bash
+docker run -d \
+  --name falkordb \
+  -p 6380:6379 \
+  -v /path/to/falkordb/data:/data \
+  falkordb/falkordb:latest
+```
+
+The FalkorDB service will be available at `redis://localhost:6380`.
+
+#### Configuration
+
+To use FalkorDB for GraphRAG, configure these environment variables:
+
+```bash
+# Enable FalkorDB implementation
+export ENABLE_GRAPHRAG_FALKOR=true
+
+# FalkorDB connection URI (defaults to REDIS_URL if not specified)
+export FALKORDB_URI="redis://localhost:6380"
+
+# Optional: Use same Redis instance as application
+# export FALKORDB_URI=$REDIS_URL
+
+# Optional: Configure connection pool
+export FALKORDB_MAX_CONNECTIONS=50
+export FALKORDB_SOCKET_TIMEOUT=30
+```
+
+#### Features
+
+- **Native Graph Operations**: Cypher query language support via openCypher
+- **Redis Integration**: Leverages Redis infrastructure (persistence, replication, clustering)
+- **High Performance**: In-memory graph processing with disk persistence
+- **Multi-Tenancy**: Namespace-per-graph isolation for secure multi-user environments
+- **Async/Await**: Full async implementation with connection pooling
+- **Production Ready**: Battle-tested in high-scale deployments
+
+#### Docker Compose Integration
+
+FalkorDB is included in the `docker-compose-graph.yml` configuration. To start with GraphRAG:
+
+```bash
+cd docker
+docker-compose -f docker-compose-graph.yml up -d
+```
+
+This starts:
+- FalkorDB (port 6380)
+- MinIO (object storage for community reports)
+- Tiledesk LLM with GraphRAG enabled
+
+#### GraphRAG Workflow with FalkorDB
+
+1. **Ingestion**: Documents → Vector Store → GraphRAG extraction
+2. **Graph Construction**: Entities & relationships → FalkorDB graph
+3. **Community Detection**: Leiden clustering (3 hierarchical levels)
+4. **Report Generation**: LLM-based community reports with synthetic QA
+5. **Vector Indexing**: Reports embedded and indexed for semantic search
+6. **Query Time**: Context fusion (global + local + graph expansion)
+
+See [FalkorDB GraphRAG Documentation](tilellm/modules/knowledge_graph_falkor/README.md) for detailed API usage and examples.
+
 ## Modular Architecture
 
 Tiledesk LLM now features a modular architecture that allows you to enable or disable specific features based on your needs. This reduces deployment footprint and resource usage by loading only the modules you require.
@@ -267,7 +397,8 @@ Tiledesk LLM now features a modular architecture that allows you to enable or di
 | Module | Description | Optional Dependencies | Docker Profile |
 |--------|-------------|----------------------|----------------|
 | **Base** | Core RAG functionality (scraping, QA, namespace management) | None | `app-base` |
-| **Knowledge Graph (GraphRAG)** | Graph-based retrieval and reasoning with Neo4j and MinIO | `graph` (neo4j, minio, langchain-aws) | `app-graph` |
+| **Knowledge Graph (Neo4j)** | Graph-based retrieval and reasoning with Neo4j and MinIO | `graph` (neo4j, minio, langchain-aws) | `app-graph` |
+| **Knowledge Graph (FalkorDB)** | **[NEW]** Production-ready GraphRAG with FalkorDB (Redis-based graph), Leiden clustering, adaptive expansion | `graph` (falkordb, minio, langchain-aws) | `app-graph` (enable with `ENABLE_GRAPHRAG_FALKOR=true`) |
 | **PDF OCR** | Optical Character Recognition for PDF documents | `ocr` (pdf2image, paddleocr, unstructured) | `app-ocr` |
 | **Conversion** | File format conversion (XLSX↔CSV, PDF→text/images) | Built-in | All profiles |
 | **Tools Registry** | Tool management for LLM interactions | Built-in | All profiles |
@@ -277,7 +408,26 @@ Tiledesk LLM now features a modular architecture that allows you to enable or di
 - **Automatic community report updates**: Community reports are automatically regenerated after document addition
 - **Sparse encoder support**: Full support for hybrid search with SPLADE and BGE-M3 sparse encoders
 
-Note: For more in-depth information regarding the architecture and module specifics, check the KG [README](tilellm/modules/knowledge_graph/README.md) and the [Architecture Report](tilellm/modules/knowledge_graph/REPORT.md).
+**FalkorDB Implementation (NEW - Production Ready):**
+- **FalkorDB Integration**: Redis-based graph database with native graph operations, async/await implementation
+- **Hierarchical Leiden Clustering**: Multi-level community detection (3 levels: fine/medium/coarse) with configurable resolution
+- **Adaptive Graph Expansion**: Query-type aware expansion (technical: 1-hop, exploratory: 2-hop, relational: 3-hop)
+- **Synthetic QA Generation**: Automatic question generation for community reports with context enhancement
+- **Cross-Encoder Reranking**: Advanced relevance scoring with TEI and Pinecone Inference API support
+- **Context Fusion Search**: Ultimate hybrid method combining global (community), local (vector+keyword), and graph expansion
+- **RRF (Reciprocal Rank Fusion)**: Intelligent fusion of dense and sparse retrieval results
+- **Cleanup Management**: Automatic cleanup of stale community reports before regeneration (prevents duplicates)
+- **Multi-Tenancy**: Namespace-per-graph isolation for secure multi-user environments
+- **Query Type Detection**: LLM-based detection (exploratory/technical/relational) with adaptive weight adjustment
+
+**Architecture Features:**
+- **Async-first**: Fully async/await implementation with connection pooling
+- **Modular Design**: Clean separation of services (extraction, clustering, search, synthesis)
+- **Production Optimizations**: Semaphore-based rate limiting, error handling, graceful degradation
+- **MinIO Integration**: Efficient storage of community reports, entities, and relationships in Parquet format
+- **DuckDB**: Fast analytical queries on exported graph data
+
+Note: For more in-depth information regarding the architecture and module specifics, check the KG [README](tilellm/modules/knowledge_graph/README.md), [FalkorDB README](tilellm/modules/knowledge_graph_falkor/README.md), and the [Architecture Report](tilellm/modules/knowledge_graph/REPORT.md). For improvement suggestions based on latest GraphRAG research (2024-2026), see [IMPROVEMENTS.md](tilellm/modules/knowledge_graph_falkor/IMPROVEMENTS.md).
 
 ## Configuration-Based Module Loading
 
@@ -328,6 +478,28 @@ The project includes a comprehensive Docker Compose setup with profiles for diff
 | `app-all` | All modules | All features |
 | `tei` | Text Embeddings Inference services (GPU) | SPLADE, Reranker, Embedding models |
 | `qdrant` | Qdrant vector store | Vector database for RAG |
+
+**Note**: The Knowledge Graph module supports both Neo4j and FalkorDB (Redis-based) graph databases.
+
+**FalkorDB (Recommended for Production):**
+- Use environment variable `ENABLE_GRAPHRAG_FALKOR=true` to enable the FalkorDB implementation
+- Configure connection via `FALKORDB_URI` environment variable (defaults to `REDIS_URL`)
+- Fully async implementation with superior performance and scalability
+- Native Redis integration for caching and connection pooling
+- Supports all advanced features: hierarchical clustering, adaptive expansion, context fusion
+
+**Neo4j (Legacy):**
+- Default when `ENABLE_GRAPHRAG_FALKOR` is not set
+- Full-featured Neo4j driver with Cypher query language
+- Best for existing Neo4j deployments
+
+Configuration example for FalkorDB:
+```bash
+export ENABLE_GRAPHRAG_FALKOR=true
+export FALKORDB_URI="redis://localhost:6380"  # FalkorDB default port
+# Or use same Redis instance as application:
+export FALKORDB_URI=$REDIS_URL
+```
 
 ### Usage Examples
 
@@ -669,7 +841,7 @@ Tag filtering allows you to filter documents by tags during indexing and queryin
 - **Querying**: Add a `tags` field to the `QuestionAnswer` model when calling `/api/qa`. The tags field can be:
   - A list of strings: `["python", "api"]` (treated as AND condition)
   - A boolean expression: `"(python|javascript)&!legacy"` (supports `&` (AND), `|` (OR), `!` (NOT), parentheses)
-- **Supported Vector Stores**: Pinecone (Serverless and Pod) and Qdrant fully support tag filtering. Redis vector store is not affected (used only for caching/streaming).
+- **Supported Vector Stores**: Pinecone (Serverless and Pod), Qdrant, and Milvus fully support tag filtering. Redis vector store is not affected (used only for caching/streaming).
 
 **Tag Grammar**:
 - Single tag: `"python"`

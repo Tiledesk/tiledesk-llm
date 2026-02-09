@@ -567,6 +567,15 @@ def inject_embedding_async_optimized(factory: Optional[CachedAsyncEmbeddingFacto
             factory = factory or CachedAsyncEmbeddingFactory()
 
             try:
+                # If there are positional args, assume they are embedding_obj and embedding_dimension
+                # We ignore them because we'll create new embeddings based on item configuration
+                if len(args) == 2:
+                    # Drop the positional args to avoid duplicate parameters
+                    args = ()
+                elif len(args) > 0:
+                    # Unexpected number of positional args, but we'll still proceed
+                    logger.warning(f"Unexpected number of positional arguments ({len(args)}) in embedding decorator")
+                
                 # Usa la stessa logica della tua factory originale
                 if isinstance(item.embedding, str):
                     config = {
@@ -617,6 +626,15 @@ def inject_embedding_qa_async_optimized(factory: Optional[CachedAsyncEmbeddingFa
             factory = factory or CachedAsyncEmbeddingFactory()
 
             try:
+                # If there are positional args, assume they are embedding_obj and embedding_dimension
+                # We ignore them because we'll create new embeddings based on question configuration
+                if len(args) == 2:
+                    # Drop the positional args to avoid duplicate parameters
+                    args = ()
+                elif len(args) > 0:
+                    # Unexpected number of positional args, but we'll still proceed
+                    logger.warning(f"Unexpected number of positional arguments ({len(args)}) in embedding QA decorator")
+                
                 if isinstance(question.embedding, LlmEmbeddingModel):#EmbeddingModel):
                     config = {
                         "provider": question.embedding.provider,

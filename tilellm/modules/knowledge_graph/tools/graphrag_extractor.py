@@ -18,7 +18,8 @@ Given a text document that is potentially relevant to this activity and a list o
 - entity_name: Name of the entity, capitalized, in language of 'Text'
 - entity_type: One of the following types: [{entity_types}]
 - entity_description: Comprehensive description of the entity's attributes and activities in language of 'Text'
-Format each entity as ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>
+- event_date: If the entity is an event or has a specific date associated (e.g., payment date, default date, legal act date), extract it in YYYY-MM-DD format. If not available, use "N/A".
+Format each entity as ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>{tuple_delimiter}<event_date>)
 
 2. From the entities identified in step 1, identify all pairs of (source_entity, target_entity) that are *clearly related* to each other.
 For each pair of related entities, extract the following information:
@@ -100,11 +101,13 @@ def handle_single_entity_extraction(record_attributes: list[str], chunk_key: str
     
     entity_type = clean_str(record_attributes[2].upper())
     entity_description = clean_str(record_attributes[3])
+    event_date = clean_str(record_attributes[4]) if len(record_attributes) > 4 else "N/A"
     
     return {
         "entity_name": entity_name.upper(),
         "entity_type": entity_type.upper(),
         "description": entity_description,
+        "event_date": event_date if event_date != "N/A" else None,
         "source_id": chunk_key,
     }
 
@@ -299,10 +302,14 @@ class GraphRAGExtractor:
             # Merge source IDs
             source_ids = flat_uniq_list(entity_list, "source_id")
             
+            # Extract event date (take the first non-null one found)
+            event_date = next((e.get("event_date") for e in entity_list if e.get("event_date")), None)
+            
             merged_entities.append({
                 "entity_name": entity_name,
                 "entity_type": most_common_type,
                 "description": merged_description,
+                "event_date": event_date,
                 "source_id": source_ids
             })
         
@@ -336,89 +343,55 @@ class GraphRAGExtractor:
         
         
         
-        async def extract_entities(text: str, llm: Any, entity_types: Optional[List[str]] = None) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-        
-            """
-        
-            Standalone function to extract entities and relationships from a text chunk.
-        
-            Compatible with PDFEntityExtractor.
-        
-            
-        
-            Args:
-        
-                text: Input text
-        
-                llm: LLM invoker
-        
-                entity_types: List of entity types
-        
-                
-        
-            Returns:
-        
-                Tuple of (entities_list, relationships_list)
-        
-            """
+    async def extract_entities(text: str, llm: Any, entity_types: Optional[List[str]] = None) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+        """
+        Standalone function to extract entities and relationships from a text chunk.
+        Compatible with PDFEntityExtractor.
+        Args:
+            text: Input text
+            llm: LLM invoker
+            entity_types: List of entity types
+
+        Returns:
+            Tuple of (entities_list, relationships_list)
+        """
         
         extractor = GraphRAGExtractor(llm_invoker=llm, entity_types=entity_types)
-        
-            
-        
+
         # We use a dummy ID as we are processing a single text block
-        
         nodes, edges, _ = await extractor.extract_chunk("temp_id", text)
 
         # Convert nodes dict to list
-        
         entities_list = []
         
         for entity_name, entity_list in nodes.items():
             if not entity_list:
-        
                 continue
         
             # Use the first occurrence for type and description
-        
             first_entity = entity_list[0]
-        
             entities_list.append({
                    "name": first_entity["entity_name"],
-        
                     "type": first_entity["entity_type"],
-        
-                    "description": first_entity["description"]
-        
+                    "description": first_entity["description"],
+                    "event_date": first_entity.get("event_date")
                 })
         
-                
-        
+
         # Convert edges dict to list
-        
         relationships_list = []
         
         for (src, tgt), rel_list in edges.items():
-        
             if not rel_list:
-        
                 continue
         
             first_rel = rel_list[0]
-        
             relationships_list.append({
-        
                 "source": first_rel["src_id"],
-        
                 "target": first_rel["tgt_id"],
-        
                 "description": first_rel["description"],
-        
                 "strength": first_rel.get("weight", 1.0)
-        
             })
-        
-                
         
         return entities_list, relationships_list
         

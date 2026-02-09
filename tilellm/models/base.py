@@ -14,6 +14,7 @@ class LLMEmbeddingProviders(str, Enum):
     ANTHROPIC = "anthropic"
     GROQ = "groq"
     TEI = "tei"
+    DEEPSEEK="deepseek"
 
 class AWSAuthentication(BaseModel):
     aws_access_key_id: str

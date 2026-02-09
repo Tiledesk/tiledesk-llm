@@ -7,6 +7,8 @@ Separated from controllers.py to keep routes clean.
 import logging
 from typing import List, Dict, Any, Optional
 
+from cleo.ui import question
+
 from tilellm.models.schemas import RepositoryEngine
 from tilellm.models.schemas.multimodal_content import TextContent
 from tilellm.shared.utility import inject_repo_async, inject_llm_chat_async, inject_llm_async, get_service_config
@@ -15,7 +17,7 @@ from .models.schemas import (
     GraphQARequest, GraphCreateRequest, GraphQAAdvancedRequest, GraphClusterRequest, AddDocumentRequest
 )
 from .services import GraphService, GraphRAGService
-from tilellm.modules.knowledge_graph.repository.repository import GraphRepository
+from .repository import AsyncFalkorGraphRepository  # Use ASYNC repository
 
 logger = logging.getLogger(__name__)
 
@@ -32,65 +34,117 @@ except ImportError as e:
 # New Services
 from .services.multimodal_search import MultimodalPDFSearch
 from .services.community_analyzer import DocumentCommunityAnalyzer
+from .services.agentic_qa_service import AgenticQAService
 
-# Global Service Instances
-repository: Optional[GraphRepository] = None
+# Global Service Instances (ASYNC)
+repository: Optional[AsyncFalkorGraphRepository] = None
 graph_service: Optional[GraphService] = None
 graph_rag_service: Optional[GraphRAGService] = None
+_initialization_attempted: bool = False
+_initialization_lock = None  # Will be asyncio.Lock()
 
-def initialize_services():
-    """Initializes Graph services and connections."""
+async def _get_lock():
+    """Get or create the initialization lock"""
+    global _initialization_lock
+    if _initialization_lock is None:
+        import asyncio
+        _initialization_lock = asyncio.Lock()
+    return _initialization_lock
+
+async def initialize_services():
+    """Initializes Graph services and connections (ASYNC)."""
     global repository, graph_service, graph_rag_service
-    
-    # Check if graphrag service is enabled in configuration
+
+    # Check if FalkorDB graphrag service is enabled in configuration
     try:
         service_config = get_service_config()
-        graphrag_enabled = service_config.get("services", {}).get("graphrag", False) if service_config.get("services") else False
-        if not graphrag_enabled:
-            logger.info("Knowledge Graph service is disabled in configuration (graphrag: false).")
+        graphrag_falkor_enabled = service_config.get("services", {}).get("graphrag_falkor", False) if service_config.get("services") else False
+        if not graphrag_falkor_enabled:
+            logger.info("FalkorDB Knowledge Graph service is disabled in configuration (graphrag_falkor: false).")
             repository = None
             graph_service = GraphService()
             graph_rag_service = GraphRAGService(graph_service=graph_service)
-            logger.warning("Knowledge Graph services are DISABLED. API endpoints will fail if used.")
+            logger.warning("FalkorDB Knowledge Graph services are DISABLED. API endpoints will fail if used.")
             return
     except Exception as e:
-        logger.warning(f"Failed to read service configuration: {e}. Assuming graphrag is enabled.")
-    
+        logger.warning(f"Failed to read service configuration: {e}. Assuming FalkorDB graphrag is enabled.")
+
     try:
-        repository = GraphRepository()
-        if not repository.verify_connection():
-            raise ConnectionError("Failed to verify connection to Neo4j database.")
-        
+        repository = AsyncFalkorGraphRepository()
+        # Use await for async verify_connection
+        is_connected = await repository.verify_connection()
+        if not is_connected:
+            raise ConnectionError("Failed to verify connection to FalkorDB database.")
+
         graph_service = GraphService(repository=repository)
         graph_rag_service = GraphRAGService(graph_service=graph_service)
-        logger.info("Successfully initialized and verified Neo4j connection and services.")
+        logger.info("Successfully initialized and verified FalkorDB async connection and services.")
 
     except Exception as e:
-        logger.error(f"CRITICAL: Failed to initialize Neo4j connection: {e}")
+        logger.error(f"CRITICAL: Failed to initialize FalkorDB connection: {e}")
+        logger.error(f"Error details: {type(e).__name__}: {str(e)}")
         # Create dummy services that allow app to start but will fail on use
         repository = None
         graph_service = GraphService()
         graph_rag_service = GraphRAGService(graph_service=graph_service)
         logger.warning("Knowledge Graph services are NOT operational due to DB connection failure.")
 
-# Initialize on module load
-initialize_services()
+async def ensure_initialized():
+    """
+    Lazy initialization - chiamato prima di ogni operazione.
+    Inizializza FalkorDB solo se necessario e non ancora fatto.
+    Thread-safe con lock.
+    """
+    global repository, graph_service, graph_rag_service, _initialization_attempted
+
+    # Se già inizializzato, ritorna subito
+    if repository is not None:
+        return
+
+    # Se già tentato e fallito, non ritentare continuamente
+    if _initialization_attempted:
+        if repository is None:
+            raise RuntimeError("Graph repository not initialized. FalkorDB service may be disabled or failed to connect.")
+        return
+
+    # Lock per evitare inizializzazioni multiple concorrenti
+    lock = await _get_lock()
+    async with lock:
+        # Double-check dopo aver acquisito il lock
+        if repository is not None:
+            return
+
+        if _initialization_attempted:
+            if repository is None:
+                raise RuntimeError("Graph repository not initialized. FalkorDB service may be disabled or failed to connect.")
+            return
+
+        # Tenta l'inizializzazione
+        await initialize_services()
+        _initialization_attempted = True
+
+        # Verifica se è riuscita
+        if repository is None:
+            raise RuntimeError("Graph repository not initialized. FalkorDB service may be disabled or failed to connect.")
+
+# Note: Lazy initialization - initialize_services() verrà chiamato on-demand
+# Non inizializzare qui per supportare app modulari
 
 # ==================== HEALTH & STATS LOGIC ====================
 
 def check_health():
-    """Verify Neo4j connection."""
+    """Verify FalkorDB connection."""
     is_connected = graph_service.verify_connection()
     if is_connected:
         return {"status": "healthy", "database": "connected"}
     else:
-        raise Exception("Neo4j database connection failed")
+        raise Exception("FalkorDB database connection failed")
 
 def get_stats():
     """Get database statistics."""
     return graph_service.get_database_stats()
 
-def get_graph_network(
+async def get_graph_network(
     namespace: Optional[str] = None,
     index_name: Optional[str] = None,
     node_limit: int = 1000,
@@ -112,7 +166,7 @@ def get_graph_network(
     Returns:
         Dictionary with nodes, relationships, and stats
     """
-    return graph_service.get_graph_network(
+    return await graph_service.get_graph_network(
         namespace=namespace,
         index_name=index_name,
         node_limit=node_limit,
@@ -123,38 +177,40 @@ def get_graph_network(
 
 # ==================== NODE & RELATIONSHIP LOGIC ====================
 
-def create_node(node: Node) -> Node:
-    return graph_service.create_node(node)
+async def create_node(node: Node) -> Node:
+    return await graph_service.create_node(node)
 
-def get_node(node_id: str) -> Optional[Node]:
-    return graph_service.get_node(node_id)
+async def get_node(node_id: str) -> Optional[Node]:
+    return await graph_service.get_node(node_id)
 
-def get_nodes_by_label(label: str, limit: int) -> List[Node]:
-    return graph_service.get_nodes_by_label(label, limit)
+async def get_nodes_by_label(label: str, limit: int) -> List[Node]:
+    return await graph_service.get_nodes_by_label(label, limit)
 
-def search_nodes(label: str, property_key: str, property_value: str, limit: int) -> List[Node]:
-    return graph_service.search_nodes(label, property_key, property_value, limit)
+async def search_nodes(label: str, property_key: str, property_value: str, limit: int) -> List[Node]:
+    return await graph_service.search_nodes(label, property_key, property_value, limit)
 
-def update_node(node_id: str, node_update: NodeUpdate) -> Optional[Node]:
-    return graph_service.update_node(node_id, node_update)
+async def update_node(node_id: str, node_update: NodeUpdate) -> Optional[Node]:
+    return await graph_service.update_node(node_id, node_update)
 
-def delete_node(node_id: str, detach: bool) -> bool:
-    return graph_service.delete_node(node_id, detach)
+async def delete_node(node_id: str, detach: bool) -> bool:
+    return await graph_service.delete_node(node_id, detach)
 
-def create_relationship(relationship: Relationship) -> Relationship:
-    return graph_service.create_relationship(relationship)
+# ==================== RELATIONSHIP ====================
 
-def get_relationship(relationship_id: str) -> Optional[Relationship]:
-    return graph_service.get_relationship(relationship_id)
+async def create_relationship(relationship: Relationship) -> Relationship:
+    return await graph_service.create_relationship(relationship)
 
-def get_node_relationships(node_id: str, direction: str) -> List[Relationship]:
-    return graph_service.get_node_relationships(node_id, direction)
+async def get_relationship(relationship_id: str) -> Optional[Relationship]:
+    return await graph_service.get_relationship(relationship_id)
 
-def update_relationship(relationship_id: str, relationship_update: RelationshipUpdate) -> Optional[Relationship]:
-    return graph_service.update_relationship(relationship_id, relationship_update)
+async def get_node_relationships(node_id: str, direction: str) -> List[Relationship]:
+    return await graph_service.get_node_relationships(node_id, direction)
 
-def delete_relationship(relationship_id: str) -> bool:
-    return graph_service.delete_relationship(relationship_id)
+async def update_relationship(relationship_id: str, relationship_update: RelationshipUpdate) -> Optional[Relationship]:
+    return await graph_service.update_relationship(relationship_id, relationship_update)
+
+async def delete_relationship(relationship_id: str) -> bool:
+    return await graph_service.delete_relationship(relationship_id)
 
 # ==================== ADVANCED LOGIC (DI WRAPPERS) ====================
 
@@ -173,6 +229,9 @@ async def add_document_to_graph(
     This enables incremental graph updates when a new document is added to the knowledge base,
     without regenerating the entire namespace graph.
     """
+    # Lazy initialization
+    await ensure_initialized()
+
     if llm is None:
         raise ValueError("LLM configuration is required for entity extraction.")
 
@@ -193,7 +252,10 @@ async def add_document_to_graph(
     )
     
     # If document added successfully, update community reports
-    if result.get("status") == "success" and COMMUNITY_GRAPH_AVAILABLE and CommunityGraphService is not None:
+    if (result.get("status") == "success" and 
+        COMMUNITY_GRAPH_AVAILABLE and 
+        CommunityGraphService is not None and
+        repository is not None):
         try:
             community_service = CommunityGraphService(
                 graph_service=graph_service,
@@ -232,8 +294,14 @@ async def create_graph(
     **kwargs
 ) -> Dict[str, Any]:
     """Create community graph using existing GraphRAG extraction and clustering."""
+    # Lazy initialization
+    await ensure_initialized()
+
     if not COMMUNITY_GRAPH_AVAILABLE or CommunityGraphService is None:
         raise RuntimeError("Community Graph service not available")
+
+    if repository is None:
+        raise RuntimeError("Graph repository not initialized. FalkorDB service may be disabled or failed to connect.")
     
     if repo is None:
         raise RuntimeError("Vector store repository not injected")
@@ -256,7 +324,7 @@ async def create_graph(
         limit=request.limit or 100,
         index_name=request.engine.index_name,
         overwrite=request.overwrite or False,
-        import_to_neo4j=True
+        import_to_graph=True
     )
 
 @inject_llm_async
@@ -269,8 +337,12 @@ async def cluster_graph_louvain(
     **kwargs
 ) -> Dict[str, Any]:
     """Cluster graph and generate reports (Microsoft GraphRAG style)."""
+    await ensure_initialized()
     if not COMMUNITY_GRAPH_AVAILABLE or CommunityGraphService is None:
         raise RuntimeError("Community Graph service not available")
+    
+    if repository is None:
+        raise RuntimeError("Graph repository not initialized. FalkorDB service may be disabled or failed to connect.")
         
     if chat_model is None:
         raise ValueError("LLM configuration is required for community report generation.")
@@ -302,9 +374,13 @@ async def cluster_graph_leiden(
     llm_embeddings=None,
     **kwargs
 ) -> Dict[str, Any]:
+    await ensure_initialized()
     """Cluster graph using Leiden algorithm."""
     if not COMMUNITY_GRAPH_AVAILABLE or CommunityGraphService is None:
         raise RuntimeError("Community Graph service not available")
+    
+    if repository is None:
+        raise RuntimeError("Graph repository not initialized. FalkorDB service may be disabled or failed to connect.")
         
     if chat_model is None:
         raise ValueError("LLM configuration is required for community report generation.")
@@ -336,9 +412,13 @@ async def cluster_graph_hierarchical(
     llm_embeddings=None,
     **kwargs
 ) -> Dict[str, Any]:
+    await ensure_initialized()
     """Cluster graph hierarchically (Levels 0, 1, 2)."""
     if not COMMUNITY_GRAPH_AVAILABLE or CommunityGraphService is None:
         raise RuntimeError("Community Graph service not available")
+    
+    if repository is None:
+        raise RuntimeError("Graph repository not initialized. FalkorDB service may be disabled or failed to connect.")
         
     if llm is None:
         raise ValueError("LLM configuration is required for community report generation.")
@@ -372,9 +452,13 @@ async def query_graph(
     embedding_dimension=None,
     **kwargs
 ) -> Dict[str, Any]:
+    await ensure_initialized()
     """Query community graph using global search."""
     if not COMMUNITY_GRAPH_AVAILABLE or CommunityGraphService is None:
         raise RuntimeError("Community Graph service not available")
+    
+    if repository is None:
+        raise RuntimeError("Graph repository not initialized. FalkorDB service may be disabled or failed to connect.")
     
     if not hasattr(request, 'engine') or request.engine is None:
         raise ValueError("Engine configuration is required for semantic report search.")
@@ -421,13 +505,17 @@ async def context_fusion_graph_search(
     embedding_dimension=None,
     **kwargs
 ) -> Dict[str, Any]:
+    await ensure_initialized()
     """Hybrid Search with Context Fusion (Local + Global)."""
     if not COMMUNITY_GRAPH_AVAILABLE or CommunityGraphService is None:
         raise RuntimeError("Community Graph service not available")
     
+    if repository is None:
+        raise RuntimeError("Graph repository not initialized. FalkorDB service may be disabled or failed to connect.")
+    
     if request.engine is None:
          raise ValueError("Engine configuration is required for vector store access")
-         
+          
     community_service = CommunityGraphService(
         graph_service=graph_service,
         graph_rag_service=graph_rag_service
@@ -448,6 +536,7 @@ async def context_fusion_graph_search(
         reranking_injected=reranking_model_config,
         engine=request.engine,
         vector_store_repo=repo,
+        max_results=request.top_k if request.top_k else 15,
         llm=llm,
         llm_embeddings=llm_embeddings,
         query_type=request.query_type,
@@ -465,11 +554,15 @@ async def multimodal_search(
     llm_embeddings=None,
     **kwargs
 ) -> Dict[str, Any]:
+    await ensure_initialized()
     """
     Perform multimodal search (Text + Table + Image).
     """
     if not COMMUNITY_GRAPH_AVAILABLE or CommunityGraphService is None:
         raise RuntimeError("Community Graph service not available")
+    
+    if repository is None:
+        raise RuntimeError("Graph repository not initialized. FalkorDB service may be disabled or failed to connect.")
 
     if request.engine is None:
          raise ValueError("Engine configuration is required")
@@ -503,6 +596,7 @@ async def analyze_community(
     repo=None,
     **kwargs
 ) -> Dict[str, Any]:
+    await ensure_initialized()
     """
     Analyze document collection to find communities.
     """
@@ -528,4 +622,110 @@ async def analyze_community(
     return await analyzer.analyze_collection(
         namespace=request.namespace,
         engine=request.engine
+    )
+
+# ==================== ADVANCED QA LOGIC ====================
+
+@inject_llm_chat_async
+@inject_repo_async
+async def advanced_qa_search(
+    request: GraphQAAdvancedRequest,
+    repo=None,
+    llm=None,
+    llm_embeddings=None,
+    **kwargs
+) -> Dict[str, Any]:
+    await ensure_initialized()
+    """
+    Advanced QA Search with intent classification and domain-specific Cypher queries.
+    Specialized for debt collection (recupero crediti) domain.
+
+    Pipeline:
+    1. Intent Classifier → identifies query type (timeline, exposure, guarantees, etc.)
+    2. Parameter Extractor → extracts entities (debtor_name, loan_id, etc.)
+    3. Find seed nodes from vector store
+    4. Get relevant community reports (max 3)
+    5. Template Cypher Engine → generates safe parameterized queries
+    6. Graph Execution → runs queries on FalkorDB
+    7. LLM Response Enricher → transforms results into readable response
+    """
+    if not COMMUNITY_GRAPH_AVAILABLE or CommunityGraphService is None:
+        raise RuntimeError("Community Graph service not available")
+
+    if repository is None:
+        raise RuntimeError("Graph repository not initialized. FalkorDB service may be disabled or failed to connect.")
+
+    if request.engine is None:
+        raise ValueError("Engine configuration is required for vector store access")
+
+    if llm is None:
+        raise ValueError("LLM is required for advanced QA processing")
+
+    # Import Advanced QA Service
+    from .services.advanced_qa_service import AdvancedQAService
+
+    # Initialize services
+    community_service = CommunityGraphService(
+        graph_service=graph_service,
+        graph_rag_service=graph_rag_service
+    )
+
+    advanced_qa_service = AdvancedQAService(
+        graph_service=graph_service,
+        graph_rag_service=graph_rag_service,
+        community_graph_service=community_service,
+        llm=llm
+    )
+
+    # Extract question text
+    question_text = request.question if isinstance(request.question, str) else request.question[0].text
+
+    # Process query through advanced pipeline
+    return await advanced_qa_service.process_query(
+        question=question_text,
+        namespace=request.namespace,
+        engine=request.engine,
+        vector_store_repo=repo,
+        llm_embeddings=llm_embeddings,
+        search_type=request.search_type if hasattr(request, 'search_type') else "hybrid",
+        sparse_encoder=request.sparse_encoder,
+        chat_history_dict=request.chat_history_dict,
+        max_community_reports=3,  # Always max 3 reports as requested
+        top_k=request.top_k if request.top_k else 10
+    )
+
+
+@inject_llm_chat_async
+@inject_repo_async
+async def agentic_qa_search(
+    request: GraphQAAdvancedRequest,
+    repo=None,
+    llm=None,
+    llm_embeddings=None,
+    **kwargs
+) -> Dict[str, Any]:
+    await ensure_initialized()
+    """
+    Agentic QA Search using "The Graph Specialist".
+    """
+    if AgenticQAService is None:
+        raise RuntimeError("Agentic QA service not available")
+
+    if repository is None:
+        raise RuntimeError("Graph repository not initialized")
+
+    if llm is None:
+        raise ValueError("LLM is required for agentic QA")
+
+    agent_service = AgenticQAService(
+        graph_service=graph_service,
+        llm=llm
+    )
+
+    question_text = request.question if isinstance(request.question, str) else request.question[0].text
+
+    return await agent_service.process_query(
+        question=question_text,
+        namespace=request.namespace,
+        chat_history_dict=request.chat_history_dict
     )

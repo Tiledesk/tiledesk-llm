@@ -10,6 +10,28 @@ from tilellm.modules.knowledge_graph.models.schemas import (
     GraphClusterRequest, GraphClusterResponse
 )
 
+# FalkorDB imports
+try:
+    from tilellm.modules.knowledge_graph_falkor import logic as falkor_logic
+    from tilellm.modules.knowledge_graph_falkor.models.schemas import (
+        GraphCreateRequest as FalkorGraphCreateRequest,
+        AddDocumentRequest as FalkorAddDocumentRequest,
+        GraphClusterRequest as FalkorGraphClusterRequest,
+        GraphCreateResponse as FalkorGraphCreateResponse,
+        AddDocumentResponse as FalkorAddDocumentResponse,
+        GraphClusterResponse as FalkorGraphClusterResponse
+    )
+    FALKORDB_AVAILABLE = True
+except ImportError:
+    falkor_logic = None
+    FalkorGraphCreateRequest = None
+    FalkorAddDocumentRequest = None
+    FalkorGraphClusterRequest = None
+    FalkorGraphCreateResponse = None
+    FalkorAddDocumentResponse = None
+    FalkorGraphClusterResponse = None
+    FALKORDB_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 async def send_webhook(url: str, payload: dict):
@@ -142,6 +164,145 @@ async def task_community_analysis(request_dict: dict) -> dict:
         return result
     except Exception as e:
         logger.error(f"Error in community_analysis task: {e}")
+        if webhook_url:
+             await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
+        raise e
+
+
+# ==================== FALKORDB TASKS ====================
+
+@broker.task
+async def task_falkor_graph_create(request_dict: dict) -> dict:
+    """
+    Task to create/import a community graph using FalkorDB.
+    """
+    webhook_url = request_dict.get("webhook_url")
+    if not FALKORDB_AVAILABLE or falkor_logic is None:
+        raise RuntimeError("FalkorDB module not available. Install with 'poetry install --extras graph'.")
+    try:
+        # Convert dict back to Pydantic model
+        logger.info(f"FALKORDB TASK =======================> {request_dict}")
+        request = FalkorGraphCreateRequest(**request_dict)
+        logger.info(f"Starting falkor_graph_create task for namespace: {request.namespace}")
+        result = await falkor_logic.create_graph(request)
+        logger.info(f"Finished falkor_graph_create task for namespace: {request.namespace}")
+        await send_webhook(webhook_url, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error in falkor_graph_create task: {e}")
+        if webhook_url:
+             await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
+        raise e
+
+@broker.task
+async def task_falkor_add_document(request_dict: dict) -> dict:
+    """
+    Task to add a document to the FalkorDB graph.
+    """
+    webhook_url = request_dict.get("webhook_url")
+    if not FALKORDB_AVAILABLE or falkor_logic is None:
+        raise RuntimeError("FalkorDB module not available. Install with 'poetry install --extras graph'.")
+    try:
+        # Convert dict back to Pydantic model
+        request = FalkorAddDocumentRequest(**request_dict)
+        logger.info(f"Starting falkor_add_document task for metadata_id: {request.metadata_id}")
+        result = await falkor_logic.add_document_to_graph(request)
+        logger.info(f"Finished falkor_add_document task for metadata_id: {request.metadata_id}")
+        await send_webhook(webhook_url, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error in falkor_add_document task: {e}")
+        if webhook_url:
+             await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
+        raise e
+
+@broker.task
+async def task_falkor_louvain_cluster(request_dict: dict) -> dict:
+    """
+    Task to perform Louvain clustering on FalkorDB graph.
+    """
+    webhook_url = request_dict.get("webhook_url")
+    if not FALKORDB_AVAILABLE or falkor_logic is None:
+        raise RuntimeError("FalkorDB module not available. Install with 'poetry install --extras graph'.")
+    try:
+        # Convert dict back to Pydantic model
+        request = FalkorGraphClusterRequest(**request_dict)
+        logger.info(f"Starting falkor_louvain_cluster task for namespace: {request.namespace}")
+        result = await falkor_logic.cluster_graph_louvain(request)
+        logger.info(f"Finished falkor_louvain_cluster task for namespace: {request.namespace}")
+        await send_webhook(webhook_url, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error in falkor_louvain_cluster task: {e}")
+        if webhook_url:
+             await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
+        raise e
+
+@broker.task
+async def task_falkor_leiden_cluster(request_dict: dict) -> dict:
+    """
+    Task to perform Leiden clustering on FalkorDB graph.
+    """
+    webhook_url = request_dict.get("webhook_url")
+    if not FALKORDB_AVAILABLE or falkor_logic is None:
+        raise RuntimeError("FalkorDB module not available. Install with 'poetry install --extras graph'.")
+    try:
+        # Convert dict back to Pydantic model
+        request = FalkorGraphClusterRequest(**request_dict)
+        logger.info(f"Starting falkor_leiden_cluster task for namespace: {request.namespace}")
+        result = await falkor_logic.cluster_graph_leiden(request)
+        logger.info(f"Finished falkor_leiden_cluster task for namespace: {request.namespace}")
+        await send_webhook(webhook_url, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error in falkor_leiden_cluster task: {e}")
+        if webhook_url:
+             await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
+        raise e
+
+@broker.task
+async def task_falkor_hierarchical_cluster(request_dict: dict) -> dict:
+    """
+    Task to perform Hierarchical clustering on FalkorDB graph.
+    """
+    webhook_url = request_dict.get("webhook_url")
+    if not FALKORDB_AVAILABLE or falkor_logic is None:
+        raise RuntimeError("FalkorDB module not available. Install with 'poetry install --extras graph'.")
+    try:
+        # Convert dict back to Pydantic model
+        request = FalkorGraphClusterRequest(**request_dict)
+        logger.info(f"Starting falkor_hierarchical_cluster task for namespace: {request.namespace}")
+        result = await falkor_logic.cluster_graph_hierarchical(request)
+        logger.info(f"Finished falkor_hierarchical_cluster task for namespace: {request.namespace}")
+        await send_webhook(webhook_url, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error in falkor_hierarchical_cluster task: {e}")
+        if webhook_url:
+             await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
+        raise e
+
+@broker.task
+async def task_falkor_community_analysis(request_dict: dict) -> dict:
+    """
+    Task to analyze document collection for communities in FalkorDB graph.
+    """
+    webhook_url = request_dict.get("webhook_url")
+    if not FALKORDB_AVAILABLE or falkor_logic is None:
+        raise RuntimeError("FalkorDB module not available. Install with 'poetry install --extras graph'.")
+    try:
+        # Reuse GraphClusterRequest as it has namespace and engine
+        request = FalkorGraphClusterRequest(**request_dict)
+        logger.info(f"Starting falkor_community_analysis task for namespace: {request.namespace}")
+        
+        # Call logic function
+        result = await falkor_logic.analyze_community(request)
+        
+        logger.info(f"Finished falkor_community_analysis task for namespace: {request.namespace}")
+        await send_webhook(webhook_url, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error in falkor_community_analysis task: {e}")
         if webhook_url:
              await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
         raise e

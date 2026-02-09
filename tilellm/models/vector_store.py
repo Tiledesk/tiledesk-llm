@@ -13,6 +13,7 @@ class Engine(BaseModel):
     host: Optional[str] = Field(default="localhost")
     port: Optional[int] = Field(default=6333)
     deployment: Optional[Literal["local", "cloud"]] = Field(default="local")
+    database: Optional[str] = Field(default="default")
 
     @model_validator(mode='after')
     def validate_fields(self):
@@ -31,6 +32,21 @@ class Engine(BaseModel):
             if self.deployment == "local" or self.deployment == "cloud":
                 if not (self.host and self.port):
                     raise ValueError("Host and port are required for local Qdrant")
+
+        elif self.name == "milvus":
+            if not self.deployment:
+                self.deployment = "local"
+            if self.deployment not in ("local", "cloud"):
+                raise ValueError("Deployment must be 'local' or 'cloud' for Milvus")
+            
+            self.type = self.deployment
+            
+            if not (self.host and self.port):
+                raise ValueError("Host and port are required for Milvus")
+            
+            # Set default metric if not specified
+            if not self.metric:
+                self.metric = "COSINE"
 
         else:
             raise ValueError(f"Unsupported engine: {self.name}")

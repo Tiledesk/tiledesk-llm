@@ -194,6 +194,44 @@ class CachedVectorStore:
 class QdrantRepository(VectorStoreRepository):
     sparse_enabled = True
 
+    @staticmethod
+    async def create_index_cache_wrapper(engine, embeddings, emb_dimension, embedding_config_key=None,
+                                         cache_suffix=None) -> CachedVectorStore:
+        """
+        Ottiene un'istanza di CachedVectorStore dalla cache o ne crea una nuova.
+        La chiave della cache è basata sui parametri di connessione di Qdrant e sulla configurazione embedding.
+        """
+        cache_key = (
+            engine.host,
+            engine.port,
+            engine.index_name,
+            _hash_api_key(engine.apikey.get_secret_value()) if engine.apikey else "",
+            embedding_config_key if embedding_config_key is not None else "default"
+        # Aggiunto per evitare conflitti cache tra diversi embedding
+        )
+        if cache_suffix is not None:
+            cache_key = cache_key + (cache_suffix,)
+
+        async def _wrapper_creator():
+            return await _create_vector_store_instance(engine, embeddings, emb_dimension)
+
+        wrapper = await TimedCache.async_get(
+            object_type="qdrant_vector_store_wrapper",
+            key=cache_key,
+            constructor=_wrapper_creator
+        )
+        return wrapper
+
+    async def create_index(self, engine, embeddings, emb_dimension, embedding_config_key=None) -> QdrantVectorStore:
+        """
+        Metodo principale per ottenere la VectorStore finale.
+        Utilizza il wrapper cachato per gestire la connessione.
+        """
+        cached_vs_wrapper = await self.create_index_cache_wrapper(
+            engine, embeddings, emb_dimension, embedding_config_key
+        )
+        return await cached_vs_wrapper.get_vector_store()
+
     def build_filter(self, namespace: str, filter_dict: Optional[Dict] = None) -> models.Filter:
         """
         Build Qdrant Filter from namespace and optional Pinecone-style filter dict.
@@ -342,7 +380,6 @@ class QdrantRepository(VectorStoreRepository):
         except Exception as e:
             logger.error(f"Error adding documents to Qdrant: {e}")
             raise
-
 
     async def search_community_report(self, question_answer, index, dense_vector, sparse_vector):
         
@@ -797,47 +834,6 @@ class QdrantRepository(VectorStoreRepository):
 
             raise ex
 
-    async def delete_ids_namespace(self, engine: Engine, metadata_id: str, namespace: str):
-
-        try:
-            if engine.deployment == "local":
-                qdrant_client = AsyncQdrantClient(host=engine.host, port=engine.port)
-            else:
-                qdrant_client = AsyncQdrantClient(url=engine.host+":"+str(engine.port),api_key=engine.apikey.get_secret_value())
-
-            collection_name = engine.index_name
-
-            delete_filter = models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="metadata.id",
-                        match=models.MatchValue(value=metadata_id)
-                    ),
-                    models.FieldCondition(
-                        key="metadata.namespace",
-                        match=models.MatchValue(value=namespace)
-                    )
-                ]
-            )
-
-            response = await qdrant_client.delete(
-                collection_name=collection_name,
-                points_selector=models.FilterSelector(
-                    filter=delete_filter
-                )
-            )
-
-            if response.status == models.UpdateStatus.COMPLETED:
-                logger.info(f"Eliminazione completata. Stato: {response.status}")
-                logger.info(f"Punti eliminati con metadata_id = '{metadata_id}'.")
-            else:
-                logger.error(f"Eliminazione in corso o fallita. Stato: {response.status}")
-                logger.error(f"Dettagli: {response.error}")
-
-        except Exception as e:
-            logger.error(f"Errore durante l'eliminazione dei punti: {e}")
-            raise e
-
     async def delete_namespace(self, namespace_to_delete: RepositoryNamespace):
         """
         Delete namespace from Qdrant index
@@ -871,6 +867,47 @@ class QdrantRepository(VectorStoreRepository):
 
             if response.status == models.UpdateStatus.COMPLETED:
                 logger.info(f"Eliminazione completata. Stato: {response.status}")
+            else:
+                logger.error(f"Eliminazione in corso o fallita. Stato: {response.status}")
+                logger.error(f"Dettagli: {response.error}")
+
+        except Exception as e:
+            logger.error(f"Errore durante l'eliminazione dei punti: {e}")
+            raise e
+
+    async def delete_ids_namespace(self, engine: Engine, metadata_id: str, namespace: str):
+
+        try:
+            if engine.deployment == "local":
+                qdrant_client = AsyncQdrantClient(host=engine.host, port=engine.port)
+            else:
+                qdrant_client = AsyncQdrantClient(url=engine.host+":"+str(engine.port),api_key=engine.apikey.get_secret_value())
+
+            collection_name = engine.index_name
+
+            delete_filter = models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="metadata.id",
+                        match=models.MatchValue(value=metadata_id)
+                    ),
+                    models.FieldCondition(
+                        key="metadata.namespace",
+                        match=models.MatchValue(value=namespace)
+                    )
+                ]
+            )
+
+            response = await qdrant_client.delete(
+                collection_name=collection_name,
+                points_selector=models.FilterSelector(
+                    filter=delete_filter
+                )
+            )
+
+            if response.status == models.UpdateStatus.COMPLETED:
+                logger.info(f"Eliminazione completata. Stato: {response.status}")
+                logger.info(f"Punti eliminati con metadata_id = '{metadata_id}'.")
             else:
                 logger.error(f"Eliminazione in corso o fallita. Stato: {response.status}")
                 logger.error(f"Dettagli: {response.error}")
@@ -1302,41 +1339,7 @@ class QdrantRepository(VectorStoreRepository):
             logger.error(f"No Collections available '{ex}' does not exist. Creating it ...")
             raise ex
 
-    @staticmethod
-    async def create_index_cache_wrapper(engine, embeddings, emb_dimension, embedding_config_key=None,  cache_suffix=None) -> CachedVectorStore:
-        """
-        Ottiene un'istanza di CachedVectorStore dalla cache o ne crea una nuova.
-        La chiave della cache è basata sui parametri di connessione di Qdrant e sulla configurazione embedding.
-        """
-        cache_key = (
-            engine.host,
-            engine.port,
-            engine.index_name,
-            _hash_api_key(engine.apikey.get_secret_value()) if engine.apikey else "",
-            embedding_config_key if embedding_config_key is not None else "default"  # Aggiunto per evitare conflitti cache tra diversi embedding
-        )
-        if cache_suffix is not None:
-            cache_key = cache_key + (cache_suffix,)
 
-        async def _wrapper_creator():
-            return await _create_vector_store_instance(engine, embeddings, emb_dimension)
-
-        wrapper = await TimedCache.async_get(
-            object_type="qdrant_vector_store_wrapper",
-            key=cache_key,
-            constructor=_wrapper_creator
-        )
-        return wrapper
-
-    async def create_index(self, engine, embeddings, emb_dimension, embedding_config_key=None) -> QdrantVectorStore:
-        """
-        Metodo principale per ottenere la VectorStore finale.
-        Utilizza il wrapper cachato per gestire la connessione.
-        """
-        cached_vs_wrapper = await self.create_index_cache_wrapper(
-            engine, embeddings, emb_dimension, embedding_config_key
-        )
-        return await cached_vs_wrapper.get_vector_store()
 
     @staticmethod
     async def create_index_old(engine, embeddings, emb_dimension) ->  QdrantVectorStore :
@@ -1550,7 +1553,7 @@ class QdrantRepository(VectorStoreRepository):
     @staticmethod
     async def upsert_vector_store_hybrid(vector_store: QdrantVectorStore, contents, chunks, metadata_id, engine, namespace, embeddings,
                                          sparse_vectors):
-        embedding_chunk_size = 100
+        embedding_chunk_size = 32
         # batch_size: int = 32
 
         ids = [f"{uuid.uuid4().hex}" for _ in range(len(chunks))]

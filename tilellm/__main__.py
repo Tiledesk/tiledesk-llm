@@ -72,7 +72,9 @@ expiration_in_seconds = 48 * 60 * 60
 logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file (if present)
-load_dotenv('.env')
+from pathlib import Path
+env_path = Path(__file__).parent.parent / '.env'
+load_dotenv(env_path)
 
 redis_url = os.environ.get("REDIS_URL")
 tilellm_role = os.environ.get("TILELLM_ROLE")
@@ -219,10 +221,24 @@ async def reader(channel: Redis):
 async def redis_consumer(app: FastAPI):
     redis_client = from_url(redis_url)
     await redis_xgroup_create(redis_client)
-    asyncio.create_task(reader(redis_client)) 
- 
-    yield 
-    
+    asyncio.create_task(reader(redis_client))
+
+    # FalkorDB: Inizializzazione LAZY solo se servizio abilitato
+    # Non inizializzare qui per app modulare - verrà inizializzato on-demand
+    logger.info("App startup complete - FalkorDB will initialize on first use if enabled")
+
+    yield
+
+    # Cleanup FalkorDB connection on shutdown (se inizializzato)
+    try:
+        from tilellm.modules.knowledge_graph_falkor.logic import repository
+        if repository:
+            await repository.close()
+            logger.info("FalkorDB connection closed")
+    except Exception as e:
+        # Non è un errore se FalkorDB non era attivo
+        pass
+
     await redis_client.close()
     await TimedCache.async_clear_cache("vector_store_wrapper")
 
@@ -800,6 +816,7 @@ def register_feature_routers(_app: FastAPI, base_package_dir: str):
     module_config_mapping = {
         "task_executor": "task_executor",
         "knowledge_graph": "graphrag",
+        "knowledge_graph_falkor": "graphrag_falkor",
         "pdf_ocr": "pdf_ocr",
         "conversion": "conversion",
         "tools_registry": "tools_registry",

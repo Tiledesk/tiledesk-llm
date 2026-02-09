@@ -53,27 +53,31 @@ def get_service_config():
         "app-base": {
             "task_executor": True,
             "graphrag": False,
+            "graphrag_falkor": False,
             "pdf_ocr": False,
             "conversion": True,
             "tools_registry": True
         },
         "app-graph": {
             "task_executor": True,
-            "graphrag": True,
+            "graphrag": False,
+            "graphrag_falkor": True,
             "pdf_ocr": False,
             "conversion": True,
             "tools_registry": True
         },
         "app-ocr": {
             "task_executor": True,
-            "graphrag": True,
+            "graphrag": False,
+            "graphrag_falkor": True,
             "pdf_ocr": True,
             "conversion": True,
             "tools_registry": True
         },
         "app-all": {
             "task_executor": True,
-            "graphrag": True,
+            "graphrag": False,
+            "graphrag_falkor": True,
             "pdf_ocr": True,
             "conversion": True,
             "tools_registry": True
@@ -86,7 +90,8 @@ def get_service_config():
     else:
         config["services"] = {
             "task_executor": _str_to_bool(os.environ.get("ENABLE_TASKIQ", "true")),
-            "graphrag": _str_to_bool(os.environ.get("ENABLE_GRAPHRAG", "false")),
+            "graphrag": _str_to_bool(os.environ.get("ENABLE_GRAPHRAG", "false")), # Disable Neo4j by default
+            "graphrag_falkor": _str_to_bool(os.environ.get("ENABLE_GRAPHRAG_FALKOR", "false")),
             "pdf_ocr": _str_to_bool(os.environ.get("ENABLE_PDF_OCR", "false")),
             "conversion": _str_to_bool(os.environ.get("ENABLE_CONVERSION", "true")),
             "tools_registry": _str_to_bool(os.environ.get("ENABLE_TOOLS_REGISTRY", "true")),
@@ -130,6 +135,54 @@ def get_service_config():
         "user": os.environ.get("NEO4J_USERNAME", "neo4j"),
         "password": os.environ.get("NEO4J_PASSWORD", "password"),
         "database": os.environ.get("NEO4J_DATABASE", "neo4j")
+    }
+
+    # FalkorDB Configuration
+    falkordb_uri = os.environ.get("FALKORDB_URI", os.environ.get("REDIS_URL", "redis://localhost:6380/0"))
+    # Parse URI for host, port, db, username, password
+    original_uri = falkordb_uri
+    try:
+        # Remove redis://
+        uri_to_parse = falkordb_uri
+        if uri_to_parse.startswith("redis://"):
+            uri_to_parse = uri_to_parse[8:]
+        # Split off auth if present
+        if "@" in uri_to_parse:
+            auth_part, host_part = uri_to_parse.split("@", 1)
+            if ":" in auth_part:
+                falkordb_username, falkordb_password = auth_part.split(":", 1)
+            else:
+                falkordb_username = auth_part
+                falkordb_password = None
+        else:
+            host_part = uri_to_parse
+            falkordb_username = None
+            falkordb_password = None
+        # Split host:port/db
+        if ":" in host_part:
+            host_port_part, *db_part = host_part.split("/", 1)
+            host, port = host_port_part.split(":", 1)
+            port = int(port)
+            db = int(db_part[0]) if db_part else 0
+        else:
+            host = host_part.split("/")[0]
+            port = 6379
+            db = int(host_part.split("/")[1]) if "/" in host_part else 0
+    except Exception:
+        host = "localhost"
+        port = 6379
+        db = 0
+        falkordb_username = None
+        falkordb_password = None
+    
+    config["falkordb"] = {
+        "uri": original_uri,
+        "host": host,
+        "port": port,
+        "db": db,
+        "username": falkordb_username,
+        "password": falkordb_password,
+        "graph_name": os.environ.get("FALKORDB_GRAPH_NAME", "knowledge_graph")
     }
 
     # Redis Configuration
@@ -320,6 +373,10 @@ def inject_repo(func):
                 logger.info("Injecting QdrantRepository")
                 from tilellm.store.qdrant.qdrant_repository_local import QdrantRepository
                 return QdrantRepository()
+            elif engine_name == 'milvus':
+                logger.info("Injecting MilvusRepository")
+                from tilellm.store.milvus.milvus_repository import MilvusRepository
+                return MilvusRepository()
             else:
                 raise ValueError(f"Unknown engine name: {engine_name}")
 
@@ -397,6 +454,13 @@ def inject_repo_async(func: Callable) -> Callable:
                     logger.info(f"Create async QdrantRepository with key: {cache_key}")
                     return repo_instance
 
+                elif engine_name == 'milvus':
+                    logger.info("Injecting MilvusRepository (async)")
+                    from tilellm.store.milvus.milvus_repository import MilvusRepository
+                    repo_instance = MilvusRepository()
+                    logger.info(f"Create async MilvusRepository with key: {cache_key}")
+                    return repo_instance
+
                 else:
                     raise ValueError(f"Unknown engine name: {engine_name}")
 
@@ -424,7 +488,7 @@ def inject_repo_async(func: Callable) -> Callable:
             return await func(question, *args, **kwargs)
 
         except Exception as e:
-            logger.error(f"Error in decorator async inject_repo for {func.__name__}: {e}")
+            logger.error(f"Error in decorator async inject_repo_async for {func.__name__}: {e}")
             raise
 
     return async_wrapper
