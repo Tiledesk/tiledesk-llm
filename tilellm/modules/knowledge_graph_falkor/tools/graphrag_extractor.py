@@ -8,11 +8,11 @@ logger = logging.getLogger(__name__)
 GRAPH_FIELD_SEP = "<SEP>"
 DEFAULT_ENTITY_TYPES_OLD = ["organization", "person", "geo", "event", "category"]
 DEFAULT_ENTITY_TYPES = [
-    "organization", "person", "geo",
-    "loan", "mortgage", "guarantee", "protest", "debt",
-    "contract", "payment", "default", "legal_proceeding", "asset",
-    "writ_of_execution", # Titolo Esecutivo (Decreto Ingiuntivo, Precetto)
-    "insolvency_event"   # Eventi di insolvenza specifici per la timeline
+    "ORGANIZATION", "PERSON", "GEO",
+    "LOAN", "MORTGAGE", "GUARANTEE", "PROTEST", "DEBT",
+    "CONTRACT", "PAYMENT", "DEFAULT", "LEGAL_PROCEEDING", "ASSET",
+    "WRIT_OF_EXECUTION", # Titolo Esecutivo (Decreto Ingiuntivo, Precetto)
+    "INSOLVENCY_EVENT"   # Eventi di insolvenza specifici per la timeline
 ]
 
 # Relationship types for debt collection domain
@@ -94,17 +94,17 @@ Given a text document relevant to debt recovery and due diligence activities, id
 - entity_name: Name/identifier of the entity, capitalized, in language of 'Text'
 - entity_type: One of: [{entity_types}]
   * Financial types guide:
-    - "loan": credit facilities, financing agreements
-    - "mortgage": real estate collateral agreements
-    - "guarantee": suretyships, fideiussioni, personal/real guarantees
-    - "protest": unpaid checks/bills formally protested
-    - "debt": outstanding obligations, arrears
-    - "default": missed payments, covenant breaches
-    - "legal_proceeding": court cases, enforcement actions
-    - "payment": transactions, settlements, installments
-    - "asset": collateral, seized properties, valuables
-  * For persons who are debtors, USE "person" as entity_type but include "DEBTOR" in description
-  * For organizations who are debtors, USE "organization" as entity_type but include "DEBTOR" in description
+    - "LOAN": credit facilities, financing agreements
+    - "MORTGAGE": real estate collateral agreements
+    - "GUARANTEE": suretyships, fideiussioni, personal/real guarantees
+    - "PROTEST": unpaid checks/bills formally protested
+    - "DEBT": outstanding obligations, arrears
+    - "DEFAULT": missed payments, covenant breaches
+    - "LEGAL_PROCEEDING": court cases, enforcement actions
+    - "PAYMENT": transactions, settlements, installments
+    - "ASSET": collateral, seized properties, valuables
+  * For persons who are debtors, USE "PERSON" as entity_type but include "DEBTOR" in description
+  * For organizations who are debtors, USE "ORGANIZATION" as entity_type but include "DEBTOR" in description
 - entity_description: Comprehensive description including amounts, dates, parties, status, and key terms in language of 'Text'
 Format: ("entity"{tuple_delimiter}<entity_name>{tuple_delimiter}<entity_type>{tuple_delimiter}<entity_description>
 
@@ -147,9 +147,9 @@ For each relationship extract ALL 7 fields (relationship_type is MANDATORY - nev
 CRITICAL: Every relationship MUST have exactly 7 fields. The 4th field MUST be a relationship_type from the list above.
 Format: ("relationship"{tuple_delimiter}<source_entity>{tuple_delimiter}<target_entity>{tuple_delimiter}<relationship_type>{tuple_delimiter}<relationship_description>{tuple_delimiter}<relationship_strength>{tuple_delimiter}<relationship_date>
 
-3. Return output as single list of entities and relationships using **{record_delimiter}** as delimiter.
+7. Return output as single list of entities and relationships using **{record_delimiter}** as delimiter.
 
-4. When finished, output {completion_delimiter}
+8. When finished, output {completion_delimiter}
 
 ######################
 -Examples-
