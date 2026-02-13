@@ -35,27 +35,43 @@ FROM python:3.12-slim
 
 ARG EXTRAS=""
 
+# Variabili d'ambiente
 ENV REDIS_HOST=redis \
     REDIS_URL=redis://redis:6379/0 \
     TOKENIZERS_PARALLELISM=false \
     PYTHONPATH=/tiledesk-llm \
-    PATH="/root/.local/bin:$PATH" \
-    PIP_NO_CACHE_DIR=1 \
-    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+    PATH="/root/.local/bin:$PATH"
 
 WORKDIR /tiledesk-llm
 
-# Installa SOLO le dipendenze minime richieste da Chromium (molto più leggere)
+# Installazione dipendenze di sistema minime
 RUN apt update && apt install -y --no-install-recommends \
-    poppler-utils \
-    exiftool \
-    curl \
-    nodejs \
+    poppler-utils exiftool curl \
+    && curl -sL https://deb.nodesource.com/setup_16.x | bash - \
+    && apt install -y nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copia le librerie Python installate nel builder
+COPY --from=python-builder /install /usr/local
+# Copia l'app Node.js
+COPY --from=node-builder /usr/src/app /usr/src/app
+# Copia il codice sorgente
+COPY . .
+
+
+
+# NLTK e Playwright (solo Chromium per risparmiare spazio)
+RUN python -m nltk.downloader punkt punkt_tab averaged_perceptron_tagger averaged_perceptron_tagger_eng stopwords
+
+# Installazione dipendenze minime per Chromium headless (senza X11 per risparmiare spazio)
+RUN apt update && apt install -y --no-install-recommends \
     libnss3 \
-    libatk-bridge2.0-0 \
+    libnspr4 \
     libatk1.0-0 \
+    libatk-bridge2.0-0 \
     libcups2 \
     libdrm2 \
+    libdbus-1-3 \
     libxkbcommon0 \
     libxcomposite1 \
     libxdamage1 \
@@ -65,32 +81,13 @@ RUN apt update && apt install -y --no-install-recommends \
     libasound2 \
     libpango-1.0-0 \
     libcairo2 \
-    libx11-6 \
-    libxcb1 \
-    libxext6 \
+    libatspi2.0-0 \
     libxshmfence1 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install playwright \
+    && playwright install chromium --without-deps
 
-# Copia Python libs
-COPY --from=python-builder /install /usr/local
-
-# Copia Node worker
-COPY --from=node-builder /usr/src/app /usr/src/app
-
-# Copia codice
-COPY . .
-
-RUN rm -rf /usr/local/lib/python3.12/site-packages/tilellm
-
-# NLTK
-RUN python -m nltk.downloader punkt punkt_tab averaged_perceptron_tagger averaged_perceptron_tagger_eng stopwords
-
-# Playwright SENZA --with-deps
-RUN pip install --no-cache-dir playwright \
-    && playwright install chromium \
-    && rm -rf /root/.cache
-
-# Download modelli
+# Download Modelli (condizionale)
 ARG DOWLOADMODEL=false
 RUN if [ "$DOWLOADMODEL" != "true" ]; then \
     python -c "from transformers import AutoModelForSequenceClassification; AutoModelForSequenceClassification.from_pretrained('naver/splade-cocondenser-ensembledistil');" && \
@@ -98,7 +95,7 @@ RUN if [ "$DOWLOADMODEL" != "true" ]; then \
     fi
 
 EXPOSE 8000 3009
-
 RUN chmod +x /tiledesk-llm/entrypoint.sh
 
 ENTRYPOINT ["/tiledesk-llm/entrypoint.sh"]
+    
