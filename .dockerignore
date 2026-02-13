@@ -1,2 +1,64 @@
 .env
 .env.prod
+
+# Python cache and build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.hypothesis/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Git
+.git/
+.gitignore
+
+# Documentation
+*.md
+!README.md
+docs/
+
+# Tests
+tests/
+*.test.py
+*_test.py
+
+# Node modules (will be built in container)
+worker/node_modules/
+node_modules/
+
+# Logs
+*.log
+
+# Docker
+docker-compose*.yml
+Dockerfile.*
+!Dockerfile
+
+# Other
+.cache/
+results/
+latest_model/

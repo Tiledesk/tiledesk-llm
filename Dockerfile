@@ -14,11 +14,11 @@ COPY log_conf.json .
 
 # Installazione dipendenze in una cartella locale per facile copia
 RUN if [ -z "$EXTRAS" ]; then \
-    pip install --prefix=/install .; \
+    pip install --no-cache-dir --prefix=/install .; \
     else \
-    pip install --prefix=/install ".[$EXTRAS]"; \
+    pip install --no-cache-dir --prefix=/install ".[$EXTRAS]"; \
     fi
-RUN pip install --prefix=/install "uvicorn[standard]" gunicorn
+RUN pip install --no-cache-dir --prefix=/install "uvicorn[standard]" gunicorn
 
 # --- STAGE 2: Builder (Node.js) ---
 FROM node:16-slim AS node-builder
@@ -51,8 +51,10 @@ RUN apt update && apt install -y --no-install-recommends \
     && apt install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Copia le librerie Python installate nel builder
-COPY --from=python-builder /install /usr/local
+# Copia le librerie Python installate nel builder (solo bin, lib, include)
+COPY --from=python-builder /install/bin /usr/local/bin
+COPY --from=python-builder /install/lib /usr/local/lib
+COPY --from=python-builder /install/include /usr/local/include 2>/dev/null || true
 # Copia l'app Node.js
 COPY --from=node-builder /usr/src/app /usr/src/app
 # Copia il codice sorgente
