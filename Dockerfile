@@ -80,6 +80,8 @@ COPY --from=node-builder /usr/src/app /usr/src/app
 # Copia codice
 COPY . .
 
+RUN rm -rf /usr/local/lib/python3.12/site-packages/tilellm
+
 # NLTK
 RUN python -m nltk.downloader punkt punkt_tab averaged_perceptron_tagger averaged_perceptron_tagger_eng stopwords
 
