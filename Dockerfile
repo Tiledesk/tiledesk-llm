@@ -35,36 +35,60 @@ FROM python:3.12-slim
 
 ARG EXTRAS=""
 
-# Variabili d'ambiente
 ENV REDIS_HOST=redis \
     REDIS_URL=redis://redis:6379/0 \
     TOKENIZERS_PARALLELISM=false \
     PYTHONPATH=/tiledesk-llm \
-    PATH="/root/.local/bin:$PATH"
+    PATH="/root/.local/bin:$PATH" \
+    PIP_NO_CACHE_DIR=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 WORKDIR /tiledesk-llm
 
-# Installazione dipendenze di sistema minime
+# Installa SOLO le dipendenze minime richieste da Chromium (molto più leggere)
 RUN apt update && apt install -y --no-install-recommends \
-    poppler-utils exiftool curl \
-    && curl -sL https://deb.nodesource.com/setup_16.x | bash - \
-    && apt install -y nodejs \
+    poppler-utils \
+    exiftool \
+    curl \
+    nodejs \
+    libnss3 \
+    libatk-bridge2.0-0 \
+    libatk1.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libx11-6 \
+    libxcb1 \
+    libxext6 \
+    libxshmfence1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copia le librerie Python installate nel builder
+# Copia Python libs
 COPY --from=python-builder /install /usr/local
-# Copia l'app Node.js
+
+# Copia Node worker
 COPY --from=node-builder /usr/src/app /usr/src/app
-# Copia il codice sorgente
+
+# Copia codice
 COPY . .
 
-
-
-# NLTK e Playwright (solo Chromium per risparmiare spazio)
+# NLTK
 RUN python -m nltk.downloader punkt punkt_tab averaged_perceptron_tagger averaged_perceptron_tagger_eng stopwords
-RUN pip install playwright && playwright install chromium --with-deps
 
-# Download Modelli (condizionale)
+# Playwright SENZA --with-deps
+RUN pip install --no-cache-dir playwright \
+    && playwright install chromium \
+    && rm -rf /root/.cache
+
+# Download modelli
 ARG DOWLOADMODEL=false
 RUN if [ "$DOWLOADMODEL" != "true" ]; then \
     python -c "from transformers import AutoModelForSequenceClassification; AutoModelForSequenceClassification.from_pretrained('naver/splade-cocondenser-ensembledistil');" && \
@@ -72,6 +96,7 @@ RUN if [ "$DOWLOADMODEL" != "true" ]; then \
     fi
 
 EXPOSE 8000 3009
+
 RUN chmod +x /tiledesk-llm/entrypoint.sh
 
 ENTRYPOINT ["/tiledesk-llm/entrypoint.sh"]
