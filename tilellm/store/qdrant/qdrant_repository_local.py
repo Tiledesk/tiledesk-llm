@@ -325,7 +325,7 @@ class QdrantRepository(VectorStoreRepository):
             logger.info(f"Cleared namespace '{namespace}' in collection '{collection_name}'.")
 
             # 3. Prepare data and embeddings
-            doc_batch_size = 50 # Qdrant also has limits on request size
+            doc_batch_size = 32 # Reduced to match TEI server batch limit
             contents = [doc.page_content for doc in documents]
             metadatas = [doc.metadata for doc in documents]
 
