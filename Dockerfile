@@ -51,10 +51,9 @@ RUN apt update && apt install -y --no-install-recommends \
     && apt install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Copia le librerie Python installate nel builder (solo bin, lib, include)
+# Copia le librerie Python installate nel builder (solo bin e lib, include non necessario a runtime)
 COPY --from=python-builder /install/bin /usr/local/bin
 COPY --from=python-builder /install/lib /usr/local/lib
-COPY --from=python-builder /install/include /usr/local/include 2>/dev/null || true
 # Copia l'app Node.js
 COPY --from=node-builder /usr/src/app /usr/src/app
 # Copia il codice sorgente
