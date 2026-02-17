@@ -145,6 +145,7 @@ class CommunityGraphService:
         self,
         namespace: str,
         engine: Engine,
+        creation_prompt: str,
         vector_store_repo,
         llm=None,
         llm_embeddings: Optional[Any] = None,
@@ -164,6 +165,7 @@ class CommunityGraphService:
         Args:
             namespace: Base namespace for the graph
             engine: Engine configuration
+            creation_prompt: Creation prompt
             vector_store_repo: Vector store repository
             llm: LLM instance for extraction and report generation
             llm_embeddings: Embedding model
@@ -215,6 +217,7 @@ class CommunityGraphService:
                     engine_type = engine.deployment
                 import_stats = await self.graph_rag_service.import_from_vector_store(
                     namespace=namespace,
+                    creation_prompt=creation_prompt,
                     vector_store_repo=vector_store_repo,
                     engine=engine,
                     limit=limit,

@@ -28,12 +28,13 @@ def _hash_api_key(api_key: str) -> str:
     return hashlib.sha256(api_key.encode('utf-8')).hexdigest()#[:16]
 
 class TEIEmbeddings(Embeddings):
-    def __init__(self, base_url: str, model: str, api_key: Optional[str] = None, client: Optional[httpx.AsyncClient] = None, headers: Optional[Dict[str, Any]] = None):
+    def __init__(self, base_url: str, model: str, api_key: Optional[str] = None, client: Optional[httpx.AsyncClient] = None, headers: Optional[Dict[str, Any]] = None, batch_size: int = 32):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key
         self.client = client
         self.headers = headers or {}
+        self.batch_size = batch_size  # Maximum batch size supported by TEI server
 
     async def _acall(self, inputs):
         url = f"{self.base_url}/embed"
@@ -79,12 +80,15 @@ class TEIEmbeddings(Embeddings):
             return executor.submit(run_async).result()
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        """
+        Synchronous wrapper for aembed_documents with automatic batching.
+        """
         import asyncio
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
             loop = None
-            
+
         if loop and loop.is_running():
              return self._run_in_thread(self.aembed_documents(texts))
         else:
@@ -109,7 +113,29 @@ class TEIEmbeddings(Embeddings):
              return loop.run_until_complete(self.aembed_query(text))
 
     async def aembed_documents(self, texts: List[str]) -> List[List[float]]:
-        return await self._acall(texts)
+        """
+        Embed documents with automatic batching to respect TEI server limits.
+        Splits large batches into smaller chunks to avoid 413 Payload Too Large errors.
+        """
+        if not texts:
+            return []
+
+        # If the batch is small enough, process it directly
+        if len(texts) <= self.batch_size:
+            return await self._acall(texts)
+
+        # Otherwise, split into smaller batches
+        logger.info(f"TEI: Splitting {len(texts)} documents into batches of {self.batch_size}")
+        all_embeddings = []
+        num_batches = (len(texts) + self.batch_size - 1) // self.batch_size
+        for i in range(0, len(texts), self.batch_size):
+            batch = texts[i:i + self.batch_size]
+            batch_num = (i // self.batch_size) + 1
+            logger.debug(f"TEI: Processing batch {batch_num}/{num_batches} with {len(batch)} documents")
+            batch_embeddings = await self._acall(batch)
+            all_embeddings.extend(batch_embeddings)
+
+        return all_embeddings
 
     async def aembed_query(self, text: str) -> List[float]:
         result = await self._acall(text)
@@ -319,20 +345,24 @@ class EmbeddingSessionManager:
 
     async def _create_tei_with_session(self):
         """Crea TEI embeddings con sessione persistente"""
-        
+
         http_client = httpx.AsyncClient(
             timeout=httpx.Timeout(60.0),
             limits=httpx.Limits(max_keepalive_connections=20, max_connections=100)
         )
-        
+
+        # Get batch_size from config, default to 32 (TEI server limit)
+        batch_size = self.config.get("batch_size", 32)
+
         embedding_client = TEIEmbeddings(
             base_url=self.config.get("base_url", ""),
             model=self.config.get("model_name", "tei"),
             api_key=self.config.get("api_key"),
             client=http_client,
-            headers=self.config.get("custom_headers")
+            headers=self.config.get("custom_headers"),
+            batch_size=batch_size
         )
-        
+
         embedding_client._http_client = http_client
         return embedding_client
 

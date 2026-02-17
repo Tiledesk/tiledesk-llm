@@ -597,7 +597,7 @@ class GraphRAGService:
         if not self.vector_store_repository:
             raise RuntimeError("Vector store repository not initialized. Call set_vector_store_repository first.")
 
-    async def import_from_vector_store(self, namespace: str, vector_store_repo=None, engine: Optional[Engine] = None, limit: int = 100, llm=None, index_name: Optional[str] = None, overwrite: bool = True, engine_type: Optional[str] = None) -> Dict[str, Any]:
+    async def import_from_vector_store(self, namespace: str, creation_prompt:str, vector_store_repo=None, engine: Optional[Engine] = None, limit: int = 100, llm=None, index_name: Optional[str] = None, overwrite: bool = True, engine_type: Optional[str] = None) -> Dict[str, Any]:
         """
         Import documents from a vector store namespace into the knowledge graph.
 
@@ -610,6 +610,7 @@ class GraphRAGService:
             :param engine_type:
             :param overwrite:
             :param namespace: Namespace/collection name in vector store
+            :param creation_prompt: Creation prompt
             :param vector_store_repo: Vector store repository instance (if None, uses self.vector_store_repository)
             :param engine: Engine configuration for vector store (required if repo doesn't store engine)
             :param limit: Maximum number of chunks to process
@@ -718,7 +719,8 @@ class GraphRAGService:
                         logger.warning("GraphRAG extractor not available despite flag")
                         raise ImportError("GraphRAG extractor not available")
                     assert GraphRAGExtractor is not None
-                    extractor = GraphRAGExtractor(llm_to_use)
+                    extractor = GraphRAGExtractor(llm_invoker=llm_to_use, creation_prompt=creation_prompt)
+
                     entities, relationships = await extractor.extract(
                         doc_id=namespace,
                         chunks=chunks_data

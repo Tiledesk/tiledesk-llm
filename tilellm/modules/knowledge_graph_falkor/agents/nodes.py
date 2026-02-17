@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from tilellm.modules.knowledge_graph_falkor.agents.state import GraphSpecialistState
 from tilellm.modules.knowledge_graph_falkor.agents.prompts import (
-    QUERY_GENERATOR_SYSTEM_PROMPT,
+    generate_query_generator_prompt,
     QUERY_GENERATOR_CORRECTION_PROMPT,
     RESPONDER_SYSTEM_PROMPT,
     SUMMARIZER_MAP_PROMPT,
@@ -51,22 +51,43 @@ def create_nodes(repository, llm):
         """
         Generates a Cypher query from the user's natural language question.
         Includes self-correction feedback if retry_count > 0.
+        Supports chat history for context-aware queries.
         """
         question = state["question"]
         retry_count = state.get("retry_count", 0)
         error_message = state.get("error_message")
+        chat_history = state.get("chat_history")
+        creation_prompt = state.get("creation_prompt")
 
-        # Build prompt with optional correction feedback
-        system_prompt = QUERY_GENERATOR_SYSTEM_PROMPT
+        # Generate domain-specific system prompt
+        system_prompt = generate_query_generator_prompt(creation_prompt)
+
+        # Add self-correction feedback if retry
         if retry_count > 0 and error_message:
             system_prompt += QUERY_GENERATOR_CORRECTION_PROMPT.format(
                 error_message=error_message
             )
 
+        # Build user message with optional chat history context
+        user_message = f"Question: {question}"
+
+        # Add chat history context if available
+        if chat_history and isinstance(chat_history, dict):
+            history_items = chat_history.get("history", [])
+            if history_items:
+                history_text = "\n".join([
+                    f"User: {item.get('question', '')}\nAssistant: {item.get('answer', '')}"
+                    for item in history_items[-3:]  # Last 3 exchanges
+                ])
+                user_message = f"""Previous conversation:
+{history_text}
+
+Current question: {question}"""
+
         # Prepare messages
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": f"Question: {question}"},
+            {"role": "user", "content": user_message},
         ]
 
         try:

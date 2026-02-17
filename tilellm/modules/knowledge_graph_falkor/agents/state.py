@@ -17,7 +17,8 @@ class GraphSpecialistState(TypedDict):
     # Input
     question: str
     namespace: str
-    chat_history: Optional[Dict[str, Any]]  # Maintained for compatibility, not used in MVP
+    chat_history: Optional[Dict[str, Any]]  # Chat history for context
+    creation_prompt: Optional[str]  # Domain identifier (e.g., "debt_recovery", "generic")
 
     # Schema context (optional future enhancement)
     graph_schema: Optional[Dict[str, Any]]

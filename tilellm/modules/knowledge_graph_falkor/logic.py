@@ -317,6 +317,7 @@ async def create_graph(
     return await community_service.create_community_graph(
         namespace=request.namespace,
         engine=request.engine,
+        creation_prompt=request.creation_prompt,
         vector_store_repo=repo,
         llm=llm,
         llm_embeddings=llm_embeddings,
@@ -727,5 +728,6 @@ async def agentic_qa_search(
     return await agent_service.process_query(
         question=question_text,
         namespace=request.namespace,
-        chat_history_dict=request.chat_history_dict
+        chat_history_dict=request.chat_history_dict,
+        creation_prompt=getattr(request, 'creation_prompt', None)
     )

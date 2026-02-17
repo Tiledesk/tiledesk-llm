@@ -3,31 +3,43 @@ import logging
 from typing import List, Dict, Any, Optional, Tuple
 from collections import defaultdict
 
+# Import extraction configurations
+from tilellm.modules.knowledge_graph_falkor.tools.extraction_prompts import (
+    get_extraction_config,
+    list_available_domains,
+    ExtractionConfig
+)
+
 logger = logging.getLogger(__name__)
 
 GRAPH_FIELD_SEP = "<SEP>"
-DEFAULT_ENTITY_TYPES_OLD = ["organization", "person", "geo", "event", "category"]
+
+# Legacy exports for backward compatibility
+# These are kept for existing code that imports them directly
+# New code should use get_extraction_config() instead
+DEFAULT_ENTITY_TYPES_GENERIC = ["ORGANIZATION", "PERSON", "GEO", "EVENT", "CATEGORY"]
+DEFAULT_RELATIONSHIP_TYPES_GENERIC = ["RELATED_TO"]
 DEFAULT_ENTITY_TYPES = [
     "ORGANIZATION", "PERSON", "GEO",
     "LOAN", "MORTGAGE", "GUARANTEE", "PROTEST", "DEBT",
     "CONTRACT", "PAYMENT", "DEFAULT", "LEGAL_PROCEEDING", "ASSET",
-    "WRIT_OF_EXECUTION", # Titolo Esecutivo (Decreto Ingiuntivo, Precetto)
-    "INSOLVENCY_EVENT"   # Eventi di insolvenza specifici per la timeline
+    "WRIT_OF_EXECUTION",
+    "INSOLVENCY_EVENT"
 ]
-
-# Relationship types for debt collection domain
 DEFAULT_RELATIONSHIP_TYPES = [
     "HAS_LOAN", "SECURED_BY", "GUARANTEES", "HAS_PAYMENT",
     "RECEIVED", "HAS_LEGAL_ACTION", "OWNS", "OBLIGATED_UNDER",
     "TRIGGERED", "RESULTED_IN", "CONCERNS", "RELATED_TO",
-    "PRECEDES",      # Fondamentale per la timeline
-    "NOTIFIED_TO",   # Per sapere quando il debitore ha ricevuto l'atto
-    "ISSUED_BY"      # Per legare sentenze/decreti al tribunale/ente
+    "PRECEDES", "NOTIFIED_TO", "ISSUED_BY"
 ]
 
 
-# Simplified GraphRAG extraction prompt (adapted from original)
-GRAPH_EXTRACTION_PROMPT_OLD = """
+# NOTE: Extraction prompts have been moved to extraction_prompts.py
+# The prompts below are kept for reference but are no longer used.
+# Use get_extraction_config() to get the appropriate prompt for your domain.
+
+# Kept for backward compatibility - will be removed in future version
+_LEGACY_GRAPH_EXTRACTION_PROMPT_GENERIC = """
 -Goal-
 Given a text document that is potentially relevant to this activity and a list of entity types, identify all entities of those types from the text and all relationships among the identified entities.
 
@@ -85,7 +97,8 @@ Text: {input_text}
 ######################
 Output:"""
 
-GRAPH_EXTRACTION_PROMPT = """
+# Kept for backward compatibility - will be removed in future version
+_LEGACY_GRAPH_EXTRACTION_PROMPT = """
 -Goal-
 Given a text document relevant to debt recovery and due diligence activities, identify all entities—including financial instruments and events—and their relationships with EXPLICIT relationship types. Pay special attention to temporal information (dates, sequences) to enable timeline reconstruction.
 
@@ -374,20 +387,42 @@ class GraphRAGExtractor:
     """
     Simplified GraphRAG extractor for entity and relationship extraction.
     Uses LLM to parse text and extract structured knowledge.
+
+    Supports multiple domains via creation_prompt parameter.
     """
-    
-    def __init__(self, llm_invoker, language: str = "English", entity_types: Optional[List[str]] = None):
+
+    def __init__(
+        self,
+        llm_invoker,
+        language: str = "English",
+        entity_types: Optional[List[str]] = None,
+        creation_prompt: Optional[str] = None
+    ):
         """
         Initialize extractor.
-        
+
         Args:
             llm_invoker: LLM instance with invoke/chat method (LangChain ChatModel)
             language: Output language for descriptions
-            entity_types: List of entity types to extract
+            entity_types: List of entity types to extract (overrides creation_prompt config)
+            creation_prompt: Domain identifier (e.g., "debt_recovery", "generic").
+                           If None, uses "generic" domain. If entity_types is provided,
+                           it overrides the config's entity types.
         """
         self.llm = llm_invoker
         self.language = language
-        self.entity_types = entity_types or DEFAULT_ENTITY_TYPES
+
+        # Get extraction configuration based on creation_prompt
+        self.config = get_extraction_config(creation_prompt)
+
+        # Allow entity_types override, otherwise use config
+        self.entity_types = entity_types or self.config.entity_types
+        self.relationship_types = self.config.relationship_types
+        self.extraction_prompt_template = self.config.extraction_prompt
+
+        logger.info(f"Initialized GraphRAGExtractor with domain: {self.config.domain}, "
+                   f"entity_types: {len(self.entity_types)}, "
+                   f"relationship_types: {len(self.relationship_types)}")
     
     async def extract_chunk(self, chunk_key: str, chunk_text: str) -> Tuple[Dict[str, Any], Dict[str, Any], int]:
         """
@@ -404,8 +439,9 @@ class GraphRAGExtractor:
             "record_delimiter": "\n",
             "completion_delimiter": "[COMPLETED]"
         }
-        
-        prompt = GRAPH_EXTRACTION_PROMPT.format(**prompt_vars)
+
+        # Use the extraction prompt from config
+        prompt = self.extraction_prompt_template.format(**prompt_vars)
         
         try:
             # Call LLM - assume it has invoke method (LangChain style)

@@ -116,6 +116,7 @@ class GraphSpecialistAgent:
         question: str,
         namespace: str,
         chat_history_dict: Optional[Dict[str, Any]] = None,
+        creation_prompt: Optional[str] = None,
         max_retries: int = 3,
     ) -> Dict[str, Any]:
         """
@@ -127,7 +128,9 @@ class GraphSpecialistAgent:
         Args:
             question: Natural language question
             namespace: Graph namespace for multi-tenancy
-            chat_history_dict: Chat history (maintained for compatibility, not used in MVP)
+            chat_history_dict: Chat history for context-aware queries
+            creation_prompt: Domain identifier (e.g., "debt_recovery", "generic").
+                           If None, uses "generic" domain.
             max_retries: Maximum number of query generation retries
 
         Returns:
@@ -141,7 +144,8 @@ class GraphSpecialistAgent:
         initial_state: GraphSpecialistState = {
             "question": question,
             "namespace": namespace,
-            "chat_history": chat_history_dict,  # Maintained but not used in MVP
+            "chat_history": chat_history_dict,
+            "creation_prompt": creation_prompt,
             "graph_schema": None,
             "cypher_query": None,
             "cypher_explanation": None,
@@ -152,7 +156,7 @@ class GraphSpecialistAgent:
             "error_message": None,
             "validation_status": "pending",
             "answer": None,
-            "metadata": {"trace": []},
+            "metadata": {"trace": [], "domain": creation_prompt or "generic"},
         }
 
         try:

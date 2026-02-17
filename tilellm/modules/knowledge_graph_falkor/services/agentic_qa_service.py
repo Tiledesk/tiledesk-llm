@@ -43,6 +43,7 @@ class AgenticQAService:
         question: str,
         namespace: str,
         chat_history_dict: Optional[Dict[str, Any]] = None,
+        creation_prompt: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Process a natural language query using the Graph Specialist Agent.
@@ -50,16 +51,23 @@ class AgenticQAService:
         Args:
             question: Natural language question
             namespace: Graph namespace for multi-tenancy
-            chat_history_dict: Chat history (maintained for compatibility)
+            chat_history_dict: Chat history for context-aware queries
+            creation_prompt: Domain identifier (e.g., "debt_recovery", "generic").
+                           If None, uses "generic" domain to match the graph schema.
 
         Returns:
             Dictionary with answer, query_used, retrieval_strategy, and metadata
         """
-        logger.info(f"Processing agentic query: {question[:100]}...")
+        logger.info(
+            f"Processing agentic query (domain: {creation_prompt or 'generic'}): {question[:100]}..."
+        )
 
-        # Delegate to the agent
+        # Delegate to the agent with domain context
         result = await self.agent.process_query(
-            question=question, namespace=namespace, chat_history_dict=chat_history_dict
+            question=question,
+            namespace=namespace,
+            chat_history_dict=chat_history_dict,
+            creation_prompt=creation_prompt,
         )
 
         return result

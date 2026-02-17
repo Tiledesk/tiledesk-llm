@@ -38,6 +38,7 @@ class GraphCreateRequest(QuestionAnswer):
     engine: Optional[Engine] = None  # Engine configuration for vector store
     limit: Optional[int] = 100
     overwrite: Optional[bool] = False
+    creation_prompt: Optional[str] = Field(default=None, description="Optional prompt for creation")
     webhook_url: Optional[str] = Field(default=None, description="URL to call when task is finished")
     
     # Keep same type as parent but with default empty string (not needed for creation)
@@ -115,6 +116,11 @@ class GraphQAAdvancedRequest(GraphQARequest):
     use_community_search: Optional[bool] = False
     max_expansion_nodes: Optional[int] = 20
     use_reranking: Optional[bool] = True
+    creation_prompt: Optional[str] = Field(
+        default=None,
+        description="Domain identifier for knowledge graph schema (e.g., 'debt_recovery', 'generic'). "
+                   "If None, uses 'generic' domain. Must match the creation_prompt used when creating the graph."
+    )
 
 
 
