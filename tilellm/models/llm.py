@@ -1,7 +1,7 @@
 import datetime
 from typing import Dict, Optional, List, Union, Any, TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, Field, SecretStr, field_validator, RootModel, model_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator, RootModel, model_validator, computed_field
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from tilellm.models.base import AWSAuthentication, ServerConfig
@@ -94,7 +94,7 @@ class QuestionAnswer(BaseModel):
     llm: Optional[str] = Field(default="openai")
     gptkey: Optional[SecretStr] = "sk"
     model: Union[str, LlmEmbeddingModel] = Field(default="gpt-3.5-turbo")
-    sparse_encoder: Union[str, TEIConfig, None] = Field(default="splade") #bge-m3
+    sparse_encoder: Union[str, "TEIConfig", None] = Field(default="splade") #bge-m3
     temperature: float = Field(default=0.0)
     top_k: int = Field(default=5)
     max_tokens: int = Field(default=512)
@@ -108,7 +108,7 @@ class QuestionAnswer(BaseModel):
     system_context: Optional[str] = None
     search_type: str = Field(default_factory=lambda: "similarity")
     chunks_only: Optional[bool] = Field(default_factory=lambda: False)
-    reranking : Union[bool, TEIConfig, PineconeRerankerConfig] = Field(default_factory=lambda: False)
+    reranking : Union[bool, "TEIConfig", "PineconeRerankerConfig"] = Field(default_factory=lambda: False)
     reranking_multiplier: int = 3  # moltiplicatore per top_k
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     contextualize_prompt: Optional[bool] = Field(default=False, description="Enable/disable contextualize_q_system_prompt usage")
@@ -199,6 +199,36 @@ class QuestionAnswer(BaseModel):
         if self.citations and self.max_tokens < 1024:
             self.max_tokens = 1024
         return self
+
+
+    @model_validator(mode='after')
+    def validate_reranking_consistency(self):
+        """
+        Assicura che se reranking è True, esista un modello definito.
+        """
+        if self.reranking is True and not self.reranker_model:
+            raise ValueError("reranker_model must be specified if reranking is True")
+        return self
+
+
+    # 2. Campo Calcolato per la configurazione risolta
+    @computed_field(return_type=Optional[Union[str, "TEIConfig", "PineconeRerankerConfig"]])
+    @property
+    def reranker_config(self) -> Optional[Union[str, "TEIConfig", "PineconeRerankerConfig"]]:
+        """
+        Restituisce la configurazione pronta per TileReranker.
+        - Se False: None (nessun reranking)
+        - Se True: La stringa del modello (reranker_model)
+        - Se Config: L'oggetto configurazione stesso
+        """
+        if self.reranking is False:
+            return None
+
+        if self.reranking is True:
+            return self.reranker_model
+
+        # Se è già un oggetto TEIConfig o PineconeRerankerConfig
+        return self.reranking
 
 
 class QuestionToLLM(BaseModel):

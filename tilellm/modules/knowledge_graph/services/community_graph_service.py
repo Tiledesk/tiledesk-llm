@@ -1224,7 +1224,7 @@ class CommunityGraphService:
         namespace: str,
         search_type: str,
         sparse_encoder_injected: Optional[Union[str, TEIConfig, None]] ,
-        reranking_injected: Optional[Union[str, TEIConfig]],
+        reranking_injected: Optional[Union[str, TEIConfig, PineconeRerankerConfig]],
         engine: Engine,
         vector_store_repo,
         llm,

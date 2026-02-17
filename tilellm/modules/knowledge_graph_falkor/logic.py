@@ -490,7 +490,7 @@ async def query_graph(
         llm_embeddings=llm_embeddings,
         engine=request.engine,
         chat_history_dict=request.chat_history_dict,
-        reranking_config=getattr(request, 'reranking', None),  # Pass reranking config
+        reranking_config=request.reranker_config,  # Pass reranking config
         use_reranking=True,  # Enable reranking by default
         top_k_initial=20,
         top_k_reranked=5
@@ -524,17 +524,16 @@ async def context_fusion_graph_search(
     
     question_text = request.question if isinstance(request.question, str) else request.question[0].text
 
-    if isinstance(request.reranking, bool):  # True
-        reranking_model_config = request.reranker_model
-    else:
-        reranking_model_config = request.reranking
-
+    #if isinstance(request.reranking, bool):  # True
+    #    reranking_model_config = request.reranker_model
+    #else:
+    #    reranking_model_config = request.reranking
     return await community_service.context_fusion_search(
         question=question_text,
         namespace=request.namespace,
         search_type=request.search_type,
         sparse_encoder_injected=request.sparse_encoder,
-        reranking_injected=reranking_model_config,
+        reranking_injected=request.reranker_config,
         engine=request.engine,
         vector_store_repo=repo,
         max_results=request.top_k if request.top_k else 15,

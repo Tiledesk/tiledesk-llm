@@ -4,7 +4,7 @@ API request and response schemas for Knowledge Graph endpoints.
 
 from typing import Optional, Dict, Any, List, Union
 from pydantic import BaseModel, Field
-from tilellm.models import Engine, QuestionToLLM, QuestionAnswer
+from tilellm.models import Engine, QuestionAnswer
 from tilellm.models.schemas.multimodal_content import MultimodalContent
 
 
@@ -175,3 +175,16 @@ class MultimodalSearchResponse(BaseModel):
     answer: str
     sources: Dict[str, Any]
     query_used: str
+
+
+# Risolvi forward references per i modelli che ereditano da QuestionAnswer
+def rebuild_graph_schemas():
+    """Rebuild models to resolve forward references."""
+    from tilellm.models.chat import ChatEntry
+    from tilellm.models.llm import TEIConfig, PineconeRerankerConfig
+    GraphQARequest.model_rebuild()
+    GraphQAAdvancedRequest.model_rebuild()
+    GraphCreateRequest.model_rebuild()
+    GraphClusterRequest.model_rebuild()
+    AddDocumentRequest.model_rebuild()
+

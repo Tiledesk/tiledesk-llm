@@ -8,8 +8,8 @@ import asyncio
 from typing import Dict, Any, List, Optional, Union
 
 from tilellm.models import Engine
-from tilellm.modules.knowledge_graph.services.community_graph_service import CommunityGraphService
-from tilellm.modules.knowledge_graph.services.table_qa_service import TableQAService
+from tilellm.modules.knowledge_graph_falkor.services.community_graph_service import CommunityGraphService
+from tilellm.modules.knowledge_graph_falkor.services.table_qa_service import TableQAService
 
 logger = logging.getLogger(__name__)
 

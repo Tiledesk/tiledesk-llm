@@ -22,7 +22,7 @@ from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResp
 from typing import Callable
 
 from tilellm.controller.controller_utils import preprocess_chat_history, \
-    fetch_question_vectors, retrieve_documents, aretrieve_documents, create_chains, get_or_create_session_history, \
+    fetch_question_vectors, aretrieve_documents, create_chains, get_or_create_session_history, \
     generate_answer_with_history, handle_exception, initialize_retrievers, _create_event, extract_conversation_flow, \
     create_contextualize_query, get_all_filtered_tools
 from tilellm.shared.tags_query_parser import build_tags_filter
@@ -1993,16 +1993,12 @@ async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler
         base_retriever = await initialize_retrievers(question_answer, repo, llm_embeddings, embedding_config_key)
 
         # Wrap con RerankedRetriever se il re-ranking è abilitato
-        if question_answer.reranking:
+        if question_answer.reranker_config:
             contextualize_query = await create_contextualize_query(llm,question_answer)
 
-            # Determine model config
-            if isinstance(question_answer.reranking, bool): # True
-                 model_config = question_answer.reranker_model
-            else:
-                 model_config = question_answer.reranking
 
-            reranker = TileReranker(model_name=model_config)
+            reranker = TileReranker(model_name=question_answer.reranker_config)
+
             retriever = RerankedRetriever(base_retriever=base_retriever,
                                           reranker=reranker,
                                           top_k=question_answer.top_k,
