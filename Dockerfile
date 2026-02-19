@@ -11,9 +11,9 @@ COPY ./tilellm ./tilellm
 # Installazione ultra-rapida con uv
 # Usiamo --no-cache per non sprecare spazio nel layer del builder
 RUN if [ -z "$EXTRAS" ]; then \
-    pip install --system --no-cache . uvicorn[standard] gunicorn; \
+    pip install --no-cache . uvicorn[standard] gunicorn; \
     else \
-    pip install --system --no-cache ".[$EXTRAS]" uvicorn[standard] gunicorn; \
+    pip install --no-cache ".[$EXTRAS]" uvicorn[standard] gunicorn; \
     fi
 
 # --- STAGE 2: Builder (Node.js) ---
@@ -54,7 +54,7 @@ COPY . .
 
 # 3. Installazione Playwright e dipendenze usando Python (UV)
 # Questo sostituisce "npx playwright install-deps" evitando l'errore npx not found
-RUN pip install --system --no-cache playwright \
+RUN pip install --no-cache playwright \
     && playwright install-deps chromium \
     && playwright install chromium \
     && python -m nltk.downloader punkt punkt_tab averaged_perceptron_tagger averaged_perceptron_tagger_eng stopwords \
