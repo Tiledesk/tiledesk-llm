@@ -1,5 +1,5 @@
 # --- STAGE 1: Builder (Python) ---
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS python-builder
+FROM python:3.12-slim AS python-builder
 
 ARG EXTRAS='all'
 WORKDIR /build
@@ -26,7 +26,7 @@ RUN npm install --production && rm -f .npmrc
 COPY ./worker .
 
 # --- STAGE 3: Final Runtime ---
-FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
+FROM python:3.12-slim
 
 # Variabili d'ambiente
 ENV REDIS_HOST=redis \
