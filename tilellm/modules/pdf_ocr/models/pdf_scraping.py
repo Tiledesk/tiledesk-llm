@@ -37,6 +37,7 @@ class PDFScrapingRequest(ItemSingle):
     use_docling: bool = Field(False, description="Use new Docling-based advanced pipeline.")
     extract_entities: bool = Field(False, description="Whether to extract semantic entities using GraphRAG.")
     extract_structure: bool = Field(True, description="Whether to extract hierarchical document structure.")
+    extract_md_simple: bool = Field(False, description="If True, extracts a single Markdown document from the entire PDF with enhanced image/table descriptions, then indexes it with MD-specific chunking.")
 
     def is_url(self) -> bool:
         """Check if file_content is a URL."""

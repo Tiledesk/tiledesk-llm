@@ -176,14 +176,11 @@ async def ask_hybrid_with_memory(question_answer, repo=None, llm=None, callback_
         # Ripristina il valore originale
         question_answer.top_k = original_top_k
 
-        ### Fine modifiche ORIG: results = await repo.perform_hybrid_search(question_answer, index, dense_vector, sparse_vector)
         # Retrieve documents based on search results
-        if question_answer.reranking:
-            contextualize_query = await create_contextualize_query(llm,question_answer)
-        else:
-            contextualize_query= question_answer.question
+        # Always create contextualized query if enabled, regardless of reranking
+        contextualized_retrieval_query = await create_contextualize_query(llm, question_answer)
 
-        retriever = await aretrieve_documents(question_answer, results,contextualize_query)
+        retriever = await aretrieve_documents(question_answer, results, contextualized_retrieval_query)
 
         # Create chains for contextualization and Q&A
         history_aware_retriever, question_answer_chain, qa_prompt = await create_chains(llm, question_answer, retriever)
@@ -1992,18 +1989,18 @@ async def ask_with_memory(question_answer, repo=None, llm=None, callback_handler
 
         base_retriever = await initialize_retrievers(question_answer, repo, llm_embeddings, embedding_config_key)
 
+        # Always create contextualized query if enabled
+        contextualized_retrieval_query = await create_contextualize_query(llm, question_answer)
+
         # Wrap con RerankedRetriever se il re-ranking è abilitato
         if question_answer.reranker_config:
-            contextualize_query = await create_contextualize_query(llm,question_answer)
-
-
             reranker = TileReranker(model_name=question_answer.reranker_config)
 
             retriever = RerankedRetriever(base_retriever=base_retriever,
                                           reranker=reranker,
                                           top_k=question_answer.top_k,
                                           use_reranking=True,
-                                          contextualize_query=contextualize_query)
+                                          contextualize_query=contextualized_retrieval_query)
 
         else:
             retriever = base_retriever

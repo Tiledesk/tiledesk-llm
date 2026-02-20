@@ -4,6 +4,7 @@ Handles service initialization, dependency injection, and core operations.
 """
 
 import logging
+import os
 from typing import Dict, Any, Optional, List, Union
 
 from tilellm.shared.utility import inject_llm_chat_async, inject_repo_async, inject_llm_async
@@ -13,6 +14,8 @@ from .services.pdf_entity_extractor import PDFEntityExtractor
 from .services.context_aware_chunker import ContextAwareChunker
 from .services.table_semantic_linker import TableSemanticLinker
 from .services.image_semantic_linker import ImageSemanticLinker
+from .services.markdown_extraction_agent import MarkdownExtractionAgent
+from .services.markdown_chunker import MarkdownChunker
 from ...models.llm import TEIConfig
 
 try:
@@ -74,6 +77,9 @@ async def process_pdf_document_with_embeddings(
     """
     Process PDF document using Docling and add embeddings to vector store.
     
+    If extract_md_simple=True, uses the LangGraph agent for Markdown extraction
+    and structure-aware chunking instead of the default element-based processing.
+    
     Args:
         question: PDFScrapingRequest with document configuration
         repo: Injected vector store repository
@@ -94,6 +100,20 @@ async def process_pdf_document_with_embeddings(
     
     if question.engine is None:
         raise ValueError("Engine configuration is required for vector store access")
+    
+    # If extract_md_simple is enabled, use the LangGraph agent approach
+    if getattr(question, 'extract_md_simple', False):
+        logger.info(f"Using LangGraph Markdown extraction for document {question.id}")
+        return await process_pdf_markdown_extraction(
+            question=question,
+            bucket_name=bucket_name,
+            object_name=object_name,
+            file_path=file_path,
+            repo=repo,
+            llm=llm,
+            llm_embeddings=llm_embeddings,
+            **kwargs
+        )
     
     # Initialize processor with the request config
     processor = ProductionDocumentProcessor(question.model_dump())
@@ -668,3 +688,151 @@ async def _index_images_to_vector_store(
     )
     
     logger.info(f"Successfully indexed {len(documents)} image captions")
+
+
+@inject_llm_chat_async
+@inject_repo_async
+async def process_pdf_markdown_extraction(
+    question: PDFScrapingRequest,
+    bucket_name: Optional[str] = None,
+    object_name: Optional[str] = None,
+    file_path: Optional[str] = None,
+    repo=None,
+    llm=None,
+    llm_embeddings=None,
+    **kwargs
+) -> Dict[str, Any]:
+    """
+    Process PDF document using LangGraph agent for Markdown extraction and indexing.
+    
+    This is the agentic approach using LangGraph to orchestrate:
+    1. Document structure extraction with Docling
+    2. Parallel image analysis with vision LLM
+    3. Parallel table analysis with LLM
+    4. Markdown assembly
+    5. Structure-aware chunking and indexing
+    
+    Args:
+        question: PDFScrapingRequest with document configuration
+        repo: Injected vector store repository
+        llm: Injected LLM instance for analysis
+        llm_embeddings: Injected embeddings model
+        bucket_name: Optional MinIO bucket name
+        object_name: Optional MinIO object name
+        file_path: Optional local file path
+    
+    Returns:
+        Dict with processing results including markdown content and statistics
+    """
+    if repo is None:
+        raise RuntimeError("Vector store repository not injected")
+    
+    if llm is None:
+        raise ValueError("LLM configuration is required for Markdown extraction")
+    
+    if question.engine is None:
+        raise ValueError("Engine configuration is required for vector store access")
+    
+    doc_id = question.id
+    namespace = question.namespace or "default"
+    
+    logger.info(f"Starting LangGraph Markdown extraction for document {doc_id}")
+    
+    try:
+        # Determine file path
+        temp_file_path = None
+        if bucket_name and object_name:
+            # Download from MinIO to temp file
+            import tempfile
+            from tilellm.modules.knowledge_graph.services.minio_storage import get_minio_storage_service
+            
+            minio_service = get_minio_storage_service()
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                response = minio_service.get_object(bucket_name, object_name)
+                try:
+                    for d in response.stream(32*1024):
+                        tmp_file.write(d)
+                finally:
+                    response.close()
+                    response.release_conn()
+                temp_file_path = tmp_file.name
+            file_path_to_use = temp_file_path
+        elif file_path:
+            file_path_to_use = file_path
+        else:
+            raise ValueError("Either bucket_name/object_name or file_path must be provided")
+        
+        # Initialize LangGraph agent
+        agent = MarkdownExtractionAgent()
+        
+        # Extract Markdown using the agent
+        extraction_result = await agent.extract_markdown(
+            file_path=file_path_to_use,
+            doc_id=doc_id,
+            llm=llm,
+            include_images=question.include_images,
+            include_tables=question.include_tables,
+            include_formulas=question.include_formulas
+        )
+        
+        markdown_content = extraction_result["markdown"]
+        images = extraction_result.get("images", [])
+        tables = extraction_result.get("tables", [])
+        metadata = extraction_result.get("metadata", {})
+        
+        logger.info(f"Extracted {len(markdown_content)} characters of Markdown with "
+                   f"{len(images)} images and {len(tables)} tables")
+        
+        # Chunk Markdown using specialized chunker
+        chunker = MarkdownChunker(
+            chunk_size=question.chunk_size if hasattr(question, 'chunk_size') else 1000,
+            chunk_overlap=question.chunk_overlap if hasattr(question, 'chunk_overlap') else 200,
+            respect_headings=True,
+            respect_tables=True,
+            include_heading_context=True
+        )
+        
+        # Use semantic section-based chunking for better results
+        documents = chunker.chunk_with_semantic_splitting(
+            markdown_content=markdown_content,
+            doc_id=doc_id,
+            source_metadata={
+                'source_type': 'markdown_extraction',
+                'has_images': len(images) > 0,
+                'has_tables': len(tables) > 0,
+                'num_pages': metadata.get('num_pages', 0)
+            }
+        )
+        
+        logger.info(f"Created {len(documents)} Markdown chunks for indexing")
+        
+        # Index chunks to vector store
+        if documents:
+            await repo.aadd_documents(
+                engine=question.engine,
+                documents=documents,
+                namespace=namespace,
+                embedding_model=llm_embeddings,
+                sparse_encoder=question.sparse_encoder
+            )
+            logger.info(f"Successfully indexed {len(documents)} Markdown chunks")
+        
+        # Cleanup temp file if created
+        if temp_file_path and os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
+        
+        return {
+            "status": "success",
+            "doc_id": doc_id,
+            "extraction_method": "langgraph_agent",
+            "markdown_length": len(markdown_content),
+            "num_chunks": len(documents),
+            "num_images": len(images),
+            "num_tables": len(tables),
+            "metadata": metadata,
+            "markdown_preview": markdown_content[:500] + "..." if len(markdown_content) > 500 else markdown_content
+        }
+        
+    except Exception as e:
+        logger.error(f"Error in LangGraph Markdown extraction: {e}", exc_info=True)
+        raise

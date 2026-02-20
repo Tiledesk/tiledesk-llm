@@ -1409,33 +1409,72 @@ class QdrantRepository(VectorStoreRepository):
     async def get_embeddings_dimension(embedding):
         """
         Get embedding dimension for embedding model
-        :param embedding: string or LlmEmbeddingModel
+        :param embedding: string or LlmEmbeddingModel or LangChain Embeddings object
         :return:
         """
         from tilellm.models import LlmEmbeddingModel
+        
+        # First check if the object has a dimension attribute (e.g., ResilientEmbeddings)
+        if hasattr(embedding, 'dimension') and embedding.dimension is not None:
+            return embedding.dimension
+        
+        # Handle LlmEmbeddingModel
         if isinstance(embedding, LlmEmbeddingModel):
             # Use the dimension from the model if provided
             if embedding.dimension is not None:
                 return embedding.dimension
             # Otherwise fallback to default mapping
-            # (could also compute from model name)
             embedding_str = embedding.name
-        else:
+        # Handle string
+        elif isinstance(embedding, str):
             embedding_str = embedding
+        # Handle LangChain embedding objects (ResilientEmbeddings, OpenAIEmbeddings, etc.)
+        elif hasattr(embedding, 'model'):
+            # Try to get model name from LangChain embedding
+            embedding_str = str(embedding.model)
+        elif hasattr(embedding, 'model_name'):
+            embedding_str = embedding.model_name
+        else:
+            # Fallback to string representation
+            embedding_str = str(embedding)
+            logger.warning(f"Unknown embedding type: {type(embedding)}, using string representation: {embedding_str}")
         
         # Map known embedding model names to dimensions
+        # OpenAI models
         if embedding_str == "text-embedding-3-large":
             return 3072
-        elif embedding_str == "text-embedding-3-small":
+        elif embedding_str in ["text-embedding-3-small", "openai/text-embedding-3-small"]:
             return 1536
-        elif embedding_str == "text-embedding-ada-002":
+        elif embedding_str in ["text-embedding-ada-002", "openai/text-embedding-ada-002"]:
             return 1536
+        # Azure OpenAI models
+        elif isinstance(embedding_str, str) and "text-embedding-3" in embedding_str and "small" in embedding_str.lower():
+            return 1536
+        elif isinstance(embedding_str, str) and "text-embedding-ada" in embedding_str:
+            return 1536
+        # Sentence Transformers
         elif embedding_str == "sentence-transformers/all-MiniLM-L6-v2":
             return 384
+        elif embedding_str == "sentence-transformers/all-mpnet-base-v2":
+            return 768
+        # BAAI models
         elif embedding_str == "BAAI/bge-m3":
             return 1024
+        elif embedding_str == "BAAI/bge-large-en":
+            return 1024
+        # Cohere models
+        elif isinstance(embedding_str, str) and "cohere" in embedding_str.lower() and "embed" in embedding_str.lower():
+            return 1024
+        # If model name contains "1536" assume it's a 1536-dim model
+        elif isinstance(embedding_str, str) and "1536" in embedding_str:
+            return 1536
+        # If model name contains "768" assume it's a 768-dim model
+        elif isinstance(embedding_str, str) and "768" in embedding_str:
+            return 768
         # Add more mappings as needed
         # Default fallback for unknown models
+        logger.warning(f"Unknown embedding model '{embedding_str}', using default dimension 768. "
+                      f"To fix this, set the 'dimension' field in LlmEmbeddingModel.")
         return 768
 
 

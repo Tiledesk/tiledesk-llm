@@ -90,7 +90,7 @@ class EmbeddingFactory:
                             return self._create_openai({"api_key": config["api_key"], "model_name": config["model_name"]})[
                                 0]
 
-                        emb = ResilientEmbeddings(builder, seed=emb)
+                        emb = ResilientEmbeddings(builder, seed=emb, dimension=dim)
                     return emb, dim
 
                 provider = config["provider"].lower()
@@ -477,9 +477,56 @@ class AsyncEmbeddingFactory:
                         from langchain_openai import OpenAIEmbeddings
                         model_name = config.get("model_name", "text-embedding-ada-002")
                         return OpenAIEmbeddings(api_key=config["api_key"], model=model_name)
+                    emb = ResilientEmbeddings(builder, seed=emb, dimension=dim)
+                else:
+                    provider = config["provider"].lower()
+                    if provider not in self.provider_map:
+                        raise ValueError(f"Provider non supportato: {provider}")
 
-                    emb = ResilientEmbeddings(builder, seed=emb)
-                    return emb, dim
+                    emb, dim = await self.provider_map[provider](config)
+
+                    if provider in {"openai", "vllm", "ollama", "google", "cohere", "voyage"}:
+                        # builder sincrono per ricreare l'oggetto al volo
+                        def builder():
+                            # Clona la creazione "sincrona" del provider per ricostruire velocemente.
+                            # Queste classi (OpenAIEmbeddings, CohereEmbeddings, ...) hanno costruttori sincroni leggeri.
+                            if provider == "openai" or provider == "vllm":
+                                from langchain_openai import OpenAIEmbeddings
+                                return OpenAIEmbeddings(
+                                    model=config["model_name"],
+                                    base_url=config.get("base_url"),
+                                    api_key=config["api_key"],
+                                )
+                            if provider == "ollama":
+                                from langchain_ollama import OllamaEmbeddings
+                                return OllamaEmbeddings(
+                                    model=config["model_name"],
+                                    base_url=config.get("base_url", "http://localhost:11434"),
+                                )
+                            if provider == "google":
+                                from langchain_google_genai import GoogleGenerativeAIEmbeddings
+                                return GoogleGenerativeAIEmbeddings(
+                                    model=config["model_name"],
+                                    google_api_key=config["api_key"],
+                                )
+                            if provider == "cohere":
+                                from langchain_cohere import CohereEmbeddings
+                                return CohereEmbeddings(
+                                    model=config["model_name"],
+                                    cohere_api_key=config["api_key"],
+                                )
+                            if provider == "voyage":
+                                from langchain_voyageai import VoyageAIEmbeddings
+                                return VoyageAIEmbeddings(
+                                    model=config["model_name"],
+                                    voyage_api_key=config["api_key"],
+                                )
+                            # fallback: restituisci l'oggetto esistente se mai capitasse
+                            return emb
+
+                        emb = ResilientEmbeddings(builder, seed=emb, dimension=dim)
+
+                return emb, dim
 
                 provider = config["provider"].lower()
                 if provider not in self.provider_map:
@@ -526,7 +573,7 @@ class AsyncEmbeddingFactory:
                         # fallback: restituisci l'oggetto esistente se mai capitasse
                         return emb
 
-                    emb = ResilientEmbeddings(builder, seed=emb)
+                    emb = ResilientEmbeddings(builder, seed=emb, dimension=dim)
 
                 return emb, dim
 

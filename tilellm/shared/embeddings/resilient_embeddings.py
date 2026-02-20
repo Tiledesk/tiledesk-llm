@@ -18,10 +18,11 @@ class ResilientEmbeddings(Embeddings):
     - intercetta errori di sessione chiusa e ricrea l'oggetto interno
     - embed_documents / embed_query restano metodi sincroni
     """
-    def __init__(self, builder: Callable[[], Any], seed: Any = None):
+    def __init__(self, builder: Callable[[], Any], seed: Any = None, dimension: int = None):
         self._builder = builder     # deve ritornare un nuovo oggetto Embeddings
         self._inner = seed          # eventuale oggetto già costruito
         self._lock = threading.RLock()
+        self.dimension = dimension  # embedding dimension for vector store configuration
 
     def _ensure(self):
         if self._inner is None:

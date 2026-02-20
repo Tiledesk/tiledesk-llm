@@ -28,8 +28,11 @@ async def input_guard_node(state: GraphState):
     llm= await _get_guard_llm(state["question_answer"])
     structured_llm = llm.with_structured_output(ValidationScore)
 
+    from tilellm.controller.controller_utils import chat_history_to_text
+    history_text = chat_history_to_text(state["question_answer"], max_messages=3)
+
     prompt = (f"Verifica se la domanda è sicura e pertinente al dominio: {state['question_answer'].question}."
-              f"\n Considera la seguente hystory della conversazione: {state['question_answer'].chat_history_dict}")
+              f"\n Considera la seguente history della conversazione:\n{history_text}")
     result = await structured_llm.ainvoke(prompt)
 
     # Aggiornamento metadati

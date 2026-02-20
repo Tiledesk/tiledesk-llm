@@ -25,6 +25,7 @@ from tilellm.models.schemas import RepositoryItems, RepositoryNamespace
 from tilellm.models import QuestionAnswer # Aggiunto per Hybrid Search
 from tilellm.controller.controller_utils import fetch_question_vectors # Aggiunto per Hybrid Search
 from tilellm.tools.sparse_encoders import TiledeskSparseEncoders
+from tilellm.controller.controller_utils import summarize_history, create_contextualize_query
 from ..utils import format_chat_history
 from ..utils.rrf import reciprocal_rank_fusion_with_metadata
 from ..utils.query_analysis import detect_query_type_with_llm, get_weight_adjustments
@@ -1120,7 +1121,12 @@ class CommunityGraphService:
             use_rrf: bool = True,
             use_reranking: bool = True,
             top_k_initial: int = 20,
-            top_k_reranked: int = 5
+            top_k_reranked: int = 5,
+            # New Hybrid History Flags
+            contextualize_prompt: bool = False,
+            include_history_in_prompt: bool = True,
+            max_history_messages: int = 10,
+            conversation_summary: bool = False
     ) -> Dict[str, Any]:
         """
         Global Search with Semantic Retrieval on Community Reports.
@@ -1129,6 +1135,7 @@ class CommunityGraphService:
         - RRF (Reciprocal Rank Fusion) for combining dense+sparse results
         - Cross-Encoder Reranking before MAP-REDUCE
         - Query Type Detection for optimized retrieval
+        - Hybrid History Management (Contextualized Retrieval + History in Prompt)
 
         Args:
             question: User's question
@@ -1145,10 +1152,13 @@ class CommunityGraphService:
             use_reranking: Whether to use cross-encoder reranking (default: True)
             top_k_initial: Number of reports to retrieve before reranking (default: 20)
             top_k_reranked: Number of reports to use after reranking (default: 5)
+            contextualize_prompt: Enable query rewriting for retrieval
+            include_history_in_prompt: Include history in final synthesis
+            max_history_messages: Limit history turns
+            conversation_summary: Enable history summarization
         """
         logger.info(f"Enhanced Global Search for: {question} in namespace: {namespace}")
-        logger.info(f"RRF: {use_rrf}, Reranking: {use_reranking}, Initial: {top_k_initial}, Final: {top_k_reranked}")
-
+        
         # Validate dependencies
         llm_to_use = llm or self.llm
         if not llm_to_use:
@@ -1156,11 +1166,40 @@ class CommunityGraphService:
         if not all([vector_store_repo, llm_embeddings, engine]):
             raise ValueError("Vector store, embeddings, and engine are required for semantic search.")
 
+        # 0. HYBRID HISTORY PREPARATION
+        retrieval_query = question
+        summary_text = ""
+        
+        if chat_history_dict and (contextualize_prompt or conversation_summary):
+
+
+            
+            qa_mock = QuestionAnswer(
+                question=question,
+                namespace=namespace,
+                engine=engine,
+                chat_history_dict=chat_history_dict,
+                contextualize_prompt=contextualize_prompt,
+                max_history_messages=max_history_messages
+            )
+
+            if contextualize_prompt:
+                retrieval_query = await create_contextualize_query(llm_to_use, qa_mock)
+                logger.info(f"Contextualized query for retrieval: {retrieval_query}")
+            
+            if conversation_summary:
+                sorted_keys = sorted(chat_history_dict.keys(), key=lambda x: int(x))
+                if len(sorted_keys) > max_history_messages:
+                    old_keys = sorted_keys[:-max_history_messages]
+                    old_history_dict = {k: chat_history_dict[k] for k in old_keys}
+                    old_history_text = format_chat_history(old_history_dict)
+                    summary_text = await summarize_history(old_history_text, llm_to_use)
+
         try:
-            # 0. QUERY TYPE DETECTION (optional enhancement)
+            # 1. QUERY TYPE DETECTION (optional enhancement)
             query_type = None
             try:
-                query_type = await detect_query_type_with_llm(question, llm_to_use, fallback_to_heuristic=True)
+                query_type = await detect_query_type_with_llm(retrieval_query, llm_to_use, fallback_to_heuristic=True)
                 logger.info(f"Detected query type: {query_type}")
 
                 # Adjust weights based on query type
@@ -1169,13 +1208,13 @@ class CommunityGraphService:
             except Exception as e:
                 logger.warning(f"Query type detection failed: {e}, continuing without adjustments")
 
-            # 1. HYBRID SEMANTIC RETRIEVAL of reports from Vector Store
+            # 2. HYBRID SEMANTIC RETRIEVAL of reports from Vector Store
             report_namespace = f"{namespace}-reports"
             logger.info(f"Performing hybrid semantic search in report namespace: '{report_namespace}'")
 
             # Build QuestionAnswer object for hybrid search
             qa_for_reports = QuestionAnswer(
-                question=question,
+                question=retrieval_query,
                 namespace=report_namespace,
                 sparse_encoder = sparse_encoder,
                 engine=engine,
@@ -1200,7 +1239,7 @@ class CommunityGraphService:
             )
 
             if not search_results.get('matches'):
-                return {"answer": f"I could not find any semantically relevant community reports for '{question}'.", "status": "empty"}
+                return {"answer": f"I could not find any semantically relevant community reports for '{retrieval_query}'.", "status": "empty"}
 
             # Convert to Document objects for reranking
             report_documents = []
@@ -1232,7 +1271,7 @@ class CommunityGraphService:
 
                     # Rerank documents using async method (runs in thread pool)
                     reranked_docs = await reranker.arerank_documents(
-                        query=question,
+                        query=retrieval_query,
                         documents=report_documents,
                         top_k=top_k_reranked,
                         batch_size=8
@@ -1264,11 +1303,20 @@ class CommunityGraphService:
             logger.info(f"Processing {len(relevant_reports)} final reports for MAP-REDUCE")
 
             # 3. MAP PHASE: Analyze reports in parallel (only on reranked top-k)
-            tasks = [self._map_report_to_answer(question, r, user_language, llm_to_use) for r in relevant_reports]
+            tasks = [self._map_report_to_answer(retrieval_query, r, user_language, llm_to_use) for r in relevant_reports]
             partial_answers = await asyncio.gather(*tasks)
 
             # 4. REDUCE PHASE: Synthesize final answer
-            final_answer = await self._reduce_answers(question, partial_answers, user_language, llm_to_use, chat_history_dict)
+            final_answer = await self._reduce_answers(
+                question=question, 
+                answers=partial_answers, 
+                lang=user_language, 
+                llm=llm_to_use, 
+                chat_history_dict=chat_history_dict,
+                include_history=include_history_in_prompt,
+                max_history=max_history_messages,
+                summary_text=summary_text
+            )
 
             # Update Chat History
             updated_history = chat_history_dict or {}
@@ -1284,7 +1332,8 @@ class CommunityGraphService:
                 "query_type": query_type,
                 "used_rrf": use_rrf,
                 "used_reranking": use_reranking,
-                "chat_history_dict": updated_history
+                "chat_history_dict": updated_history,
+                "query_contextualized": retrieval_query if contextualize_prompt else None
             }
 
         except Exception as e:
@@ -1325,9 +1374,9 @@ class CommunityGraphService:
             logger.warning(f"Error in map phase: {e}")
             return "NOT_RELEVANT"
 
-    async def _reduce_answers(self, question, answers, lang, llm, chat_history_dict=None):
-        """Combine partial answers into final response."""
-        print(answers)
+    async def _reduce_answers(self, question, answers, lang, llm, chat_history_dict=None, 
+                             include_history=True, max_history=10, summary_text=""):
+        """Combine partial answers into final response with improved history management."""
         filtered_answers = [a for a in answers if a and "NOT_RELEVANT" not in a and len(a) > 10]
         
         if not filtered_answers:
@@ -1351,23 +1400,30 @@ class CommunityGraphService:
             
         context = "\n---\n".join(filtered_answers)
 
-        # Format Chat History
-        history_text = format_chat_history(chat_history_dict)
+        # Format Chat History with limit
+        history_text = ""
+        if include_history:
+            history_text = format_chat_history(chat_history_dict, max_messages=max_history)
 
-        # in {lang}
         prompt = f"""
-        You are an expert assistant. Synthesize the following analysis fragments to answer the user's question, taking into account the conversation history.
+        You are an expert assistant. Synthesize the following analysis fragments to answer the user's question.
 
         QUESTION: {question}
-
-        CHAT HISTORY:
-        {history_text}
+        """
+        
+        if summary_text:
+            prompt += f"\n\nCONVERSATION SUMMARY:\n{summary_text}"
+            
+        if history_text and history_text != "No chat history available.":
+            prompt += f"\n\nCHAT HISTORY:\n{history_text}"
+        
+        prompt += f"""
         
         ANALYSIS CONTEXT:
         {context}
 
         FINAL ANSWER:
-        Generate a structured, professional, and comprehensive answer.
+        Generate a structured, professional, and comprehensive answer in {lang}.
         If the question was in English, answer in English. If it was in Italian, answer in Italian. If it was in French, answer in French. If it was in Spanish, answer in Spanish, and so on, regardless of the context language.
         Cite the information source implicitly by synthesizing the facts.
         """
@@ -1461,10 +1517,15 @@ class CommunityGraphService:
         user_language: str = "the same language as the user's question",
         query_type: Optional[str] = None,
         max_results: int = 15,
-        chat_history_dict: Optional[Dict[str, Any]] = None
+        chat_history_dict: Optional[Dict[str, Any]] = None,
+        # New Hybrid History Flags
+        contextualize_prompt: bool = False,
+        include_history_in_prompt: bool = True,
+        max_history_messages: int = 10,
+        conversation_summary: bool = False
     ) -> Dict[str, Any]:
         """
-        Context Fusion Search: The Ultimate Hybrid Method.
+        Context Fusion Search with Hybrid History Management.
         
         Pipeline:
         1. Query Analysis (Type Detection & Weighting)
@@ -1473,17 +1534,44 @@ class CommunityGraphService:
            - Local Search (Hybrid Vector + Keyword Search)
         3. Graph Expansion (from Local Search seeds)
         4. Cross-Encoder Reranking (Global + Local + Graph)
-        5. LLM Synthesis
+        5. LLM Synthesis with Contextualized History
         """
-        logger.info(f"Starting Context Fusion Search (Ultimate Hybrid) for: {question}")
+        logger.info(f"Starting Context Fusion Search for: {question}")
         
         # 0. Dependencies Check
         if not self.graph_rag_service:
             raise RuntimeError("GraphRAGService required for query analysis and expansion.")
         
-        # 1. Query Analysis
+        # 1. Hybrid History Preparation & Query Rewriting
+        retrieval_query = question
+        summary_text = ""
+        
+        if chat_history_dict and (contextualize_prompt or conversation_summary):
+
+            qa_mock = QuestionAnswer(
+                question=question,
+                namespace=namespace,
+                engine=engine,
+                chat_history_dict=chat_history_dict,
+                contextualize_prompt=contextualize_prompt,
+                max_history_messages=max_history_messages
+            )
+
+            if contextualize_prompt:
+                retrieval_query = await create_contextualize_query(llm, qa_mock)
+                logger.info(f"Contextualized query for retrieval: {retrieval_query}")
+            
+            if conversation_summary:
+                sorted_keys = sorted(chat_history_dict.keys(), key=lambda x: int(x))
+                if len(sorted_keys) > max_history_messages:
+                    old_keys = sorted_keys[:-max_history_messages]
+                    old_history_dict = {k: chat_history_dict[k] for k in old_keys}
+                    old_history_text = format_chat_history(old_history_dict)
+                    summary_text = await summarize_history(old_history_text, llm)
+
+        # 2. Query Analysis (using retrieval_query)
         if not query_type:
-            query_type = self.graph_rag_service._detect_query_type(question)
+            query_type = self.graph_rag_service._detect_query_type(retrieval_query)
         
         # Get Weights from Matrix of Balancing
         weights = self.graph_rag_service._adjust_weights_by_query_type(
@@ -1539,7 +1627,7 @@ class CommunityGraphService:
             try:
                 report_namespace = f"{namespace}-reports"
                 qa_reports = QuestionAnswer(
-                    question=question,
+                    question=retrieval_query,
                     namespace=report_namespace,
                     engine=engine,
                     search_type=search_type,
@@ -1592,7 +1680,7 @@ class CommunityGraphService:
                 alpha = weights["vector"] / total_w if total_w > 0 else 0.5
                 
                 qa_local = QuestionAnswer(
-                    question=question,
+                    question=retrieval_query,
                     namespace=namespace,
                     engine=engine,
                     top_k=max_results,
@@ -1749,41 +1837,41 @@ class CommunityGraphService:
                 logger.warning(f"Reranking failed: {e}. Using raw results.")
                 final_context = [d.page_content for d in all_docs[:max_results]]
 
-        # 5. Synthesis
+        # 5. Synthesis with Contextualized History
         context_str = "\n\n".join(final_context)
         
-        # Format Chat History using utility
-        history_text = format_chat_history(chat_history_dict)
+        history_text = ""
+        if include_history_in_prompt:
+            history_text = format_chat_history(chat_history_dict, max_messages=max_history_messages)
         
         prompt = f"""
         You are an intelligent assistant using a Hybrid RAG system (Global Reports + Local Docs + Knowledge Graph).
         
         QUESTION: {question}
-        
-        CHAT HISTORY:
-        {history_text}
+        """
+        if summary_text:
+            prompt += f"\n\nSUMMARY OF PREVIOUS CONVERSATION:\n{summary_text}"
+        if history_text and history_text != "No chat history available.":
+            prompt += f"\n\nCHAT HISTORY:\n{history_text}"
+            
+        prompt += f"""
         
         RETRIEVED CONTEXT:
         {context_str}
         
         INSTRUCTIONS:
-        1. Answer the question comprehensively using the provided context and chat history.
-        2. If Global Reports are present, use them for high-level summary.
-        3. If Local Documents/Graph Entities are present, use them for specific details.
-        4. Answer in {user_language}.
-        5. If no relevant information is found, admit it politely.
+        1. Answer the question comprehensively using the provided context and history.
+        2. Answer in {user_language}.
+        3. If Global Reports are present, use them for high-level summary.
+        4. If Local Documents/Graph Entities are present, use them for specific details.
+        5. Cite the information source implicitly by synthesizing the facts.
         """
         
         answer = ""
         try:
-            if hasattr(llm, 'ainvoke'):
-                from langchain_core.messages import HumanMessage
-                messages = [HumanMessage(content=prompt)]
-                response = await llm.ainvoke(messages)
-                answer = response.content if hasattr(response, 'content') else str(response)
-            else:
-                response = await llm.invoke(prompt)
-                answer = response.content if hasattr(response, 'content') else str(response)
+            from langchain_core.messages import HumanMessage
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            answer = response.content if hasattr(response, 'content') else str(response)
         except Exception as e:
             logger.error(f"Synthesis failed: {e}")
             answer = "I'm sorry, I encountered an error generating the answer."
@@ -1813,7 +1901,8 @@ class CommunityGraphService:
             },
             "expanded_nodes": graph_nodes,
             "expanded_relationships": graph_rels,
-            "chat_history_dict": updated_history
+            "chat_history_dict": updated_history,
+            "query_contextualized": retrieval_query if contextualize_prompt else None
         }
 
 

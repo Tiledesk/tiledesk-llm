@@ -493,7 +493,12 @@ async def query_graph(
         reranking_config=request.reranker_config,  # Pass reranking config
         use_reranking=True,  # Enable reranking by default
         top_k_initial=20,
-        top_k_reranked=5
+        top_k_reranked=5,
+        # New Hybrid History Flags
+        contextualize_prompt=request.contextualize_prompt,
+        include_history_in_prompt=request.include_history_in_prompt,
+        max_history_messages=request.max_history_messages,
+        conversation_summary=request.conversation_summary
     )
 
 @inject_llm_chat_async
@@ -540,7 +545,12 @@ async def context_fusion_graph_search(
         llm=llm,
         llm_embeddings=llm_embeddings,
         query_type=request.query_type,
-        chat_history_dict=request.chat_history_dict
+        chat_history_dict=request.chat_history_dict,
+        # New Hybrid History Flags
+        contextualize_prompt=request.contextualize_prompt,
+        include_history_in_prompt=request.include_history_in_prompt,
+        max_history_messages=request.max_history_messages,
+        conversation_summary=request.conversation_summary
     )
 
 # ==================== MULTIMODAL & ANALYSIS LOGIC ====================
@@ -691,7 +701,12 @@ async def advanced_qa_search(
         sparse_encoder=request.sparse_encoder,
         chat_history_dict=request.chat_history_dict,
         max_community_reports=3,  # Always max 3 reports as requested
-        top_k=request.top_k if request.top_k else 10
+        top_k=request.top_k if request.top_k else 10,
+        # New Hybrid History Flags
+        contextualize_prompt=request.contextualize_prompt,
+        include_history_in_prompt=request.include_history_in_prompt,
+        max_history_messages=request.max_history_messages,
+        conversation_summary=request.conversation_summary
     )
 
 
@@ -728,5 +743,11 @@ async def agentic_qa_search(
         question=question_text,
         namespace=request.namespace,
         chat_history_dict=request.chat_history_dict,
-        creation_prompt=getattr(request, 'creation_prompt', None)
+        creation_prompt=getattr(request, 'creation_prompt', None),
+        engine=request.engine,
+        # New Hybrid History Flags
+        contextualize_prompt=request.contextualize_prompt,
+        include_history_in_prompt=request.include_history_in_prompt,
+        max_history_messages=request.max_history_messages,
+        conversation_summary=request.conversation_summary
     )

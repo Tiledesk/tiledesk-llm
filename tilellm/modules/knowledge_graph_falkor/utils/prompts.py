@@ -2,6 +2,7 @@
 Prompt templates for Knowledge Graph operations.
 Uses LangChain PromptTemplate for consistent formatting.
 """
+from typing import Optional
 
 try:
     from langchain_core.prompts import PromptTemplate
@@ -136,8 +137,8 @@ def format_graph_context(nodes: list, relationships: list) -> str:
     
     return formatted
 
-def format_chat_history(chat_history_dict: dict) -> str:
-    """Format chat history for prompt context."""
+def format_chat_history(chat_history_dict: dict, max_messages: Optional[int] = None) -> str:
+    """Format chat history for prompt context with optional turn limit."""
     if not chat_history_dict or not isinstance(chat_history_dict, dict):
         return "No chat history available."
     
@@ -146,6 +147,10 @@ def format_chat_history(chat_history_dict: dict) -> str:
         sorted_keys = sorted(chat_history_dict.keys(), key=lambda x: int(x) if str(x).isdigit() else x)
     except Exception:
         sorted_keys = sorted(chat_history_dict.keys())
+        
+    # Apply max_messages limit (turns)
+    if max_messages and max_messages > 0:
+        sorted_keys = sorted_keys[-max_messages:]
         
     history_lines = []
     for key in sorted_keys:

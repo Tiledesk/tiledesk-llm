@@ -51,12 +51,14 @@ def create_nodes(repository, llm):
         """
         Generates a Cypher query from the user's natural language question.
         Includes self-correction feedback if retry_count > 0.
-        Supports chat history for context-aware queries.
+        Supports chat history and summary for context-aware queries.
         """
         question = state["question"]
         retry_count = state.get("retry_count", 0)
         error_message = state.get("error_message")
         chat_history = state.get("chat_history")
+        summary_text = state.get("summary_text")
+        max_history = state.get("max_history_messages") or 3
         creation_prompt = state.get("creation_prompt")
 
         # Generate domain-specific system prompt
@@ -69,20 +71,19 @@ def create_nodes(repository, llm):
             )
 
         # Build user message with optional chat history context
-        user_message = f"Question: {question}"
-
-        # Add chat history context if available
+        user_message_parts = []
+        
+        if summary_text:
+            user_message_parts.append(f"Conversation Summary:\n{summary_text}")
+            
         if chat_history and isinstance(chat_history, dict):
-            history_items = chat_history.get("history", [])
-            if history_items:
-                history_text = "\n".join([
-                    f"User: {item.get('question', '')}\nAssistant: {item.get('answer', '')}"
-                    for item in history_items[-3:]  # Last 3 exchanges
-                ])
-                user_message = f"""Previous conversation:
-{history_text}
-
-Current question: {question}"""
+            from ..utils import format_chat_history
+            history_text = format_chat_history(chat_history, max_messages=max_history)
+            if history_text and history_text != "No chat history available.":
+                user_message_parts.append(f"Recent Conversation:\n{history_text}")
+        
+        user_message_parts.append(f"Current question: {question}")
+        user_message = "\n\n".join(user_message_parts)
 
         # Prepare messages
         messages = [
@@ -273,10 +274,14 @@ Current question: {question}"""
         """
         Generates final answer for the user.
         Includes map-reduce logic for large result sets (>50 items).
+        Supports chat history and summary for context-aware responses.
         """
         query_results = state.get("query_results", [])
         result_count = state.get("result_count", 0)
         question = state["question"]
+        chat_history = state.get("chat_history")
+        summary_text = state.get("summary_text")
+        max_history = state.get("max_history_messages") or 3
 
         # Map-Reduce for large results
         MAP_REDUCE_THRESHOLD = 50
@@ -299,12 +304,29 @@ Current question: {question}"""
             # Small result set - use directly
             context = json.dumps(query_results, default=str)
 
+        # Build context parts
+        user_message_parts = []
+        
+        if summary_text:
+            user_message_parts.append(f"Conversation Summary:\n{summary_text}")
+            
+        if chat_history and isinstance(chat_history, dict):
+            from ..utils import format_chat_history
+            history_text = format_chat_history(chat_history, max_messages=max_history)
+            if history_text and history_text != "No chat history available.":
+                user_message_parts.append(f"Recent Conversation:\n{history_text}")
+        
+        user_message_parts.append(f"Graph Results:\n{context}")
+        user_message_parts.append(f"Question: {question}")
+        
+        user_message = "\n\n".join(user_message_parts)
+
         # Generate final answer
         messages = [
             {"role": "system", "content": RESPONDER_SYSTEM_PROMPT},
             {
                 "role": "user",
-                "content": f"Question: {question}\n\nGraph Results:\n{context}\n\nProvide a clear answer to the user's question based on these results.",
+                "content": user_message,
             },
         ]
 

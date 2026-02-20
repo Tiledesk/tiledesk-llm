@@ -111,7 +111,10 @@ class QuestionAnswer(BaseModel):
     reranking : Union[bool, "TEIConfig", "PineconeRerankerConfig"] = Field(default_factory=lambda: False)
     reranking_multiplier: int = 3  # moltiplicatore per top_k
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-    contextualize_prompt: Optional[bool] = Field(default=False, description="Enable/disable contextualize_q_system_prompt usage")
+    contextualize_prompt: Optional[bool] = Field(default=False, description="Enable/disable contextualize_q_system_prompt usage for query rewriting (retrieval)")
+    include_history_in_prompt: bool = Field(default=True, description="Include chat history directly in the LLM prompt for generation context")
+    max_history_messages: int = Field(default=10, description="Maximum number of history messages to include in the prompt")
+    conversation_summary: bool = Field(default=False, description="Whether to include a summary of the conversation")
     engine: Engine
     chat_history_dict: Optional[Dict[str, "ChatEntry"]] = None
 

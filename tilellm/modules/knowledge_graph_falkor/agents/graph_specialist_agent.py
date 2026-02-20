@@ -118,6 +118,8 @@ class GraphSpecialistAgent:
         chat_history_dict: Optional[Dict[str, Any]] = None,
         creation_prompt: Optional[str] = None,
         max_retries: int = 3,
+        max_history_messages: int = 10,
+        summary_text: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Process a natural language query against the knowledge graph.
@@ -132,6 +134,8 @@ class GraphSpecialistAgent:
             creation_prompt: Domain identifier (e.g., "debt_recovery", "generic").
                            If None, uses "generic" domain.
             max_retries: Maximum number of query generation retries
+            max_history_messages: Maximum number of history turns to consider
+            summary_text: Optional summary of older conversation
 
         Returns:
             Dictionary with keys:
@@ -145,6 +149,8 @@ class GraphSpecialistAgent:
             "question": question,
             "namespace": namespace,
             "chat_history": chat_history_dict,
+            "summary_text": summary_text,
+            "max_history_messages": max_history_messages,
             "creation_prompt": creation_prompt,
             "graph_schema": None,
             "cypher_query": None,
@@ -169,12 +175,22 @@ class GraphSpecialistAgent:
                 f"Query processed successfully. Answer length: {len(result.get('answer', ''))}"
             )
 
+            # Update chat history with current turn in project standard format
+            from tilellm.models import ChatEntry
+            updated_history = result.get("chat_history") or {}
+            next_key = str(len(updated_history))
+            updated_history[next_key] = ChatEntry(
+                question=question, 
+                answer=result.get("answer", "No answer generated")
+            )
+
             # Return standardized response
             return {
                 "answer": result.get("answer", "No answer generated"),
                 "query_used": result.get("cypher_query"),
                 "retrieval_strategy": "agentic_qa",
                 "metadata": result.get("metadata", {}),
+                "chat_history_dict": updated_history
             }
 
         except Exception as e:

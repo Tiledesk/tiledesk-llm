@@ -18,6 +18,8 @@ class GraphSpecialistState(TypedDict):
     question: str
     namespace: str
     chat_history: Optional[Dict[str, Any]]  # Chat history for context
+    summary_text: Optional[str]  # Summarized conversation context
+    max_history_messages: int  # Limit history turns
     creation_prompt: Optional[str]  # Domain identifier (e.g., "debt_recovery", "generic")
 
     # Schema context (optional future enhancement)

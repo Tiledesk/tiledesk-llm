@@ -566,18 +566,24 @@ class AdvancedQAService:
         sparse_encoder=None,
         chat_history_dict: Optional[Dict[str, Any]] = None,
         max_community_reports: int = 3,
-        top_k: int = 10
+        top_k: int = 10,
+        # New Hybrid History Flags
+        contextualize_prompt: bool = False,
+        include_history_in_prompt: bool = True,
+        max_history_messages: int = 10,
+        conversation_summary: bool = False
     ) -> Dict[str, Any]:
         """
         Process an advanced QA query using the full pipeline.
 
         Pipeline:
-        1. Classify intent
-        2. Extract parameters
-        3. Find seed nodes from vector store
-        4. Get relevant community reports (max 3)
-        5. Generate and execute Cypher queries
-        6. Enrich response with LLM
+        1. Hybrid History Prep & Query Contextualization
+        2. Classify intent
+        3. Extract parameters
+        4. Find seed nodes from vector store
+        5. Get relevant community reports (max 3)
+        6. Generate and execute Cypher queries
+        7. Enrich response with LLM
 
         Args:
             question: User's natural language question
@@ -590,25 +596,59 @@ class AdvancedQAService:
             chat_history_dict: Chat history
             max_community_reports: Maximum community reports to use (default: 3)
             top_k: Number of seed nodes to retrieve
+            contextualize_prompt: Enable query rewriting for retrieval
+            include_history_in_prompt: Include history in final synthesis
+            max_history_messages: Limit history turns
+            conversation_summary: Enable history summarization
 
         Returns:
             Response dict compatible with GraphQAAdvancedResponse
         """
         logger.info(f"Processing advanced QA query: {question}")
 
-        # Step 1: Classify Intent
-        intent, confidence = await self.intent_classifier.classify_intent(question)
+        # 0. HYBRID HISTORY PREPARATION
+        retrieval_query = question
+        summary_text = ""
+        
+        if chat_history_dict and (contextualize_prompt or conversation_summary):
+            from tilellm.controller.controller_utils import summarize_history, create_contextualize_query
+            from tilellm.models import QuestionAnswer
+            
+            qa_mock = QuestionAnswer(
+                question=question,
+                namespace=namespace,
+                engine=engine,
+                chat_history_dict=chat_history_dict,
+                contextualize_prompt=contextualize_prompt,
+                max_history_messages=max_history_messages
+            )
+
+            if contextualize_prompt:
+                retrieval_query = await create_contextualize_query(self.llm, qa_mock)
+                logger.info(f"Contextualized query for retrieval: {retrieval_query}")
+            
+            if conversation_summary:
+                sorted_keys = sorted(chat_history_dict.keys(), key=lambda x: int(x))
+                if len(sorted_keys) > max_history_messages:
+                    from ..utils import format_chat_history
+                    old_keys = sorted_keys[:-max_history_messages]
+                    old_history_dict = {k: chat_history_dict[k] for k in old_keys}
+                    old_history_text = format_chat_history(old_history_dict)
+                    summary_text = await summarize_history(old_history_text, self.llm)
+
+        # Step 1: Classify Intent (using retrieval_query for better accuracy)
+        intent, confidence = await self.intent_classifier.classify_intent(retrieval_query)
         logger.info(f"Intent classified: {intent} (confidence: {confidence:.2f})")
 
         # Step 2: Extract Parameters (Considering History)
         parameters = await self.parameter_extractor.extract_parameters(
-            question, intent, chat_history_dict=chat_history_dict
+            retrieval_query, intent, chat_history_dict=chat_history_dict
         )
         logger.info(f"Extracted parameters: {parameters}")
 
         # Step 3: Find Seed Nodes from Vector Store
         seed_documents = await self._find_seed_nodes(
-            question=question,
+            question=retrieval_query,
             namespace=namespace,
             engine=engine,
             vector_store_repo=vector_store_repo,
@@ -621,7 +661,7 @@ class AdvancedQAService:
 
         # Step 4: Get Relevant Community Reports (max 3)
         community_reports = await self._get_community_reports(
-            question=question,
+            question=retrieval_query,
             namespace=namespace,
             engine=engine,
             vector_store_repo=vector_store_repo,
@@ -647,7 +687,10 @@ class AdvancedQAService:
             seed_documents=seed_documents,
             community_reports=community_reports,
             cypher_results=cypher_results,
-            chat_history_dict=chat_history_dict
+            chat_history_dict=chat_history_dict,
+            include_history=include_history_in_prompt,
+            max_history=max_history_messages,
+            summary_text=summary_text
         )
 
         # Extract entities and relationships from Cypher results
@@ -656,13 +699,11 @@ class AdvancedQAService:
         # Update chat history with current turn in project standard format (one entry per turn with question/answer)
         updated_history = chat_history_dict.copy() if chat_history_dict else {}
         turn_id = str(len(updated_history))
-        updated_history[turn_id] = {
-            "question": question,
-            "answer": final_answer
-        }
-
-        logger.info(f"Final parameters for enrichment: {parameters}")
-        logger.info(f"Is full request: {parameters.get('is_full_request')}")
+        from tilellm.models import ChatEntry
+        updated_history[turn_id] = ChatEntry(
+            question=question,
+            answer=final_answer
+        )
 
         return {
             "answer": final_answer,
@@ -680,11 +721,7 @@ class AdvancedQAService:
             "expanded_nodes": entities,
             "expanded_relationships": relationships,
             "chat_history_dict": updated_history,
-            "debug_info": {
-                "intent": intent,
-                "confidence": confidence,
-                "parameters": parameters
-            }
+            "query_contextualized": retrieval_query if contextualize_prompt else None
         }
 
     async def _find_seed_nodes(
@@ -907,7 +944,10 @@ class AdvancedQAService:
         seed_documents: List[Document],
         community_reports: List[Dict[str, Any]],
         cypher_results: List[Dict[str, Any]],
-        chat_history_dict: Optional[Dict[str, Any]]
+        chat_history_dict: Optional[Dict[str, Any]],
+        include_history: bool = True,
+        max_history: int = 10,
+        summary_text: str = ""
     ) -> str:
         """Use LLM to transform raw results into readable response."""
         
@@ -918,7 +958,8 @@ class AdvancedQAService:
         if len(cypher_results) > self.high_volume_threshold and not is_full_request:
             logger.info(f"High volume of results ({len(cypher_results)}) detected for intent '{intent}'. Using Summary Mode.")
             return await self._generate_summary(
-                question, intent, parameters, cypher_results, chat_history_dict
+                question, intent, parameters, cypher_results, chat_history_dict,
+                include_history=include_history, max_history=max_history, summary_text=summary_text
             )
 
         # Build context from all sources
@@ -941,9 +982,9 @@ class AdvancedQAService:
 
         # Format chat history
         history_text = ""
-        if chat_history_dict:
+        if include_history:
             from ..utils import format_chat_history
-            history_text = format_chat_history(chat_history_dict)
+            history_text = format_chat_history(chat_history_dict, max_messages=max_history)
 
         # Format Graph Results specifically for the intent
         formatted_events = self._format_cypher_results(intent, cypher_results)
@@ -952,12 +993,18 @@ class AdvancedQAService:
         prompt_template = INTENT_PROMPTS.get(intent, INTENT_PROMPTS["general"])
         
         # Construct the final prompt
-        prompt = prompt_template.format(
+        prompt = f"QUESTION: {question}\n"
+        if summary_text:
+            prompt += f"\n\nCONVERSATION SUMMARY:\n{summary_text}"
+        if history_text and history_text != "No chat history available.":
+            prompt += f"\n\nCHAT HISTORY:\n{history_text}"
+            
+        prompt += prompt_template.format(
             question=question,
             parameters=parameters,
             context=context,
             formatted_events=formatted_events,
-            history_text=history_text
+            history_text=history_text # Keep for backward compatibility in template
         )
 
         # Get LLM response
@@ -995,7 +1042,10 @@ class AdvancedQAService:
         intent: str,
         parameters: Dict[str, Any],
         cypher_results: List[Dict[str, Any]],
-        chat_history_dict: Optional[Dict[str, Any]]
+        chat_history_dict: Optional[Dict[str, Any]],
+        include_history: bool = True,
+        max_history: int = 10,
+        summary_text: str = ""
     ) -> str:
         """Handle high-volume queries with a summary + option to expand for all intents."""
         
@@ -1020,20 +1070,27 @@ class AdvancedQAService:
         
         # Format chat history
         history_text = ""
-        if chat_history_dict:
+        if include_history:
             from ..utils import format_chat_history
-            history_text = format_chat_history(chat_history_dict)
+            history_text = format_chat_history(chat_history_dict, max_messages=max_history)
             
-        # Build prompt parameters
+        # Build prompt
+        prompt = f"QUESTION: {question}\n"
+        if summary_text:
+            prompt += f"\n\nCONVERSATION SUMMARY:\n{summary_text}"
+        if history_text and history_text != "No chat history available.":
+            prompt += f"\n\nCHAT HISTORY:\n{history_text}"
+
+        # Build prompt parameters for template
         if prompt_key == "timeline_summary":
-            prompt = prompt_template.format(
+            prompt += prompt_template.format(
                 question=question,
                 event_count=total_items,
                 formatted_events=formatted_events,
                 history_text=history_text
             )
         else:
-            prompt = prompt_template.format(
+            prompt += prompt_template.format(
                 question=question,
                 item_count=total_items,
                 formatted_events=formatted_events,
