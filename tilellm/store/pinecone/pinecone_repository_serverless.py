@@ -20,6 +20,7 @@ from tilellm.store.vector_store_repository import VectorStoreIndexingError
 from tilellm.tools.document_tools import (get_content_by_url,
                                           get_content_by_url_with_bs,
                                           load_document,
+                                          handle_regex_custom_chunk,
                                           )
 
 from tilellm.store.pinecone.pinecone_repository_base import PineconeRepositoryBase
@@ -224,7 +225,32 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                                               documents=documents,
                                               embeddings=embedding_obj
                                               )
-                #print(f"chunks {chunks}")
+            elif item.type == 'regex_custom':
+                documents = await self.fetch_documents(type_source=item.type,
+                                                       source=item.source,
+                                                       scrape_type=item.scrape_type,
+                                                       parameters_scrape_type_4=item.parameters_scrape_type_4,
+                                                       browser_headers=item.browser_headers,
+                                                       chunk_regex=item.chunk_regex
+                                                       )
+                base_metadata = MetadataItem(
+                    id=item.id,
+                    source=item.source,
+                    type=item.type,
+                    embedding=str(item.embedding)
+                ).model_dump()
+
+                if item.tags:
+                    base_metadata["tags"] = item.tags
+
+                # Unisci i metadati del documento con i metadati base
+                chunks = [
+                    Document(
+                        page_content=document.page_content,
+                        metadata={**document.metadata, **base_metadata}  # Merge dei due dizionari
+                    )
+                    for document in documents
+                ]
             else:
                 metadata = MetadataItem(id=item.id,
                                         source=item.source,
@@ -323,6 +349,32 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                                               documents=documents,
                                               embeddings=embedding_obj
                                               )
+            elif item.type == 'regex_custom':
+                documents = await self.fetch_documents(type_source=item.type,
+                                                       source=item.source,
+                                                       scrape_type=item.scrape_type,
+                                                       parameters_scrape_type_4=item.parameters_scrape_type_4,
+                                                       browser_headers=item.browser_headers,
+                                                       chunk_regex=item.chunk_regex
+                                                       )
+                base_metadata = MetadataItem(
+                    id=item.id,
+                    source=item.source,
+                    type=item.type,
+                    embedding=str(item.embedding)
+                ).model_dump()
+
+                if item.tags:
+                    base_metadata["tags"] = item.tags
+
+                # Unisci i metadati del documento con i metadati base
+                chunks = [
+                    Document(
+                        page_content=document.page_content,
+                        metadata={**document.metadata, **base_metadata}  # Merge dei due dizionari
+                    )
+                    for document in documents
+                ]
             else:
                 metadata = MetadataItem(id=item.id,
                                         source=item.source,
@@ -425,12 +477,14 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
         return await self.create_index(engine=engine, embeddings=embedding_obj, emb_dimension=embedding_dimension)
 
     @staticmethod
-    async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers):
+    async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers, chunk_regex=None):
         if type_source in ['url', 'txt', 'md']:
             documents = await get_content_by_url(source,
                                                  scrape_type,
                                                  parameters_scrape_type_4=parameters_scrape_type_4,
                                                  browser_headers=browser_headers)
+        elif type_source == 'regex_custom':
+            documents = await handle_regex_custom_chunk(source, chunk_regex, browser_headers)
         else:
             documents = load_document(source, type_source)
 

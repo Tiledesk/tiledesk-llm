@@ -19,7 +19,8 @@ from tilellm.shared.tags_query_parser import build_tags_filter
 from tilellm.store.vector_store_repository import VectorStoreIndexingError
 from tilellm.tools.document_tools import (get_content_by_url,
                                           get_content_by_url_with_bs,
-                                          load_document
+                                          load_document,
+                                          handle_regex_custom_chunk
                                           )
 
 from tilellm.store.pinecone.pinecone_repository_base import PineconeRepositoryBase
@@ -176,6 +177,33 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 # pprint(chunks)
                 logger.info(f"chunks: {len(chunks)}, total_tokens: {total_tokens}, cost: {cost: .6f}")
 
+
+            elif type_source == 'regex_custom':
+                documents = await handle_regex_custom_chunk(source, item.chunk_regex, item.browser_headers)
+                base_metadata = MetadataItem(
+                    id=item.id,
+                    source=item.source,
+                    type=item.type,
+                    embedding=str(item.embedding)
+                ).model_dump()
+
+                if item.tags:
+                    base_metadata["tags"] = item.tags
+
+                # Unisci i metadati del documento con i metadati base
+                chunks = [
+                    Document(
+                        page_content=document.page_content,
+                        metadata={**document.metadata, **base_metadata}  # Merge dei due dizionari
+                    )
+                    for document in documents
+                ]
+                if len(chunks) == 0:
+                    raise Exception("No chunks generated from source")
+                ids = await vector_store.aadd_documents(chunks, namespace=namespace)
+                logger.debug(f"ids: {ids}")
+                total_tokens, cost = self.calc_embedding_cost(chunks, embedding_name)
+                logger.info(f"chunks: {len(chunks)}, total_tokens: {total_tokens}, cost: {cost: .6f}")
 
             elif type_source == 'urlbs':
                 doc_array = get_content_by_url_with_bs(source)

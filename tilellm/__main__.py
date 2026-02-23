@@ -29,6 +29,22 @@ from tilellm.models.schemas import (RepositoryItem,
                                     IndexingResult, RetrievalResult, RepositoryNamespaceResult,
                                     RepositoryDescNamespaceResult, RepositoryItems, SimpleAnswer,
                                     RepositoryEngine, RetrievalChunksResult)
+from tilellm.models.schemas.general_schemas import AsyncTaskResponse
+from tilellm.modules.knowledge_graph.models.schemas import TaskPollResponse
+
+try:
+    from tilellm.modules.task_executor.tasks import task_scrape_item_single
+    from tilellm.modules.task_executor.broker import broker
+    TASKIQ_AVAILABLE = True
+except ImportError:
+    TASKIQ_AVAILABLE = False
+    task_scrape_item_single = None
+    broker = None
+
+ENABLE_TASKIQ = os.environ.get("ENABLE_TASKIQ", "false").lower() == "true"
+ENABLE_TASKIQ = ENABLE_TASKIQ and TASKIQ_AVAILABLE
+
+from tilellm.shared.llm_config import serialize_with_secrets
 
 
 from tilellm.store.redis_repository import redis_xgroup_create
@@ -217,30 +233,81 @@ async def reader(channel: Redis):
     else:
         logger.debug(f"My role is {tilellm_role}")
 
+
 @asynccontextmanager
 async def redis_consumer(app: FastAPI):
-    redis_client = from_url(redis_url)
-    await redis_xgroup_create(redis_client)
-    asyncio.create_task(reader(redis_client))
+    redis_client = None
+    try:
+        # ✅ 1. Aggiungi AWAIT (from_url è asincrono)
+        redis_client = await from_url(redis_url, decode_responses=True)
+
+        # ✅ 2. Crea il consumer group se necessario
+        try:
+            await redis_xgroup_create(redis_client)
+        except Exception as e:
+            logger.warning(f"Consumer group creation skipped or failed: {e}")
+
+        # ✅ 3. Avvia il task di lettura
+        reader_task = asyncio.create_task(reader(redis_client))
+
+        logger.info("App startup complete - Redis & FalkorDB ready")
+
+        yield
+
+    finally:
+        # ✅ 4. Cleanup ordinato allo shutdown
+        logger.info("Shutting down Redis consumer...")
+
+        # Cancella il task di lettura se attivo
+        if 'reader_task' in locals() and not reader_task.done():
+            reader_task.cancel()
+            try:
+                await reader_task
+            except asyncio.CancelledError:
+                pass
+
+        # Chiudi FalkorDB
+        try:
+            from tilellm.modules.knowledge_graph_falkor.logic import repository
+            if repository:
+                await repository.close()
+                logger.info("FalkorDB connection closed")
+        except Exception as e:
+            logger.debug(f"FalkorDB cleanup skipped: {e}")
+
+        # Chiudi Redis
+        if redis_client:
+            await redis_client.aclose()
+            logger.info("Redis connection closed")
+
+        # Pulisci cache
+        await TimedCache.async_clear_cache("vector_store_wrapper")
+
+
+# @asynccontextmanager
+#async def redis_consumer_A():
+#    redis_client = from_url(redis_url)
+#    await redis_xgroup_create(redis_client)
+#    asyncio.create_task(reader(redis_client))
 
     # FalkorDB: Inizializzazione LAZY solo se servizio abilitato
     # Non inizializzare qui per app modulare - verrà inizializzato on-demand
-    logger.info("App startup complete - FalkorDB will initialize on first use if enabled")
+#    logger.info("App startup complete - FalkorDB will initialize on first use if enabled")
 
-    yield
+#    yield
 
     # Cleanup FalkorDB connection on shutdown (se inizializzato)
-    try:
-        from tilellm.modules.knowledge_graph_falkor.logic import repository
-        if repository:
-            await repository.close()
-            logger.info("FalkorDB connection closed")
-    except Exception as e:
+#    try:
+#        from tilellm.modules.knowledge_graph_falkor.logic import repository
+#        if repository:
+#            await repository.close()
+#            logger.info("FalkorDB connection closed")
+#    except Exception as e:
         # Non è un errore se FalkorDB non era attivo
-        pass
+#        pass
 
-    await redis_client.close()
-    await TimedCache.async_clear_cache("vector_store_wrapper")
+#    await redis_client.close()
+#    await TimedCache.async_clear_cache("vector_store_wrapper")
 
 
 
@@ -262,27 +329,128 @@ logging.getLogger().setLevel(LOG_LEVEL)
 
 
 
-@app.post("/api/scrape/enqueue" , tags=["Scrape"])
+@app.post("/api/scrape/enqueue", response_model=Union[AsyncTaskResponse, IndexingResult], tags=["Scrape"])
 async def enqueue_scrape_item_main(item: ItemSingle, redis_client: Redis = Depends(get_redis_client)):
     """
-    enqueue item to redis. Consumer read message and add it to namespace
+    Enqueue item for async processing via Taskiq or process synchronously if Taskiq is disabled.
+    When Taskiq is enabled, returns AsyncTaskResponse with task_id.
+    When Taskiq is disabled, processes the item synchronously like /api/scrape/single.
     :param item:
     :param redis_client:
-    :return: PineconeIndexingResult
+    :return: AsyncTaskResponse or IndexingResult
     """
-    from tilellm.shared import const
-    logger.debug(item) 
-    res = await redis_client.xadd(const.STREAM_NAME, {"single": item.model_dump_json()}, id="*")
-    scrape_status_response = ScrapeStatusResponse(status_message="Document added to queue",
-                                                  status_code=0
-                                                  )
-    await redis_client.set(f"{item.namespace}/{item.id}",
-                           scrape_status_response.model_dump_json(),
-                           ex=expiration_in_seconds)
+    logger.debug(item)
 
-    logger.debug(res)
+    if ENABLE_TASKIQ:
+        scrape_status_response = ScrapeStatusResponse(
+            status_message="Document added to queue",
+            status_code=0
+        )
+        await redis_client.set(
+            f"{item.namespace}/{item.id}",
+            scrape_status_response.model_dump_json(),
+            ex=expiration_in_seconds
+        )
 
-    return {"message": f"Item {item.id} created successfully, more {res}"}
+        payload = serialize_with_secrets(item.model_dump(mode='python'))
+        task = await task_scrape_item_single.kiq(payload)
+
+        logger.info(f"Task enqueued with id: {task.task_id}")
+        return AsyncTaskResponse(task_id=task.task_id)
+
+    webhook = ""
+    token = ""
+    try:
+        scrape_status_response = ScrapeStatusResponse(
+            status_message="Indexing started",
+            status_code=2
+        )
+        await redis_client.set(
+            f"{item.namespace}/{item.id}",
+            scrape_status_response.model_dump_json(),
+            ex=expiration_in_seconds
+        )
+
+        logger.debug(f"Start processing item {item.id}")
+
+        raw_webhook = item.webhook
+        if raw_webhook and '?' in raw_webhook:
+            webhook, raw_token = raw_webhook.split('?')
+            if raw_token.startswith('token='):
+                _, token = raw_token.split('=')
+        else:
+            webhook = raw_webhook or ""
+
+        logger.info(f"webhook: {webhook}, token: {token}")
+
+        if item.hybrid:
+            pc_result = await add_item_hybrid(item)
+        else:
+            pc_result = await add_item(item)
+
+        scrape_status_response = ScrapeStatusResponse(
+            status_message="Indexing finish",
+            status_code=3
+        )
+        await redis_client.set(
+            f"{item.namespace}/{item.id}",
+            scrape_status_response.model_dump_json(),
+            ex=expiration_in_seconds
+        )
+
+        return JSONResponse(content=pc_result.model_dump(exclude_none=True))
+
+    except Exception as e:
+        scrape_status_response = ScrapeStatusResponse(
+            status_message="Error",
+            status_code=4
+        )
+        await redis_client.set(
+            f"{item.namespace}/{item.id}",
+            scrape_status_response.model_dump_json(),
+            ex=expiration_in_seconds
+        )
+
+        logger.error(f"Error processing item {item.id}: {e}")
+        import traceback
+        traceback.print_exc()
+        logger.error(e)
+        return JSONResponse(status_code=400, content=e.args[0])
+
+
+@app.get("/api/enqueue/status/{task_id}", response_model=TaskPollResponse, tags=["Scrape"])
+async def get_enqueue_task_status(task_id: str):
+    """
+    Check the status of an asynchronous scrape task.
+    """
+    if not (ENABLE_TASKIQ and TASKIQ_AVAILABLE):
+        raise HTTPException(status_code=501, detail="Async tasks not enabled")
+
+    try:
+        result_backend = broker.result_backend
+        is_ready = await result_backend.is_result_ready(task_id)
+
+        if not is_ready:
+            return TaskPollResponse(task_id=task_id, status="in_progress")
+
+        result = await result_backend.get_result(task_id)
+
+        if result.is_err:
+            return TaskPollResponse(
+                task_id=task_id,
+                status="failed",
+                error=str(result.error) if hasattr(result, 'error') else str(result.return_value)
+            )
+
+        return TaskPollResponse(
+            task_id=task_id,
+            status="success",
+            result=result.return_value
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to get task status: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve task status: {str(e)}")
 
 
 @app.post("/api/scrape/single", response_model=IndexingResult, tags=["Scrape"])

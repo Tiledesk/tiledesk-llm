@@ -113,32 +113,41 @@ class CachedVectorStore:
             return False
 
     async def _create_index_if_not_exists(self):
-        """Crea l'indice se non esiste"""
+        """Crea l'indice se non esiste."""
+        from pinecone.exceptions import PineconeApiException
+
         logger.info(f'Creating new index {self.engine.index_name}...')
-
-        if self.engine.type == "serverless":
-            await self._pc_client.create_index(
-                name=self.engine.index_name,
-                dimension=self.emb_dimension,
-                metric=self.engine.metric,
-                spec=pinecone.ServerlessSpec(
-                    cloud="aws",
-                    region="us-west-2"
+        try:
+            if self.engine.type == "serverless":
+                await self._pc_client.create_index(
+                    name=self.engine.index_name,
+                    dimension=self.emb_dimension,
+                    metric=self.engine.metric,
+                    spec=pinecone.ServerlessSpec(
+                        cloud="aws",
+                        region="us-west-2"
+                    )
                 )
-            )
-        else:  # Pod type
-            await self._pc_client.create_index(
-                name=self.engine.index_name,
-                dimension=self.emb_dimension,
-                metric=self.engine.metric,
-                spec=pinecone.PodSpec(
-                    pod_type="p1",
-                    pods=1,
-                    environment="us-west4-gpc"
+            else:  # Pod type
+                await self._pc_client.create_index(
+                    name=self.engine.index_name,
+                    dimension=self.emb_dimension,
+                    metric=self.engine.metric,
+                    spec=pinecone.PodSpec(
+                        pod_type="p1",
+                        pods=1,
+                        environment="us-west4-gpc"
+                    )
                 )
-            )
+            logger.info(f"Index '{self.engine.index_name}' create request sent.")
+        except PineconeApiException as e:
+            if e.status == 409:
+                # Un altro worker ha creato l'indice in contemporanea: race condition innocua
+                logger.info(f"Index '{self.engine.index_name}' già creato da un altro processo (409 Conflict ignorato).")
+            else:
+                raise
 
-        # Attendi che l'indice sia pronto
+        # Attendi che l'indice sia pronto (sia nel caso di creazione che di race condition)
         while not (await self._pc_client.describe_index(self.engine.index_name)).status["ready"]:
             logger.debug(f"Waiting for index {self.engine.index_name} to be ready...")
             await asyncio.sleep(1)

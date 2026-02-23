@@ -1,3 +1,4 @@
+import re
 import time
 
 import logging
@@ -697,7 +698,15 @@ def load_document(url: str, type_source: str):
         loader = TextLoader(url)
     elif type_source == 'md':
         logger.info(f'Loading {url}')
-        loader = UnstructuredMarkdownLoader(url)
+        loader = UnstructuredMarkdownLoader(url,
+                                            mode="elements",
+                                            strategy="hi_res",  # fast O "hi_res" se hai tabelle complesse
+                                            chunking_strategy="by_title",  # Raggruppa per gerarchia di titoli
+                                            max_characters=1500,
+                                            combine_text_under_n_chars=500,  # Evita i chunk minuscoli
+                                            multipage_sections=True
+                                            )
+
     else:
         logger.info('Document format is not supported!')
         return None
@@ -706,6 +715,7 @@ def load_document(url: str, type_source: str):
     # from pprint import pprint
     # pprint(data)
     return data
+
 
 
 def load_from_wikipedia(query, lang='en', load_max_docs=2):
@@ -761,6 +771,7 @@ def get_content_by_url_with_bs(url: str):
     return testi
 
 
+
 def is_valid_value(value):
     if isinstance(value, (str, int, float, bool)):
         return True
@@ -773,12 +784,14 @@ def clean_metadata(dictionary):
     return {k: v for k, v in dictionary.items() if is_valid_value(v)}
 
 
-async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers):
+async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers, chunk_regex=None):
     if type_source in ['url', 'txt', 'md']:
         documents = await get_content_by_url(source,
                                         scrape_type,
                                         parameters_scrape_type_4=parameters_scrape_type_4,
                                         browser_headers=browser_headers)
+    elif type_source == 'regex_custom':
+        documents = await handle_regex_custom_chunk(source, chunk_regex, browser_headers)
     else:
         documents = load_document(source, type_source)
     
@@ -797,6 +810,101 @@ async def fetch_documents(type_source, source, scrape_type, parameters_scrape_ty
         raise ValueError(f"Documents retrieved but source content is empty: {source} (source type: {type_source})")
     
     return documents
+
+
+async def handle_regex_custom_chunk(url: str, chunk_regex: str, browser_headers: Optional[dict] = None) -> list[Document]:
+    """
+    Fetch a text file from URL and split it using a custom regex pattern.
+    
+    The regex must have at least one capturing group for the page/section identifier
+    and one for the content. Example pattern for page markers:
+    r"={10,}\\s*INIZIO: pagina_(\\d+)\\.md\\s*={10,}(.*?)\\s*={10,}\\s*FINE: pagina_\\1\\.md\\s*={10,}"
+    
+    Args:
+        url: URL of the text file to fetch
+        chunk_regex: Regex pattern with groups for (identifier, content)
+        browser_headers: Optional headers for the request
+        
+    Returns:
+        List of Document objects with page_content and metadata including page_number
+    """
+    if not chunk_regex:
+        raise ValueError("chunk_regex is required for regex_custom type")
+    
+    if browser_headers is None:
+        browser_headers = {
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+    
+    logger.info(f"Fetching regex_custom content from: {url}")
+    
+    try:
+        response = requests.get(url, headers=browser_headers, timeout=60)
+        response.raise_for_status()
+        content = response.text
+        
+        logger.info(f"Downloaded {len(content)} characters from {url}")
+        
+    except Exception as e:
+        logger.error(f"Error fetching URL {url}: {e}")
+        raise ValueError(f"Failed to fetch content from URL: {url}. Error: {e}")
+    
+    pattern = re.compile(chunk_regex, re.DOTALL)
+    matches = pattern.findall(content)
+    
+    if not matches:
+        logger.warning(f"No matches found for regex pattern in content from {url}")
+        doc = Document(
+            page_content=content,
+            metadata={
+                'source': url,
+                'type': 'regex_custom',
+                'page_number': None
+            }
+        )
+        return [doc]
+    
+    documents = []
+    for match in matches:
+        if len(match) >= 2:
+            page_identifier = match[0]
+            page_content = match[1].strip()
+        else:
+            page_identifier = len(documents) + 1
+            page_content = match[0].strip() if match else ""
+        
+        if not page_content:
+            continue
+            
+        try:
+            page_number = int(page_identifier)
+        except (ValueError, TypeError):
+            page_number = page_identifier
+        
+        doc = Document(
+            page_content=page_content,
+            metadata={
+                'source': url,
+                'type': 'regex_custom',
+                'page_number': page_number
+            }
+        )
+        documents.append(doc)
+    
+    logger.info(f"Created {len(documents)} chunks from regex_custom content")
+    
+    if not documents:
+        doc = Document(
+            page_content=content,
+            metadata={
+                'source': url,
+                'type': 'regex_custom',
+                'page_number': None
+            }
+        )
+        documents = [doc]
+    
+    return clean_documents_metadata(documents)
 
 
 def calc_embedding_cost(texts, embedding):

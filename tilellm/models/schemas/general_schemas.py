@@ -71,6 +71,12 @@ class ReasoningConfig(BaseModel):
                 raise ValueError("thinkingBudget cannot exceed 32000")
         return v
 
+class AsyncTaskResponse(BaseModel):
+    task_id: str
+    status: str = "queued"
+    message: str = "Task submitted successfully"
+
+
 class SimpleAnswer(BaseModel):
     answer: Union[str, Dict[str, Any], list] = Field(default="No answer")
     tools_log: Optional[list] = None

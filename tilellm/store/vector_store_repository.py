@@ -11,7 +11,7 @@ from tilellm.models import (Engine,
                             QuestionAnswer
                             )
 from tilellm.models.llm import TEIConfig
-from tilellm.tools.document_tools import get_content_by_url, load_document
+from tilellm.tools.document_tools import get_content_by_url, load_document, handle_regex_custom_chunk
 
 
 logger = logging.getLogger(__name__)
@@ -185,12 +185,14 @@ class VectorStoreRepository(ABC):
         return load_document(source, type_source)
 
     @staticmethod
-    async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers):
+    async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers, chunk_regex=None):
         if type_source in ['url', 'txt', 'md']:
             documents = await get_content_by_url(source,
                                                  scrape_type,
                                                  parameters_scrape_type_4=parameters_scrape_type_4,
                                                  browser_headers=browser_headers)
+        elif type_source == 'regex_custom':
+            documents = await handle_regex_custom_chunk(source, chunk_regex, browser_headers)
         else:
             documents = load_document(source, type_source)
 

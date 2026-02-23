@@ -3,7 +3,7 @@ API request and response schemas for Knowledge Graph endpoints.
 """
 
 from typing import Optional, Dict, Any, List, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from tilellm.models import Engine, QuestionAnswer
 from tilellm.models.schemas.multimodal_content import MultimodalContent
 
@@ -31,21 +31,30 @@ class GraphQAResponse(BaseModel):
 class GraphCreateRequest(QuestionAnswer):
     """
     Request model for Graph creation endpoint.
-    Extends QuestionToLLM to include LLM configuration for GraphRAG extraction.
+    Extends QuestionAnswer to include LLM configuration for GraphRAG extraction.
     """
     namespace: str
     index_name: Optional[str] = None  # Optional index_name for graph partition
     engine: Optional[Engine] = None  # Engine configuration for vector store
     limit: Optional[int] = 100
     overwrite: Optional[bool] = False
-    creation_prompt: Optional[str] = Field(default=None, description="Optional prompt for creation")
+    creation_prompt: Optional[str] = Field(default="generic", description="Optional prompt for creation")
     webhook_url: Optional[str] = Field(default=None, description="URL to call when task is finished")
     
     # Keep same type as parent but with default empty string (not needed for creation)
     question: Optional[Union[str, List[MultimodalContent]]] = Field(default="", description="Optional prompt for extraction guidance")
-    
-    # Note: llm_key, llm, model, etc. are inherited from QuestionToLLM
+    graph_name: Optional[str] = Field(default=None, description="Graph name")
 
+    @model_validator(mode='after')
+    def set_graph_name(self) -> 'GraphCreateRequest':
+        if not self.graph_name:
+            if self.creation_prompt:
+                self.graph_name = f"{self.namespace}-{self.creation_prompt}"
+            else:
+                self.graph_name = self.namespace # Fallback if creation_prompt is also missing
+        return self
+    # Note: llm_key, llm, model, etc. are inherited from QuestionAnswer
+    
 
 class GraphCreateResponse(BaseModel):
     """Response model for Graph creation endpoint"""

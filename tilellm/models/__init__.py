@@ -9,8 +9,9 @@ from .scraping import ParametersScrapeType4 as ParametersScrapeType4
 from .chat import (ChatEntry as ChatEntry,
                    ChatHistory as ChatHistory,)
 from .schemas.general_schemas import (SimpleAnswer as SimpleAnswer,
-                                      PromptTokenInfo as PromptTokenInfo,
-                                      rebuild_models)
+                                       PromptTokenInfo as PromptTokenInfo,
+                                       AsyncTaskResponse as AsyncTaskResponse,
+                                       rebuild_models)
 from .schemas.retrieval_schemas import rebuild_retrieval_models
 from .llm import (ItemSingle as ItemSingle,
                   MetadataItem as MetadataItem,

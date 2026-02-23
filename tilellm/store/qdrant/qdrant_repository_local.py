@@ -35,7 +35,7 @@ from tilellm.shared.sparse_util import hybrid_score_norm
 from tilellm.shared.timed_cache import TimedCache
 from tilellm.shared.utility import _hash_api_key
 from tilellm.store.vector_store_repository import VectorStoreRepository, VectorStoreIndexingError
-from tilellm.tools.document_tools import fetch_documents, get_content_by_url_with_bs, calc_embedding_cost
+from tilellm.tools.document_tools import fetch_documents, get_content_by_url_with_bs, calc_embedding_cost, handle_regex_custom_chunk
 from tilellm.tools.sparse_encoders import TiledeskSparseEncoders
 
 logger = logging.getLogger(__name__)
@@ -53,10 +53,10 @@ class CachedVectorStore:
         self.embeddings = embeddings
         self.emb_dimension = emb_dimension
 
-        # Sostituzione di _pc_client con _qdrant_client
         self._qdrant_client: QdrantClient | None = None
         self._lock = asyncio.Lock()
         self._loop = None
+        self._collection_ready = False  # True dopo che la collection è confermata esistente
 
         # Logica di throttling per i test di connessione (invariata)
         self._last_check = 0.0
@@ -77,7 +77,7 @@ class CachedVectorStore:
                     except Exception as e:
                         logger.warning(f"Errore durante la chiusura del vecchio client Qdrant: {e}")
 
-                logger.info(f"Creazione di un nuovo client AsyncQdrantClient per l'host: {self.engine.host}")
+                logger.info(f"Creazione di un nuovo client QdrantClient per l'host: {self.engine.host}")
                 if self.engine.deployment == "local":
                     self._qdrant_client = QdrantClient(host=self.engine.host, port=self.engine.port)
                 else:
@@ -87,9 +87,12 @@ class CachedVectorStore:
                         api_key=self.engine.apikey.get_secret_value()
                     )
                 self._loop = cur_loop
+                self._collection_ready = False  # Reset: nuovo client, collection da verificare
 
-            # Assicura che la collection esista, altrimenti la crea
-            await self._create_collection_if_not_exists()
+            # Crea la collection solo se non già confermata in questa sessione
+            if not self._collection_ready:
+                await self._create_collection_if_not_exists()
+                self._collection_ready = True
 
     async def get_index(self):
         await self._ensure_client()
@@ -141,6 +144,7 @@ class CachedVectorStore:
                         logger.debug(f"Close problem {repr(e)}")
                         pass
                 self._qdrant_client = None
+                self._collection_ready = False  # Reset: la collection andrà riverificata
 
             # Singolo tentativo di retry
             try:
@@ -155,14 +159,27 @@ class CachedVectorStore:
                 return False
 
     async def _create_collection_if_not_exists(self):
-        """Crea la collection Qdrant se non esiste."""
-        collection_name = self.engine.index_name
-        try:
-            self._qdrant_client.get_collection(collection_name=collection_name)
-        except Exception:
-            logger.info(f"La collection '{collection_name}' non esiste. Inizio la creazione...")
+        """
+        Crea la collection Qdrant se non esiste.
+        Gestisce la race condition tra worker concorrenti (409 Conflict ignorato).
+        """
+        from qdrant_client.http.exceptions import UnexpectedResponse
 
-            metric_distance = models.Distance[self.engine.metric.upper()]
+        collection_name = self.engine.index_name
+
+        # Fast-path: controlla se la collection esiste già
+        try:
+            if self._qdrant_client.collection_exists(collection_name=collection_name):
+                logger.debug(f"Collection '{collection_name}' già esistente, nessuna azione.")
+                return
+        except Exception as check_err:
+            # Se il check fallisce (es. errore di rete), proviamo comunque a creare:
+            # il 409 sotto gestirà il caso in cui esiste già.
+            logger.warning(f"Impossibile verificare l'esistenza della collection '{collection_name}': {check_err}. Tentativo di creazione...")
+
+        logger.info(f"Collection '{collection_name}' non trovata. Avvio creazione...")
+        metric_distance = models.Distance[self.engine.metric.upper()]
+        try:
             self._qdrant_client.create_collection(
                 collection_name=collection_name,
                 vectors_config={"text-dense": models.VectorParams(
@@ -178,6 +195,13 @@ class CachedVectorStore:
                 }
             )
             logger.info(f"Collection '{collection_name}' creata con successo.")
+        except UnexpectedResponse as e:
+            if e.status_code == 409:
+                # Race condition: un altro worker ha creato la collection in contemporanea.
+                # Non è un errore: la collection esiste e possiamo procedere.
+                logger.info(f"Collection '{collection_name}' già creata da un altro processo (409 ignorato).")
+            else:
+                raise
 
     async def close(self):
         """Chiude la connessione del client Qdrant."""
@@ -566,7 +590,31 @@ class QdrantRepository(VectorStoreRepository):
                                                     documents=documents,
                                                     embeddings=embedding_obj
                                                     )
-                # print(f"chunks {chunks}")
+            elif item.type == 'regex_custom':
+                documents = await fetch_documents(type_source=item.type,
+                                                  source=item.source,
+                                                  scrape_type=item.scrape_type,
+                                                  parameters_scrape_type_4=item.parameters_scrape_type_4,
+                                                  browser_headers=item.browser_headers,
+                                                  chunk_regex=item.chunk_regex)
+                base_metadata = MetadataItem(
+                    id=item.id,
+                    source=item.source,
+                    type=item.type,
+                    embedding=str(item.embedding)
+                ).model_dump()
+
+                if item.tags:
+                    base_metadata["tags"] = item.tags
+
+                # Unisci i metadati del documento con i metadati base
+                chunks = [
+                    Document(
+                        page_content=document.page_content,
+                        metadata={**document.metadata, **base_metadata}  # Merge dei due dizionari
+                    )
+                    for document in documents
+                ]
             else:
                 metadata = MetadataItem(id=item.id,
                                         source=item.source,
@@ -690,6 +738,33 @@ class QdrantRepository(VectorStoreRepository):
                                                     documents=documents,
                                                     embeddings=embedding_obj
                                                     )
+            elif item.type == 'regex_custom':
+                documents = await self.fetch_documents(type_source=item.type,
+                                                       source=item.source,
+                                                       scrape_type=item.scrape_type,
+                                                       parameters_scrape_type_4=item.parameters_scrape_type_4,
+                                                       browser_headers=item.browser_headers,
+                                                       chunk_regex=item.chunk_regex)
+                #chunks = documents
+                base_metadata = MetadataItem(
+                    id=item.id,
+                    source=item.source,
+                    type=item.type,
+                    embedding=str(item.embedding)
+                ).model_dump()
+
+                if item.tags:
+                    base_metadata["tags"] = item.tags
+
+                # Unisci i metadati del documento con i metadati base
+                chunks = [
+                    Document(
+                        page_content=document.page_content,
+                        metadata={**document.metadata, **base_metadata}  # Merge dei due dizionari
+                    )
+                    for document in documents
+                ]
+
             else:
                 metadata = MetadataItem(id=item.id,
                                         source=item.source,

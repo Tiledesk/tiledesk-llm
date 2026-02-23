@@ -1,7 +1,12 @@
+import os
 import logging
 from typing import Optional, Dict, Any
 
+
 import httpx
+
+
+from taskiq import Context, TaskiqDepends, TaskiqState
 from tilellm.modules.task_executor.broker import broker
 from tilellm.modules.knowledge_graph import logic as kg_logic
 from tilellm.modules.knowledge_graph.models.schemas import (
@@ -44,23 +49,32 @@ async def send_webhook(url: str, payload: dict):
     except Exception as e:
         logger.error(f"Failed to send webhook to {url}: {e}")
 
+
+
 @broker.task
-async def task_graph_create(request_dict: dict) -> dict:
+async def task_graph_create(request_dict: dict, state: TaskiqState = TaskiqDepends()) -> dict:
     """
     Task to create/import a community graph.
     """
     webhook_url = request_dict.get("webhook_url")
+    task_id = state.task_id
     try:
         # Convert dict back to Pydantic model
-        logger.info(f"TASK =======================> {request_dict}")
+        logger.info(f"TASK [{task_id}] => {request_dict}")
         request = GraphCreateRequest(**request_dict)
         logger.info(f"Starting graph_create task for namespace: {request.namespace}")
+        # ✅ Invia heartbeat iniziale
+        await state.send_heartbeat()
+
+        #result = await kg_logic.create_graph(request)
         result = await kg_logic.create_graph(request)
+
         logger.info(f"Finished graph_create task for namespace: {request.namespace}")
-        await send_webhook(webhook_url, result)
+        if webhook_url:
+            await send_webhook(webhook_url, result)
         return result
     except Exception as e:
-        logger.error(f"Error in graph_create task: {e}")
+        logger.error(f"Error in graph_create task: [{task_id}]: {e}")
         if webhook_url:
              await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
         raise e
@@ -305,6 +319,80 @@ async def task_falkor_community_analysis(request_dict: dict) -> dict:
         logger.error(f"Error in falkor_community_analysis task: {e}")
         if webhook_url:
              await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
+        raise e
+
+
+EXPIRATION_SECONDS = 48 * 60 * 60
+
+
+@broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "scraping"})
+async def task_scrape_item_single(item_dict: dict, state: Context = TaskiqDepends()) -> dict:
+    """
+    Task to scrape and index a single item.
+    Handles both standard and hybrid indexing.
+    """
+    from tilellm.models import ItemSingle
+    from tilellm.controller.controller import add_item, add_item_hybrid
+    from tilellm.models.schemas.repository_schemas import IndexingResult
+
+    item = ItemSingle(**item_dict)
+    webhook = ""
+    token = ""
+
+    try:
+        raw_webhook = item.webhook
+        if raw_webhook and '?' in raw_webhook:
+            webhook, raw_token = raw_webhook.split('?')
+            if raw_token.startswith('token='):
+                _, token = raw_token.split('=')
+        else:
+            webhook = raw_webhook or ""
+
+        logger.info(f"Starting scrape task for item {item.id}, hybrid={item.hybrid} ")
+
+        if item.hybrid:
+            pc_result = await add_item_hybrid(item)
+        else:
+            pc_result = await add_item(item)
+
+
+
+        if webhook:
+            try:
+                async with httpx.AsyncClient() as client:
+                    await client.post(
+                        webhook,
+                        json=pc_result.model_dump(exclude_none=True),
+                        headers={
+                            "Content-Type": "application/json",
+                            "X-Auth-Token": token
+                        }
+                    )
+                    logger.info(f"Webhook sent to {webhook}")
+            except Exception as e:
+                logger.error(f"Webhook error: {e}")
+
+        logger.info(f"Finished scrape task for item {item.id}")
+        return pc_result.model_dump(exclude_none=True)
+
+    except Exception as e:
+        logger.error(f"Error in scrape task for item {item.id}: {e}")
+
+        if webhook:
+            try:
+                res = IndexingResult(id=item.id, status=400, error=repr(e))
+                async with httpx.AsyncClient() as client:
+                    await client.post(
+                        webhook,
+                        json=res.model_dump(exclude_none=True),
+                        headers={
+                            "Content-Type": "application/json",
+                            "X-Auth-Token": token
+                        }
+                    )
+            except Exception as we:
+                logger.error(f"Webhook error notification failed: {we}")
+
         raise e
 
 
