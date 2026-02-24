@@ -14,7 +14,7 @@ from langchain_core.tools import StructuredTool
 logger = logging.getLogger(__name__)
 
 
-def create_cypher_executor_tool(repository: Any, namespace: str) -> StructuredTool:
+def create_cypher_executor_tool(repository: Any, namespace: str, graph_name: str = None) -> StructuredTool:
     """
     Factory function for Cypher executor tool.
 
@@ -56,7 +56,7 @@ def create_cypher_executor_tool(repository: Any, namespace: str) -> StructuredTo
         try:
             logger.info(f"Tool executing Cypher: {cypher_query} on namespace: {namespace}")
 
-            results = await repository._execute_query(cypher_query, {}, namespace=namespace)
+            results = await repository._execute_query(cypher_query, {}, namespace=namespace, graph_name=graph_name)
 
             if not results:
                 return "No results found."

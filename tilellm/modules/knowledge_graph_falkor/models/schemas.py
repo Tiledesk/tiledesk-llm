@@ -15,8 +15,19 @@ class GraphQARequest(QuestionAnswer):
     """
     max_results: Optional[int] = 10
     index_name: Optional[str] = None  # Optional index_name for graph partition
-    
+    graph_db_name: Optional[str] = Field(default=None, description="Graph name")
+    creation_prompt: str = Field(default="generic", description="Optional prompt for creation")
     # Note: llm_key, llm, model, etc. are inherited from QuestionAnswer
+    @model_validator(mode='after')
+    def set_graph_db_name(self) -> 'GraphQARequest':
+        if not self.graph_db_name:
+            parts = [self.namespace]
+            if self.creation_prompt:
+                parts.append(self.creation_prompt)
+            if self.index_name:
+                parts.append(self.index_name)
+            self.graph_db_name = "-".join(parts)
+        return self
 
 
 class GraphQAResponse(BaseModel):
@@ -38,20 +49,23 @@ class GraphCreateRequest(QuestionAnswer):
     engine: Optional[Engine] = None  # Engine configuration for vector store
     limit: Optional[int] = 100
     overwrite: Optional[bool] = False
-    creation_prompt: Optional[str] = Field(default="generic", description="Optional prompt for creation")
+    creation_prompt: str = Field(default="generic", description="Optional prompt for creation")
     webhook_url: Optional[str] = Field(default=None, description="URL to call when task is finished")
-    
+
+
     # Keep same type as parent but with default empty string (not needed for creation)
     question: Optional[Union[str, List[MultimodalContent]]] = Field(default="", description="Optional prompt for extraction guidance")
-    graph_name: Optional[str] = Field(default=None, description="Graph name")
+    graph_db_name: Optional[str] = Field(default=None, description="Graph name")
 
     @model_validator(mode='after')
-    def set_graph_name(self) -> 'GraphCreateRequest':
-        if not self.graph_name:
+    def set_graph_db_name(self) -> 'GraphCreateRequest':
+        if not self.graph_db_name:
+            parts = [self.namespace]
             if self.creation_prompt:
-                self.graph_name = f"{self.namespace}-{self.creation_prompt}"
-            else:
-                self.graph_name = self.namespace # Fallback if creation_prompt is also missing
+                parts.append(self.creation_prompt)
+            if self.index_name:
+                parts.append(self.index_name)
+            self.graph_db_name = "-".join(parts)
         return self
     # Note: llm_key, llm, model, etc. are inherited from QuestionAnswer
     
@@ -89,6 +103,7 @@ class GraphClusterRequest(QuestionAnswer):
     level: Optional[int] = 0
     namespace: Optional[str] = None
     index_name: Optional[str] = None
+    graph_db_name: Optional[str] = Field(default=None, description="Graph name")
     engine: Optional[Engine] = None  # Added for report indexing
     overwrite: Optional[bool] = Field(
         default=True,
@@ -96,6 +111,14 @@ class GraphClusterRequest(QuestionAnswer):
     )
     webhook_url: Optional[str] = Field(default=None, description="URL to call when task is finished")
 
+    @model_validator(mode='after')
+    def set_graph_db_name_cluster(self) -> 'GraphClusterRequest':
+        if not self.graph_db_name:
+            parts = [self.namespace] if self.namespace else []
+            if self.index_name:
+                parts.append(self.index_name)
+            self.graph_db_name = "-".join(parts) if parts else "knowledge_graph"
+        return self
 
 class GraphClusterResponse(BaseModel):
     """Response model for Graph clustering endpoint"""

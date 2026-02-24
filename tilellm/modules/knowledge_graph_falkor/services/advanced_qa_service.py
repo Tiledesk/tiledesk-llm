@@ -32,7 +32,8 @@ class IntentClassifier:
         "contacts": ["contatti", "comunicazioni", "lettere", "email", "pec", "contacts"],
         "legal_actions": ["legale", "precetto", "ingiunzione", "tribunale", "legal", "court"],
         "debtor_info": ["debitore", "anagrafica", "chi è", "who is", "debtor", "informazioni"],
-        "relationship": ["relazione", "collegamento", "legame", "relationship", "connected", "related", "garanti", "guarantors", "fideiussori", "garante"]
+        "relationship": ["relazione", "collegamento", "legame", "relationship", "connected", "related", "garanti", "guarantors", "fideiussori", "garante"],
+        "vespro": ["vespri", "vespro", "siciliani", "ferdinando", "aragona", "1282", "rivolta"]
     }
 
     def __init__(self, llm=None):
@@ -462,7 +463,32 @@ class CypherTemplateEngine:
                 COLLECT(DISTINCT COALESCE(loan.id, loan.entity_name, loan.name)) as loan_ids,
                 guarantor.description as guarantor_description
             LIMIT 200
+        """,
+
+        "vespro": """
+            // Query per trovare relazioni tra Ferdinando III d'Aragona e protagonisti dei Vespri Siciliani
+            MATCH (ferdinando:PERSON)-[*1..3]-(protagonista)
+            WHERE ferdinando.namespace = $namespace
+            AND protagonista.namespace = $namespace
+            AND (
+                toUpper(ferdinando.name) CONTAINS 'FERDINANDO'
+                OR toUpper(ferdinando.name) CONTAINS 'ARAGONA'
+            )
+            WITH ferdinando, protagonista
+            WHERE (
+                toUpper(COALESCE(protagonista.name, '')) CONTAINS 'VESPRI'
+                OR toUpper(COALESCE(protagonista.name, '')) CONTAINS 'SICILIA'
+                OR toUpper(COALESCE(protagonista.description, '')) CONTAINS 'VESPRI'
+                OR toUpper(COALESCE(protagonista.description, '')) CONTAINS 'SICILIANI'
+            )
+            RETURN DISTINCT
+                ferdinando.name as ferdinando_name,
+                protagonista.name as protagonista_name,
+                labels(protagonista)[0] as protagonista_type,
+                COALESCE(protagonista.description, '') as protagonista_description
+            LIMIT 50
         """
+
     }
 
 
@@ -490,11 +516,16 @@ class CypherTemplateEngine:
             template = self.QUERY_TEMPLATES.get(intent)
             
         if not template:
-            # Fallback to general query
-            template = """
+            # Fallback to general query — build WHERE dynamically to avoid FalkorDB null-parameter issues
+            fallback_conditions = []
+            if namespace:
+                fallback_conditions.append("debtor.namespace = $namespace")
+            if index_name:
+                fallback_conditions.append("debtor.index_name = $index_name")
+            fallback_where = ("WHERE " + " AND ".join(fallback_conditions)) if fallback_conditions else ""
+            template = f"""
                 MATCH (debtor)
-                WHERE ($namespace IS NULL OR debtor.namespace = $namespace)
-                AND ($index_name IS NULL OR debtor.index_name = $index_name)
+                {fallback_where}
                 RETURN debtor
                 LIMIT 20
             """
@@ -507,11 +538,12 @@ class CypherTemplateEngine:
             else:
                 template = template.replace("WHERE", f"WHERE debtor.namespace = $namespace AND ")
 
-        # Prepare parameters for binding
-        query_params = {
-            "namespace": namespace,
-            "index_name": index_name
-        }
+        # Prepare parameters for binding — only include non-None values
+        query_params = {}
+        if namespace is not None:
+            query_params["namespace"] = namespace
+        if index_name is not None:
+            query_params["index_name"] = index_name
 
         # Map extracted parameters to query parameters
         query_params["debtor_name"] = parameters.get("debtor_name", "").upper()
@@ -571,7 +603,8 @@ class AdvancedQAService:
         contextualize_prompt: bool = False,
         include_history_in_prompt: bool = True,
         max_history_messages: int = 10,
-        conversation_summary: bool = False
+        conversation_summary: bool = False,
+        graph_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Process an advanced QA query using the full pipeline.
@@ -666,7 +699,8 @@ class AdvancedQAService:
             engine=engine,
             vector_store_repo=vector_store_repo,
             llm_embeddings=llm_embeddings,
-            max_reports=max_community_reports
+            max_reports=max_community_reports,
+            graph_name=graph_name
         )
         logger.info(f"Retrieved {len(community_reports)} community reports")
 
@@ -675,7 +709,8 @@ class AdvancedQAService:
             intent=intent,
             parameters=parameters,
             namespace=namespace,
-            index_name=engine.index_name if hasattr(engine, 'index_name') else None
+            index_name=engine.index_name if hasattr(engine, 'index_name') else None,
+            graph_name=graph_name
         )
         logger.info(f"Cypher query returned {len(cypher_results)} results")
 
@@ -789,13 +824,15 @@ class AdvancedQAService:
         engine,
         vector_store_repo,
         llm_embeddings,
-        max_reports: int
+        max_reports: int,
+        graph_name: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Get relevant community reports (max 3)."""
         from tilellm.models import QuestionAnswer
         from tilellm.controller.controller_utils import fetch_question_vectors
 
-        report_namespace = f"{namespace}-reports"
+        graph_name_to_use = graph_name if graph_name else namespace
+        report_namespace = f"{graph_name_to_use}-reports"
 
         try:
             qa = QuestionAnswer(
@@ -838,7 +875,8 @@ class AdvancedQAService:
         intent: str,
         parameters: Dict[str, Any],
         namespace: str,
-        index_name: Optional[str]
+        index_name: Optional[str],
+        graph_name: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Execute Cypher query based on intent and parameters."""
         # Generate query
@@ -864,15 +902,15 @@ class AdvancedQAService:
                 RETURN debtor.entity_name as entity_name, debtor.name as name, labels(debtor) as labels, count(*) as count
                 LIMIT 5
             """
-            debug_results = await repo._execute_query(debug_query, query_params, namespace=namespace)
+            debug_results = await repo._execute_query(debug_query, query_params, namespace=namespace, graph_name=graph_name)
             logger.info(f"DEBUG debtor search results: {debug_results}")
-            
+
             # Also check for any nodes with timestamp/date or other date fields
             timestamp_query = """
                 MATCH (n)
                 WHERE n.namespace = $namespace
                 AND (
-                    n.timestamp IS NOT NULL OR 
+                    n.timestamp IS NOT NULL OR
                     n.date IS NOT NULL OR
                     n.created_at IS NOT NULL OR
                     n.updated_at IS NOT NULL OR
@@ -887,9 +925,9 @@ class AdvancedQAService:
                 RETURN labels(n)[0] as label, count(*) as count
                 LIMIT 10
             """
-            timestamp_results = await repo._execute_query(timestamp_query, query_params, namespace=namespace)
+            timestamp_results = await repo._execute_query(timestamp_query, query_params, namespace=namespace, graph_name=graph_name)
             logger.info(f"DEBUG nodes with timestamp/date: {timestamp_results}")
-            
+
             # Debug: check property keys for first few nodes
             property_query = """
                 MATCH (n)
@@ -897,9 +935,9 @@ class AdvancedQAService:
                 RETURN labels(n)[0] as label, keys(n) as keys
                 LIMIT 5
             """
-            property_results = await repo._execute_query(property_query, query_params, namespace=namespace)
+            property_results = await repo._execute_query(property_query, query_params, namespace=namespace, graph_name=graph_name)
             logger.info(f"DEBUG node properties: {property_results}")
-            
+
             # Debug: check import_timestamp values
             import_timestamp_query = """
                 MATCH (n)
@@ -908,26 +946,27 @@ class AdvancedQAService:
                 RETURN labels(n)[0] as label, n.name as name, n.import_timestamp as import_timestamp
                 LIMIT 5
             """
-            import_timestamp_results = await repo._execute_query(import_timestamp_query, query_params, namespace=namespace)
+            import_timestamp_results = await repo._execute_query(import_timestamp_query, query_params, namespace=namespace, graph_name=graph_name)
             logger.info(f"DEBUG import_timestamp values: {import_timestamp_results}")
-            
+
             # Debug: check relationships from debtor nodes
             relationship_query = """
                 MATCH (debtor)
-                WHERE debtor.namespace = $namespace 
+                WHERE debtor.namespace = $namespace
                 AND (COALESCE(toUpper(debtor.name), '') CONTAINS $debtor_name OR COALESCE(debtor.entity_name, '') CONTAINS $debtor_name)
                 MATCH (debtor)-[r]-(other)
                 RETURN type(r) as rel_type, labels(other)[0] as other_label, count(*) as count
                 ORDER BY count DESC
                 LIMIT 10
             """
-            relationship_results = await repo._execute_query(relationship_query, query_params, namespace=namespace)
+            relationship_results = await repo._execute_query(relationship_query, query_params, namespace=namespace, graph_name=graph_name)
             logger.info(f"DEBUG debtor relationships: {relationship_results}")
-            
+
             results = await repo._execute_query(
                 cypher_query,
                 query_params,
-                namespace=namespace
+                namespace=namespace,
+                graph_name=graph_name
             )
             logger.info(f"Cypher query raw results (first 3): {results[:3] if results else []}")
 
@@ -1202,6 +1241,19 @@ class AdvancedQAService:
                     date_ref = result.get('date_reference', 'N/D')
                     desc = result.get('connected_description') or result.get('relationship_description') or ""
                     formatted_lines.append(f"{idx}. [{date_ref}] {debtor} -[{rel_type}]-> {entity} | {desc[:150]}")
+            elif intent == "vespro":
+                formatted_lines.append("=== RELAZIONI FERDINANDO III D'ARAGONA - VESPRI SICILIANI ===\n")
+                for idx, result in enumerate(results, 1):
+                    ferdinando = result.get('ferdinando_name', 'Ferdinando III d\'Aragona')
+                    protagonista = result.get('protagonista_name', 'Unknown')
+                    p_type = result.get('protagonista_type', 'Personaggio')
+                    description = result.get('protagonista_description', '')[:200]
+
+                    formatted_lines.append(
+                        f"{idx}. **{protagonista}** ({p_type})\n"
+                        f"   Collegato a: {ferdinando}\n"
+                        f"   Descrizione: {description}\n"
+                    )
             else:
                 # Generic relationship results (path-based)
                 for idx, result in enumerate(results[:20], 1):

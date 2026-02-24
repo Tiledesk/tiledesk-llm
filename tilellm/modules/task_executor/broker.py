@@ -2,7 +2,7 @@ import os
 import logging
 
 from redis.asyncio import Redis, from_url
-from taskiq import TaskiqEvents, TaskiqState, TaskiqMessage, TaskiqResult, SimpleRetryMiddleware
+from taskiq import TaskiqEvents, TaskiqState, SimpleRetryMiddleware
 from taskiq_redis import RedisStreamBroker, RedisAsyncResultBackend
 from tilellm.shared.utility import get_service_config
 

@@ -8,34 +8,9 @@ import httpx
 
 from taskiq import Context, TaskiqDepends, TaskiqState
 from tilellm.modules.task_executor.broker import broker
-from tilellm.modules.knowledge_graph import logic as kg_logic
-from tilellm.modules.knowledge_graph.models.schemas import (
-    GraphCreateRequest, GraphCreateResponse,
-    AddDocumentRequest, AddDocumentResponse,
-    GraphClusterRequest, GraphClusterResponse
-)
 
-# FalkorDB imports
-try:
-    from tilellm.modules.knowledge_graph_falkor import logic as falkor_logic
-    from tilellm.modules.knowledge_graph_falkor.models.schemas import (
-        GraphCreateRequest as FalkorGraphCreateRequest,
-        AddDocumentRequest as FalkorAddDocumentRequest,
-        GraphClusterRequest as FalkorGraphClusterRequest,
-        GraphCreateResponse as FalkorGraphCreateResponse,
-        AddDocumentResponse as FalkorAddDocumentResponse,
-        GraphClusterResponse as FalkorGraphClusterResponse
-    )
-    FALKORDB_AVAILABLE = True
-except ImportError:
-    falkor_logic = None
-    FalkorGraphCreateRequest = None
-    FalkorAddDocumentRequest = None
-    FalkorGraphClusterRequest = None
-    FalkorGraphCreateResponse = None
-    FalkorAddDocumentResponse = None
-    FalkorGraphClusterResponse = None
-    FALKORDB_AVAILABLE = False
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -51,11 +26,13 @@ async def send_webhook(url: str, payload: dict):
 
 
 
-@broker.task
+@broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "neo4j_graph_create"})
 async def task_graph_create(request_dict: dict, state: TaskiqState = TaskiqDepends()) -> dict:
     """
     Task to create/import a community graph.
     """
+    from tilellm.modules.knowledge_graph import logic as kg_logic
+    from tilellm.modules.knowledge_graph.models import GraphCreateRequest
     webhook_url = request_dict.get("webhook_url")
     task_id = state.task_id
     try:
@@ -79,11 +56,13 @@ async def task_graph_create(request_dict: dict, state: TaskiqState = TaskiqDepen
              await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
         raise e
 
-@broker.task
+@broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "neo4j_add_document"})
 async def task_add_document(request_dict: dict) -> dict:
     """
     Task to add a document to the graph.
     """
+    from tilellm.modules.knowledge_graph import logic as kg_logic
+    from tilellm.modules.knowledge_graph.models.schemas import AddDocumentRequest
     webhook_url = request_dict.get("webhook_url")
     try:
         # Convert dict back to Pydantic model
@@ -99,11 +78,13 @@ async def task_add_document(request_dict: dict) -> dict:
              await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
         raise e
 
-@broker.task
+@broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "neo4_louvain_cluster"})
 async def task_louvain_cluster(request_dict: dict) -> dict:
     """
     Task to perform Louvain clustering.
     """
+    from tilellm.modules.knowledge_graph import logic as kg_logic
+    from tilellm.modules.knowledge_graph.models.schemas import GraphClusterRequest
     webhook_url = request_dict.get("webhook_url")
     try:
         # Convert dict back to Pydantic model
@@ -119,11 +100,14 @@ async def task_louvain_cluster(request_dict: dict) -> dict:
              await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
         raise e
 
-@broker.task
+@broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "neo4j_leiden_cluster"})
 async def task_leiden_cluster(request_dict: dict) -> dict:
     """
     Task to perform Leiden clustering.
     """
+    from tilellm.modules.knowledge_graph import logic as kg_logic
+    from tilellm.modules.knowledge_graph.models.schemas import GraphClusterRequest
+
     webhook_url = request_dict.get("webhook_url")
     try:
         # Convert dict back to Pydantic model
@@ -139,11 +123,14 @@ async def task_leiden_cluster(request_dict: dict) -> dict:
              await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
         raise e
 
-@broker.task
+@broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "neo4j_hierarchical_cluster"})
 async def task_hierarchical_cluster(request_dict: dict) -> dict:
     """
     Task to perform Hierarchical clustering.
     """
+    from tilellm.modules.knowledge_graph import logic as kg_logic
+    from tilellm.modules.knowledge_graph.models.schemas import GraphClusterRequest
+
     webhook_url = request_dict.get("webhook_url")
     try:
         # Convert dict back to Pydantic model
@@ -159,11 +146,14 @@ async def task_hierarchical_cluster(request_dict: dict) -> dict:
              await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
         raise e
 
-@broker.task
+@broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "neo4j_community_analysis"})
 async def task_community_analysis(request_dict: dict) -> dict:
     """
     Task to analyze document collection for communities.
     """
+    from tilellm.modules.knowledge_graph import logic as kg_logic
+    from tilellm.modules.knowledge_graph.models.schemas import GraphClusterRequest
+
     webhook_url = request_dict.get("webhook_url")
     try:
         # Reuse GraphClusterRequest as it has namespace and engine
@@ -185,17 +175,29 @@ async def task_community_analysis(request_dict: dict) -> dict:
 
 # ==================== FALKORDB TASKS ====================
 
-@broker.task
+@broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "falkor_graph_create"})
 async def task_falkor_graph_create(request_dict: dict) -> dict:
     """
     Task to create/import a community graph using FalkorDB.
     """
+
+
+
+    try:
+        from tilellm.modules.knowledge_graph_falkor import logic as falkor_logic
+        from tilellm.modules.knowledge_graph_falkor.models.schemas import GraphCreateRequest as FalkorGraphCreateRequest
+        FALKORDB_AVAILABLE=True
+    except ImportError:
+        FALKORDB_AVAILABLE=False
+        falkor_logic=None
+        FalkorGraphCreateRequest=None
+
     webhook_url = request_dict.get("webhook_url")
     if not FALKORDB_AVAILABLE or falkor_logic is None:
         raise RuntimeError("FalkorDB module not available. Install with 'poetry install --extras graph'.")
     try:
         # Convert dict back to Pydantic model
-        logger.info(f"FALKORDB TASK =======================> {request_dict}")
+        logger.info(f"FALKORDB TASK {request_dict}")
         request = FalkorGraphCreateRequest(**request_dict)
         logger.info(f"Starting falkor_graph_create task for namespace: {request.namespace}")
         result = await falkor_logic.create_graph(request)
@@ -208,11 +210,21 @@ async def task_falkor_graph_create(request_dict: dict) -> dict:
              await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
         raise e
 
-@broker.task
+@broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "falkor_add_document"})
 async def task_falkor_add_document(request_dict: dict) -> dict:
     """
     Task to add a document to the FalkorDB graph.
     """
+    try:
+        from tilellm.modules.knowledge_graph_falkor import logic as falkor_logic
+        from tilellm.modules.knowledge_graph_falkor.models.schemas import AddDocumentRequest as FalkorAddDocumentRequest
+        FALKORDB_AVAILABLE=True
+    except ImportError:
+        FALKORDB_AVAILABLE=False
+        falkor_logic=None
+        FalkorAddDocumentRequest=None
+
+
     webhook_url = request_dict.get("webhook_url")
     if not FALKORDB_AVAILABLE or falkor_logic is None:
         raise RuntimeError("FalkorDB module not available. Install with 'poetry install --extras graph'.")
@@ -230,11 +242,20 @@ async def task_falkor_add_document(request_dict: dict) -> dict:
              await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
         raise e
 
-@broker.task
+@broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "falkor_louvain_cluster"})
 async def task_falkor_louvain_cluster(request_dict: dict) -> dict:
     """
     Task to perform Louvain clustering on FalkorDB graph.
     """
+    try:
+        from tilellm.modules.knowledge_graph_falkor import logic as falkor_logic
+        from tilellm.modules.knowledge_graph_falkor.models.schemas import GraphClusterRequest as FalkorGraphClusterRequest
+        FALKORDB_AVAILABLE=True
+    except ImportError:
+        FALKORDB_AVAILABLE=False
+        falkor_logic=None
+        FalkorGraphClusterRequest=None
+
     webhook_url = request_dict.get("webhook_url")
     if not FALKORDB_AVAILABLE or falkor_logic is None:
         raise RuntimeError("FalkorDB module not available. Install with 'poetry install --extras graph'.")
@@ -252,11 +273,21 @@ async def task_falkor_louvain_cluster(request_dict: dict) -> dict:
              await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
         raise e
 
-@broker.task
+@broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "falkor_leiden_cluster"})
 async def task_falkor_leiden_cluster(request_dict: dict) -> dict:
     """
     Task to perform Leiden clustering on FalkorDB graph.
     """
+    try:
+        from tilellm.modules.knowledge_graph_falkor import logic as falkor_logic
+        from tilellm.modules.knowledge_graph_falkor.models.schemas import \
+            GraphClusterRequest as FalkorGraphClusterRequest
+        FALKORDB_AVAILABLE = True
+    except ImportError:
+        FALKORDB_AVAILABLE = False
+        falkor_logic = None
+        FalkorGraphClusterRequest = None
+
     webhook_url = request_dict.get("webhook_url")
     if not FALKORDB_AVAILABLE or falkor_logic is None:
         raise RuntimeError("FalkorDB module not available. Install with 'poetry install --extras graph'.")
@@ -274,11 +305,21 @@ async def task_falkor_leiden_cluster(request_dict: dict) -> dict:
              await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
         raise e
 
-@broker.task
+@broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "falkor_hierarchical_cluster"})
 async def task_falkor_hierarchical_cluster(request_dict: dict) -> dict:
     """
     Task to perform Hierarchical clustering on FalkorDB graph.
     """
+    try:
+        from tilellm.modules.knowledge_graph_falkor import logic as falkor_logic
+        from tilellm.modules.knowledge_graph_falkor.models.schemas import \
+            GraphClusterRequest as FalkorGraphClusterRequest
+        FALKORDB_AVAILABLE = True
+    except ImportError:
+        FALKORDB_AVAILABLE = False
+        falkor_logic = None
+        FalkorGraphClusterRequest = None
+
     webhook_url = request_dict.get("webhook_url")
     if not FALKORDB_AVAILABLE or falkor_logic is None:
         raise RuntimeError("FalkorDB module not available. Install with 'poetry install --extras graph'.")
@@ -296,11 +337,21 @@ async def task_falkor_hierarchical_cluster(request_dict: dict) -> dict:
              await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
         raise e
 
-@broker.task
+@broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "falkor_community_analysis"})
 async def task_falkor_community_analysis(request_dict: dict) -> dict:
     """
     Task to analyze document collection for communities in FalkorDB graph.
     """
+    try:
+        from tilellm.modules.knowledge_graph_falkor import logic as falkor_logic
+        from tilellm.modules.knowledge_graph_falkor.models.schemas import \
+            GraphClusterRequest as FalkorGraphClusterRequest
+        FALKORDB_AVAILABLE = True
+    except ImportError:
+        FALKORDB_AVAILABLE = False
+        falkor_logic = None
+        FalkorGraphClusterRequest = None
+
     webhook_url = request_dict.get("webhook_url")
     if not FALKORDB_AVAILABLE or falkor_logic is None:
         raise RuntimeError("FalkorDB module not available. Install with 'poetry install --extras graph'.")
@@ -326,7 +377,7 @@ EXPIRATION_SECONDS = 48 * 60 * 60
 
 
 @broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "scraping"})
-async def task_scrape_item_single(item_dict: dict, state: Context = TaskiqDepends()) -> dict:
+async def task_scrape_item_single(item_dict: dict) -> dict:
     """
     Task to scrape and index a single item.
     Handles both standard and hybrid indexing.
@@ -396,7 +447,7 @@ async def task_scrape_item_single(item_dict: dict, state: Context = TaskiqDepend
         raise e
 
 
-@broker.task
+@broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "pdf_ocr"})
 async def process_pdf_document_task(
         doc_id: str,
         file_path: Optional[str] = None,

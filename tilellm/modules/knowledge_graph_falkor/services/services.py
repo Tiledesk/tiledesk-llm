@@ -14,7 +14,8 @@ import tempfile
 import shutil
 import os
 
-from ..models import Node, NodeUpdate, Relationship, RelationshipUpdate
+from tilellm.modules.knowledge_graph.models import Node, NodeUpdate, Relationship, RelationshipUpdate
+from ..tools.extraction_prompts import get_extraction_config
 from tilellm.store.graph import BaseGraphRepository
 from tilellm.models import Engine
 from tilellm.models.schemas import RepositoryItems
@@ -87,7 +88,7 @@ class GraphService:
 
     # ==================== NODE OPERATIONS ====================
 
-    async def create_node(self, node: Node, namespace: Optional[str] = None, index_name: Optional[str] = None, engine_name: Optional[str] = None, engine_type: Optional[str] = None, metadata_id: Optional[str] = None) -> Node:
+    async def create_node(self, node: Node, namespace: Optional[str] = None, index_name: Optional[str] = None, engine_name: Optional[str] = None, engine_type: Optional[str] = None, metadata_id: Optional[str] = None, graph_name: Optional[str] = None) -> Node:
         """
         Create a new node with business logic validation.
 
@@ -98,6 +99,7 @@ class GraphService:
             engine_name: Optional engine name (e.g., 'pinecone', 'qdrant') to partition the graph
             engine_type: Optional engine type (e.g., 'pod', 'serverless')
             metadata_id: Optional metadata ID from vector store chunks for cleanup
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             Created node with ID
@@ -114,24 +116,26 @@ class GraphService:
         if not node.label[0].isupper():
             logger.warning(f"Node label '{node.label}' should start with uppercase for Neo4j convention.")
 
-        logger.info(f"Creating node with label: {node.label}, namespace: {namespace}, index_name: {index_name}, engine_name: {engine_name}, engine_type: {engine_type}, metadata_id: {metadata_id}")
-        return await self._get_repository().create_node(node, namespace=namespace, index_name=index_name, engine_name=engine_name, engine_type=engine_type, metadata_id=metadata_id)
+        logger.info(f"Creating node with label: {node.label}, namespace: {namespace}, index_name: {index_name}, engine_name: {engine_name}, engine_type: {engine_type}, metadata_id: {metadata_id}, graph_name: {graph_name}")
+        return await self._get_repository().create_node(node, namespace=namespace, index_name=index_name, engine_name=engine_name, engine_type=engine_type, metadata_id=metadata_id, graph_name=graph_name)
 
-    async def get_node(self, node_id: str) -> Optional[Node]:
+    async def get_node(self, node_id: str, namespace: Optional[str] = None, graph_name: Optional[str] = None) -> Optional[Node]:
         """
         Get a node by ID.
 
         Args:
             node_id: Node ID
+            namespace: Optional namespace to search in (for multi-graph isolation)
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             Node if found, None otherwise
         """
         self._ensure_repository()
-        logger.info(f"Retrieving node with ID: {node_id}")
-        return await self._get_repository().find_node_by_id(node_id)
+        logger.info(f"Retrieving node with ID: {node_id}, namespace: {namespace}, graph_name: {graph_name}")
+        return await self._get_repository().find_node_by_id(node_id, namespace=namespace, graph_name=graph_name)
 
-    async def get_nodes_by_label(self, label: str, limit: int = 100, namespace: Optional[str] = None, index_name: Optional[str] = None) -> List[Node]:
+    async def get_nodes_by_label(self, label: str, limit: int = 100, namespace: Optional[str] = None, index_name: Optional[str] = None, graph_name: Optional[str] = None) -> List[Node]:
         """
         Get all nodes with a specific label.
 
@@ -140,15 +144,16 @@ class GraphService:
             limit: Maximum number of nodes to return
             namespace: Optional namespace to filter nodes
             index_name: Optional index_name (collection name) to filter nodes
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             List of nodes
         """
         self._ensure_repository()
-        logger.info(f"Retrieving nodes with label: {label}, limit: {limit}, namespace: {namespace}, index_name: {index_name}")
-        return await self._get_repository().find_nodes_by_label(label, limit, namespace=namespace, index_name=index_name)
+        logger.info(f"Retrieving nodes with label: {label}, limit: {limit}, namespace: {namespace}, index_name: {index_name}, graph_name: {graph_name}")
+        return await self._get_repository().find_nodes_by_label(label, limit, namespace=namespace, index_name=index_name, graph_name=graph_name)
 
-    async def search_nodes(self, label: str, property_key: str, property_value: Any, limit: int = 100, namespace: Optional[str] = None, index_name: Optional[str] = None) -> List[Node]:
+    async def search_nodes(self, label: str, property_key: str, property_value: Any, limit: int = 100, namespace: Optional[str] = None, index_name: Optional[str] = None, graph_name: Optional[str] = None) -> List[Node]:
         """
         Search nodes by property value.
 
@@ -159,15 +164,16 @@ class GraphService:
             limit: Maximum number of nodes to return
             namespace: Optional namespace to filter nodes
             index_name: Optional index_name (collection name) to filter nodes
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             List of matching nodes
         """
         self._ensure_repository()
-        logger.info(f"Searching nodes with {label}.{property_key} = {property_value}, namespace: {namespace}, index_name: {index_name}")
-        return await self._get_repository().find_nodes_by_property(label, property_key, property_value, limit, namespace=namespace, index_name=index_name)
+        logger.info(f"Searching nodes with {label}.{property_key} = {property_value}, namespace: {namespace}, index_name: {index_name}, graph_name: {graph_name}")
+        return await self._get_repository().find_nodes_by_property(label, property_key, property_value, limit, namespace=namespace, index_name=index_name, graph_name=graph_name)
 
-    async def find_entity_by_name_and_type(self, entity_name: str, entity_type: str, namespace: Optional[str] = None, index_name: Optional[str] = None) -> Optional[Node]:
+    async def find_entity_by_name_and_type(self, entity_name: str, entity_type: str, namespace: Optional[str] = None, index_name: Optional[str] = None, graph_name: Optional[str] = None) -> Optional[Node]:
         """
         Find an existing entity node by name and type for deduplication.
 
@@ -176,6 +182,7 @@ class GraphService:
             entity_type: Entity type/label
             namespace: Optional namespace to filter
             index_name: Optional index_name to filter
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             First matching node if found, None otherwise
@@ -186,17 +193,20 @@ class GraphService:
             property_value=entity_name,
             limit=1,
             namespace=namespace,
-            index_name=index_name
+            index_name=index_name,
+            graph_name=graph_name
         )
         return matching_nodes[0] if matching_nodes else None
 
-    async def update_node(self, node_id: str, node_update: NodeUpdate) -> Optional[Node]:
+    async def update_node(self, node_id: str, node_update: NodeUpdate, namespace: Optional[str] = None, graph_name: Optional[str] = None) -> Optional[Node]:
         """
         Update a node's properties.
 
         Args:
             node_id: Node ID
             node_update: Update data
+            namespace: Optional namespace where the node exists (for multi-graph isolation)
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             Updated node if found, None otherwise
@@ -207,7 +217,7 @@ class GraphService:
         self._ensure_repository()
 
         # Check if node exists
-        existing_node = await self._get_repository().find_node_by_id(node_id)
+        existing_node = await self._get_repository().find_node_by_id(node_id, namespace=namespace, graph_name=graph_name)
         if not existing_node:
             logger.warning(f"Node with ID {node_id} not found for update")
             return None
@@ -216,38 +226,42 @@ class GraphService:
         if node_update.label and not node_update.label[0].isupper():
             logger.warning(f"Node label '{node_update.label}' should start with uppercase for Neo4j convention.")
 
-        logger.info(f"Updating node with ID: {node_id}")
+        logger.info(f"Updating node with ID: {node_id}, namespace: {namespace}, graph_name: {graph_name}")
         return await self._get_repository().update_node(
             node_id=node_id,
             label=node_update.label,
-            properties=node_update.properties
+            properties=node_update.properties,
+            namespace=namespace,
+            graph_name=graph_name
         )
 
-    async def delete_node(self, node_id: str, detach: bool = True) -> bool:
+    async def delete_node(self, node_id: str, detach: bool = True, namespace: Optional[str] = None, graph_name: Optional[str] = None) -> bool:
         """
         Delete a node.
 
         Args:
             node_id: Node ID
             detach: If True, also delete all relationships
+            namespace: Optional namespace where the node exists (for multi-graph isolation)
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             True if deleted, False if not found
         """
         self._ensure_repository()
-        logger.info(f"Deleting node with ID: {node_id}, detach: {detach}")
+        logger.info(f"Deleting node with ID: {node_id}, detach: {detach}, namespace: {namespace}, graph_name: {graph_name}")
 
         # Check if node exists before deletion
-        existing_node = await self._get_repository().find_node_by_id(node_id)
+        existing_node = await self._get_repository().find_node_by_id(node_id, namespace=namespace, graph_name=graph_name)
         if not existing_node:
             logger.warning(f"Node with ID {node_id} not found for deletion")
             return False
 
-        return await self._get_repository().delete_node(node_id, detach)
+        return await self._get_repository().delete_node(node_id, detach, namespace=namespace, graph_name=graph_name)
 
     # ==================== RELATIONSHIP OPERATIONS ====================
 
-    async def create_relationship(self, relationship: Relationship, namespace: Optional[str] = None, index_name: Optional[str] = None, engine_name: Optional[str] = None, engine_type: Optional[str] = None, metadata_id: Optional[str] = None) -> Relationship:
+    async def create_relationship(self, relationship: Relationship, namespace: Optional[str] = None, index_name: Optional[str] = None, engine_name: Optional[str] = None, engine_type: Optional[str] = None, metadata_id: Optional[str] = None, graph_name: Optional[str] = None) -> Relationship:
         """
         Create a relationship between nodes.
 
@@ -258,6 +272,7 @@ class GraphService:
             engine_name: Optional engine name (e.g., 'pinecone', 'qdrant') to partition the graph
             engine_type: Optional engine type (e.g., 'pod', 'serverless')
             metadata_id: Optional metadata ID from vector store chunks for cleanup
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             Created relationship with ID
@@ -276,38 +291,42 @@ class GraphService:
             logger.warning(f"Relationship type '{relationship.type}' should be uppercase for Neo4j convention.")
 
         # Verify source and target nodes exist (with namespace for multi-graph isolation)
-        source_node = await self._get_repository().find_node_by_id(relationship.source_id, namespace=namespace)
+        source_node = await self._get_repository().find_node_by_id(relationship.source_id, namespace=namespace, graph_name=graph_name)
         if not source_node:
             raise RuntimeError(f"Source node with ID '{relationship.source_id}' does not exist.")
 
-        target_node = await self._get_repository().find_node_by_id(relationship.target_id, namespace=namespace)
+        target_node = await self._get_repository().find_node_by_id(relationship.target_id, namespace=namespace, graph_name=graph_name)
         if not target_node:
             raise RuntimeError(f"Target node with ID '{relationship.target_id}' does not exist.")
 
         logger.info(f"Creating relationship: {relationship.source_id} -[{relationship.type}]-> {relationship.target_id}")
-        return await self._get_repository().create_relationship(relationship, namespace=namespace, index_name=index_name, engine_name=engine_name, engine_type=engine_type, metadata_id=metadata_id)
+        return await self._get_repository().create_relationship(relationship, namespace=namespace, index_name=index_name, engine_name=engine_name, engine_type=engine_type, metadata_id=metadata_id, graph_name=graph_name)
 
-    async def get_relationship(self, relationship_id: str) -> Optional[Relationship]:
+    async def get_relationship(self, relationship_id: str, namespace: Optional[str] = None, graph_name: Optional[str] = None) -> Optional[Relationship]:
         """
         Get a relationship by ID.
 
         Args:
             relationship_id: Relationship ID
+            namespace: Optional namespace to search in (for multi-graph isolation)
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             Relationship if found, None otherwise
         """
         self._ensure_repository()
-        logger.info(f"Retrieving relationship with ID: {relationship_id}")
-        return await self._get_repository().find_relationship_by_id(relationship_id)
+        logger.info(f"Retrieving relationship with ID: {relationship_id}, namespace: {namespace}, graph_name: {graph_name}")
+        return await self._get_repository().find_relationship_by_id(relationship_id, namespace=namespace, graph_name=graph_name)
 
-    async def get_node_relationships(self, node_id: str, direction: str = "both") -> List[Relationship]:
+    async def get_node_relationships(self, node_id: str, direction: str = "both", namespace: Optional[str] = None, graph_name: Optional[str] = None) -> List[Relationship]:
         """
         Get all relationships for a node.
 
         Args:
             node_id: Node ID
             direction: "incoming", "outgoing", or "both"
+            namespace: Optional namespace to search in (for multi-graph isolation)
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             List of relationships
@@ -320,16 +339,18 @@ class GraphService:
         if direction not in ["incoming", "outgoing", "both"]:
             raise ValueError(f"Invalid direction: {direction}. Must be 'incoming', 'outgoing', or 'both'.")
 
-        logger.info(f"Retrieving {direction} relationships for node: {node_id}")
-        return await self._get_repository().find_relationships_by_node(node_id, direction)
+        logger.info(f"Retrieving {direction} relationships for node: {node_id}, namespace: {namespace}, graph_name: {graph_name}")
+        return await self._get_repository().find_relationships_by_node(node_id, direction, namespace=namespace, graph_name=graph_name)
 
-    async def update_relationship(self, relationship_id: str, relationship_update: RelationshipUpdate) -> Optional[Relationship]:
+    async def update_relationship(self, relationship_id: str, relationship_update: RelationshipUpdate, namespace: Optional[str] = None, graph_name: Optional[str] = None) -> Optional[Relationship]:
         """
         Update a relationship.
 
         Args:
             relationship_id: Relationship ID
             relationship_update: Update data
+            namespace: Optional namespace where the relationship exists (for multi-graph isolation)
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             Updated relationship if found, None otherwise
@@ -340,7 +361,7 @@ class GraphService:
         self._ensure_repository()
 
         # Check if relationship exists
-        existing_rel = await self._get_repository().find_relationship_by_id(relationship_id)
+        existing_rel = await self._get_repository().find_relationship_by_id(relationship_id, namespace=namespace, graph_name=graph_name)
         if not existing_rel:
             logger.warning(f"Relationship with ID {relationship_id} not found for update")
             return None
@@ -349,33 +370,37 @@ class GraphService:
         if relationship_update.type and not relationship_update.type.isupper():
             logger.warning(f"Relationship type '{relationship_update.type}' should be uppercase for Neo4j convention.")
 
-        logger.info(f"Updating relationship with ID: {relationship_id}")
+        logger.info(f"Updating relationship with ID: {relationship_id}, namespace: {namespace}, graph_name: {graph_name}")
         return await self._get_repository().update_relationship(
             relationship_id=relationship_id,
             rel_type=relationship_update.type,
-            properties=relationship_update.properties
+            properties=relationship_update.properties,
+            namespace=namespace,
+            graph_name=graph_name
         )
 
-    async def delete_relationship(self, relationship_id: str) -> bool:
+    async def delete_relationship(self, relationship_id: str, namespace: Optional[str] = None, graph_name: Optional[str] = None) -> bool:
         """
         Delete a relationship.
 
         Args:
             relationship_id: Relationship ID
+            namespace: Optional namespace where the relationship exists (for multi-graph isolation)
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             True if deleted, False if not found
         """
         self._ensure_repository()
-        logger.info(f"Deleting relationship with ID: {relationship_id}")
+        logger.info(f"Deleting relationship with ID: {relationship_id}, namespace: {namespace}, graph_name: {graph_name}")
 
         # Check if relationship exists before deletion
-        existing_rel = await self._get_repository().find_relationship_by_id(relationship_id)
+        existing_rel = await self._get_repository().find_relationship_by_id(relationship_id, namespace=namespace, graph_name=graph_name)
         if not existing_rel:
             logger.warning(f"Relationship with ID {relationship_id} not found for deletion")
             return False
 
-        return await self._get_repository().delete_relationship(relationship_id)
+        return await self._get_repository().delete_relationship(relationship_id, namespace=namespace, graph_name=graph_name)
 
     # ==================== UTILITY OPERATIONS ====================
 
@@ -408,7 +433,8 @@ class GraphService:
         node_limit: int = 1000,
         relationship_limit: int = 5000,
         node_labels: Optional[List[str]] = None,
-        community: bool = False
+        community: bool = False,
+        graph_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Retrieve the graph network (nodes + relationships) for visualization.
@@ -420,12 +446,13 @@ class GraphService:
             relationship_limit: Maximum number of relationships to return (default: 5000)
             node_labels: Optional list of node labels to filter (e.g., ["PERSON", "ORGANIZATION"])
             community: If True, returns the community graph (BELONGS_TO_COMMUNITY)
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             Dictionary with:
             {
                 "nodes": [{"id": str, "label": str, "properties": dict}, ...],
-                "relationships": [{"id": str, "source_id": str, "target_id": str, "type": str, "properties": dict}, ...],
+                "relationships": [{"id": str, "source_id": str, "target_id: str, "type": str, "properties": dict}, ...],
                 "stats": {"node_count": int, "relationship_count": int, "filtered_by": {...}}
             }
         """
@@ -433,7 +460,7 @@ class GraphService:
         repo = self._get_repository()
 
         logger.info(f"Retrieving graph network - namespace: {namespace}, index_name: {index_name}, "
-                   f"node_limit: {node_limit}, node_labels: {node_labels}, community: {community}")
+                   f"node_limit: {node_limit}, node_labels: {node_labels}, community: {community}, graph_name: {graph_name}")
 
         if community:
             # Check if namespace and index_name are provided, as they are required for community query
@@ -445,7 +472,8 @@ class GraphService:
             result = await repo.get_community_network(
                 namespace=namespace or "",
                 index_name=index_name or "",
-                limit=relationship_limit
+                limit=relationship_limit,
+                graph_name=graph_name
             )
 
             result["stats"] = {
@@ -454,7 +482,8 @@ class GraphService:
                 "filtered_by": {
                     "namespace": namespace,
                     "index_name": index_name,
-                    "community": True
+                    "community": True,
+                    "graph_name": graph_name
                 }
             }
             return result
@@ -468,7 +497,8 @@ class GraphService:
                     label=label,
                     limit=node_limit // len(node_labels),
                     namespace=namespace,
-                    index_name=index_name
+                    index_name=index_name,
+                    graph_name=graph_name
                 )
                 nodes.extend(label_nodes)
         else:
@@ -480,7 +510,8 @@ class GraphService:
                         label=label,
                         limit=node_limit // len(all_labels),
                         namespace=namespace,
-                        index_name=index_name
+                        index_name=index_name,
+                        graph_name=graph_name
                     )
                     nodes.extend(label_nodes)
                 except Exception as e:
@@ -502,7 +533,9 @@ class GraphService:
             try:
                 node_rels = await repo.find_relationships_by_node(
                     node_id=node.id,
-                    direction="both"
+                    direction="both",
+                    namespace=namespace,
+                    graph_name=graph_name
                 )
                 # Only include relationships where both source and target are in our node set
                 for rel in node_rels:
@@ -546,7 +579,8 @@ class GraphService:
             "filtered_by": {
                 "namespace": namespace,
                 "index_name": index_name,
-                "node_labels": node_labels
+                "node_labels": node_labels,
+                "graph_name": graph_name
             }
         }
 
@@ -597,7 +631,7 @@ class GraphRAGService:
         if not self.vector_store_repository:
             raise RuntimeError("Vector store repository not initialized. Call set_vector_store_repository first.")
 
-    async def import_from_vector_store(self, namespace: str, creation_prompt:str, vector_store_repo=None, engine: Optional[Engine] = None, limit: int = 100, llm=None, index_name: Optional[str] = None, overwrite: bool = True, engine_type: Optional[str] = None) -> Dict[str, Any]:
+    async def import_from_vector_store(self, namespace: str, creation_prompt:str, vector_store_repo=None, engine: Optional[Engine] = None, limit: int = 100, llm=None, index_name: Optional[str] = None, overwrite: bool = True, engine_type: Optional[str] = None, graph_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Import documents from a vector store namespace into the knowledge graph.
 
@@ -616,6 +650,7 @@ class GraphRAGService:
             :param limit: Maximum number of chunks to process
             :param llm: LLM instance for extraction (if None, uses self.llm)
             :param index_name: Optional index_name for graph partition (defaults to engine.index_name)
+            :param graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             Dictionary with import statistics
@@ -639,12 +674,22 @@ class GraphRAGService:
         engine_name = engine.name if engine else None
         engine_type = engine_type if engine_type is not None else (engine.type if engine else None)
 
+        # Determine graph name to use (fallback to namespace if not provided)
+        graph_name_to_use = graph_name if graph_name is not None else namespace
+
         logger.info(f"Importing from vector store namespace: {namespace}, limit: {limit}, index_name: {index_name}")
 
+        # Get repository instance for index creation and cleanup
+        graph_repo = self.graph_service._get_repository()
+        
         # Clean up existing nodes if overwrite is True
         if overwrite:
-            graph_repo = self.graph_service._get_repository()
-            await graph_repo.delete_nodes_by_metadata(namespace=namespace, index_name=index_name, engine_name=engine_name, engine_type=engine_type)
+            await graph_repo.delete_nodes_by_metadata(namespace=namespace, index_name=index_name, engine_name=engine_name, engine_type=engine_type, graph_name=graph_name_to_use)
+
+        # Ensure indexes for the graph using entity types from extraction config
+        config = get_extraction_config(creation_prompt)
+        node_labels = config.entity_types
+        await graph_repo.ensure_indexes_for_graph(graph_name=graph_name_to_use, node_labels=node_labels)
 
         try:
             # Get all chunks from the namespace
@@ -765,11 +810,12 @@ class GraphRAGService:
                                 }
                             )
                             created_node = await self.graph_service.create_node(node,
-                                                                          namespace=namespace,
-                                                                          index_name=index_name,
-                                                                          engine_name=engine_name,
-                                                                          engine_type=engine_type,
-                                                                          metadata_id=entity_metadata_id)
+                                                                           namespace=namespace,
+                                                                           index_name=index_name,
+                                                                           engine_name=engine_name,
+                                                                           engine_type=engine_type,
+                                                                           metadata_id=entity_metadata_id,
+                                                                           graph_name=graph_name_to_use)
                             if created_node.id is None:
                                 logger.error("Created entity node has no ID, skipping")
                                 continue
@@ -830,7 +876,7 @@ class GraphRAGService:
                                 type=rel_type,
                                 properties=rel_properties
                             )
-                            await self.graph_service.create_relationship(relationship, namespace=namespace, index_name=index_name, engine_name=engine_name, engine_type=engine_type, metadata_id=rel_metadata_id)
+                            await self.graph_service.create_relationship(relationship, namespace=namespace, index_name=index_name, engine_name=engine_name, engine_type=engine_type, metadata_id=rel_metadata_id, graph_name=graph_name_to_use)
                             relationships_created += 1
                             
                         except Exception as ex:
@@ -843,11 +889,11 @@ class GraphRAGService:
                     logger.error(f"GraphRAG extraction failed: {e}")
                     # Fall back to simple document nodes
                     logger.info("Falling back to simple document nodes")
-                    return await self._create_simple_document_nodes(chunks_to_process, namespace, index_name=index_name, engine_name=engine_name, engine_type=engine_type)
+                    return await self._create_simple_document_nodes(chunks_to_process, namespace, index_name=index_name, engine_name=engine_name, engine_type=engine_type, graph_name=graph_name_to_use)
             else:
                 # No LLM available, create simple document nodes
                 logger.info("LLM not available for GraphRAG, creating simple document nodes")
-                return await self._create_simple_document_nodes(chunks_to_process, namespace, index_name=index_name, engine_name=engine_name, engine_type=engine_type)
+                return await self._create_simple_document_nodes(chunks_to_process, namespace, index_name=index_name, engine_name=engine_name, engine_type=engine_type, graph_name=graph_name_to_use)
             
             return {
                 "namespace": namespace,
@@ -861,7 +907,7 @@ class GraphRAGService:
             logger.error(f"Error importing from vector store: {e}")
             raise
 
-    async def _create_simple_document_nodes(self, chunks, namespace: str, index_name: Optional[str] = None, engine_name: Optional[str] = None, engine_type: Optional[str] = None) -> Dict[str, Any]:
+    async def _create_simple_document_nodes(self, chunks, namespace: str, index_name: Optional[str] = None, engine_name: Optional[str] = None, engine_type: Optional[str] = None, graph_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Create simple Document nodes for chunks when GraphRAG extraction is not possible.
         
@@ -871,6 +917,7 @@ class GraphRAGService:
             index_name: Optional index_name for graph partition
             engine_name: Optional engine name (e.g., 'pinecone', 'qdrant') for graph partition
             engine_type: Optional engine type (e.g., 'pod', 'serverless')
+            graph_name: Optional graph name (overrides namespace for graph selection)
             
         Returns:
             Dictionary with import statistics
@@ -932,7 +979,7 @@ class GraphRAGService:
                     label="Document",
                     properties=node_properties
                 )
-                await self.graph_service.create_node(node, namespace=namespace, index_name=index_name, engine_name=engine_name, engine_type=engine_type, metadata_id=metadata_id)
+                await self.graph_service.create_node(node, namespace=namespace, index_name=index_name, engine_name=engine_name, engine_type=engine_type, metadata_id=metadata_id, graph_name=graph_name)
                 nodes_created += 1
             except Exception as e:
                 logger.error(f"Error creating document node for chunk {chunk_id}: {e}")
@@ -953,7 +1000,8 @@ class GraphRAGService:
         engine: Engine,
         vector_store_repo,
         llm=None,
-        deduplicate_entities: bool = True
+        deduplicate_entities: bool = True,
+        graph_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Add all chunks of a document to the knowledge graph by retrieving them from vector store.
@@ -1023,6 +1071,7 @@ class GraphRAGService:
         # Determine engine_name and engine_type based on engine configuration
         engine_name = engine.name
         index_name = engine.index_name
+        graph_name_to_use = graph_name if graph_name is not None else namespace
 
         # For Pinecone use 'type', for Qdrant use 'deployment'
         if engine.name == "pinecone":
@@ -1130,7 +1179,8 @@ class GraphRAGService:
                         entity_name=entity_name,
                         entity_type=entity_type,
                         namespace=namespace,
-                        index_name=index_name
+                        index_name=index_name,
+                        graph_name=graph_name_to_use
                     )
 
                 if existing_node:
@@ -1159,7 +1209,8 @@ class GraphRAGService:
                         index_name=index_name,
                         engine_name=engine_name,
                         engine_type=engine_type,
-                        metadata_id=metadata_id
+                        metadata_id=metadata_id,
+                        graph_name=graph_name_to_use
                     )
 
                     if created_node.id is None:
@@ -1224,7 +1275,8 @@ class GraphRAGService:
                     index_name=index_name,
                     engine_name=engine_name,
                     engine_type=engine_type,
-                    metadata_id=metadata_id
+                    metadata_id=metadata_id,
+                    graph_name=graph_name_to_use
                 )
                 relationships_created += 1
                 logger.debug(f"Created relationship: {source_name} -> {target_name}")
@@ -1246,7 +1298,7 @@ class GraphRAGService:
             "status": "success"
         }
 
-    async def answer_with_graph(self, question: str, namespace: str, max_results: Optional[int] = 10, similarity_threshold: Optional[float] = 0.3, llm=None, llm_embeddings=None, index_name: Optional[str] = None, chat_history_dict: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def answer_with_graph(self, question: str, namespace: str, max_results: Optional[int] = 10, similarity_threshold: Optional[float] = 0.3, llm=None, llm_embeddings=None, index_name: Optional[str] = None, chat_history_dict: Optional[Dict[str, Any]] = None, graph_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Answer a question using the knowledge graph (GraphRAG).
 
@@ -1293,7 +1345,7 @@ class GraphRAGService:
         
         rels = []
         for rel in relationships:
-            rels.append(rel.model_dump() if hasattr(rel, 'model_dump') else rel)  # type: ignore[attr-defined]
+            rels.append(rel)
         
         # Generate answer using LLM if available
         if llm_to_use is not None:
@@ -1905,7 +1957,7 @@ class GraphRAGService:
 
         return adjusted_weights
 
-    async def cluster_graph(self, llm=None, level: int = 0, namespace: Optional[str] = None, index_name: Optional[str] = None, engine_name: Optional[str] = None, engine_type: Optional[str] = None) -> Dict[str, Any]:
+    async def cluster_graph(self, llm=None, level: int = 0, namespace: Optional[str] = None, index_name: Optional[str] = None, engine_name: Optional[str] = None, engine_type: Optional[str] = None, graph_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Detect communities in the graph and generate reports for each.
         
@@ -1916,6 +1968,7 @@ class GraphRAGService:
             index_name: Optional index_name to filter graph partition
             engine_name: Optional engine name (e.g., 'pinecone', 'qdrant') to filter graph partition
             engine_type: Optional engine type (e.g., 'pod', 'serverless') to filter graph partition
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
             
         Returns:
             Statistics about the clustering process
@@ -1932,5 +1985,6 @@ class GraphRAGService:
             namespace=namespace if namespace is not None else "default", 
             index_name=index_name,
             engine_name=engine_name,
-            engine_type=engine_type
+            engine_type=engine_type,
+            graph_name=graph_name
         )

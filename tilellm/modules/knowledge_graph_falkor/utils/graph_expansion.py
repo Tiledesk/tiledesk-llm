@@ -32,7 +32,7 @@ class GraphExpander:
         Initialize graph expander.
 
         Args:
-            repository: GraphRepository instance for Neo4j queries
+            repository: GraphRepository instance for FalkorDB queries
         """
         self.repository = repository
 
@@ -44,7 +44,8 @@ class GraphExpander:
         namespace: Optional[str] = None,
         index_name: Optional[str] = None,
         relationship_types: Optional[List[str]] = None,
-        min_relationship_weight: float = 0.0
+        min_relationship_weight: float = 0.0,
+        graph_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Expand graph from seed nodes with adaptive hop count.
@@ -57,6 +58,7 @@ class GraphExpander:
             index_name: Optional index filter
             relationship_types: Optional list of relationship types to follow
             min_relationship_weight: Minimum weight threshold for relationships
+            graph_name: Optional graph name
 
         Returns:
             Dictionary with expanded nodes and relationships:
@@ -88,7 +90,9 @@ class GraphExpander:
 
         # Fetch seed nodes
         for seed_id in seed_node_ids:
-            node = await self.repository.find_node_by_id(seed_id)
+            node = await self.repository.find_node_by_id(node_id=seed_id,
+                                                         namespace=namespace,
+                                                         graph_name=graph_name)
             if node:
                 all_nodes[seed_id] = node
 
@@ -134,7 +138,8 @@ class GraphExpander:
             try:
                 results = await self.repository.execute_query(query=query,
                                                               parameters=params,
-                                                              namespace=namespace)
+                                                              namespace=namespace,
+                                                              graph_name=graph_name)
                 logger.debug(f"Expansion query returned {len(results)} results")
             except Exception as e:
                 logger.error(f"Error executing expansion query at hop {hop}: {e}", exc_info=True)

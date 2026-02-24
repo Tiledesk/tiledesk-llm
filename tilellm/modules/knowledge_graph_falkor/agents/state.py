@@ -17,6 +17,7 @@ class GraphSpecialistState(TypedDict):
     # Input
     question: str
     namespace: str
+    graph_name: Optional[str]  # Explicit graph name (overrides namespace for FalkorDB selection)
     chat_history: Optional[Dict[str, Any]]  # Chat history for context
     summary_text: Optional[str]  # Summarized conversation context
     max_history_messages: int  # Limit history turns

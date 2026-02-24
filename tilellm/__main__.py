@@ -1,6 +1,12 @@
 import os
 from contextlib import asynccontextmanager
 from typing import Union
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env early so all os.environ.get() calls pick up values from .env
+_env_path = Path(__file__).parent.parent / '.env'
+load_dotenv(_env_path)
 
 from fastapi import (FastAPI,
                      Depends,
@@ -13,7 +19,6 @@ import asyncio
 from redis.asyncio import Redis, from_url
 import aiohttp
 import json
-from dotenv import load_dotenv
 
 
 from tilellm.shared.timed_cache import TimedCache
@@ -67,7 +72,6 @@ from tilellm.controller.controller import (ask_with_memory,
 import logging
 
 import sys
-from pathlib import Path
 
 # 1. Trova il percorso del file corrente (__main__.py)
 current_file_path = Path(__file__).resolve()
@@ -86,11 +90,6 @@ sys.path.append(str(project_root))
 expiration_in_seconds = 48 * 60 * 60
 
 logger = logging.getLogger(__name__)
-
-# Load environment variables from .env file (if present)
-from pathlib import Path
-env_path = Path(__file__).parent.parent / '.env'
-load_dotenv(env_path)
 
 redis_url = os.environ.get("REDIS_URL")
 tilellm_role = os.environ.get("TILELLM_ROLE")
@@ -250,13 +249,29 @@ async def redis_consumer(app: FastAPI):
         # ✅ 3. Avvia il task di lettura
         reader_task = asyncio.create_task(reader(redis_client))
 
+        # ✅ 4. Avvia il broker Taskiq per l'invio di task (kicker side)
+        if ENABLE_TASKIQ and broker is not None:
+            try:
+                await broker.startup()
+                logger.info("TaskIQ broker started successfully")
+            except Exception as e:
+                logger.error(f"Failed to start TaskIQ broker: {e}")
+
         logger.info("App startup complete - Redis & FalkorDB ready")
 
         yield
 
     finally:
-        # ✅ 4. Cleanup ordinato allo shutdown
+        # ✅ 5. Cleanup ordinato allo shutdown
         logger.info("Shutting down Redis consumer...")
+
+        # Chiudi il broker Taskiq
+        if ENABLE_TASKIQ and broker is not None:
+            try:
+                await broker.shutdown()
+                logger.info("TaskIQ broker shut down")
+            except Exception as e:
+                logger.debug(f"TaskIQ broker shutdown error (ignored): {e}")
 
         # Cancella il task di lettura se attivo
         if 'reader_task' in locals() and not reader_task.done():

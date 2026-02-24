@@ -2,6 +2,7 @@ import io
 import os
 import base64
 import requests
+import logging
 from typing import Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import SecretStr
@@ -16,8 +17,16 @@ from tilellm.modules.task_executor.tasks import process_pdf_document_task
 from tilellm.modules.pdf_ocr.logic import process_pdf_document_with_embeddings
 from tilellm.shared.llm_config import serialize_with_secrets
 
+try:
+    from tilellm.modules.task_executor.broker import broker as _broker  # noqa: F401
+    TASKIQ_AVAILABLE = True
+except Exception:
+    TASKIQ_AVAILABLE = False
+
 ENABLE_TASKIQ = os.environ.get("ENABLE_TASKIQ", "false").lower() == "true"
-TASKIQ_AVAILABLE = True  # Assuming True since we import it, or could use try-except block like in KG
+ENABLE_TASKIQ = ENABLE_TASKIQ and TASKIQ_AVAILABLE
+
+logger = logging.getLogger(__name__)
 
 # Create router for this module
 router = APIRouter(
@@ -73,6 +82,7 @@ async def scrape_pdf(request: PDFScrapingRequest):
             config['id'] = job_id
             
             if ENABLE_TASKIQ and TASKIQ_AVAILABLE:
+                logger.info("TaskIQ enabled, queuing PDF processing task")
                 # Trigger Taskiq task
                 task_payload = serialize_with_secrets(config)
                 await process_pdf_document_task.kiq(
@@ -86,6 +96,7 @@ async def scrape_pdf(request: PDFScrapingRequest):
             else:
                 # Fallback: Process synchronously (blocking)
                 # Note: This will block the API response until processing finishes!
+                logger.info("TaskIQ disabled or unavailable, processing PDF synchronously")
                 # We need to construct the request object again or pass config
                 # process_pdf_document_with_embeddings expects 'request' object
                 

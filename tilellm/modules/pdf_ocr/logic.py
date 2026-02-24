@@ -157,7 +157,7 @@ async def process_pdf_document_with_embeddings(
         
         # Index tables to vector store if requested
         if question.index_tables_to_vector_store and question.include_tables and result and 'tables' in result:
-            namespace = question.namespace or "default"
+            namespace = question.namespace if question.namespace else "default"
             await _index_tables_to_vector_store(
                 repo=repo,
                 llm_embeddings=llm_embeddings,
@@ -165,12 +165,13 @@ async def process_pdf_document_with_embeddings(
                 doc_id=question.id,
                 namespace=namespace,
                 engine=question.engine,
-                sparse_encoder = question.sparse_encoder
+                sparse_encoder=question.sparse_encoder,
+                tags=question.tags if question.tags else None
             )
-        
+
         # Index images to vector store if requested
         if question.index_images_to_vector_store and question.include_images and result and 'images' in result:
-            namespace = question.namespace or "default"
+            namespace = question.namespace if question.namespace else "default"
             await _index_images_to_vector_store(
                 repo=repo,
                 llm_embeddings=llm_embeddings,
@@ -178,7 +179,8 @@ async def process_pdf_document_with_embeddings(
                 doc_id=question.id,
                 namespace=namespace,
                 engine=question.engine,
-                sparse_encoder=question.sparse_encoder
+                sparse_encoder=question.sparse_encoder,
+                tags=question.tags if question.tags else None
             )
         
         # Extract entities using GraphRAG if requested
@@ -197,7 +199,7 @@ async def process_pdf_document_with_embeddings(
 
         # After processing, index text chunks to vector store
         if question.include_text and result and 'text_elements' in result:
-            namespace = question.namespace or "default"
+            namespace = question.namespace if question.namespace else "default"
             await _index_text_chunks(
                 repo=repo,
                 llm_embeddings=llm_embeddings,
@@ -206,7 +208,8 @@ async def process_pdf_document_with_embeddings(
                 namespace=namespace,
                 engine=question.engine,
                 sparse_encoder=question.sparse_encoder,
-                hierarchy=result.get('hierarchy')
+                hierarchy=result.get('hierarchy'),
+                tags=question.tags if question.tags else None
             )
         
         # Ensure result is not None (should be dict)
@@ -519,7 +522,8 @@ async def _index_text_chunks(
     namespace: str,
     engine,
     sparse_encoder: Union[str, TEIConfig, None] = None,
-    hierarchy: Optional[Dict[str, Any]] = None
+    hierarchy: Optional[Dict[str, Any]] = None,
+    tags: Optional[List[str]] = None
 ):
     """
     Index text chunks to vector store.
@@ -532,6 +536,10 @@ async def _index_text_chunks(
             text_elements=text_elements,
             structure=hierarchy
         )
+        for doc in documents:
+            doc.metadata['namespace'] = namespace
+            if tags:
+                doc.metadata['tags'] = tags
     else:
         from langchain_core.documents import Document
         documents = []
@@ -539,16 +547,22 @@ async def _index_text_chunks(
             text = element.get('text', '')
             if not text or not text.strip():
                 continue
-            
+
+            meta = {
+                'id': doc_id,
+                'metadata_id': doc_id,
+                'doc_id': doc_id,
+                'page': element.get('page', 0),
+                'type': element.get('type', 'text'),
+                'chunk_type': 'text',
+                'source': f"docling_{doc_id}",
+                'namespace': namespace
+            }
+            if tags:
+                meta['tags'] = tags
             doc = Document(
                 page_content=text,
-                metadata={
-                    'doc_id': doc_id,
-                    'page': element.get('page', 0),
-                    'type': element.get('type', 'text'),
-                    'chunk_type': 'text',
-                    'source': f"docling_{doc_id}"
-                }
+                metadata=meta
             )
             documents.append(doc)
     
@@ -578,6 +592,7 @@ async def _index_tables_to_vector_store(
     namespace: str,
     engine,
     sparse_encoder: Union[str, TEIConfig, None] = None,
+    tags: Optional[List[str]] = None
 ):
     """
     Index table semantic descriptions to vector store.
@@ -598,18 +613,24 @@ async def _index_tables_to_vector_store(
             continue
         
         # Create document for vector store
+        meta = {
+            'id': doc_id,
+            'metadata_id': doc_id,
+            'doc_id': doc_id,
+            'table_id': table_id,
+            'type': 'table',
+            'chunk_type': 'table_description',
+            'page': table_data.get('page', 0),
+            'answerable_questions': str(table_data.get('answerable_questions', [])),
+            'columns': str(table_data.get('columns', [])),
+            'source': f"docling_{doc_id}",
+            'namespace': namespace
+        }
+        if tags:
+            meta['tags'] = tags
         doc = Document(
             page_content=semantic_desc,
-            metadata={
-                'doc_id': doc_id,
-                'table_id': table_id,
-                'type': 'table',
-                'chunk_type': 'table_description',
-                'page': table_data.get('page', 0),
-                'answerable_questions': table_data.get('answerable_questions', []),
-                'columns': table_data.get('columns', []),
-                'source': f"docling_{doc_id}"
-            }
+            metadata=meta
         )
         documents.append(doc)
     
@@ -638,7 +659,8 @@ async def _index_images_to_vector_store(
     doc_id: str,
     namespace: str,
     engine,
-    sparse_encoder: Union[str, TEIConfig, None] = None
+    sparse_encoder: Union[str, TEIConfig, None] = None,
+    tags: Optional[List[str]] = None
 ):
     """
     Index image captions to vector store.
@@ -657,18 +679,24 @@ async def _index_images_to_vector_store(
             continue
         
         # Create document for vector store
+        meta = {
+            'id': doc_id,
+            'metadata_id': doc_id,
+            'doc_id': doc_id,
+            'image_id': image_id,
+            'type': 'image',
+            'chunk_type': 'image_caption',
+            'page': image_data.get('page', 0),
+            'surrounding_text': image_data.get('surrounding_text', ''),
+            'path': image_data.get('path', ''),
+            'source': f"docling_{doc_id}",
+            'namespace': namespace
+        }
+        if tags:
+            meta['tags'] = tags
         doc = Document(
             page_content=caption,
-            metadata={
-                'doc_id': doc_id,
-                'image_id': image_id,
-                'type': 'image',
-                'chunk_type': 'image_caption',
-                'page': image_data.get('page', 0),
-                'surrounding_text': image_data.get('surrounding_text', ''),
-                'path': image_data.get('path'),
-                'source': f"docling_{doc_id}"
-            }
+            metadata=meta
         )
         documents.append(doc)
     
@@ -734,7 +762,7 @@ async def process_pdf_markdown_extraction(
         raise ValueError("Engine configuration is required for vector store access")
     
     doc_id = question.id
-    namespace = question.namespace or "default"
+    namespace = question.namespace if question.namespace else "default"
     
     logger.info(f"Starting LangGraph Markdown extraction for document {doc_id}")
     
@@ -792,17 +820,31 @@ async def process_pdf_markdown_extraction(
             include_heading_context=True
         )
         
+        # Build source metadata, including tags if provided
+        source_metadata = {
+            'id': doc_id,
+            'metadata_id': doc_id,
+            'doc_id': doc_id,
+            'source_type': 'markdown_extraction',
+            'has_images': len(images) > 0,
+            'has_tables': len(tables) > 0,
+            'num_pages': metadata.get('num_pages', 0),
+            'namespace': namespace
+        }
+        if question.tags:
+            source_metadata['tags'] = question.tags
+
         # Use semantic section-based chunking for better results
         documents = chunker.chunk_with_semantic_splitting(
             markdown_content=markdown_content,
             doc_id=doc_id,
-            source_metadata={
-                'source_type': 'markdown_extraction',
-                'has_images': len(images) > 0,
-                'has_tables': len(tables) > 0,
-                'num_pages': metadata.get('num_pages', 0)
-            }
+            source_metadata=source_metadata
         )
+
+        for doc in documents:
+            doc.metadata['namespace'] = namespace
+            if question.tags and 'tags' not in doc.metadata:
+                doc.metadata['tags'] = question.tags
         
         logger.info(f"Created {len(documents)} Markdown chunks for indexing")
         

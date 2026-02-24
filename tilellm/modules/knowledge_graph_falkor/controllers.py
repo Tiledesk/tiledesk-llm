@@ -7,6 +7,7 @@ import logging
 from fastapi import APIRouter, HTTPException, status, Query
 from typing import List, Union
 from pydantic import SecretStr
+from sympy import true
 
 from .models import Node, NodeUpdate, Relationship, RelationshipUpdate
 from .models.schemas import (
@@ -17,6 +18,8 @@ from .models.schemas import (
     AddDocumentRequest, AddDocumentResponse,
     GraphNetworkResponse, AsyncTaskResponse, TaskPollResponse, MultimodalSearchResponse
 )
+
+logger = logging.getLogger(__name__)
 
 # Import business logic
 from . import logic as kg_logic
@@ -39,15 +42,26 @@ try:
     )
     from tilellm.modules.task_executor.broker import broker
     TASKIQ_AVAILABLE = True
-except ImportError:
+except ImportError as  e:
+    logger.error(f"!!! ERRORE DI IMPORTAZIONE: {e}")
     TASKIQ_AVAILABLE = False
+    broker=None
+    task_falkor_add_document=None
+    task_falkor_louvain_cluster=None
+    task_falkor_leiden_cluster=None
+    task_falkor_community_analysis=None
+    task_falkor_graph_create=None
+    task_falkor_hierarchical_cluster=None
+
 
 ENABLE_TASKIQ = os.environ.get("ENABLE_TASKIQ", "false").lower() == "true"
 ENABLE_TASKIQ = ENABLE_TASKIQ and TASKIQ_AVAILABLE
 
+
+
 logger = logging.getLogger(__name__)
 
-
+logger.debug(f"TASKIQ_AVAILABLE: {TASKIQ_AVAILABLE} ENABLE_TASKIQ:{ENABLE_TASKIQ}")
 
 # ==================== ROUTER SETUP ====================
 router = APIRouter(

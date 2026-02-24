@@ -32,18 +32,34 @@ class BaseGraphRepository(ABC):
         pass
 
     @abstractmethod
+    async def ensure_indexes_for_graph(self, graph_name: str, node_labels: Optional[List[str]] = None):
+        """
+        Ensure that required indexes exist for a specific graph.
+        
+        Args:
+            graph_name: Name of the graph to ensure indexes for
+            node_labels: Optional list of node labels to create indexes for.
+                        If None, uses default entity types from the domain.
+        """
+        pass
+
+    @abstractmethod
     async def close(self):
         """Close the database connection pool."""
         pass
 
     @abstractmethod
-    async def execute_query(self, query: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    async def execute_query(self, query: str, parameters: Optional[Dict[str, Any]] = None,
+                            namespace: Optional[str] = None,
+                            graph_name: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Execute a Cypher/openCypher query and return results.
 
         Args:
             query: Cypher query string
             parameters: Optional query parameters
+            namespace: Optional namespace to select graph (fallback if graph_name not set)
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             List of result records as dictionaries
@@ -55,17 +71,19 @@ class BaseGraphRepository(ABC):
     @abstractmethod
     async def create_node(self, node: Node, namespace: Optional[str] = None,
                    index_name: Optional[str] = None, engine_name: Optional[str] = None,
-                   engine_type: Optional[str] = None, metadata_id: Optional[str] = None) -> Node:
+                   engine_type: Optional[str] = None, metadata_id: Optional[str] = None,
+                   graph_name: Optional[str] = None) -> Node:
         """
         Create a new node in the graph.
 
         Args:
             node: Node object with label and properties
-            namespace: Optional namespace to partition the graph
+            namespace: Optional namespace to partition the graph (used as node property)
             index_name: Optional index_name (collection name) to partition the graph
             engine_name: Optional engine name (e.g., 'pinecone', 'qdrant') to partition the graph
             engine_type: Optional engine type (e.g., 'pod', 'serverless', 'local', 'cloud')
             metadata_id: Optional metadata ID from vector store chunks for cleanup
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             Created node with generated ID
@@ -73,13 +91,14 @@ class BaseGraphRepository(ABC):
         pass
 
     @abstractmethod
-    async def find_node_by_id(self, node_id: str, namespace: Optional[str] = None) -> Optional[Node]:
+    async def find_node_by_id(self, node_id: str, namespace: Optional[str] = None, graph_name: Optional[str] = None) -> Optional[Node]:
         """
         Find a node by its internal database ID.
 
         Args:
             node_id: Internal node ID
             namespace: Optional namespace to search in (for multi-graph isolation)
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             Node if found, None otherwise
@@ -88,7 +107,8 @@ class BaseGraphRepository(ABC):
 
     @abstractmethod
     async def find_nodes_by_label(self, label: str, limit: int = 100,
-                           namespace: Optional[str] = None, index_name: Optional[str] = None) -> List[Node]:
+                           namespace: Optional[str] = None, index_name: Optional[str] = None,
+                           graph_name: Optional[str] = None) -> List[Node]:
         """
         Find all nodes with a specific label.
 
@@ -97,6 +117,7 @@ class BaseGraphRepository(ABC):
             limit: Maximum number of nodes to return
             namespace: Optional namespace to filter nodes
             index_name: Optional index_name (collection name) to filter nodes
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             List of matching nodes
@@ -106,7 +127,7 @@ class BaseGraphRepository(ABC):
     @abstractmethod
     async def find_nodes_by_property(self, label: str, property_key: str, property_value: Any,
                               limit: int = 100, namespace: Optional[str] = None,
-                              index_name: Optional[str] = None) -> List[Node]:
+                              index_name: Optional[str] = None, graph_name: Optional[str] = None) -> List[Node]:
         """
         Find nodes by a specific property value.
 
@@ -117,6 +138,7 @@ class BaseGraphRepository(ABC):
             limit: Maximum number of nodes to return
             namespace: Optional namespace to filter nodes
             index_name: Optional index_name (collection name) to filter nodes
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             List of matching nodes
@@ -126,7 +148,8 @@ class BaseGraphRepository(ABC):
     @abstractmethod
     async def find_nodes_by_source_id(self, source_id: str, limit: int = 10,
                                      namespace: Optional[str] = None,
-                                     index_name: Optional[str] = None) -> List[Node]:
+                                     index_name: Optional[str] = None,
+                                     graph_name: Optional[str] = None) -> List[Node]:
         """
         Find nodes that reference a specific source ID (vector store chunk ID).
         Checks 'chunk_id', 'metadata_id', and 'source_ids' list property.
@@ -136,6 +159,7 @@ class BaseGraphRepository(ABC):
             limit: Maximum number of nodes to return
             namespace: Optional namespace to filter nodes
             index_name: Optional index_name (collection name) to filter nodes
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             List of matching nodes
@@ -145,7 +169,7 @@ class BaseGraphRepository(ABC):
     @abstractmethod
     async def update_node(self, node_id: str, label: Optional[str] = None,
                    properties: Optional[Dict[str, Any]] = None,
-                   namespace: Optional[str] = None) -> Optional[Node]:
+                   namespace: Optional[str] = None, graph_name: Optional[str] = None) -> Optional[Node]:
         """
         Update a node's label and/or properties.
 
@@ -154,6 +178,7 @@ class BaseGraphRepository(ABC):
             label: New label (optional)
             properties: New properties to set/update (optional)
             namespace: Optional namespace where the node exists (for multi-graph isolation)
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             Updated node if found, None otherwise
@@ -161,7 +186,8 @@ class BaseGraphRepository(ABC):
         pass
 
     @abstractmethod
-    async def delete_node(self, node_id: str, detach: bool = True, namespace: Optional[str] = None) -> bool:
+    async def delete_node(self, node_id: str, detach: bool = True, namespace: Optional[str] = None,
+                         graph_name: Optional[str] = None) -> bool:
         """
         Delete a node from the graph.
 
@@ -169,6 +195,7 @@ class BaseGraphRepository(ABC):
             node_id: Internal node ID
             detach: If True, delete all relationships before deleting node
             namespace: Optional namespace where the node exists (for multi-graph isolation)
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             True if deleted, False if not found
@@ -180,17 +207,19 @@ class BaseGraphRepository(ABC):
     @abstractmethod
     async def create_relationship(self, relationship: Relationship, namespace: Optional[str] = None,
                            index_name: Optional[str] = None, engine_name: Optional[str] = None,
-                           engine_type: Optional[str] = None, metadata_id: Optional[str] = None) -> Relationship:
+                           engine_type: Optional[str] = None, metadata_id: Optional[str] = None,
+                           graph_name: Optional[str] = None) -> Relationship:
         """
         Create a relationship between two nodes.
 
         Args:
             relationship: Relationship object with source, target, type, and properties
-            namespace: Optional namespace to partition the graph
+            namespace: Optional namespace to partition the graph (used as relationship property)
             index_name: Optional index_name (collection name) to partition the graph
             engine_name: Optional engine name (e.g., 'pinecone', 'qdrant') to partition the graph
             engine_type: Optional engine type (e.g., 'pod', 'serverless')
             metadata_id: Optional metadata ID from vector store chunks for cleanup
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             Created relationship with generated ID
@@ -198,13 +227,15 @@ class BaseGraphRepository(ABC):
         pass
 
     @abstractmethod
-    async def find_relationship_by_id(self, relationship_id: str, namespace: Optional[str] = None) -> Optional[Relationship]:
+    async def find_relationship_by_id(self, relationship_id: str, namespace: Optional[str] = None,
+                                     graph_name: Optional[str] = None) -> Optional[Relationship]:
         """
         Find a relationship by its internal database ID.
 
         Args:
             relationship_id: Internal relationship ID
             namespace: Optional namespace to search in (for multi-graph isolation)
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             Relationship if found, None otherwise
@@ -213,7 +244,7 @@ class BaseGraphRepository(ABC):
 
     @abstractmethod
     async def find_relationships_by_node(self, node_id: str, direction: str = "both",
-                                   namespace: Optional[str] = None) -> List[Relationship]:
+                                   namespace: Optional[str] = None, graph_name: Optional[str] = None) -> List[Relationship]:
         """
         Find all relationships connected to a node.
 
@@ -221,6 +252,7 @@ class BaseGraphRepository(ABC):
             node_id: Internal node ID
             direction: "incoming", "outgoing", or "both"
             namespace: Optional namespace to search in (for multi-graph isolation)
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             List of relationships
@@ -230,7 +262,7 @@ class BaseGraphRepository(ABC):
     @abstractmethod
     async def update_relationship(self, relationship_id: str, rel_type: Optional[str] = None,
                            properties: Optional[Dict[str, Any]] = None,
-                           namespace: Optional[str] = None) -> Optional[Relationship]:
+                           namespace: Optional[str] = None, graph_name: Optional[str] = None) -> Optional[Relationship]:
         """
         Update a relationship's type and/or properties.
 
@@ -239,6 +271,7 @@ class BaseGraphRepository(ABC):
             rel_type: New relationship type (may require recreation)
             properties: New properties to set/update
             namespace: Optional namespace where the relationship exists (for multi-graph isolation)
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             Updated relationship if found, None otherwise
@@ -246,13 +279,15 @@ class BaseGraphRepository(ABC):
         pass
 
     @abstractmethod
-    async def delete_relationship(self, relationship_id: str, namespace: Optional[str] = None) -> bool:
+    async def delete_relationship(self, relationship_id: str, namespace: Optional[str] = None,
+                                graph_name: Optional[str] = None) -> bool:
         """
         Delete a relationship from the graph.
 
         Args:
             relationship_id: Internal relationship ID
             namespace: Optional namespace where the relationship exists (for multi-graph isolation)
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             True if deleted, False if not found
@@ -266,18 +301,20 @@ class BaseGraphRepository(ABC):
         index_name: Optional[str] = None,
         engine_name: Optional[str] = None,
         engine_type: Optional[str] = None,
-        metadata_id: Optional[str] = None
+        metadata_id: Optional[str] = None,
+        graph_name: Optional[str] = None
     ) -> Dict[str, int]:
         """
         Delete all nodes (Entity and CommunityReport) that match the specified metadata.
         Also deletes all relationships connected to those nodes.
 
         Args:
-            namespace: Namespace to filter nodes
+            namespace: Namespace to filter nodes (property filter)
             index_name: Index name/collection to filter nodes
             engine_name: Engine name (e.g., 'pinecone', 'qdrant')
             engine_type: Engine type (e.g., 'pod', 'serverless')
             metadata_id: Metadata ID from vector store chunks
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             Dictionary with deletion statistics
@@ -308,7 +345,8 @@ class BaseGraphRepository(ABC):
 
     @abstractmethod
     async def search_nodes_by_text(self, search_text: str, limit: int = 10,
-                            namespace: Optional[str] = None, index_name: Optional[str] = None) -> List[Node]:
+                            namespace: Optional[str] = None, index_name: Optional[str] = None,
+                            graph_name: Optional[str] = None) -> List[Node]:
         """
         Search nodes using a full-text index.
 
@@ -317,6 +355,7 @@ class BaseGraphRepository(ABC):
             limit: Maximum number of nodes to return.
             namespace: Optional namespace to filter nodes
             index_name: Optional index_name (collection name) to filter nodes
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             List of matching nodes.
@@ -325,7 +364,8 @@ class BaseGraphRepository(ABC):
 
     @abstractmethod
     async def search_relationships_by_text(self, search_text: str, limit: int = 10,
-                                    namespace: Optional[str] = None, index_name: Optional[str] = None) -> List[Dict[str, Any]]:
+                                    namespace: Optional[str] = None, index_name: Optional[str] = None,
+                                    graph_name: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Search relationships using a full-text index.
 
@@ -334,6 +374,7 @@ class BaseGraphRepository(ABC):
             limit: Maximum number of relationships to return.
             namespace: Optional namespace to filter relationships
             index_name: Optional index_name (collection name) to filter relationships
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             List of matching relationships with node info.
@@ -341,13 +382,16 @@ class BaseGraphRepository(ABC):
         pass
 
     @abstractmethod
-    async def search_community_reports(self, search_text: str, limit: int = 5) -> List[Node]:
+    async def search_community_reports(self, search_text: str, limit: int = 5,
+                                      namespace: Optional[str] = None, graph_name: Optional[str] = None) -> List[Node]:
         """
         Search community reports by text.
 
         Args:
             search_text: Text to search for
             limit: Maximum number of reports to return
+            namespace: Optional namespace to filter reports
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             List of matching community report nodes
@@ -358,7 +402,8 @@ class BaseGraphRepository(ABC):
     async def get_all_nodes_and_relationships(self, namespace: Optional[str] = None,
                                        index_name: Optional[str] = None,
                                        engine_name: Optional[str] = None,
-                                       engine_type: Optional[str] = None) -> Dict[str, Any]:
+                                       engine_type: Optional[str] = None,
+                                       graph_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Fetch the entire graph, optionally filtered by namespace, index_name, engine_name and engine_type.
 
@@ -367,6 +412,7 @@ class BaseGraphRepository(ABC):
             index_name: Optional index_name (collection name) to filter nodes
             engine_name: Optional engine name (e.g., 'pinecone', 'qdrant') to filter nodes
             engine_type: Optional engine type (e.g., 'pod', 'serverless') to filter nodes
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             Dictionary with filtered nodes and relationships
@@ -374,7 +420,8 @@ class BaseGraphRepository(ABC):
         pass
 
     @abstractmethod
-    async def get_community_network(self, namespace: str, index_name: str, limit: int = 1000) -> Dict[str, Any]:
+    async def get_community_network(self, namespace: str, index_name: str, limit: int = 1000,
+                                   graph_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Fetch the community graph (nodes + BELONGS_TO_COMMUNITY relationships).
 
@@ -382,6 +429,7 @@ class BaseGraphRepository(ABC):
             namespace: Namespace to filter
             index_name: index_name to filter
             limit: Maximum number of paths to return
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             Dictionary with nodes and relationships

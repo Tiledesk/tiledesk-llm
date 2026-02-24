@@ -145,6 +145,7 @@ def create_nodes(repository, llm):
         """
         cypher_query = state["cypher_query"]
         namespace = state["namespace"]
+        graph_name = state.get("graph_name")
 
         # Security check: Only read operations
         query_upper = cypher_query.strip().upper()
@@ -177,7 +178,7 @@ def create_nodes(repository, llm):
             logger.info(f"Executing Cypher: {cypher_query} on namespace: {namespace}")
 
             # Execute query via repository
-            results = await repository._execute_query(cypher_query, {}, namespace=namespace)
+            results = await repository._execute_query(cypher_query, {}, namespace=namespace, graph_name=graph_name)
 
             result_count = len(results) if results else 0
 

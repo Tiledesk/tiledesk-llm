@@ -51,7 +51,8 @@ class AgenticQAService:
         contextualize_prompt: bool = False,
         include_history_in_prompt: bool = True,
         max_history_messages: int = 10,
-        conversation_summary: bool = False
+        conversation_summary: bool = False,
+        graph_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Process a natural language query using the Graph Specialist Agent.
@@ -120,7 +121,8 @@ class AgenticQAService:
             chat_history_dict=chat_history_dict,
             creation_prompt=creation_prompt,
             max_history_messages=max_history_messages,
-            summary_text=summary_text
+            summary_text=summary_text,
+            graph_name=graph_name
         )
 
         # Add contextualization info to result

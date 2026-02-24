@@ -13,7 +13,7 @@ try:
 except ImportError:
     IGRAPH_AVAILABLE = False
 
-from tilellm.modules.knowledge_graph_falkor.repository import AsyncFalkorGraphRepository
+from tilellm.store.graph import BaseGraphRepository
 
 # Supponiamo tu abbia un client Minio o un repository per i file
 # from ..utils.minio_client import minio_client
@@ -22,19 +22,20 @@ logger = logging.getLogger(__name__)
 
 
 class ClusterService:
-    def __init__(self, repository: AsyncFalkorGraphRepository, llm=None, minio_client=None):
+    def __init__(self, repository: BaseGraphRepository, llm=None, minio_client=None):
         self.repository = repository
         self.llm = llm
         self.minio_client = minio_client
         self.semaphore = asyncio.Semaphore(10)  # Limita le chiamate LLM contemporanee
 
-    async def perform_clustering(self, level: int = 0, namespace: str = "default", index_name: Optional[str] = None, engine_name: Optional[str] = None, engine_type: Optional[str] = None):
+    async def perform_clustering(self, level: int = 0, namespace: str = "default", index_name: Optional[str] = None, engine_name: Optional[str] = None, engine_type: Optional[str] = None, graph_name: Optional[str] = None):
         logger.info("Fetching graph data from Neo4j...")
         graph_data = await  self.repository.get_all_nodes_and_relationships(
             namespace=namespace,
             index_name=index_name,
             engine_name=engine_name,
-            engine_type=engine_type)
+            engine_type=engine_type,
+            graph_name=graph_name)
 
         # Trasformiamo in DataFrame per usare DuckDB come motore di supporto
         df_nodes = pd.DataFrame(graph_data["nodes"])
@@ -80,7 +81,8 @@ class ClusterService:
                         index_name=index_name,
                         engine_name=None,
                         engine_type=None,
-                        metadata_id=None
+                        metadata_id=None,
+                        graph_name=graph_name
                     )
                 except Exception as e:
                     logger.error(f"Failed to save report for community {report.get('community_id')} to Neo4j: {e}")
@@ -96,7 +98,7 @@ class ClusterService:
             "communities_detected": len(communities_list)
         }
 
-    async def perform_clustering_leiden(self, level: int = 0, namespace: str = "default", index_name: Optional[str] = None, engine_name: Optional[str] = None, engine_type: Optional[str] = None, resolution: float = 1.0):
+    async def perform_clustering_leiden(self, level: int = 0, namespace: str = "default", index_name: Optional[str] = None, engine_name: Optional[str] = None, engine_type: Optional[str] = None, resolution: float = 1.0, graph_name: Optional[str] = None):
         """
         Esegue il clustering usando Leiden (via igraph) per una maggiore efficienza e modularità.
         Supporta 'resolution' per il clustering gerarchico (1.0 = fine/specifico, <1.0 = coarse/generale).
@@ -107,7 +109,7 @@ class ClusterService:
         logger.info(f"Starting Leiden clustering for namespace: {namespace}, level: {level}, resolution: {resolution}")
 
         # 1. Fetch dei dati (raw dicts, no Pandas overhead)
-        graph_data = await self.repository.get_all_nodes_and_relationships(namespace=namespace, index_name=index_name, engine_name=engine_name, engine_type=engine_type)
+        graph_data = await self.repository.get_all_nodes_and_relationships(namespace=namespace, index_name=index_name, engine_name=engine_name, engine_type=engine_type, graph_name=graph_name)
         nodes = graph_data["nodes"]
         rels = graph_data["relationships"]
 
@@ -186,7 +188,8 @@ class ClusterService:
                         index_name=index_name,
                         engine_name=None,
                         engine_type=None,
-                        metadata_id=None
+                        metadata_id=None,
+                        graph_name=graph_name
                     )
                 except Exception as e:
                     logger.error(f"Failed to save report {report.get('community_id')} to Neo4j: {e}")

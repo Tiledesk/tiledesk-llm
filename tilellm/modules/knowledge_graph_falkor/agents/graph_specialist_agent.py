@@ -119,7 +119,8 @@ class GraphSpecialistAgent:
         creation_prompt: Optional[str] = None,
         max_retries: int = 3,
         max_history_messages: int = 10,
-        summary_text: Optional[str] = None
+        summary_text: Optional[str] = None,
+        graph_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Process a natural language query against the knowledge graph.
@@ -136,6 +137,7 @@ class GraphSpecialistAgent:
             max_retries: Maximum number of query generation retries
             max_history_messages: Maximum number of history turns to consider
             summary_text: Optional summary of older conversation
+            graph_name: Graph name
 
         Returns:
             Dictionary with keys:
@@ -148,6 +150,7 @@ class GraphSpecialistAgent:
         initial_state: GraphSpecialistState = {
             "question": question,
             "namespace": namespace,
+            "graph_name": graph_name,
             "chat_history": chat_history_dict,
             "summary_text": summary_text,
             "max_history_messages": max_history_messages,

@@ -12,7 +12,7 @@ from cleo.ui import question
 from tilellm.models.schemas import RepositoryEngine
 from tilellm.models.schemas.multimodal_content import TextContent
 from tilellm.shared.utility import inject_repo_async, inject_llm_chat_async, inject_llm_async, get_service_config
-from .models import Node, NodeUpdate, Relationship, RelationshipUpdate
+from tilellm.modules.knowledge_graph.models import Node, NodeUpdate, Relationship, RelationshipUpdate
 from .models.schemas import (
     GraphQARequest, GraphCreateRequest, GraphQAAdvancedRequest, GraphClusterRequest, AddDocumentRequest
 )
@@ -314,6 +314,8 @@ async def create_graph(
         graph_rag_service=graph_rag_service
     )
     
+    graph_name = request.graph_db_name
+    
     return await community_service.create_community_graph(
         namespace=request.namespace,
         engine=request.engine,
@@ -325,7 +327,8 @@ async def create_graph(
         limit=request.limit or 100,
         index_name=request.engine.index_name,
         overwrite=request.overwrite or False,
-        import_to_graph=True
+        import_to_graph=True,
+        graph_name=graph_name
     )
 
 @inject_llm_async
@@ -359,6 +362,7 @@ async def cluster_graph_louvain(
     return await community_service.generate_community_reports(
         namespace=request.namespace,
         index_name=request.engine.index_name if hasattr(request.engine, "index_name") else None,
+        graph_name=request.graph_db_name,
         llm=chat_model,
         vector_store_repo=repo,
         llm_embeddings=llm_embeddings,
@@ -397,6 +401,7 @@ async def cluster_graph_leiden(
     return await community_service.generate_community_reports_leiden(
         namespace=request.namespace,
         index_name=request.engine.index_name if hasattr(request.engine, "index_name") else None,
+        graph_name=request.graph_db_name,
         llm=chat_model,
         vector_store_repo=repo,
         llm_embeddings=llm_embeddings,
@@ -435,6 +440,7 @@ async def cluster_graph_hierarchical(
     return await community_service.generate_hierarchical_reports(
         namespace=request.namespace,
         index_name=request.engine.index_name if hasattr(request.engine, 'index_name') else None,
+        graph_name=request.graph_db_name,
         sparse_encoder=request.sparse_encoder,
         llm=llm,
         vector_store_repo=repo,
@@ -498,7 +504,8 @@ async def query_graph(
         contextualize_prompt=request.contextualize_prompt,
         include_history_in_prompt=request.include_history_in_prompt,
         max_history_messages=request.max_history_messages,
-        conversation_summary=request.conversation_summary
+        conversation_summary=request.conversation_summary,
+        graph_name=request.graph_db_name
     )
 
 @inject_llm_chat_async
@@ -550,7 +557,8 @@ async def context_fusion_graph_search(
         contextualize_prompt=request.contextualize_prompt,
         include_history_in_prompt=request.include_history_in_prompt,
         max_history_messages=request.max_history_messages,
-        conversation_summary=request.conversation_summary
+        conversation_summary=request.conversation_summary,
+        graph_name=request.graph_db_name
     )
 
 # ==================== MULTIMODAL & ANALYSIS LOGIC ====================
@@ -706,7 +714,8 @@ async def advanced_qa_search(
         contextualize_prompt=request.contextualize_prompt,
         include_history_in_prompt=request.include_history_in_prompt,
         max_history_messages=request.max_history_messages,
-        conversation_summary=request.conversation_summary
+        conversation_summary=request.conversation_summary,
+        graph_name=request.graph_db_name
     )
 
 
@@ -749,5 +758,6 @@ async def agentic_qa_search(
         contextualize_prompt=request.contextualize_prompt,
         include_history_in_prompt=request.include_history_in_prompt,
         max_history_messages=request.max_history_messages,
-        conversation_summary=request.conversation_summary
+        conversation_summary=request.conversation_summary,
+        graph_name=request.graph_db_name
     )

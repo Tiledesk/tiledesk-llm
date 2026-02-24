@@ -158,7 +158,8 @@ class CommunityGraphService:
         import_to_graph: bool = True,
         save_to_minio: bool = True,
         timestamp: Optional[str] = None,
-        cleanup_before: bool = True
+        cleanup_before: bool = True,
+        graph_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Create a knowledge graph with community reports from vector store chunks.
@@ -167,6 +168,7 @@ class CommunityGraphService:
             namespace: Base namespace for the graph
             engine: Engine configuration
             creation_prompt: Creation prompt
+            graph_name: Optional graph name (overrides namespace for graph selection)
             vector_store_repo: Vector store repository
             llm: LLM instance for extraction and report generation
             llm_embeddings: Embedding model
@@ -225,7 +227,8 @@ class CommunityGraphService:
                     llm=llm,
                     index_name=index_name,
                     overwrite=overwrite,
-                    engine_type=engine_type
+                    engine_type=engine_type,
+                    graph_name=graph_name
                 )
                 logger.info(f"Imported {import_stats.get('nodes_created', 0)} nodes and "
                            f"{import_stats.get('relationships_created', 0)} relationships")
@@ -236,6 +239,7 @@ class CommunityGraphService:
             cluster_stats = await self.generate_hierarchical_reports(
                 namespace=namespace,
                 index_name=index_name,
+                graph_name=graph_name,
                 sparse_encoder=sparse_encoder,
                 output_dir=output_dir,
                 save_to_minio=save_to_minio,
@@ -270,6 +274,7 @@ class CommunityGraphService:
         self,
         namespace: str,
         index_name: Optional[str] = None,
+        graph_name: Optional[str] = None,
         sparse_encoder: Union[str, TEIConfig, None] = None,
         output_dir: Optional[str] = None,
         save_to_minio: bool = True,
@@ -303,35 +308,47 @@ class CommunityGraphService:
         if isinstance(sparse_encoder, str) and sparse_encoder == "":
             sparse_encoder = None
 
+        # Validate required parameters
+        if engine is None:
+            raise ValueError("Engine configuration is required for community report generation")
+        assert engine is not None  # For type checking
+
+        # Resolve graph name once, before cleanup and clustering
+        graph_name_to_use = graph_name if graph_name is not None else namespace
+
         # Perform cleanup before clustering if enabled
         if cleanup_before and vector_store_repo and engine:
             cleanup_stats = await self.cleanup_before_clustering(
                 namespace=namespace,
                 index_name=index_name,
                 vector_store_repo=vector_store_repo,
-                engine=engine
+                engine=engine,
+                graph_name=graph_name_to_use
             )
             logger.info(f"Cleanup stats: {cleanup_stats}")
         elif overwrite and vector_store_repo and engine:
             # Backward compatibility: if overwrite=True but cleanup_before=False,
             # only clear vector store (old behavior)
-            await self._clear_existing_reports(namespace, vector_store_repo, engine)
+            await self._clear_existing_reports(namespace, vector_store_repo, engine, graph_name=graph_name_to_use)
         if self.graph_service is None:
             raise RuntimeError("GraphService not initialized")
-        
+
         repo = self.graph_service._get_repository()
         llm_to_use = llm or (self.graph_rag_service.llm if self.graph_rag_service else None) or self.llm
-        
+
         if llm_to_use is None:
              raise RuntimeError("LLM not provided")
-             
+
         cluster_service = ClusterService(repository=repo, llm=llm_to_use)
-        
+
+        # Engine is guaranteed non‑None after validation
+        assert engine is not None
+
         levels_config = { 0: 1.2, 1: 0.8, 2: 0.5 }
-        
+
         all_reports = []
         total_communities = 0
-        
+
         for level, resolution in levels_config.items():
             logger.info(f"Generating reports for Level {level} (Resolution {resolution})")
             stats = await cluster_service.perform_clustering_leiden(
@@ -340,7 +357,8 @@ class CommunityGraphService:
                 index_name=index_name,
                 engine_name=engine.name,
                 engine_type=engine.type, #if engine.name=="pinecone" else engine.deployment,
-                resolution=resolution
+                resolution=resolution,
+                graph_name=graph_name_to_use
             )
             if stats.get("reports"):
                 all_reports.extend(stats["reports"])
@@ -388,8 +406,8 @@ class CommunityGraphService:
                         )
                     )
 
-                # Use a dedicated namespace for reports
-                report_namespace = f"{namespace}-reports"
+                # Use a dedicated namespace for reports, keyed by graph name
+                report_namespace = f"{graph_name_to_use}-reports"
 
                 # Add documents to the vector store (using aadd_documents)
                 await vector_store_repo.aadd_documents(
@@ -411,28 +429,31 @@ class CommunityGraphService:
         }
         
         return await self._process_reports_and_export(
-            combined_stats, namespace, index_name, output_dir, save_to_minio, timestamp, repo, engine
+            combined_stats, namespace, index_name, output_dir, save_to_minio, timestamp, repo, engine, graph_name=graph_name_to_use
         )
 
     async def _clear_existing_reports(
         self,
         namespace: str,
         vector_store_repo=None,
-        engine=None
+        engine=None,
+        graph_name: Optional[str] = None
     ):
         """
         Clear existing community reports from vector store.
 
         Args:
-            namespace: Base namespace (reports are stored in {namespace}-reports)
+            namespace: Base namespace for the graph
             vector_store_repo: Vector store repository instance
             engine: Engine configuration
+            graph_name: FalkorDB graph name (used to build the report namespace)
         """
         if not vector_store_repo or not engine:
             logger.warning("Cannot clear existing reports: vector_store_repo or engine not provided")
             return
 
-        report_namespace = f"{namespace}-reports"
+        graph_name_to_use = graph_name if graph_name else namespace
+        report_namespace = f"{graph_name_to_use}-reports"
         logger.info(f"Clearing existing reports from namespace: {report_namespace}")
 
         namespace_to_delete = RepositoryNamespace(
@@ -458,7 +479,8 @@ class CommunityGraphService:
         namespace: str,
         index_name: Optional[str],
         vector_store_repo,
-        engine: Engine
+        engine: Engine,
+        graph_name: Optional[str] = None
     ) -> Dict[str, int]:
         """
         Clean up existing community reports before regenerating clusters.
@@ -487,10 +509,11 @@ class CommunityGraphService:
             "nodes_deleted": 0
         }
 
-        # 1. Clean Vector Store (delete {namespace}-reports namespace)
+        # 1. Clean Vector Store (delete {graph_name}-reports namespace)
         if vector_store_repo and engine:
             try:
-                report_namespace = f"{namespace}-reports"
+                _graph_name_to_use = graph_name if graph_name else namespace
+                report_namespace = f"{_graph_name_to_use}-reports"
                 logger.info(f"Deleting vector store namespace: {report_namespace}")
 
                 namespace_to_delete = RepositoryNamespace(
@@ -514,21 +537,32 @@ class CommunityGraphService:
             try:
                 repo = self.graph_service._get_repository()
 
+                # Build dynamic WHERE conditions to avoid FalkorDB null-parameter issues
+                # ($param IS NULL) is unreliable in FalkorDB when param=None
+                where_parts = []
+                filter_params = {}
+                if namespace is not None:
+                    where_parts.append("c.namespace = $namespace")
+                    filter_params["namespace"] = namespace
+                if index_name is not None:
+                    where_parts.append("c.index_name = $index_name")
+                    filter_params["index_name"] = index_name
+                where_clause = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
                 # Count and delete BELONGS_TO_COMMUNITY relationships
                 logger.info("Deleting BELONGS_TO_COMMUNITY relationships...")
 
-                # Count relationships first
-                count_rels_query = """
+                count_rels_query = f"""
                 MATCH (e)-[r:BELONGS_TO_COMMUNITY]->(c:CommunityReport)
-                WHERE ($namespace IS NULL OR c.namespace = $namespace)
-                AND ($index_name IS NULL OR c.index_name = $index_name)
+                {where_clause}
                 RETURN count(r) as count
                 """
 
                 count_result = await repo._execute_query(
                     count_rels_query,
-                    {"namespace": namespace, "index_name": index_name},
-                    namespace=namespace
+                    filter_params,
+                    namespace=namespace,
+                    graph_name=graph_name
                 )
 
                 if count_result and len(count_result) > 0:
@@ -536,36 +570,34 @@ class CommunityGraphService:
                     stats["relationships_deleted"] = rels_count
                     logger.info(f"Found {rels_count} BELONGS_TO_COMMUNITY relationships to delete")
 
-                # Now delete them
-                delete_rels_query = """
+                delete_rels_query = f"""
                 MATCH (e)-[r:BELONGS_TO_COMMUNITY]->(c:CommunityReport)
-                WHERE ($namespace IS NULL OR c.namespace = $namespace)
-                AND ($index_name IS NULL OR c.index_name = $index_name)
+                {where_clause}
                 DELETE r
                 """
 
                 await repo._execute_query(
                     delete_rels_query,
-                    {"namespace": namespace, "index_name": index_name},
-                    namespace=namespace
+                    filter_params,
+                    namespace=namespace,
+                    graph_name=graph_name
                 )
                 logger.info(f"Deleted {stats['relationships_deleted']} BELONGS_TO_COMMUNITY relationships")
 
                 # Delete CommunityReport nodes
                 logger.info("Deleting CommunityReport nodes...")
 
-                # Count nodes first
-                count_nodes_query = """
+                count_nodes_query = f"""
                 MATCH (c:CommunityReport)
-                WHERE ($namespace IS NULL OR c.namespace = $namespace)
-                AND ($index_name IS NULL OR c.index_name = $index_name)
+                {where_clause}
                 RETURN count(c) as count
                 """
 
                 count_result = await repo._execute_query(
                     count_nodes_query,
-                    {"namespace": namespace, "index_name": index_name},
-                    namespace=namespace
+                    filter_params,
+                    namespace=namespace,
+                    graph_name=graph_name
                 )
 
                 if count_result and len(count_result) > 0:
@@ -573,18 +605,17 @@ class CommunityGraphService:
                     stats["nodes_deleted"] = nodes_count
                     logger.info(f"Found {nodes_count} CommunityReport nodes to delete")
 
-                # Delete nodes
-                delete_nodes_query = """
+                delete_nodes_query = f"""
                 MATCH (c:CommunityReport)
-                WHERE ($namespace IS NULL OR c.namespace = $namespace)
-                AND ($index_name IS NULL OR c.index_name = $index_name)
-                DELETE c
+                {where_clause}
+                DETACH DELETE c
                 """
 
                 await repo._execute_query(
                     delete_nodes_query,
-                    {"namespace": namespace, "index_name": index_name},
-                    namespace=namespace
+                    filter_params,
+                    namespace=namespace,
+                    graph_name=graph_name
                 )
                 logger.info(f"Deleted {stats['nodes_deleted']} CommunityReport nodes")
 
@@ -600,6 +631,7 @@ class CommunityGraphService:
         self,
         namespace: str,
         index_name: Optional[str] = None,
+        graph_name: Optional[str] = None,
         output_dir: Optional[str] = None,
         save_to_minio: bool = True,
         timestamp: Optional[str] = None,
@@ -627,33 +659,41 @@ class CommunityGraphService:
             overwrite: Deprecated - use cleanup_before instead (kept for backward compatibility)
             cleanup_before: If True, performs full cleanup (vector store + graph) before regenerating (default: True)
         """
+        # Validate required parameters
+        if engine is None:
+            raise ValueError("Engine configuration is required for community report generation")
+
+        # Resolve graph name once, before cleanup and clustering
+        graph_name_to_use = graph_name if graph_name is not None else namespace
+
         # Perform cleanup before clustering if enabled
         if cleanup_before and vector_store_repo and engine:
             cleanup_stats = await self.cleanup_before_clustering(
                 namespace=namespace,
                 index_name=index_name,
                 vector_store_repo=vector_store_repo,
-                engine=engine
+                engine=engine,
+                graph_name=graph_name_to_use
             )
             logger.info(f"Cleanup stats: {cleanup_stats}")
         elif overwrite and vector_store_repo and engine:
             # Backward compatibility: if overwrite=True but cleanup_before=False,
             # only clear vector store (old behavior)
-            await self._clear_existing_reports(namespace, vector_store_repo, engine)
+            await self._clear_existing_reports(namespace, vector_store_repo, engine, graph_name=graph_name_to_use)
         # 3. Perform clustering to generate community reports
         if self.graph_service is None:
             raise RuntimeError("GraphService not initialized")
-        
+
         # Get repository from graph service
         repo = self.graph_service._get_repository()
         if repo is None:
             raise RuntimeError("Graph repository not available")
-        
+
         # Determine which LLM to use
         llm_to_use = llm or (self.graph_rag_service.llm if self.graph_rag_service else None) or self.llm
         if llm_to_use is None:
             raise RuntimeError("LLM not provided for community report generation")
-        
+
         # Initialize cluster service
         cluster_service = ClusterService(repository=repo, llm=llm_to_use)
         
@@ -663,17 +703,19 @@ class CommunityGraphService:
             namespace=namespace,
             index_name= index_name,
             engine_name=engine.name,
-            engine_type=engine.type #if engine.name=="pinecone" else engine.deployment
+            engine_type=engine.type,
+            graph_name=graph_name_to_use
         )
         
         return await self._process_reports_and_export(
-            cluster_stats, namespace, index_name, output_dir, save_to_minio, timestamp, repo, None
+            cluster_stats, namespace, index_name, output_dir, save_to_minio, timestamp, repo, None, graph_name=graph_name_to_use
         )
 
     async def generate_community_reports_leiden(
         self,
         namespace: str,
         index_name: Optional[str] = None,
+        graph_name: Optional[str] = None,
         output_dir: Optional[str] = None,
         save_to_minio: bool = True,
         timestamp: Optional[str] = None,
@@ -700,46 +742,54 @@ class CommunityGraphService:
             overwrite: Deprecated - use cleanup_before instead (kept for backward compatibility)
             cleanup_before: If True, performs full cleanup (vector store + graph) before regenerating (default: True)
         """
+        # Validate required parameters
+        if engine is None:
+            raise ValueError("Engine configuration is required for community report generation")
+
+        # Resolve graph name once, before cleanup and clustering
+        graph_name_to_use = graph_name if graph_name is not None else namespace
+
         # Perform cleanup before clustering if enabled
         if cleanup_before and vector_store_repo and engine:
             cleanup_stats = await self.cleanup_before_clustering(
                 namespace=namespace,
                 index_name=index_name,
                 vector_store_repo=vector_store_repo,
-                engine=engine
+                engine=engine,
+                graph_name=graph_name_to_use
             )
             logger.info(f"Cleanup stats: {cleanup_stats}")
         elif overwrite and vector_store_repo and engine:
             # Backward compatibility: if overwrite=True but cleanup_before=False,
             # only clear vector store (old behavior)
-            await self._clear_existing_reports(namespace, vector_store_repo, engine)
+            await self._clear_existing_reports(namespace, vector_store_repo, engine, graph_name=graph_name_to_use)
         if self.graph_service is None:
             raise RuntimeError("GraphService not initialized")
-        
+
         repo = self.graph_service._get_repository()
         llm_to_use = llm or (self.graph_rag_service.llm if self.graph_rag_service else None) or self.llm
-        
+
         if llm_to_use is None:
              raise RuntimeError("LLM not provided")
-             
+
         cluster_service = ClusterService(repository=repo, llm=llm_to_use)
-        
+
         # Use Leiden clustering
         cluster_stats = await cluster_service.perform_clustering_leiden(
             level=0,
             namespace=namespace,
             index_name=index_name,
             engine_name=engine.name,
-            engine_type=engine.type #if engine.name =="pinecone" else engine.deployment
-
+            engine_type=engine.type,
+            graph_name=graph_name_to_use
         )
         
         return await self._process_reports_and_export(
-            cluster_stats, namespace, index_name, output_dir, save_to_minio, timestamp, repo, None
+            cluster_stats, namespace, index_name, output_dir, save_to_minio, timestamp, repo, None, graph_name=graph_name_to_use
         )
 
     async def _process_reports_and_export(
-        self, cluster_stats, namespace, index_name, output_dir, save_to_minio, timestamp, repo, engine=None
+        self, cluster_stats, namespace, index_name, output_dir, save_to_minio, timestamp, repo, engine=None, graph_name=None
     ):
         """Helper to process reports, save parquet, upload MinIO"""
         created_temp_dir = False
@@ -790,13 +840,13 @@ class CommunityGraphService:
                 parquet_files["community_reports"] = str(reports_path)
             
             # Export entities and relationships
-            entities_df = await self._export_entities_to_dataframe(repo, namespace, index_name)
+            entities_df = await self._export_entities_to_dataframe(repo, namespace, index_name, graph_name=graph_name)
             if not entities_df.empty:
                 entities_path = Path(output_dir) / "entities.parquet"
                 entities_df.to_parquet(entities_path, index=False)
                 parquet_files["entities"] = str(entities_path)
 
-            relationships_df = await self._export_relationships_to_dataframe(repo, namespace, index_name)
+            relationships_df = await self._export_relationships_to_dataframe(repo, namespace, index_name, graph_name=graph_name)
             if not relationships_df.empty:
                 relationships_path = Path(output_dir) / "relationships.parquet"
                 relationships_df.to_parquet(relationships_path, index=False)
@@ -852,14 +902,23 @@ class CommunityGraphService:
                 shutil.rmtree(output_dir, ignore_errors=True)
             raise
 
-    async def _export_community_reports_to_dataframe(self, repository, namespace: Optional[str] = None, index_name: Optional[str] = None):
+    async def _export_community_reports_to_dataframe(self, repository, namespace: Optional[str] = None, index_name: Optional[str] = None, graph_name: Optional[str] = None):
         """Export community reports from FalkorDB to pandas DataFrame."""
         try:
-            # Query community reports from FalkorDB (async)
-            query = """
+            # Build dynamic WHERE to avoid FalkorDB null-parameter issues
+            where_parts = []
+            filter_params = {}
+            if namespace is not None:
+                where_parts.append("c.namespace = $namespace")
+                filter_params["namespace"] = namespace
+            if index_name is not None:
+                where_parts.append("c.index_name = $index_name")
+                filter_params["index_name"] = index_name
+            where_clause = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+            query = f"""
             MATCH (c:CommunityReport)
-            WHERE ($namespace IS NULL OR c.namespace = $namespace)
-            AND ($index_name IS NULL OR c.index_name = $index_name)
+            {where_clause}
             RETURN
                 id(c) as report_id,
                 c.community_id as community_id,
@@ -872,11 +931,11 @@ class CommunityGraphService:
                 c.level as level
             """
 
-            # Use async repository _execute_query
             result = await repository._execute_query(
                 query,
-                {"namespace": namespace, "index_name": index_name},
-                namespace=namespace
+                filter_params,
+                namespace=namespace,
+                graph_name=graph_name
             )
 
             # _execute_query returns List[Dict], so iterate directly
@@ -911,26 +970,34 @@ class CommunityGraphService:
             import pandas as pd
             return pd.DataFrame()
     
-    async def _export_entities_to_dataframe(self, repository, namespace: Optional[str] = None, index_name: Optional[str] = None):
+    async def _export_entities_to_dataframe(self, repository, namespace: Optional[str] = None, index_name: Optional[str] = None, graph_name: Optional[str] = None):
         """Export entities (nodes) from FalkorDB to pandas DataFrame."""
         try:
-            # Query nodes from FalkorDB (async)
-            query = """
+            # Build dynamic WHERE to avoid FalkorDB null-parameter issues
+            where_parts = ["NOT n:CommunityReport"]
+            filter_params = {}
+            if namespace is not None:
+                where_parts.append("n.namespace = $namespace")
+                filter_params["namespace"] = namespace
+            if index_name is not None:
+                where_parts.append("n.index_name = $index_name")
+                filter_params["index_name"] = index_name
+            where_clause = "WHERE " + " AND ".join(where_parts)
+
+            query = f"""
             MATCH (n)
-            WHERE ($namespace IS NULL OR n.namespace = $namespace)
-            AND ($index_name IS NULL OR n.index_name = $index_name)
-            AND NOT n:CommunityReport
+            {where_clause}
             RETURN
                 id(n) as node_id,
                 labels(n) as labels,
                 properties(n) as properties
             """
 
-            # Use async repository _execute_query
             result = await repository._execute_query(
                 query,
-                {"namespace": namespace, "index_name": index_name},
-                namespace=namespace
+                filter_params,
+                namespace=namespace,
+                graph_name=graph_name
             )
 
             # _execute_query returns List[Dict], so iterate directly
@@ -952,14 +1019,23 @@ class CommunityGraphService:
             import pandas as pd
             return pd.DataFrame()
     
-    async def _export_relationships_to_dataframe(self, repository, namespace: Optional[str] = None, index_name: Optional[str] = None):
+    async def _export_relationships_to_dataframe(self, repository, namespace: Optional[str] = None, index_name: Optional[str] = None, graph_name: Optional[str] = None):
         """Export relationships from FalkorDB to pandas DataFrame."""
         try:
-            # Query relationships from FalkorDB (async)
-            query = """
+            # Build dynamic WHERE to avoid FalkorDB null-parameter issues
+            where_parts = []
+            filter_params = {}
+            if namespace is not None:
+                where_parts.append("s.namespace = $namespace AND t.namespace = $namespace")
+                filter_params["namespace"] = namespace
+            if index_name is not None:
+                where_parts.append("s.index_name = $index_name AND t.index_name = $index_name")
+                filter_params["index_name"] = index_name
+            where_clause = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
+
+            query = f"""
             MATCH (s)-[r]->(t)
-            WHERE ($namespace IS NULL OR s.namespace = $namespace AND t.namespace = $namespace)
-            AND ($index_name IS NULL OR s.index_name = $index_name AND t.index_name = $index_name)
+            {where_clause}
             RETURN
                 id(r) as relationship_id,
                 id(s) as source_id,
@@ -968,11 +1044,11 @@ class CommunityGraphService:
                 properties(r) as properties
             """
 
-            # Use async repository _execute_query
             result = await repository._execute_query(
                 query,
-                {"namespace": namespace, "index_name": index_name},
-                namespace=namespace
+                filter_params,
+                namespace=namespace,
+                graph_name=graph_name
             )
 
             # _execute_query returns List[Dict], so iterate directly
@@ -1126,7 +1202,8 @@ class CommunityGraphService:
             contextualize_prompt: bool = False,
             include_history_in_prompt: bool = True,
             max_history_messages: int = 10,
-            conversation_summary: bool = False
+            conversation_summary: bool = False,
+            graph_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Global Search with Semantic Retrieval on Community Reports.
@@ -1209,7 +1286,8 @@ class CommunityGraphService:
                 logger.warning(f"Query type detection failed: {e}, continuing without adjustments")
 
             # 2. HYBRID SEMANTIC RETRIEVAL of reports from Vector Store
-            report_namespace = f"{namespace}-reports"
+            _graph_name_to_use = graph_name if graph_name else namespace
+            report_namespace = f"{_graph_name_to_use}-reports"
             logger.info(f"Performing hybrid semantic search in report namespace: '{report_namespace}'")
 
             # Build QuestionAnswer object for hybrid search
@@ -1522,7 +1600,8 @@ class CommunityGraphService:
         contextualize_prompt: bool = False,
         include_history_in_prompt: bool = True,
         max_history_messages: int = 10,
-        conversation_summary: bool = False
+        conversation_summary: bool = False,
+        graph_name: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Context Fusion Search with Hybrid History Management.
@@ -1594,7 +1673,7 @@ class CommunityGraphService:
         # This ensures both tasks use the same PineconeAsyncio client
         cached_wrapper = None
         cache_suffix = f"context_fusion_{namespace}"
-        
+
         if hasattr(vector_store_repo, 'create_index_cache_wrapper'):
             cached_wrapper = await vector_store_repo.create_index_cache_wrapper(
                 engine, llm_embeddings, emb_dimension, embedding_config_key=None, cache_suffix=cache_suffix
@@ -1602,6 +1681,7 @@ class CommunityGraphService:
         else:
             # Fallback for non-Pinecone repositories or older versions
             # Create a dummy QuestionAnswer for initialization
+
             qa_dummy = QuestionAnswer(
                 question=question,
                 namespace=namespace,
@@ -1625,7 +1705,8 @@ class CommunityGraphService:
             
             index = None
             try:
-                report_namespace = f"{namespace}-reports"
+                _graph_name_to_use = graph_name if graph_name else namespace
+                report_namespace = f"{_graph_name_to_use}-reports"
                 qa_reports = QuestionAnswer(
                     question=retrieval_query,
                     namespace=report_namespace,
@@ -1687,7 +1768,7 @@ class CommunityGraphService:
                     alpha=alpha,
                     search_type=search_type,
                     llm="openai", model="gpt-3.5-turbo",
-                    embedding=llm_embeddings.model_name if hasattr(llm_embeddings, 'model_name') else "text-embedding-ada-002",
+                    embedding=llm_embeddings.model_name if hasattr(llm_embeddings, 'model_name') else "text-embedding-3-small",
                     sparse_encoder=sparse_encoder_injected,
                     reranking=False # We rerank later globally
                 )
@@ -1744,7 +1825,7 @@ class CommunityGraphService:
                 # Find seed nodes
                 seed_ids = []
                 for cid in chunk_ids:
-                    nodes = await graph_repo.find_nodes_by_source_id(cid, limit=2, namespace=namespace, index_name=engine.index_name)
+                    nodes = await graph_repo.find_nodes_by_source_id(cid, limit=2, namespace=namespace, index_name=engine.index_name, graph_name=graph_name)
                     if nodes:
                         logger.debug(f"Found {len(nodes)} seed nodes for chunk {cid}")
                     seed_ids.extend([n.id for n in nodes])
@@ -1765,7 +1846,8 @@ class CommunityGraphService:
                         max_nodes=expansion_limit,
                         namespace=namespace,
                         index_name=engine.index_name,
-                        min_relationship_weight=0.0
+                        min_relationship_weight=0.0,
+                        graph_name=graph_name
                     )
 
                     # Convert to expected format

@@ -4,6 +4,7 @@ Provides CRUD operations for nodes and relationships with connection pooling.
 Uses FalkorDB (Redis Graph) with openCypher support.
 """
 
+import asyncio
 import json
 import logging
 import os
@@ -113,43 +114,46 @@ class FalkorGraphRepository(BaseGraphRepository):
                     if username:
                         pool_kwargs["username"] = username
 
-                    pool = ConnectionPool(**pool_kwargs)
+                    pool = ConnectionPool(**pool_kwargs)  # type: ignore[call-arg]
                     connection_kwargs = {"connection_pool": pool}
 
-                FalkorGraphRepository._client = FalkorDB(**connection_kwargs)
+                FalkorGraphRepository._client = FalkorDB(**connection_kwargs)  # type: ignore[call-arg]
 
                 logger.info(f"FalkorDB connection pool initialized with {max_connections} max connections")
                 
                 logger.info("FalkorDB client initialized")
                 
                 # Ensure indexes on default graph
-                self.ensure_indexes()
+                self._ensure_indexes_for_graph(self._default_graph_name, node_labels=None)
                 
             except Exception as e:
                 logger.error(f"Failed to initialize FalkorDB connection: {e}")
                 raise ConnectionError(f"Failed to connect to FalkorDB: {e}")
 
-    def _get_graph_name(self, namespace: Optional[str] = None, index_name: Optional[str] = None) -> str:
+    def _get_graph_name(self, namespace: Optional[str] = None, index_name: Optional[str] = None, graph_name: Optional[str] = None) -> str:
         """
         Determine graph name based on namespace-first strategy.
 
         Strategy hierarchy:
-        1. Use namespace if provided (primary - aligns with vector store multi-tenancy)
-        2. Fallback to default_graph_name for global operations
+        1. Use explicit graph_name if provided (overrides namespace)
+        2. Use namespace if provided (primary - aligns with vector store multi-tenancy)
+        3. Fallback to default_graph_name for global operations
 
         Args:
             namespace: Client/tenant namespace (e.g., "cliente_A")
             index_name: Collection name (stored as property, not used for graph selection)
+            graph_name: Optional explicit graph name (overrides namespace)
 
         Returns:
             Graph name to use
         """
+        if graph_name:
+            return graph_name
         if namespace:
             return namespace
-
         return self._default_graph_name
 
-    def _get_graph(self, namespace: Optional[str] = None, index_name: Optional[str] = None):
+    def _get_graph(self, namespace: Optional[str] = None, index_name: Optional[str] = None, graph_name: Optional[str] = None):
         """
         Select the graph based on namespace and ensure indexes exist.
         Creates indexes on first access to each graph (lazy initialization).
@@ -157,21 +161,22 @@ class FalkorGraphRepository(BaseGraphRepository):
         Args:
             namespace: Client/tenant namespace
             index_name: Collection name (for tracking only)
+            graph_name: Optional explicit graph name (overrides namespace)
 
         Returns:
             FalkorDB Graph instance
         """
-        graph_name = self._get_graph_name(namespace, index_name)
-        graph = self._client.select_graph(graph_name)
+        graph_name_to_use = self._get_graph_name(namespace, index_name, graph_name)
+        graph = self._client.select_graph(graph_name_to_use)  # type: ignore[union-attr]
 
         # Ensure indexes on first access to this graph
-        if graph_name not in FalkorGraphRepository._indexed_graphs:
-            self._ensure_indexes_for_graph(graph_name)
-            FalkorGraphRepository._indexed_graphs.add(graph_name)
+        if graph_name_to_use not in FalkorGraphRepository._indexed_graphs:
+            self._ensure_indexes_for_graph(graph_name_to_use, node_labels=None)
+            FalkorGraphRepository._indexed_graphs.add(graph_name_to_use)
 
         return graph
 
-    def _ensure_indexes_for_graph(self, graph_name: str):
+    def _ensure_indexes_for_graph(self, graph_name: str, node_labels: Optional[List[str]] = None):
         """
         Create indexes on a specific graph using FalkorDB openCypher syntax.
         Called automatically on first access to each graph.
@@ -184,12 +189,15 @@ class FalkorGraphRepository(BaseGraphRepository):
 
         Args:
             graph_name: Name of the graph to create indexes on
+            node_labels: Optional list of node labels to create indexes for.
+                        If None, uses default labels: ['Entity', 'Document', 'CommunityReport', 'Person', 'Organization']
         """
         try:
             logger.info(f"Creating indexes on graph '{graph_name}'")
 
             # Common node labels in GraphRAG
-            node_labels = ['Entity', 'Document', 'CommunityReport', 'Person', 'Organization']
+            if node_labels is None:
+                node_labels = ['Entity', 'Document', 'CommunityReport', 'Person', 'Organization']
 
             # Create range indexes for searchable properties on each label
             for label in node_labels:
@@ -197,7 +205,7 @@ class FalkorGraphRepository(BaseGraphRepository):
                     # OpenCypher standard syntax for FalkorDB
                     query = f"CREATE INDEX FOR (n:{label}) ON (n.{prop})"
                     try:
-                        self._execute_query(query, namespace=graph_name)
+                        self._execute_query(query, namespace=graph_name, graph_name=graph_name)
                         logger.debug(f"Created index on {label}.{prop} for graph '{graph_name}'")
                     except Exception as e:
                         # Index might already exist or property doesn't exist yet
@@ -208,7 +216,18 @@ class FalkorGraphRepository(BaseGraphRepository):
         except Exception as e:
             logger.error(f"Error ensuring indexes on graph '{graph_name}': {e}")
 
-    def _execute_query(self, query: str, parameters: Optional[Dict[str, Any]] = None, namespace: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def ensure_indexes_for_graph(self, graph_name: str, node_labels: Optional[List[str]] = None):
+        """
+        Ensure that required indexes exist for a specific graph.
+        
+        Args:
+            graph_name: Name of the graph to ensure indexes for
+            node_labels: Optional list of node labels to create indexes for.
+                        If None, uses default entity types from the domain.
+        """
+        self._ensure_indexes_for_graph(graph_name, node_labels)
+
+    def _execute_query(self, query: str, parameters: Optional[Dict[str, Any]] = None, namespace: Optional[str] = None, graph_name: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Execute a FalkorDB query (openCypher) and return results.
         
@@ -216,11 +235,12 @@ class FalkorGraphRepository(BaseGraphRepository):
             query: openCypher query string
             parameters: Optional query parameters
             namespace: Optional namespace to select graph
+            graph_name: Optional explicit graph name (overrides namespace)
             
         Returns:
             List of result records as dictionaries
         """
-        graph = self._get_graph(namespace)
+        graph = self._get_graph(namespace=namespace, graph_name=graph_name)
         logger.debug(f"Executing query on graph '{graph.name}': {query}, params: {parameters}")
         
         try:
@@ -291,16 +311,16 @@ class FalkorGraphRepository(BaseGraphRepository):
         
         return value
 
-    def ensure_indexes(self):
+    async def ensure_indexes(self):
         """
         Ensure indexes on the default graph.
         Note: With per-namespace strategy, indexes are created automatically
         on first access to each graph via _get_graph().
         This method ensures indexes on the default graph only.
         """
-        self._ensure_indexes_for_graph(self._default_graph_name)
+        self._ensure_indexes_for_graph(self._default_graph_name, node_labels=None)
 
-    def close(self):
+    async def close(self):
         """Close the connection pool"""
         if FalkorGraphRepository._client:
             try:
@@ -357,7 +377,7 @@ class FalkorGraphRepository(BaseGraphRepository):
             if namespace == self._default_graph_name:
                 logger.warning(f"Attempting to delete default graph '{namespace}'")
 
-            graph = self._client.select_graph(namespace)
+            graph = self._client.select_graph(namespace)  # type: ignore[union-attr]
             graph.delete()
 
             # Remove from indexed graphs tracking
@@ -370,17 +390,20 @@ class FalkorGraphRepository(BaseGraphRepository):
             logger.error(f"Failed to delete graph '{namespace}': {e}")
             return False
 
-    def execute_query(self, query: str, parameters: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    async def execute_query(self, query: str, parameters: Optional[Dict[str, Any]] = None,
+                            namespace: Optional[str] = None,
+                            graph_name: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Execute a query on the DEFAULT graph.
+        Execute a query, routing to the correct graph via graph_name/namespace.
         """
-        return self._execute_query(query, parameters)
+        return self._execute_query(query, parameters, namespace=namespace, graph_name=graph_name)
 
     # ==================== NODE OPERATIONS ====================
 
-    def create_node(self, node: Node, namespace: Optional[str] = None, 
+    async def create_node(self, node: Node, namespace: Optional[str] = None, 
                    index_name: Optional[str] = None, engine_name: Optional[str] = None, 
-                   engine_type: Optional[str] = None, metadata_id: Optional[str] = None) -> Node:
+                   engine_type: Optional[str] = None, metadata_id: Optional[str] = None,
+                   graph_name: Optional[str] = None) -> Node:
         """
         Create a new node in the graph.
         """
@@ -403,7 +426,7 @@ class FalkorGraphRepository(BaseGraphRepository):
         RETURN id(n) as id, labels(n) as labels, properties(n) as properties
         """
         
-        result = self._execute_query(query, properties, namespace=namespace)
+        result = self._execute_query(query, properties, namespace=namespace, graph_name=graph_name)
         if result:
             record = result[0]
             return Node(
@@ -413,13 +436,14 @@ class FalkorGraphRepository(BaseGraphRepository):
             )
         raise RuntimeError("Failed to create node")
 
-    def find_node_by_id(self, node_id: str, namespace: Optional[str] = None) -> Optional[Node]:
+    async def find_node_by_id(self, node_id: str, namespace: Optional[str] = None, graph_name: Optional[str] = None) -> Optional[Node]:
         """
         Find a node by its internal FalkorDB ID.
 
         Args:
             node_id: Internal node ID (numeric string or int)
             namespace: Namespace/graph to search in. If None, uses default graph.
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             Node if found, None otherwise
@@ -430,7 +454,7 @@ class FalkorGraphRepository(BaseGraphRepository):
         RETURN id(n) as id, labels(n) as labels, properties(n) as properties
         """
 
-        result = self._execute_query(query, {"node_id": int(node_id)}, namespace=namespace)
+        result = self._execute_query(query, {"node_id": int(node_id)}, namespace=namespace, graph_name=graph_name)
         if result:
             record = result[0]
             return Node(
@@ -440,13 +464,14 @@ class FalkorGraphRepository(BaseGraphRepository):
             )
         return None
 
-    def find_nodes_by_label(self, label: str, limit: int = 100, 
-                           namespace: Optional[str] = None, index_name: Optional[str] = None) -> List[Node]:
+    async def find_nodes_by_label(self, label: str, limit: int = 100,
+                           namespace: Optional[str] = None, index_name: Optional[str] = None,
+                           graph_name: Optional[str] = None) -> List[Node]:
         """
         Find all nodes with a specific label.
         """
         where_clauses = []
-        params = {"limit": limit}
+        params: Dict[str, Union[int, str]] = {"limit": limit}
         if namespace is not None:
             where_clauses.append("n.namespace = $namespace")
             params["namespace"] = namespace
@@ -463,7 +488,7 @@ class FalkorGraphRepository(BaseGraphRepository):
         LIMIT $limit
         """
         
-        result = self._execute_query(query, params, namespace=namespace)
+        result = self._execute_query(query, params, namespace=namespace, graph_name=graph_name)
         nodes = []
         for record in result:
             nodes.append(Node(
@@ -473,9 +498,9 @@ class FalkorGraphRepository(BaseGraphRepository):
             ))
         return nodes
 
-    def find_nodes_by_property(self, label: str, property_key: str, property_value: Any, 
-                              limit: int = 100, namespace: Optional[str] = None, 
-                              index_name: Optional[str] = None) -> List[Node]:
+    async def find_nodes_by_property(self, label: str, property_key: str, property_value: Any, 
+                               limit: int = 100, namespace: Optional[str] = None, 
+                               index_name: Optional[str] = None, graph_name: Optional[str] = None) -> List[Node]:
         """
         Find nodes by a specific property value.
         """
@@ -496,7 +521,7 @@ class FalkorGraphRepository(BaseGraphRepository):
         LIMIT $limit
         """
         
-        result = self._execute_query(query, params, namespace=namespace)
+        result = self._execute_query(query, params, namespace=namespace, graph_name=graph_name)
         nodes = []
         for record in result:
             nodes.append(Node(
@@ -506,9 +531,9 @@ class FalkorGraphRepository(BaseGraphRepository):
             ))
         return nodes
 
-    def update_node(self, node_id: str, label: Optional[str] = None,
+    async def update_node(self, node_id: str, label: Optional[str] = None,
                    properties: Optional[Dict[str, Any]] = None,
-                   namespace: Optional[str] = None) -> Optional[Node]:
+                   namespace: Optional[str] = None, graph_name: Optional[str] = None) -> Optional[Node]:
         """
         Update a node's label and/or properties.
 
@@ -517,11 +542,12 @@ class FalkorGraphRepository(BaseGraphRepository):
             label: New label (currently not supported - would require recreate)
             properties: Properties to update
             namespace: Namespace/graph where the node exists
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             Updated node if found, None otherwise
         """
-        existing_node = self.find_node_by_id(node_id, namespace=namespace)
+        existing_node = await self.find_node_by_id(node_id, namespace=namespace, graph_name=graph_name)
         if not existing_node:
             return None
 
@@ -534,11 +560,12 @@ class FalkorGraphRepository(BaseGraphRepository):
             RETURN id(n) as id, labels(n) as labels, properties(n) as properties
             """
             params = {"node_id": int(node_id), **properties}
-            self._execute_query(query, params, namespace=namespace)
+            self._execute_query(query, params, namespace=namespace, graph_name=graph_name)
 
-        return self.find_node_by_id(node_id, namespace=namespace)
+        return await self.find_node_by_id(node_id, namespace=namespace, graph_name=graph_name)
 
-    def delete_node(self, node_id: str, detach: bool = True, namespace: Optional[str] = None) -> bool:
+    async def delete_node(self, node_id: str, detach: bool = True, namespace: Optional[str] = None,
+                         graph_name: Optional[str] = None) -> bool:
         """
         Delete a node from the graph.
 
@@ -546,6 +573,7 @@ class FalkorGraphRepository(BaseGraphRepository):
             node_id: Internal node ID
             detach: If True, delete all relationships before deleting node
             namespace: Namespace/graph where the node exists
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             True if deleted, False if not found
@@ -565,16 +593,17 @@ class FalkorGraphRepository(BaseGraphRepository):
             RETURN count(n) as deleted_count
             """
 
-        result = self._execute_query(query, {"node_id": int(node_id)}, namespace=namespace)
+        result = self._execute_query(query, {"node_id": int(node_id)}, namespace=namespace, graph_name=graph_name)
         if result:
             return result[0].get("deleted_count", 0) > 0
         return False
 
     # ==================== RELATIONSHIP OPERATIONS ====================
 
-    def create_relationship(self, relationship: Relationship, namespace: Optional[str] = None,
+    async def create_relationship(self, relationship: Relationship, namespace: Optional[str] = None,
                            index_name: Optional[str] = None, engine_name: Optional[str] = None,
-                           engine_type: Optional[str] = None, metadata_id: Optional[str] = None) -> Relationship:
+                           engine_type: Optional[str] = None, metadata_id: Optional[str] = None,
+                           graph_name: Optional[str] = None) -> Relationship:
         """
         Create a relationship between two nodes.
         """
@@ -607,7 +636,7 @@ class FalkorGraphRepository(BaseGraphRepository):
             **properties
         }
         
-        result = self._execute_query(query, params, namespace=namespace)
+        result = self._execute_query(query, params, namespace=namespace, graph_name=graph_name)
         if result:
             record = result[0]
             return Relationship(
@@ -619,13 +648,15 @@ class FalkorGraphRepository(BaseGraphRepository):
             )
         raise RuntimeError("Failed to create relationship. Check if source and target nodes exist.")
 
-    def find_relationship_by_id(self, relationship_id: str, namespace: Optional[str] = None) -> Optional[Relationship]:
+    async def find_relationship_by_id(self, relationship_id: str, namespace: Optional[str] = None,
+                                      graph_name: Optional[str] = None) -> Optional[Relationship]:
         """
         Find a relationship by its internal FalkorDB ID.
 
         Args:
             relationship_id: Internal relationship ID
             namespace: Namespace/graph to search in
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             Relationship if found, None otherwise
@@ -637,7 +668,7 @@ class FalkorGraphRepository(BaseGraphRepository):
                id(source) as source_id, id(target) as target_id
         """
 
-        result = self._execute_query(query, {"relationship_id": int(relationship_id)}, namespace=namespace)
+        result = self._execute_query(query, {"relationship_id": int(relationship_id)}, namespace=namespace, graph_name=graph_name)
         if result:
             record = result[0]
             return Relationship(
@@ -649,8 +680,8 @@ class FalkorGraphRepository(BaseGraphRepository):
             )
         return None
 
-    def find_relationships_by_node(self, node_id: str, direction: str = "both",
-                                   namespace: Optional[str] = None) -> List[Relationship]:
+    async def find_relationships_by_node(self, node_id: str, direction: str = "both",
+                                   namespace: Optional[str] = None, graph_name: Optional[str] = None) -> List[Relationship]:
         """
         Find all relationships connected to a node.
 
@@ -658,6 +689,7 @@ class FalkorGraphRepository(BaseGraphRepository):
             node_id: Internal node ID
             direction: "incoming", "outgoing", or "both"
             namespace: Namespace/graph to search in
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             List of relationships
@@ -684,7 +716,7 @@ class FalkorGraphRepository(BaseGraphRepository):
                    id(startNode(r)) as source_id, id(endNode(r)) as target_id
             """
 
-        result = self._execute_query(query, {"node_id": int(node_id)}, namespace=namespace)
+        result = self._execute_query(query, {"node_id": int(node_id)}, namespace=namespace, graph_name=graph_name)
         relationships = []
         for record in result:
             relationships.append(Relationship(
@@ -696,9 +728,9 @@ class FalkorGraphRepository(BaseGraphRepository):
             ))
         return relationships
 
-    def update_relationship(self, relationship_id: str, rel_type: Optional[str] = None,
+    async def update_relationship(self, relationship_id: str, rel_type: Optional[str] = None,
                            properties: Optional[Dict[str, Any]] = None,
-                           namespace: Optional[str] = None) -> Optional[Relationship]:
+                           namespace: Optional[str] = None, graph_name: Optional[str] = None) -> Optional[Relationship]:
         """
         Update a relationship's type and/or properties.
 
@@ -707,23 +739,24 @@ class FalkorGraphRepository(BaseGraphRepository):
             rel_type: New relationship type (may require recreation)
             properties: Properties to update
             namespace: Namespace/graph where the relationship exists
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             Updated relationship if found, None otherwise
         """
-        existing_rel = self.find_relationship_by_id(relationship_id, namespace=namespace)
+        existing_rel = await self.find_relationship_by_id(relationship_id, namespace=namespace, graph_name=graph_name)
         if not existing_rel:
             return None
 
         if rel_type and rel_type != existing_rel.type:
-            self.delete_relationship(relationship_id, namespace=namespace)
+            await self.delete_relationship(relationship_id, namespace=namespace, graph_name=graph_name)
             new_rel = Relationship(
                 source_id=existing_rel.source_id,
                 target_id=existing_rel.target_id,
                 type=rel_type,
                 properties=properties if properties else existing_rel.properties
             )
-            return self.create_relationship(new_rel, namespace=namespace)
+            return await self.create_relationship(new_rel, namespace=namespace, graph_name=graph_name)
 
         if properties:
             set_clauses = ", ".join([f"r.{k} = ${k}" for k in properties.keys()])
@@ -735,17 +768,19 @@ class FalkorGraphRepository(BaseGraphRepository):
                    id(startNode(r)) as source_id, id(endNode(r)) as target_id
             """
             params = {"relationship_id": int(relationship_id), **properties}
-            self._execute_query(query, params, namespace=namespace)
+            self._execute_query(query, params, namespace=namespace, graph_name=graph_name)
 
-        return self.find_relationship_by_id(relationship_id, namespace=namespace)
+        return await self.find_relationship_by_id(relationship_id, namespace=namespace, graph_name=graph_name)
 
-    def delete_relationship(self, relationship_id: str, namespace: Optional[str] = None) -> bool:
+    async def delete_relationship(self, relationship_id: str, namespace: Optional[str] = None,
+                                 graph_name: Optional[str] = None) -> bool:
         """
         Delete a relationship from the graph.
 
         Args:
             relationship_id: Internal relationship ID
             namespace: Namespace/graph where the relationship exists
+            graph_name: Optional explicit graph name (overrides namespace for graph selection)
 
         Returns:
             True if deleted, False if not found
@@ -757,18 +792,19 @@ class FalkorGraphRepository(BaseGraphRepository):
         RETURN count(r) as deleted_count
         """
 
-        result = self._execute_query(query, {"relationship_id": int(relationship_id)}, namespace=namespace)
+        result = self._execute_query(query, {"relationship_id": int(relationship_id)}, namespace=namespace, graph_name=graph_name)
         if result:
             return result[0].get("deleted_count", 0) > 0
         return False
 
-    def delete_nodes_by_metadata(
+    async def delete_nodes_by_metadata(
         self,
         namespace: Optional[str] = None,
         index_name: Optional[str] = None,
         engine_name: Optional[str] = None,
         engine_type: Optional[str] = None,
-        metadata_id: Optional[str] = None
+        metadata_id: Optional[str] = None,
+        graph_name: Optional[str] = None
     ) -> Dict[str, int]:
         """
         Delete all nodes (Entity and CommunityReport) that match the specified metadata.
@@ -806,7 +842,7 @@ class FalkorGraphRepository(BaseGraphRepository):
         RETURN count(n) as deleted_count
         """
         
-        result = self._execute_query(query, parameters, namespace=namespace)
+        result = self._execute_query(query, parameters, namespace=namespace, graph_name=graph_name)
         deleted_count = result[0].get("deleted_count", 0) if result else 0
         
         logger.info(f"Deleted {deleted_count} nodes matching metadata")
@@ -815,7 +851,7 @@ class FalkorGraphRepository(BaseGraphRepository):
 
     # ==================== UTILITY OPERATIONS ====================
 
-    def verify_connection(self) -> bool:
+    async def verify_connection(self) -> bool:
         """
         Verify the connection to FalkorDB is working.
         """
@@ -831,7 +867,7 @@ class FalkorGraphRepository(BaseGraphRepository):
             logger.error(f"Connection verification failed: {e}")
             return False
 
-    def get_database_info(self) -> Dict[str, Any]:
+    async def get_database_info(self) -> Dict[str, Any]:
         """
         Get information about the database (DEFAULT graph).
         """
@@ -858,8 +894,8 @@ class FalkorGraphRepository(BaseGraphRepository):
                 "error": str(e)
             }
 
-    def search_nodes_by_text(self, search_text: str, limit: int = 10,
-                            namespace: Optional[str] = None, index_name: Optional[str] = None) -> List[Node]:
+    async def search_nodes_by_text(self, search_text: str, limit: int = 10,
+                            namespace: Optional[str] = None, index_name: Optional[str] = None, graph_name: Optional[str] = None) -> List[Node]:
         """
         Search nodes using a full-text index.
         """
@@ -889,7 +925,7 @@ class FalkorGraphRepository(BaseGraphRepository):
         LIMIT $limit
         """
         
-        result = self._execute_query(query, params, namespace=namespace)
+        result = self._execute_query(query, params, namespace=namespace, graph_name=graph_name)
         nodes = []
         for record in result:
             nodes.append(Node(
@@ -899,8 +935,8 @@ class FalkorGraphRepository(BaseGraphRepository):
             ))
         return nodes
 
-    def search_relationships_by_text(self, search_text: str, limit: int = 10,
-                                    namespace: Optional[str] = None, index_name: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def search_relationships_by_text(self, search_text: str, limit: int = 10,
+                                    namespace: Optional[str] = None, index_name: Optional[str] = None, graph_name: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Search relationships using a full-text index.
         """
@@ -933,7 +969,7 @@ class FalkorGraphRepository(BaseGraphRepository):
         LIMIT $limit
         """
         
-        result = self._execute_query(query, params, namespace=namespace)
+        result = self._execute_query(query, params, namespace=namespace, graph_name=graph_name)
         relationships = []
         for record in result:
             relationships.append({
@@ -953,21 +989,32 @@ class FalkorGraphRepository(BaseGraphRepository):
             })
         return relationships
 
-    def search_community_reports(self, search_text: str, limit: int = 5) -> List[Node]:
+    async def search_community_reports(self, search_text: str, limit: int = 5, namespace: Optional[str] = None, graph_name: Optional[str] = None) -> List[Node]:
         """
-        Search community reports by text (DEFAULT graph).
+        Search community reports by text.
         """
-        query = """
+        where_clauses = []
+        params = {"search_text": search_text, "limit": limit}
+        text_conditions = [
+            "(n.full_report IS NOT NULL AND n.full_report CONTAINS $search_text)",
+            "(n.summary IS NOT NULL AND n.summary CONTAINS $search_text)",
+            "(n.title IS NOT NULL AND n.title CONTAINS $search_text)"
+        ]
+        where_clauses.append(f"({' OR '.join(text_conditions)})")
+        if namespace is not None:
+            where_clauses.append("n.namespace = $namespace")
+            params["namespace"] = namespace
+        
+        where_clause = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+        
+        query = f"""
         MATCH (n:CommunityReport)
-        WHERE 
-            (n.full_report IS NOT NULL AND n.full_report CONTAINS $search_text) OR
-            (n.summary IS NOT NULL AND n.summary CONTAINS $search_text) OR
-            (n.title IS NOT NULL AND n.title CONTAINS $search_text)
+        {where_clause}
         RETURN id(n) as id, labels(n) as labels, properties(n) as properties
         LIMIT $limit
         """
         
-        result = self._execute_query(query, {"search_text": search_text, "limit": limit})
+        result = self._execute_query(query, params, namespace=namespace, graph_name=graph_name)
         nodes = []
         for record in result:
             nodes.append(Node(
@@ -977,10 +1024,11 @@ class FalkorGraphRepository(BaseGraphRepository):
             ))
         return nodes
 
-    def get_all_nodes_and_relationships(self, namespace: Optional[str] = None,
+    async def get_all_nodes_and_relationships(self, namespace: Optional[str] = None,
                                        index_name: Optional[str] = None,
                                        engine_name: Optional[str] = None,
-                                       engine_type: Optional[str] = None) -> Dict[str, Any]:
+                                       engine_type: Optional[str] = None,
+                                       graph_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Fetch the entire graph, optionally filtered by namespace, index_name, engine_name and engine_type.
         """
@@ -1008,7 +1056,7 @@ class FalkorGraphRepository(BaseGraphRepository):
         RETURN n, r, m
         """
         
-        result = self._execute_query(query, params, namespace=namespace)
+        result = self._execute_query(query, params, namespace=namespace, graph_name=graph_name)
         
         nodes = {}
         relationships = []
@@ -1018,26 +1066,31 @@ class FalkorGraphRepository(BaseGraphRepository):
         for record in result:
             n = record.get("n")
             if n:
+                n_labels = n.get("labels", ["Unknown"])
+                if "CommunityReport" in n_labels:
+                    continue  # Skip: community reports must not be clustered
                 n_id = str(n.get("id"))
                 if n_id not in seen_nodes:
                     seen_nodes.add(n_id)
                     nodes[n_id] = {
                         "id": n_id,
-                        "label": n.get("labels", ["Unknown"])[0],
+                        "label": n_labels[0],
                         "properties": n.get("properties", {})
                     }
-            
+
             m = record.get("m")
             if m:
-                m_id = str(m.get("id"))
-                if m_id not in seen_nodes:
-                    seen_nodes.add(m_id)
-                    nodes[m_id] = {
-                        "id": m_id,
-                        "label": m.get("labels", ["Unknown"])[0],
-                        "properties": m.get("properties", {})
-                    }
-            
+                m_labels = m.get("labels", ["Unknown"])
+                if "CommunityReport" not in m_labels:
+                    m_id = str(m.get("id"))
+                    if m_id not in seen_nodes:
+                        seen_nodes.add(m_id)
+                        nodes[m_id] = {
+                            "id": m_id,
+                            "label": m_labels[0],
+                            "properties": m.get("properties", {})
+                        }
+
             r = record.get("r")
             if r:
                 r_id = str(r.get("id"))
@@ -1050,7 +1103,7 @@ class FalkorGraphRepository(BaseGraphRepository):
                         "source_id": str(r.get("source_id", "")),
                         "target_id": str(r.get("target_id", ""))
                     })
-        
+
         return {
             "nodes": list(nodes.values()),
             "relationships": relationships
@@ -1065,7 +1118,8 @@ class FalkorGraphRepository(BaseGraphRepository):
         index_name: Optional[str] = None,
         engine_name: Optional[str] = None,
         engine_type: Optional[str] = None,
-        metadata_id: Optional[str] = None
+        metadata_id: Optional[str] = None,
+        graph_name: Optional[str] = None
     ) -> Optional[str]:
         """
         Save a community report as a node in FalkorDB.
@@ -1129,7 +1183,7 @@ class FalkorGraphRepository(BaseGraphRepository):
         """
 
         try:
-            result = self._execute_query(query, properties, namespace=namespace)
+            result = self._execute_query(query, properties, namespace=namespace, graph_name=graph_name)
 
             # _execute_query returns List[Dict], so access directly
             if result and len(result) > 0:
@@ -1153,7 +1207,8 @@ class FalkorGraphRepository(BaseGraphRepository):
                         result = self._execute_query(
                             link_query,
                             {"entity_ids": entity_ids, "report_id": int(report_node_id)},
-                            namespace=namespace
+                            namespace=namespace,
+                            graph_name=graph_name
                         )
                         logger.info(f"Linked {len(entity_ids)} entities to community report {report_node_id}")
                     except Exception as link_error:
@@ -1169,7 +1224,7 @@ class FalkorGraphRepository(BaseGraphRepository):
             logger.error(f"Error saving community report: {e}", exc_info=True)
             return None
 
-    def get_community_network(self, namespace: str, index_name: str, limit: int = 1000) -> Dict[str, Any]:
+    async def get_community_network(self, namespace: str, index_name: str, limit: int = 1000, graph_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Fetch the community graph (nodes + BELONGS_TO_COMMUNITY relationships).
         """
@@ -1181,7 +1236,7 @@ class FalkorGraphRepository(BaseGraphRepository):
         LIMIT $limit
         """
         
-        result = self._execute_query(query, {"namespace": namespace, "index_name": index_name, "limit": limit}, namespace=namespace)
+        result = self._execute_query(query, {"namespace": namespace, "index_name": index_name, "limit": limit}, namespace=namespace, graph_name=graph_name)
         
         # Simplified response
         return {
