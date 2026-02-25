@@ -6,6 +6,14 @@
 ### **Copyright**: Tiledesk SRL
 
 ---
+## [2026-02-25]
+### 0.9.0-rc1
+- Added: GraphRAG support integrated with FalkorDB for enhanced information retrieval.
+- Added: Taskiq integration configured with Redis to handle heavy asynchronous tasks.
+- Added: Experimental pdf_ocr module for extracting Markdown from PDF files (unstable).
+- Modified: Offloaded heavy processing workloads to dedicated workers via Taskiq/Redis.
+
+---
 ## [2026-01-27]
 ### 0.8.2-rc1
 - Added: tags field to the `ItemSingle` and `QuestionAnswer` model in order to allow filter documents by tags during querying.

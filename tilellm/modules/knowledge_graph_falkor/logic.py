@@ -241,6 +241,8 @@ async def add_document_to_graph(
     if request.engine is None:
         raise ValueError("Engine configuration is required for vector store access")
 
+    graph_name = request.graph_db_name
+
     # Call GraphRAG service to add document
     result = await graph_rag_service.add_document_to_graph(
         metadata_id=request.metadata_id,
@@ -248,12 +250,13 @@ async def add_document_to_graph(
         engine=request.engine,
         vector_store_repo=repo,
         llm=llm,
-        deduplicate_entities=request.deduplicate_entities if request.deduplicate_entities is not None else True
+        deduplicate_entities=request.deduplicate_entities if request.deduplicate_entities is not None else True,
+        graph_name=graph_name
     )
-    
+
     # If document added successfully, update community reports
-    if (result.get("status") == "success" and 
-        COMMUNITY_GRAPH_AVAILABLE and 
+    if (result.get("status") == "success" and
+        COMMUNITY_GRAPH_AVAILABLE and
         CommunityGraphService is not None and
         repository is not None):
         try:
@@ -270,7 +273,8 @@ async def add_document_to_graph(
                 vector_store_repo=repo,
                 llm_embeddings=llm_embeddings,  # Could be injected separately
                 engine=request.engine,
-                overwrite=True
+                overwrite=True,
+                graph_name=graph_name
             )
             result["community_reports_updated"] = True
             result["report_stats"] = report_stats

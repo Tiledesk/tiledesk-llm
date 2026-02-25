@@ -8,7 +8,8 @@ from tilellm.modules.knowledge_graph.tools.graphrag_extractor import GRAPH_FIELD
 from tilellm.modules.knowledge_graph_falkor.tools.extraction_prompts import (
     get_extraction_config,
     list_available_domains,
-    ExtractionConfig
+    ExtractionConfig,
+    GRAPH_EXTRACTION_PROMPT
 )
 
 logger = logging.getLogger(__name__)

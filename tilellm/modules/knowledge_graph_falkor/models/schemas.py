@@ -180,9 +180,23 @@ class AddDocumentRequest(QuestionAnswer):
     engine: Engine = Field(..., description="Engine configuration (must include name, index_name, and type/deployment)")
     deduplicate_entities: Optional[bool] = Field(default=True, description="If True, reuses existing entity nodes")
     webhook_url: Optional[str] = Field(default=None, description="URL to call when task is finished")
+    creation_prompt: str = Field(default="generic", description="Must match the creation_prompt used in /create")
+    graph_db_name: Optional[str] = Field(default=None, description="Explicit FalkorDB graph name (computed if not provided)")
 
     # Keep same type as parent but with default empty string (not needed for chunk addition)
     question: Optional[Union[str, List[MultimodalContent]]] = Field(default="", description="Not used for chunk addition")
+
+    @model_validator(mode='after')
+    def set_graph_db_name(self) -> 'AddDocumentRequest':
+        if not self.graph_db_name:
+            parts = [self.namespace]
+            if self.creation_prompt:
+                parts.append(self.creation_prompt)
+            index_name = self.engine.index_name if self.engine and self.engine.index_name else None
+            if index_name:
+                parts.append(index_name)
+            self.graph_db_name = "-".join(parts)
+        return self
 
 
 
