@@ -766,11 +766,17 @@ class GraphRAGService:
                     assert GraphRAGExtractor is not None
                     extractor = GraphRAGExtractor(llm_invoker=llm_to_use, creation_prompt=creation_prompt)
 
-                    entities, relationships = await extractor.extract(
+                    entities, relationships, failed_chunks = await extractor.extract(
                         doc_id=namespace,
                         chunks=chunks_data
                     )
-                    
+
+                    if failed_chunks:
+                        logger.warning(
+                            f"import_from_vector_store: {len(failed_chunks)} chunk(s) skipped "
+                            f"due to permanent LLM errors: {failed_chunks}"
+                        )
+
                     logger.info(f"Extracted {len(entities)} entities and {len(relationships)} relationships")
                     
                     # Create nodes for extracted entities
@@ -898,6 +904,7 @@ class GraphRAGService:
             return {
                 "namespace": namespace,
                 "chunks_processed": len(chunks_to_process),
+                "chunks_failed": len(failed_chunks) if 'failed_chunks' in locals() else 0,
                 "nodes_created": nodes_created,
                 "relationships_created": relationships_created,
                 "status": "success" if nodes_created > 0 else "no_entities"
@@ -1135,10 +1142,15 @@ class GraphRAGService:
         logger.info(f"Extracting entities and relationships from {len(chunks_for_extraction)} chunks")
         try:
             extractor = GraphRAGExtractor(llm)
-            entities, relationships = await extractor.extract(
+            entities, relationships, failed_chunks = await extractor.extract(
                 doc_id=metadata_id,
                 chunks=chunks_for_extraction
             )
+            if failed_chunks:
+                logger.warning(
+                    f"add_document_to_graph [{metadata_id}]: {len(failed_chunks)} chunk(s) skipped "
+                    f"due to permanent LLM errors: {failed_chunks}"
+                )
             logger.info(f"Extracted {len(entities)} entities and {len(relationships)} relationships from document {metadata_id}")
         except Exception as e:
             logger.error(f"GraphRAG extraction failed: {e}")

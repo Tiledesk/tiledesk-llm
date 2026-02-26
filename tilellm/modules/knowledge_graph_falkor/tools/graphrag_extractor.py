@@ -1,4 +1,5 @@
 import re
+import asyncio
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 from collections import defaultdict
@@ -13,6 +14,34 @@ from tilellm.modules.knowledge_graph_falkor.tools.extraction_prompts import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _is_retriable_error(exc: Exception) -> bool:
+    """Return True if the exception represents a transient error worth retrying."""
+    try:
+        import openai
+        # Never retry auth/permission/bad-request errors
+        if isinstance(exc, (openai.AuthenticationError, openai.BadRequestError, openai.PermissionDeniedError)):
+            return False
+        # Always retry connection/timeout errors
+        if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError)):
+            return True
+        # Retry rate-limit
+        if isinstance(exc, openai.RateLimitError):
+            return True
+        # Retry server-side errors and 404 (vLLM model not ready yet)
+        if isinstance(exc, openai.APIStatusError):
+            return exc.status_code in {404, 429, 500, 502, 503, 504}
+    except ImportError:
+        pass
+    try:
+        import httpx
+        if isinstance(exc, (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError)):
+            return True
+    except ImportError:
+        pass
+    return False
+
 
 def clean_str(input: Any) -> str:
     """Clean an input string by removing HTML escapes and control characters."""
@@ -208,7 +237,9 @@ class GraphRAGExtractor:
         llm_invoker,
         language: str = "English",
         entity_types: Optional[List[str]] = None,
-        creation_prompt: Optional[str] = None
+        creation_prompt: Optional[str] = None,
+        max_retries: int = 3,
+        retry_base_delay: float = 5.0,
     ):
         """
         Initialize extractor.
@@ -220,9 +251,14 @@ class GraphRAGExtractor:
             creation_prompt: Domain identifier (e.g., "debt_recovery", "generic").
                            If None, uses "generic" domain. If entity_types is provided,
                            it overrides the config's entity types.
+            max_retries: Maximum number of retry attempts for transient LLM errors (default 3).
+            retry_base_delay: Base delay in seconds for exponential backoff (default 5.0).
+                              Actual delay: retry_base_delay * 2^attempt (5s, 10s, 20s, …)
         """
         self.llm = llm_invoker
         self.language = language
+        self.max_retries = max_retries
+        self.retry_base_delay = retry_base_delay
 
         # Get extraction configuration based on creation_prompt
         self.config = get_extraction_config(creation_prompt)
@@ -236,10 +272,52 @@ class GraphRAGExtractor:
                    f"entity_types: {len(self.entity_types)}, "
                    f"relationship_types: {len(self.relationship_types)}")
     
+    async def _call_llm_with_retry(self, prompt: str) -> str:
+        """
+        Call the LLM with automatic retry on transient errors (exponential backoff).
+
+        Raises the last exception if all retries are exhausted or the error is not retriable.
+        """
+        from langchain_core.messages import HumanMessage, SystemMessage
+
+        last_exc: Optional[Exception] = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                if hasattr(self.llm, 'invoke'):
+                    messages = [
+                        SystemMessage(content="You are a helpful assistant that extracts entities and relationships from text."),
+                        HumanMessage(content=prompt)
+                    ]
+                    response = await self.llm.ainvoke(messages)
+                    return response.content if hasattr(response, 'content') else str(response)
+                elif hasattr(self.llm, 'chat'):
+                    return await self.llm.chat(
+                        system="You are a helpful assistant that extracts entities and relationships from text.",
+                        messages=[{"role": "user", "content": prompt}]
+                    )
+                else:
+                    return await self.llm(prompt)
+            except Exception as e:
+                if _is_retriable_error(e) and attempt < self.max_retries:
+                    delay = self.retry_base_delay * (2 ** attempt)
+                    logger.warning(
+                        f"Transient LLM error (attempt {attempt + 1}/{self.max_retries + 1}), "
+                        f"retrying in {delay:.1f}s: {type(e).__name__}: {e}"
+                    )
+                    await asyncio.sleep(delay)
+                    last_exc = e
+                else:
+                    raise
+        # Should never reach here, but satisfy type checker
+        raise last_exc  # type: ignore[misc]
+
     async def extract_chunk(self, chunk_key: str, chunk_text: str) -> Tuple[Dict[str, Any], Dict[str, Any], int]:
         """
         Extract entities and relationships from a single text chunk.
-        
+
+        Raises on permanent failure (after all retries). Callers should handle the exception
+        and decide whether to skip the chunk or abort the entire extraction.
+
         Returns:
             Tuple of (entities_dict, relationships_dict, token_count)
         """
@@ -254,113 +332,114 @@ class GraphRAGExtractor:
 
         # Use the extraction prompt from config
         prompt = self.extraction_prompt_template.format(**prompt_vars)
-        
-        try:
-            # Call LLM - assume it has invoke method (LangChain style)
-            if hasattr(self.llm, 'invoke'):
-                from langchain_core.messages import HumanMessage, SystemMessage
-                messages = [
-                    SystemMessage(content="You are a helpful assistant that extracts entities and relationships from text."),
-                    HumanMessage(content=prompt)
-                ]
-                response = await self.llm.ainvoke(messages)
-                response_text = response.content if hasattr(response, 'content') else str(response)
-            elif hasattr(self.llm, 'chat'):
-                # Assume chat method takes system and messages
-                response_text = await self.llm.chat(
-                    system="You are a helpful assistant that extracts entities and relationships from text.",
-                    messages=[{"role": "user", "content": prompt}]
-                )
-            else:
-                # Assume it's a callable that returns text
-                response_text = await self.llm(prompt)
 
-            # DEBUG: Log first 500 chars of LLM response
-            logger.info(f"LLM extraction response (first 500 chars): {response_text[:500]}")
+        # Call LLM with retry logic
+        response_text = await self._call_llm_with_retry(prompt)
 
-            # Parse response
-            lines = response_text.strip().split('\n')
-            maybe_nodes = defaultdict(list)
-            maybe_edges = defaultdict(list)
+        # DEBUG: Log first 500 chars of LLM response
+        logger.info(f"LLM extraction response (first 500 chars): {response_text[:500]}")
 
-            for line in lines:
-                line = line.strip()
-                if not line or '[COMPLETED]' in line:
-                    continue
-                
-                # Skip lines that are clearly markdown formatting or non-data
-                if should_skip_line(line):
-                    logger.debug(f"Skipping non-data line: {line[:100]}")
-                    continue
-                
-                # Remove surrounding parentheses if present
-                if line.startswith('(') and line.endswith(')'):
-                    line = line[1:-1]
+        # Parse response
+        lines = response_text.strip().split('\n')
+        maybe_nodes = defaultdict(list)
+        maybe_edges = defaultdict(list)
 
-                # Try to split with different delimiters (LLM may use different quote patterns)
-                # First try with double quotes: "entity"",""name"",""type
-                # Then try with single quotes: "entity","name","type
-                record_attributes = split_string_by_multi_markers(line, ['"",""', '","'])
-                logger.debug(f"Parsed attributes ({len(record_attributes)}): {record_attributes}")
-                
-                # Skip lines that produce very few fields (likely not data)
-                if len(record_attributes) < 2:
-                    logger.debug(f"Skipping line with insufficient parsed fields ({len(record_attributes)}): {line[:100]}")
-                    continue
-                
-                # Try to parse as entity
-                entity = handle_single_entity_extraction(record_attributes, chunk_key)
-                if entity:
-                    maybe_nodes[entity["entity_name"]].append(entity)
-                    continue
-                
-                # Try to parse as relationship
-                rel = handle_single_relationship_extraction(record_attributes, chunk_key)
-                if rel:
-                    maybe_edges[(rel["src_id"], rel["tgt_id"])].append(rel)
-            
-            return dict(maybe_nodes), dict(maybe_edges), len(response_text.split())
-            
-        except Exception as e:
-            logger.exception(f"Error extracting from chunk {chunk_key}")
-            return {}, {}, 0
+        for line in lines:
+            line = line.strip()
+            if not line or '[COMPLETED]' in line:
+                continue
+
+            # Skip lines that are clearly markdown formatting or non-data
+            if should_skip_line(line):
+                logger.debug(f"Skipping non-data line: {line[:100]}")
+                continue
+
+            # Remove surrounding parentheses if present
+            if line.startswith('(') and line.endswith(')'):
+                line = line[1:-1]
+
+            # Try to split with different delimiters (LLM may use different quote patterns)
+            # First try with double quotes: "entity"",""name"",""type
+            # Then try with single quotes: "entity","name","type
+            record_attributes = split_string_by_multi_markers(line, ['"",""', '","'])
+            logger.debug(f"Parsed attributes ({len(record_attributes)}): {record_attributes}")
+
+            # Skip lines that produce very few fields (likely not data)
+            if len(record_attributes) < 2:
+                logger.debug(f"Skipping line with insufficient parsed fields ({len(record_attributes)}): {line[:100]}")
+                continue
+
+            # Try to parse as entity
+            entity = handle_single_entity_extraction(record_attributes, chunk_key)
+            if entity:
+                maybe_nodes[entity["entity_name"]].append(entity)
+                continue
+
+            # Try to parse as relationship
+            rel = handle_single_relationship_extraction(record_attributes, chunk_key)
+            if rel:
+                maybe_edges[(rel["src_id"], rel["tgt_id"])].append(rel)
+
+        return dict(maybe_nodes), dict(maybe_edges), len(response_text.split())
     
-    async def extract(self, doc_id: str, chunks: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    async def extract(self, doc_id: str, chunks: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[str]]:
         """
         Extract entities and relationships from multiple chunks.
-        
+
+        Chunks that permanently fail (after all retries) are collected in ``failed_chunks``
+        so the caller can log them, retry later, or surface them in the API response.
+
         Args:
             doc_id: Document identifier
             chunks: List of dictionaries containing 'id' and 'text'
-            
+
         Returns:
-            Tuple of (entities_list, relationships_list)
+            Tuple of (entities_list, relationships_list, failed_chunk_ids)
         """
         all_nodes = defaultdict(list)
         all_edges = defaultdict(list)
         total_tokens = 0
-        
+        failed_chunks: List[str] = []
+
         # Process chunks sequentially (can be parallelized later)
         for i, chunk in enumerate(chunks):
             chunk_id = chunk.get("id", f"{doc_id}_{i}")
             chunk_text = chunk.get("text", "")
-            
+
             if not chunk_text:
                 continue
-                
+
             logger.info(f"Processing chunk {i+1}/{len(chunks)} (ID: {chunk_id})")
-            
-            nodes, edges, tokens = await self.extract_chunk(chunk_id, chunk_text)
+
+            try:
+                nodes, edges, tokens = await self.extract_chunk(chunk_id, chunk_text)
+            except Exception as e:
+                logger.error(
+                    f"Chunk {chunk_id} permanently failed after {self.max_retries} retries "
+                    f"({type(e).__name__}: {e}) – skipping"
+                )
+                failed_chunks.append(chunk_id)
+                continue
+
             total_tokens += tokens
-            
+
             # Merge results
             for entity_name, entity_list in nodes.items():
                 all_nodes[entity_name].extend(entity_list)
-            
+
             for edge_key, edge_list in edges.items():
                 all_edges[edge_key].extend(edge_list)
-        
-        logger.info(f"Extracted {len(all_nodes)} unique entities and {len(all_edges)} unique relationships from {len(chunks)} chunks")
+
+        if failed_chunks:
+            logger.warning(
+                f"{len(failed_chunks)}/{len(chunks)} chunk(s) could not be processed: "
+                f"{failed_chunks}"
+            )
+
+        logger.info(
+            f"Extracted {len(all_nodes)} unique entities and {len(all_edges)} unique relationships "
+            f"from {len(chunks) - len(failed_chunks)}/{len(chunks)} chunks"
+        )
         
         # Merge duplicate entities
         merged_entities = []
@@ -423,8 +502,8 @@ class GraphRAGExtractor:
                 "keywords": keywords,
                 "source_id": source_ids
             })
-        
-        return merged_entities, merged_relationships
+
+        return merged_entities, merged_relationships, failed_chunks
         
         
         
