@@ -7,6 +7,12 @@
 
 ---
 ## [2026-02-25]
+### 0.9.0-rc2
+- Fixed: ModuleNotFoundError in the multimodal_search module
+- Updated: API documentation and README.md with a new section on conversation history management 
+
+---
+## [2026-02-25]
 ### 0.9.0-rc1
 - Added: GraphRAG support integrated with FalkorDB for enhanced information retrieval.
 - Added: Taskiq integration configured with Redis to handle heavy asynchronous tasks.
