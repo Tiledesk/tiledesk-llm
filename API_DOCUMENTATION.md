@@ -18,7 +18,8 @@ Complete REST API documentation for Tiledesk LLM server.
 - [Conversion APIs](#conversion-apis)
 - [Tag Filtering](#tag-filtering)
 - [Tools Registry APIs](#tools-registry-apis)
-- [Knowledge Graph APIs](#knowledge-graph-apis)
+- [Knowledge Graph APIs (Neo4j)](#knowledge-graph-apis)
+- [Knowledge Graph APIs (FalkorDB)](#knowledge-graph-apis-falkordb)
 - [Authentication](#authentication)
 - [Data Models](#data-models)
 
@@ -509,7 +510,7 @@ Converts files between different formats.
 
 ---
 
-## Knowledge Graph APIs
+## Knowledge Graph APIs (Neo4j)
 
 The Knowledge Graph module provides GraphRAG (Graph-based Retrieval Augmented Generation) capabilities using Neo4j and MinIO.
 
@@ -846,6 +847,52 @@ Lists all available tools in the system.
   }
 ]
 ```
+
+---
+
+## Knowledge Graph APIs (FalkorDB)
+
+The Knowledge Graph module provides advanced graph-based retrieval using FalkorDB (Redis-based graph database). All endpoints are prefixed with `/api/kg-falkor/`.
+
+### Utility Endpoints
+- `GET /api/kg-falkor/health` - Check FalkorDB connection health
+- `GET /api/kg-falkor/stats` - Get database statistics (node count, relationship count, etc.)
+- `GET /api/kg-falkor/tasks/{task_id}` - Check status of an asynchronous task
+
+### Node Management
+- `POST /api/kg-falkor/nodes` - Create a new node
+- `GET /api/kg-falkor/nodes/{node_id}` - Read node by ID
+- `GET /api/kg-falkor/nodes` - List nodes (optional filters: label, namespace, index_name)
+- `GET /api/kg-falkor/nodes/search` - Search nodes by text across searchable properties
+- `PUT /api/kg-falkor/nodes/{node_id}` - Update node
+- `PATCH /api/kg-falkor/nodes/{node_id}` - Partially update node
+- `DELETE /api/kg-falkor/nodes/{node_id}` - Delete node
+
+### Relationship Management
+- `POST /api/kg-falkor/relationships` - Create relationship between nodes
+- `GET /api/kg-falkor/relationships/{relationship_id}` - Read relationship by ID
+- `GET /api/kg-falkor/nodes/{node_id}/relationships` - List relationships for a node (direction: incoming/outgoing/both)
+- `PUT /api/kg-falkor/relationships/{relationship_id}` - Update relationship
+- `PATCH /api/kg-falkor/relationships/{relationship_id}` - Partially update relationship
+- `DELETE /api/kg-falkor/relationships/{relationship_id}` - Delete relationship
+
+### Graph Operations
+- `POST /api/kg-falkor/create` - Create/import knowledge graph from vector store namespace (async)
+- `POST /api/kg-falkor/add-document` - Add a single document to existing knowledge graph and update community reports (async)
+- `POST /api/kg-falkor/louvain-cluster` - Perform Louvain clustering with MinIO storage (async)
+- `POST /api/kg-falkor/leiden-cluster` - Perform Leiden clustering (async)
+- `POST /api/kg-falkor/hierarchical` - Perform Hierarchical Clustering (async)
+- `POST /api/kg-falkor/community-analysis` - Perform community analysis (async)
+
+### Search & QA
+- `POST /api/kg-falkor/qa` - Community/Global search on community reports
+- `POST /api/kg-falkor/hybrid` - Integrated hybrid search (Global + Local + Graph expansion)
+- `POST /api/kg-falkor/advancedqa` - Advanced QA with context fusion, reranking, and adaptive expansion
+- `POST /api/kg-falkor/agenticqa` - Agentic QA with iterative reasoning and tool usage
+- `GET /api/kg-falkor/network` - Get network visualization data (nodes and relationships)
+- `POST /api/kg-falkor/multimodal-search` - Multimodal search combining text and image embeddings
+
+For detailed request/response schemas and examples, refer to the [Knowledge Graph FalkorDB README](tilellm/modules/knowledge_graph_falkor/README.md).
 
 ---
 

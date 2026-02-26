@@ -29,6 +29,7 @@ Tiledesk LLM is a powerful backend service designed for Retrieval-Augmented Gene
   - [Semantic Chunks](#semantic-chunks)
   - [Reranker](#reranker)
   - [Structured Output](#structured-output)
+  - [Conversation History Management](#conversation-history-management)
   - [Tag Filtering](#tag-filtering)
   - [MCP (Model Context Protocol) Integration](#mcp-model-context-protocol-integration)
 
@@ -349,9 +350,12 @@ export FALKORDB_URI="redis://localhost:6380"
 # Optional: Use same Redis instance as application
 # export FALKORDB_URI=$REDIS_URL
 
-# Optional: Configure connection pool
+# Connection pool settings (optional)
 export FALKORDB_MAX_CONNECTIONS=50
-export FALKORDB_SOCKET_TIMEOUT=30
+export FALKORDB_SOCKET_TIMEOUT=30.0
+export FALKORDB_SOCKET_CONNECT_TIMEOUT=10.0
+export FALKORDB_SOCKET_KEEPALIVE=True
+export FALKORDB_RETRY_ON_TIMEOUT=True
 ```
 
 #### Features
@@ -427,7 +431,7 @@ Tiledesk LLM now features a modular architecture that allows you to enable or di
 - **MinIO Integration**: Efficient storage of community reports, entities, and relationships in Parquet format
 - **DuckDB**: Fast analytical queries on exported graph data
 
-Note: For more in-depth information regarding the architecture and module specifics, check the KG [README](tilellm/modules/knowledge_graph/README.md), [FalkorDB README](tilellm/modules/knowledge_graph_falkor/README.md), and the [Architecture Report](tilellm/modules/knowledge_graph/REPORT.md). For improvement suggestions based on latest GraphRAG research (2024-2026), see [IMPROVEMENTS.md](tilellm/modules/knowledge_graph_falkor/IMPROVEMENTS.md).
+Note: For more in-depth information regarding the architecture and module specifics, check the KG [README](tilellm/modules/knowledge_graph/README.md), [FalkorDB README](tilellm/modules/knowledge_graph_falkor/README.md), and the [Architecture Report](tilellm/modules/knowledge_graph_falkor/docs/REPORT.md). 
 
 ## Configuration-Based Module Loading
 
@@ -832,7 +836,120 @@ Then, make a request to `/api/ask` with the schema:
 - If the LLM fails to produce a valid JSON object conforming to the schema, an error is returned.
 - Structured output works with both streaming and non‑streaming requests.
 - For `/api/thinking` and `/api/qa`, the structured answer is returned in the `answer` field, while reasoning content (if any) is placed in `reasoning_content`.
-- Requires LLM providers that support structured output (OpenAI, Anthropic, Google Gemini, and other compatible providers).
+ - Requires LLM providers that support structured output (OpenAI, Anthropic, Google Gemini, and other compatible providers).
+
+### Conversation History Management
+
+The Tiledesk LLM system provides sophisticated conversation history management across all question‑answering endpoints (`/api/qa`, `/api/ask`, `/api/thinking`). History is preserved as a `chat_history_dict` mapping turn IDs to `ChatEntry` objects, enabling multi‑turn conversations with contextual awareness and adaptive retrieval strategies.
+
+#### Key Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `chat_history_dict` | `Dict[str, ChatEntry]` | `None` | Dictionary mapping turn IDs (sequential integers as strings) to `ChatEntry` objects containing `question` and `answer`. Pass this field in each request to maintain conversation continuity. |
+| `include_history_in_prompt` | `bool` | `True` | Whether to include conversation history directly in the LLM prompt. When `True`, history is injected as formatted text or structured messages; when `False`, only the current query is processed. |
+| `contextualize_prompt` | `bool` | `False` | **Query Rewriting for Retrieval**: When enabled, the system uses the LLM to rewrite the user’s query considering previous conversation turns, improving retrieval relevance in RAG pipelines. |
+| `max_history_messages` | `int` | `10` | Maximum number of conversation turns (question‑answer pairs) to retain. Older turns are automatically trimmed or summarized. |
+| `conversation_summary` | `bool` | `False` | When `True` and history exceeds `max_history_messages`, the oldest turns are summarized into a concise summary using an extra LLM call, preserving context without token bloat. |
+
+#### Data Structure
+
+Each `ChatEntry` contains:
+- `question`: The user’s input (can be a string or a list of multimodal content objects).
+- `answer`: The assistant’s response (string).
+
+The `chat_history_dict` uses sequential integer keys (as strings) to maintain chronological order. The system automatically appends each new turn with the next available key (e.g., after keys `"0"` and `"1"`, the next turn becomes `"2"`). The updated dictionary is returned in every response, ready to be passed to the subsequent request.
+
+```json
+{
+  "0": {"question": "What is Python?", "answer": "Python is a programming language."},
+  "1": {"question": "What is its latest version?", "answer": "Python 3.12 is the latest stable version."}
+}
+```
+
+#### History Processing Algorithms
+
+**1. Trimming** (`trim_history`)
+- Sorts keys as integers, keeps only the last `max_history_messages` turns.
+- Applied automatically when `max_history_messages > 0`.
+
+**2. Summarization** (`summarize_history`)
+- When `conversation_summary=True` and history exceeds the limit, the oldest turns are summarized via an LLM call.
+- The summary is injected as a `SystemMessage` before the recent turns, preserving long‑term context.
+
+**3. Structured vs. Textual History Injection**
+- **`contextualize_prompt=False` (default)**: History is passed as structured `HumanMessage`/`AIMessage` pairs, ideal for modern LLMs with native chat memory.
+- **`contextualize_prompt=True`**: History is flattened into a single text block and inserted into the system prompt; used for retrieval‑time query rewriting.
+
+**4. Query Contextualization for Retrieval**
+- In GraphRAG services (`advanced_qa_service`, `community_graph_service`, `agentic_qa_service`), when `contextualize_prompt=True` the LLM rewrites the current query using the conversation history before searching the vector store and knowledge graph.
+- Improves recall for follow‑up questions (e.g., “What about its performance?” after discussing a product).
+
+**5. Hybrid History‑Aware GraphRAG**
+- **Community Reports**: History influences which community reports are retrieved (global context).
+- **Adaptive Expansion**: Query‑type detection (exploratory/technical/relational) adjusts graph‑expansion depth based on historical context.
+- **Context Fusion**: Combines global (community), local (vector+keyword), and graph‑expansion results, weighted by historical relevance.
+
+#### Usage Examples
+
+**Basic Multi‑turn Conversation**
+```json
+{
+  "question": "What about its performance?",
+  "namespace": "my-docs",
+  "llm": "openai",
+  "model": "gpt-4o",
+  "chat_history_dict": {
+    "0": {"question": "Tell me about Product X.", "answer": "Product X is a scalable cloud database."},
+    "1": {"question": "What are its features?", "answer": "It offers auto‑scaling, encryption, and multi‑region replication."}
+  },
+  "include_history_in_prompt": true,
+  "max_history_messages": 10
+}
+```
+
+**Query Rewriting for Improved Retrieval**
+```json
+{
+  "question": "How does it compare to Product Y?",
+  "namespace": "my-docs",
+  "contextualize_prompt": true,
+  "chat_history_dict": {
+    "0": {"question": "What is Product X?", "answer": "Product X is a cloud database."},
+    "1": {"question": "What about Product Y?", "answer": "Product Y is a competing database."}
+  }
+}
+```
+
+**History Summarization for Long Conversations**
+```json
+{
+  "question": "Based on our discussion, what should I choose?",
+  "namespace": "my-docs",
+  "max_history_messages": 5,
+  "conversation_summary": true,
+  "chat_history_dict": { ... }  // 20 previous turns
+}
+```
+
+#### Integration with Advanced GraphRAG Endpoints
+
+The Knowledge Graph (GraphRAG) modules leverage conversation history for:
+
+- **Contextualized Query Generation**: Rewrites queries using history before vector and graph searches.
+- **Community‑Aware Retrieval**: Prioritizes community reports that align with the conversation topic.
+- **Adaptive Graph Expansion**: Increases expansion depth for exploratory queries, reduces for technical follow‑ups.
+- **Multi‑Hop Reasoning**: Uses historical entities and relationships to guide graph traversals.
+
+All GraphRAG services (`/api/kg/advanced‑qa`, `/api/kg/community‑graph`, `/api/kg/agentic‑qa`) accept the same history parameters and automatically apply the appropriate algorithms.
+
+#### Notes
+
+- History is **not** persisted server‑side between requests; clients must send `chat_history_dict` with each turn.
+- The system automatically updates the dictionary with the new turn’s question and answer, returning the updated `chat_history_dict` in the response.
+- For streaming responses, history is updated after the stream completes.
+- Works with all supported LLM providers and vector stores (Pinecone, Qdrant, Milvus, Redis).
+- Compatible with hybrid search, reranking, tag filtering, and structured output features.
 
 ### Tag Filtering
 Tag filtering allows you to filter documents by tags during indexing and querying. You can assign tags to documents when indexing and use boolean expressions or simple lists to filter results during retrieval.

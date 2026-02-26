@@ -1,30 +1,23 @@
 import asyncio
 import json
 import os
-from functools import lru_cache
 
 from functools import wraps
 import hashlib
 
 import logging
-from typing import Dict, Any, Callable, Tuple
+from typing import Dict, Any, Callable, Tuple, Optional
 
 from langchain_community.callbacks.openai_info import OpenAICallbackHandler
-from langchain_deepseek import ChatDeepSeek
 
-from tilellm.models import LlmEmbeddingModel, LLMEmbeddingProviders  # EmbeddingModel
-from tilellm.shared import const
+from tilellm.models import LlmEmbeddingModel  # EmbeddingModel
 
-from langchain_openai.chat_models import ChatOpenAI
-from langchain_anthropic import ChatAnthropic
 
 
 from tilellm.shared.embedding_factory import EmbeddingFactory, AsyncEmbeddingFactory
 from tilellm.shared.tiledesk_chatmodel_info import TiledeskAICallbackHandler
 from tilellm.shared.timed_cache import TimedCache
 from tilellm.shared.llm_config import get_llm_params
-
-from tilellm.models.llm import LlmEmbeddingModel # Need this import
 
 logger = logging.getLogger(__name__)
 
@@ -138,9 +131,17 @@ def get_service_config():
     }
 
     # FalkorDB Configuration
-    falkordb_uri = os.environ.get("FALKORDB_URI", os.environ.get("REDIS_URL", "redis://localhost:6380/0"))
+    falkordb_uri = os.environ.get("FALKORDB_URI", "redis://localhost:6380/0")
     # Parse URI for host, port, db, username, password
     original_uri = falkordb_uri
+    
+    # Helper to clean empty strings to None
+    def _clean_auth(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip()
+        return value if value else None
+    
     try:
         # Remove redis://
         uri_to_parse = falkordb_uri
@@ -158,6 +159,11 @@ def get_service_config():
             host_part = uri_to_parse
             falkordb_username = None
             falkordb_password = None
+        
+        # Clean username and password (empty strings -> None)
+        falkordb_username = _clean_auth(falkordb_username)
+        falkordb_password = _clean_auth(falkordb_password)
+        
         # Split host:port/db
         if ":" in host_part:
             host_port_part, *db_part = host_part.split("/", 1)
@@ -182,7 +188,11 @@ def get_service_config():
         "db": db,
         "username": falkordb_username,
         "password": falkordb_password,
-        "graph_name": os.environ.get("FALKORDB_GRAPH_NAME", "knowledge_graph")
+        "max_connections": int(os.environ.get("FALKORDB_MAX_CONNECTIONS", "50")),
+        "socket_timeout": float(os.environ.get("FALKORDB_SOCKET_TIMEOUT", "30.0")),
+        "socket_connect_timeout": float(os.environ.get("FALKORDB_SOCKET_CONNECT_TIMEOUT", "10.0")),
+        "socket_keepalive": _str_to_bool(os.environ.get("FALKORDB_SOCKET_KEEPALIVE", "True")),
+        "retry_on_timeout": _str_to_bool(os.environ.get("FALKORDB_RETRY_ON_TIMEOUT", "True"))
     }
 
     # Redis Configuration
@@ -246,7 +256,7 @@ async def _get_llm_config_for_client(question, llm_params: Dict[str, Any]) -> Di
             api_key_param = question.gptkey
             
         model_name_param = question.model if isinstance(question.model, str) else (question.model.name if hasattr(question.model, 'name') else None)
-        base_url_param = question.model.url if hasattr(question.model, 'url') else None
+        base_url_param = None if isinstance(question.model, str) else (question.model.url if hasattr(question.model, 'url') else None)
         #provider_param = question.llm if isinstance(question.llm, str) else (question.model.provider if hasattr(question.model, 'provider') else None)
 
     # Default vLLM base_url if not specified
@@ -410,22 +420,9 @@ def inject_repo_async(func: Callable) -> Callable:
 
         repo_type = question.engine.type if engine_name == 'pinecone' else None
 
-        # Costruisci chiave cache
-        #cache_key_parts = [engine_name]
-        #if repo_type:
-        #    cache_key_parts.append(repo_type)
+        cache_key_tuple = await _build_repository_cache_key(question)  # type: ignore
 
-        #if hasattr(question.engine, 'host') and question.engine.host:
-        #    cache_key_parts.append(question.engine.host)
-        #elif hasattr(question.engine, 'endpoint') and question.engine.endpoint:
-        #    cache_key_parts.append(question.engine.endpoint)
-
-        #_hash_api_key(str(question.engine.get("api_key").get_secret_value())) if temp_client_base_config.get(
-        #    "api_key") else "no_key"
-        cache_key_tuple = await _build_repository_cache_key(question)
-
-        key_string = "|".join([str(item) for item in cache_key_tuple])
-        cache_key = _hash_api_key(key_string)
+        cache_key = cache_key_tuple
 
         async def _async_creator() -> Any:
             """Factory function async per creare nuove istanze del repository"""
@@ -470,7 +467,7 @@ def inject_repo_async(func: Callable) -> Callable:
 
         try:
             # Ottieni il repository dalla cache (versione async)
-            repo = await TimedCache.async_get(
+            repo = await TimedCache.async_get(  # type: ignore
                 object_type="repository",
                 key=cache_key,
                 constructor=_async_creator
@@ -517,7 +514,7 @@ def inject_llm(func):
             cache_key_parts = [
                 question.llm,
                 temp_client_base_config.get("model") if temp_client_base_config.get("model") else (question.model if isinstance(question.model, str) else question.model.name if hasattr(question.model, 'name') else None),
-                _hash_api_key(str(temp_client_base_config.get("api_key").get_secret_value())) if temp_client_base_config.get("api_key") else "no_key"
+                _hash_api_key(str(temp_client_base_config.get("api_key").get_secret_value())) if temp_client_base_config.get("api_key") else "no_key"  # type: ignore  # type: ignore
             ]
             if temp_client_base_config.get("base_url"):
                 cache_key_parts.append(temp_client_base_config.get("base_url"))
@@ -670,7 +667,7 @@ async def _build_standard_llm_cache_key(question) -> Tuple:
 
     # Aggiungi URL per modelli self-hosted
     if question.llm in ["vllm", "ollama"] and hasattr(question.model, 'url'):
-        cache_key_parts.append(question.model.url)
+        cache_key_parts.append(question.model.url)  # type: ignore
 
     return tuple(cache_key_parts)
 
@@ -701,7 +698,7 @@ def inject_llm_chat(func):
             llm_cache_key_parts = [
                 question.llm,
                 temp_client_base_config.get("model") if temp_client_base_config.get("model") else (question.model if isinstance(question.model, str) else (question.model.name if hasattr(question.model, 'name') else None)),
-                _hash_api_key(str(temp_client_base_config.get("api_key").get_secret_value())) if temp_client_base_config.get("api_key") else "no_key"
+                _hash_api_key(str(temp_client_base_config.get("api_key").get_secret_value())) if temp_client_base_config.get("api_key") else "no_key"  # type: ignore
             ]
             if temp_client_base_config.get("base_url"):
                 llm_cache_key_parts.append(temp_client_base_config.get("base_url"))
@@ -981,14 +978,13 @@ async def _build_llm_cache_key_old(question) -> tuple:
 
     # Aggiungi URL per modelli self-hosted
     if question.llm in ["vllm", "ollama"] and hasattr(question.model, 'url'):
-        cache_key_parts.append(question.model.url)
+        cache_key_parts.append(question.model.url)  # type: ignore
 
     return tuple(cache_key_parts)
 
 async def _build_llm_cache_key(question) -> tuple:
     """Costruisce la chiave di cache per il modello LLM"""
 
-    cache_key_parts = ["chat"]
     cache_key_parts_dic = {}
 
     if isinstance(question.model, LlmEmbeddingModel):  # EmbeddingModel):
@@ -996,7 +992,7 @@ async def _build_llm_cache_key(question) -> tuple:
             "model_type": "chat_object",
             "provider": question.model.provider,
             "model_name": question.model.name,
-            "api_key": _hash_api_key(str(question.model.api_key.get_secret_value())),  # Hash della chiave
+            "api_key": _hash_api_key(str(question.model.api_key.get_secret_value())),  # Hash della chiave  # type: ignore
             #"base_url": question.model.url
         }
         if question.model.url is not None:
@@ -1037,7 +1033,7 @@ async def _build_embedding_cache_key(question) -> tuple:
             "embedding_type": "object",
             "provider": question.embedding.provider,
             "model_name": question.embedding.name,
-            "api_key": _hash_api_key(str(question.embedding.api_key.get_secret_value())),  # Hash della chiave
+            "api_key": _hash_api_key(str(question.embedding.api_key.get_secret_value())),  # Hash della chiave  # type: ignore
             "base_url": question.embedding.url
         }
     else:  # Modalità legacy con stringa
@@ -1058,11 +1054,10 @@ async def _create_llm_instance(question):
 
     try:
 
-        provider_param = question.model.provider.value if hasattr(question.model, 'provider') else question.llm if isinstance(
-            question.llm, str) else None
+        provider_param = question.model.provider.value if hasattr(question.model, 'provider') else question.llm
 
         llm_params = get_llm_params(
-            provider=provider_param,
+            provider=provider_param,  # type: ignore
             temperature=question.temperature,
             top_p=question.top_p,
             max_tokens=question.max_tokens
@@ -1277,7 +1272,7 @@ def inject_reason_llm(func):
                 "reasoning", # Add type to distinguish from standard LLM
                 question.llm,
                 temp_client_base_config.get("model") if temp_client_base_config.get("model") else (question.model if isinstance(question.model, str) else (question.model.name if hasattr(question.model, 'name') else None)),
-                _hash_api_key(str(temp_client_base_config.get("api_key").get_secret_value())) if temp_client_base_config.get("api_key") else "no_key"
+                _hash_api_key(str(temp_client_base_config.get("api_key").get_secret_value())) if temp_client_base_config.get("api_key") else "no_key"  # type: ignore
             ]
             if temp_client_base_config.get("base_url"):
                 cache_key_parts.append(temp_client_base_config.get("base_url"))
@@ -1416,7 +1411,7 @@ async def _build_reasoning_llm_cache_key(question) -> Tuple:
 
     # Aggiungi URL per modelli self-hosted se necessario
     if question.llm in ["vllm", "ollama"] and hasattr(question.model, 'url'):
-        cache_key_parts.append(question.model.url)
+        cache_key_parts.append(question.model.url)  # type: ignore
 
     return tuple(cache_key_parts)
 

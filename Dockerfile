@@ -70,4 +70,4 @@ RUN if [ "$DOWLOADMODEL" != "true" ]; then \
 
 EXPOSE 8000 3009
 RUN chmod +x /tiledesk-llm/entrypoint.sh
-ENTRYPOINT ["/tiledesk-llm/entrypoint.sh"]
+ENTRYPOINT ["sh","-c","/tiledesk-llm/entrypoint.sh & node /usr/src/app/index.js"]
