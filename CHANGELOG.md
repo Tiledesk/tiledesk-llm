@@ -5,6 +5,12 @@
     * Andrea Sponziello
 ### **Copyright**: Tiledesk SRL
 
+
+---
+## [2026-02-27]
+### 0.9.0-rc3
+- Fixed: MinIO connection error on startup
+
 ---
 ## [2026-02-25]
 ### 0.9.0-rc2
