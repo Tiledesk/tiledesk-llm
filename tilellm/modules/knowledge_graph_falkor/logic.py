@@ -63,11 +63,16 @@ async def initialize_services():
             logger.info("FalkorDB Knowledge Graph service is disabled in configuration (graphrag_falkor: false).")
             repository = None
             graph_service = GraphService()
-            graph_rag_service = GraphRAGService(graph_service=graph_service)
+            graph_rag_service = None  # Disable GraphRAG service completely
             logger.warning("FalkorDB Knowledge Graph services are DISABLED. API endpoints will fail if used.")
             return
     except Exception as e:
-        logger.warning(f"Failed to read service configuration: {e}. Assuming FalkorDB graphrag is enabled.")
+        logger.warning(f"Failed to read service configuration: {e}. Assuming FalkorDB graphrag is disabled for safety.")
+        repository = None
+        graph_service = GraphService()
+        graph_rag_service = None
+        logger.warning("FalkorDB Knowledge Graph services are DISABLED due to configuration error.")
+        return
 
     try:
         repository = AsyncFalkorGraphRepository()

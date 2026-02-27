@@ -73,7 +73,7 @@ class MinIOStorageService:
             raise ValueError("endpoint, access_key, and secret_key are required for MinIO configuration")
         
         self._client: Optional[Minio] = None
-        self._initialize()
+        # Lazy initialization - don't connect immediately
     
     def _initialize(self):
         """Initialize MinIO client and ensure bucket exists."""
@@ -92,17 +92,17 @@ class MinIOStorageService:
             else:
                 logger.info(f"MinIO bucket '{self.bucket_name}' already exists.")
                 
-        except S3Error as e:
-            logger.error(f"Failed to connect to MinIO at {self.endpoint}: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to connect to MinIO at {self.endpoint}: {e}. MinIO storage will be disabled.")
             self._client = None
-            raise RuntimeError(f"Failed to connect to MinIO: {e}")
     
     @property
     def client(self):
         """Get MinIO client, ensuring it's initialized."""
         if self._client is None:
             self._initialize()
-        assert self._client is not None, "MinIO client failed to initialize"
+            if self._client is None:
+                raise RuntimeError("MinIO client is not available. Check MinIO connection and configuration.")
         return self._client
     
     def upload_file(

@@ -849,6 +849,8 @@ async def process_pdf_markdown_extraction(
         logger.info(f"Created {len(documents)} Markdown chunks for indexing")
         
         # Index chunks to vector store
+        from pprint import pprint
+        pprint(documents)
         if documents:
             await repo.aadd_documents(
                 engine=question.engine,

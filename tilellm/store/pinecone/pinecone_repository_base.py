@@ -323,7 +323,9 @@ class PineconeRepositoryBase(VectorStoreRepository):
                 api_key=engine.apikey.get_secret_value()
             )
 
-            host = pc.describe_index(engine.index_name).host
+            index_info = pc.describe_index(engine.index_name)
+            host = index_info.host
+            dimension = index_info.dimension
             index = pc.IndexAsyncio(name=engine.index_name, host=host)
 
             async with index as index:
@@ -335,12 +337,12 @@ class PineconeRepositoryBase(VectorStoreRepository):
 
                 if namespaces:
                     if namespace in namespaces.keys():
-                        total_vectors = namespaces.get(namespace).get('vector_count')
+                        total_vectors = namespaces.get(namespace).vector_count
 
                 logger.debug(f"pinecone total vector in {namespace}: {total_vectors}")
                 batch_size = min([total_vectors, 10000])
                 pc_res = await index.query(
-                    vector=[0] * 1536,  # [0,0,0,0......0]
+                    vector=[0] * dimension,  # Zero vector matching index dimension
                     top_k=batch_size,
                     filter={"id": {"$eq": metadata_id}},
                     namespace=namespace,
@@ -398,7 +400,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
                 results = []
 
                 for namespace in namespaces.keys():
-                    total_vectors = namespaces.get(namespace).get('vector_count')
+                    total_vectors = namespaces.get(namespace).vector_count
                     pc_item_namespace = RepositoryItemNamespaceResult(namespace=namespace, vector_count=total_vectors)
                     results.append(pc_item_namespace)
                     logger.debug(f"{namespace}, {total_vectors}")
@@ -441,14 +443,19 @@ class PineconeRepositoryBase(VectorStoreRepository):
 
                 if namespaces:
                     if namespace in namespaces.keys():
-                        total_vectors = namespaces.get(namespace).get('vector_count')
+                        total_vectors = namespaces.get(namespace).vector_count
 
                 logger.debug(f"pinecone total vector in {namespace}: {total_vectors}")
 
                 batch_size = min([total_vectors, 1000])
+                
+                # Get index dimension from Pinecone API
+                index_info = pc.describe_index(engine.index_name)
+                dimension = index_info.dimension
+                logger.debug(f"Index dimension: {dimension}")
 
                 pc_res = await index.query(
-                    vector=[0] * 1536,  # [0,0,0,0......0]
+                    vector=[0] * dimension,  # Zero vector matching index dimension
                     top_k=batch_size,
                     # filter={"id": {"$eq": id}},
                     namespace=namespace,
@@ -495,7 +502,9 @@ class PineconeRepositoryBase(VectorStoreRepository):
                 api_key=engine.apikey.get_secret_value()
             )
 
-            host = pc.describe_index(engine.index_name).host
+            index_info = pc.describe_index(engine.index_name)
+            host = index_info.host
+            dimension = index_info.dimension
             index = pc.IndexAsyncio(name=engine.index_name, host=host)
 
             # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
@@ -508,7 +517,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
                 description = RepositoryItemNamespaceResult(namespace=namespace, vector_count=0)
                 if namespaces:
                     if namespace in namespaces.keys():
-                        total_vectors = namespaces.get(namespace).get('vector_count')
+                        total_vectors = namespaces.get(namespace).vector_count
                         description = RepositoryItemNamespaceResult(namespace=namespace, vector_count=total_vectors)
 
                 logger.debug(f"pinecone total vector in {namespace}: {total_vectors}")
@@ -516,7 +525,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
                 batch_size = min([total_vectors, 10000])
 
                 pc_res = await index.query(
-                    vector=[0] * 1536,  # [0,0,0,0......0]
+                    vector=[0] * dimension,  # Zero vector matching index dimension
                     top_k=batch_size,
                     # filter={"id": {"$eq": id}},
                     namespace=namespace,
@@ -566,7 +575,9 @@ class PineconeRepositoryBase(VectorStoreRepository):
                 api_key=engine.apikey.get_secret_value()
             )
 
-            host = pc.describe_index(engine.index_name).host
+            index_info = pc.describe_index(engine.index_name)
+            host = index_info.host
+            dimension = index_info.dimension
             index = pc.IndexAsyncio(name=engine.index_name, host=host)
 
             # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
@@ -578,11 +589,11 @@ class PineconeRepositoryBase(VectorStoreRepository):
 
                 if namespaces:
                     if namespace in namespaces.keys():
-                        total_vectors = namespaces.get(namespace).get('vector_count')
+                        total_vectors = namespaces.get(namespace).vector_count
 
                 logger.debug(f"pinecone total vector in {namespace}: {total_vectors}")
                 pc_res = await index.query(
-                    vector=[0] * 1536,  # [0,0,0,0......0]
+                    vector=[0] * dimension,  # Zero vector matching index dimension
                     top_k=total_vectors,
                     filter={"source": {"$eq": source}},
                     namespace=namespace,
@@ -694,25 +705,77 @@ class PineconeRepositoryBase(VectorStoreRepository):
     @staticmethod
     async def get_embeddings_dimension(embedding):
         """
-        Get embedding dimension for OpenAI embedding model
-        :param embedding:
+        Get embedding dimension for embedding model
+        :param embedding: string or LlmEmbeddingModel or LangChain Embeddings object
         :return:
         """
-        emb_dimension = 1536
-        try:
-            if embedding == "text-embedding-3-large":
-                emb_dimension = 3072
-            elif embedding == "text-embedding-3-small":
-                emb_dimension = 1536
-            else:
-                embedding = "text-embedding-ada-002"
-                emb_dimension = 1536
-
-        except IndexError:
-            embedding = "text-embedding-ada-002"
-            emb_dimension = 1536
-
-        return emb_dimension
+        from tilellm.models import LlmEmbeddingModel
+        
+        # First check if the object has a dimension attribute (e.g., ResilientEmbeddings)
+        if hasattr(embedding, 'dimension') and embedding.dimension is not None:
+            return embedding.dimension
+        
+        # Handle LlmEmbeddingModel
+        if isinstance(embedding, LlmEmbeddingModel):
+            # Use the dimension from the model if provided
+            if embedding.dimension is not None:
+                return embedding.dimension
+            # Otherwise fallback to default mapping
+            embedding_str = embedding.name
+        # Handle string
+        elif isinstance(embedding, str):
+            embedding_str = embedding
+        # Handle LangChain embedding objects (ResilientEmbeddings, OpenAIEmbeddings, etc.)
+        elif hasattr(embedding, 'model'):
+            # Try to get model name from LangChain embedding
+            embedding_str = str(embedding.model)
+        elif hasattr(embedding, 'model_name'):
+            embedding_str = embedding.model_name
+        else:
+            # Fallback to string representation
+            embedding_str = str(embedding)
+            logger.warning(f"Unknown embedding type: {type(embedding)}, using string representation: {embedding_str}")
+        
+        # Map known embedding model names to dimensions
+        # OpenAI models
+        if embedding_str == "text-embedding-3-large":
+            return 3072
+        elif embedding_str in ["text-embedding-3-small", "openai/text-embedding-3-small"]:
+            return 1536
+        elif embedding_str in ["text-embedding-ada-002", "openai/text-embedding-ada-002"]:
+            return 1536
+        # Azure OpenAI models
+        elif isinstance(embedding_str, str) and "text-embedding-3" in embedding_str and "small" in embedding_str.lower():
+            return 1536
+        elif isinstance(embedding_str, str) and "text-embedding-ada" in embedding_str:
+            return 1536
+        # Sentence Transformers
+        elif embedding_str == "sentence-transformers/all-MiniLM-L6-v2":
+            return 384
+        elif embedding_str == "sentence-transformers/all-mpnet-base-v2":
+            return 768
+        # BAAI models
+        elif embedding_str == "BAAI/bge-m3":
+            return 1024
+        elif embedding_str == "BAAI/bge-large-en":
+            return 1024
+        # TEI models (commonly 1024 dimensions)
+        elif isinstance(embedding_str, str) and ("e5-large" in embedding_str.lower() or "multilingual-e5" in embedding_str.lower()):
+            return 1024
+        # Cohere models
+        elif isinstance(embedding_str, str) and "cohere" in embedding_str.lower() and "embed" in embedding_str.lower():
+            return 1024
+        # If model name contains "1536" assume it's a 1536-dim model
+        elif isinstance(embedding_str, str) and "1536" in embedding_str:
+            return 1536
+        # If model name contains "3072" assume it's a 3072-dim model
+        elif isinstance(embedding_str, str) and "3072" in embedding_str:
+            return 3072
+        # If model name contains "1024" assume it's a 1024-dim model
+        elif isinstance(embedding_str, str) and "1024" in embedding_str:
+            return 1024
+        # Default fallback for unknown models
+        return 1536
 
 
 

@@ -1540,9 +1540,18 @@ class QdrantRepository(VectorStoreRepository):
         # Cohere models
         elif isinstance(embedding_str, str) and "cohere" in embedding_str.lower() and "embed" in embedding_str.lower():
             return 1024
+        # TEI models (commonly 1024 dimensions)
+        elif isinstance(embedding_str, str) and ("e5-large" in embedding_str.lower() or "multilingual-e5" in embedding_str.lower()):
+            return 1024
         # If model name contains "1536" assume it's a 1536-dim model
         elif isinstance(embedding_str, str) and "1536" in embedding_str:
             return 1536
+        # If model name contains "1024" assume it's a 1024-dim model
+        elif isinstance(embedding_str, str) and "1024" in embedding_str:
+            return 1024
+        # If model name contains "3072" assume it's a 3072-dim model
+        elif isinstance(embedding_str, str) and "3072" in embedding_str:
+            return 3072
         # If model name contains "768" assume it's a 768-dim model
         elif isinstance(embedding_str, str) and "768" in embedding_str:
             return 768

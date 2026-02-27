@@ -575,7 +575,7 @@ class GraphRAGService:
         self.graph_service = graph_service
         self.llm = llm
         self.vector_store_repository = vector_store_repository
-        self.minio_storage = MinIOStorageService()
+        self._minio_storage = None
 
     def set_llm(self, llm):
         """Set the LLM instance"""
@@ -584,6 +584,17 @@ class GraphRAGService:
     def set_vector_store_repository(self, repo):
         """Set the vector store repository"""
         self.vector_store_repository = repo
+
+    @property
+    def minio_storage(self):
+        """Get MinIO storage service (lazy initialization)."""
+        if self._minio_storage is None:
+            try:
+                self._minio_storage = MinIOStorageService()
+            except Exception as e:
+                logger.warning(f"Failed to initialize MinIO storage: {e}")
+                self._minio_storage = None
+        return self._minio_storage
 
     def _ensure_llm(self):
         """Ensure LLM is initialized"""
@@ -1341,7 +1352,11 @@ class GraphRAGService:
             local_path = Path(temp_dir) / "community_reports.parquet"
             
             try:
-                self.minio_storage.download_parquet_file(
+                minio_storage = self.minio_storage
+                if minio_storage is None:
+                    logger.warning(f"MinIO storage not available for namespace {namespace}. Global search might be empty.")
+                    return []
+                minio_storage.download_parquet_file(
                     namespace=namespace,
                     file_name="community_reports.parquet",
                     local_path=str(local_path),

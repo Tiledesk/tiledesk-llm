@@ -24,8 +24,7 @@ class GraphQARequest(QuestionAnswer):
             parts = [self.namespace]
             if self.creation_prompt:
                 parts.append(self.creation_prompt)
-            if self.index_name:
-                parts.append(self.index_name)
+            # Not including index_name in graph_db_name to maintain consistency with report namespace
             self.graph_db_name = "-".join(parts)
         return self
 
@@ -63,8 +62,7 @@ class GraphCreateRequest(QuestionAnswer):
             parts = [self.namespace]
             if self.creation_prompt:
                 parts.append(self.creation_prompt)
-            if self.index_name:
-                parts.append(self.index_name)
+            # Not including index_name in graph_db_name to maintain consistency with report namespace
             self.graph_db_name = "-".join(parts)
         return self
     # Note: llm_key, llm, model, etc. are inherited from QuestionAnswer
@@ -103,6 +101,7 @@ class GraphClusterRequest(QuestionAnswer):
     level: Optional[int] = 0
     namespace: Optional[str] = None
     index_name: Optional[str] = None
+    creation_prompt: str = Field(default="generic", description="Optional prompt for creation")
     graph_db_name: Optional[str] = Field(default=None, description="Graph name")
     engine: Optional[Engine] = None  # Added for report indexing
     overwrite: Optional[bool] = Field(
@@ -115,8 +114,9 @@ class GraphClusterRequest(QuestionAnswer):
     def set_graph_db_name_cluster(self) -> 'GraphClusterRequest':
         if not self.graph_db_name:
             parts = [self.namespace] if self.namespace else []
-            if self.index_name:
-                parts.append(self.index_name)
+            if self.creation_prompt:
+                parts.append(self.creation_prompt)
+            # Not including index_name in graph_db_name to maintain consistency with report namespace
             self.graph_db_name = "-".join(parts) if parts else "knowledge_graph"
         return self
 
@@ -192,9 +192,7 @@ class AddDocumentRequest(QuestionAnswer):
             parts = [self.namespace]
             if self.creation_prompt:
                 parts.append(self.creation_prompt)
-            index_name = self.engine.index_name if self.engine and self.engine.index_name else None
-            if index_name:
-                parts.append(index_name)
+            # Not including index_name in graph_db_name to maintain consistency with report namespace
             self.graph_db_name = "-".join(parts)
         return self
 
