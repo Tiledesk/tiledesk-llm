@@ -49,6 +49,7 @@ async def test_delete_namespace_success(mocker):
     mocker.patch('pinecone.Pinecone', return_value=mock_pinecone_client)
     mock_pinecone_client.IndexAsyncio.return_value = mock_index_async
     mock_pinecone_client.describe_index.return_value.host = "dummy-host"
+    mock_pinecone_client.describe_index.return_value.dimension = 1536
 
     repo = PineconeRepositoryServerless()
 
@@ -83,6 +84,7 @@ async def test_delete_ids_namespace_success(mocker):
 
     # Configure the synchronous client mocks
     mock_sync_pinecone_client.describe_index.return_value.host = "dummy-host"
+    mock_sync_pinecone_client.describe_index.return_value.dimension = 1536
     mock_sync_pinecone_client.Index.return_value = mock_sync_index
     mock_sync_index.list.return_value = [[f"{metadata_id}#chunk1", f"{metadata_id}#chunk2"]] # Simulates a list of IDs to delete
     
@@ -119,6 +121,7 @@ async def test_delete_chunk_id_namespace_success(mocker):
     mocker.patch('pinecone.Pinecone', return_value=mock_pinecone_client)
     mock_pinecone_client.IndexAsyncio.return_value = mock_index_async
     mock_pinecone_client.describe_index.return_value.host = "dummy-host"
+    mock_pinecone_client.describe_index.return_value.dimension = 1536
 
     repo = PineconeRepositoryServerless()
 
@@ -150,46 +153,47 @@ async def test_get_ids_namespace_success(mocker):
 
     # This configures what 'async with mock_async_index_context_manager as index_in_block:' will yield
     mock_index_in_block = MagicMock()
-    mock_async_index_context_manager.__aenter__.return_value = mock_index_in_block
-    mock_async_index_context_manager.__aexit__.return_value = False # To not suppress exceptions
+    mock_index_async.__aenter__.return_value = mock_index_in_block
+    mock_index_async.__aexit__.return_value = False # To not suppress exceptions
     
 
     # Now, configure the describe_index_stats on the object yielded by the context manager
     mock_index_stats_response_instance = MockIndexStatsResponse(namespaces_data={
         "my-namespace": {"vector_count": 100}
     })
-    mock_index_in_block.describe_index_stats.return_value = AsyncMock(return_value=mock_index_stats_response_instance)
+    mock_index_in_block.describe_index_stats = AsyncMock(return_value=mock_index_stats_response_instance)
 
     # Mock the query response on the object yielded by the context manager
-    mock_query_response = MagicMock(
-        matches=[
-            MagicMock(
-                id="chunk1",
-                metadata={
-                    "id": metadata_id,
-                    "source": "source1",
-                    "type": "type1",
-                    "date": "2025-01-01",
-                    "text": "content of chunk 1"
+    mock_query_response = {
+        'matches': [
+            {
+                'id': 'chunk1',
+                'metadata': {
+                    'id': metadata_id,
+                    'source': 'source1',
+                    'type': 'type1',
+                    'date': '2025-01-01',
+                    'text': 'content of chunk 1'
                 }
-            ),
-            MagicMock(
-                id="chunk2",
-                metadata={
-                    "id": metadata_id,
-                    "source": "source1",
-                    "type": "type1",
-                    "date": "2025-01-02",
-                    "text": "content of chunk 2"
+            },
+            {
+                'id': 'chunk2',
+                'metadata': {
+                    'id': metadata_id,
+                    'source': 'source1',
+                    'type': 'type1',
+                    'date': '2025-01-02',
+                    'text': 'content of chunk 2'
                 }
-            )
+            }
         ]
-    )
-    mock_index_in_block.query.return_value = AsyncMock(return_value=mock_query_response)
+    }
+    mock_index_in_block.query = AsyncMock(return_value=mock_query_response)
 
     mocker.patch('pinecone.Pinecone', return_value=mock_pinecone_client)
     mock_pinecone_client.IndexAsyncio.return_value = mock_index_async
     mock_pinecone_client.describe_index.return_value.host = "dummy-host"
+    mock_pinecone_client.describe_index.return_value.dimension = 1536
 
     repo = PineconeRepositoryServerless()
 

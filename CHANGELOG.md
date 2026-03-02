@@ -5,6 +5,10 @@
     * Andrea Sponziello
 ### **Copyright**: Tiledesk SRL
 
+---
+## [2026-03-02]
+### 0.9.0-rc4
+- Fixed: tags management in `add_item` function, when `type="text"`
 
 ---
 ## [2026-02-27]

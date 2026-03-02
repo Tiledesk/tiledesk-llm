@@ -257,6 +257,9 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                                         type=item.type,
                                         embedding=str(item.embedding),
                                         namespace=None).model_dump(exclude_none=False)
+                if item.tags:
+                    metadata["tags"] = item.tags
+
                 documents = await self.process_contents(type_source=item.type,
                                                         source=item.source,
                                                         metadata=metadata,
