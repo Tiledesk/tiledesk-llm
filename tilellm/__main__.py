@@ -1,8 +1,12 @@
 import os
+import json
+import logging.config
+
 from contextlib import asynccontextmanager
 from typing import Union
 from pathlib import Path
 from dotenv import load_dotenv
+from fastapi.exception_handlers import http_exception_handler
 
 # Load .env early so all os.environ.get() calls pick up values from .env
 _env_path = Path(__file__).parent.parent / '.env'
@@ -10,7 +14,8 @@ load_dotenv(_env_path)
 
 from fastapi import (FastAPI,
                      Depends,
-                     HTTPException)
+                     HTTPException,
+                     Request)
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi_cprofile.profiler import CProfileMiddleware
 from fastapi.responses import JSONResponse
@@ -18,7 +23,6 @@ from fastapi.responses import JSONResponse
 import asyncio
 from redis.asyncio import Redis, from_url
 import aiohttp
-import json
 
 
 from tilellm.shared.timed_cache import TimedCache
@@ -72,6 +76,32 @@ from tilellm.controller.controller import (ask_with_memory,
 import logging
 
 import sys
+
+
+def setup_logging():
+    with open("log_conf.json", "r") as f:
+        config = json.load(f)
+    # Leggi ENV e applica
+
+    # File handler
+    log_file_path = os.getenv("LOG_FILE_PATH", "app.log")
+    log_dir = Path(log_file_path).parent
+    log_dir.mkdir(parents=True, exist_ok=True)
+    config["handlers"]["file_handler"]["filename"] = log_file_path
+    config["handlers"]["file_handler"]["level"] = os.getenv("LOG_LEVEL_FILE", "INFO").upper()
+
+    # stdout handler
+    config["handlers"]["stdout"]["level"] = os.getenv("LOG_LEVEL_STDOUT", "INFO").upper()
+
+    # Livello dei logger Gunicorn/Uvicorn
+    sys_level = os.getenv("LOG_LEVEL_SYS", "INFO").upper()
+    for logger_name in ["gunicorn.error", "uvicorn.error"]:
+        if logger_name in config["loggers"]:
+            config["loggers"][logger_name]["level"] = sys_level
+
+    logging.config.dictConfig(config)
+
+setup_logging()
 
 # 1. Trova il percorso del file corrente (__main__.py)
 current_file_path = Path(__file__).resolve()
@@ -233,6 +263,8 @@ async def reader(channel: Redis):
         logger.debug(f"My role is {tilellm_role}")
 
 
+
+
 @asynccontextmanager
 async def redis_consumer(app: FastAPI):
     redis_client = None
@@ -299,33 +331,6 @@ async def redis_consumer(app: FastAPI):
         await TimedCache.async_clear_cache("vector_store_wrapper")
 
 
-# @asynccontextmanager
-#async def redis_consumer_A():
-#    redis_client = from_url(redis_url)
-#    await redis_xgroup_create(redis_client)
-#    asyncio.create_task(reader(redis_client))
-
-    # FalkorDB: Inizializzazione LAZY solo se servizio abilitato
-    # Non inizializzare qui per app modulare - verrà inizializzato on-demand
-#    logger.info("App startup complete - FalkorDB will initialize on first use if enabled")
-
-#    yield
-
-    # Cleanup FalkorDB connection on shutdown (se inizializzato)
-#    try:
-#        from tilellm.modules.knowledge_graph_falkor.logic import repository
-#        if repository:
-#            await repository.close()
-#            logger.info("FalkorDB connection closed")
-#    except Exception as e:
-        # Non è un errore se FalkorDB non era attivo
-#        pass
-
-#    await redis_client.close()
-#    await TimedCache.async_clear_cache("vector_store_wrapper")
-
-
-
 
 app = FastAPI(lifespan=redis_consumer)
 
@@ -336,13 +341,26 @@ ENABLE_PROFILER = os.getenv("ENABLE_PROFILER", "False").lower() == "true"
 if ENABLE_PROFILER:
     app.add_middleware(CProfileMiddleware, enable=True, print_each_request=True)
 
-# Leggi la variabile d'ambiente per il livello di log
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
-logging.getLogger().setLevel(LOG_LEVEL)
+@app.exception_handler(Exception)
+async def debug_exception_handler(request: Request, exc: Exception):
+    # 1. Se l'errore è una HTTPException (quella che lanci tu con i tuoi messaggi)
+    # la lasciamo passare senza loggare il traceback chilometrico (se non vuoi)
+    if isinstance(exc, HTTPException):
+        return await http_exception_handler(request, exc)
 
+    # 2. Se è un errore NON GESTITO (il crash che hai visto nel file log)
+    # Lo scriviamo nel file log con TUTTO il traceback
+    logger.error(
+        f"Uncaught Exception: {request.method} {request.url.path} - {type(exc).__name__}: {str(exc)}",
+        exc_info=True
+    )
 
-
+    # 3. Restituiamo una risposta di fallback per evitare che il client riceva il vuoto
+    return JSONResponse(
+        status_code=500,
+        content={"error": "Internal Server Error", "type": type(exc).__name__}
+    )
 
 @app.post("/api/scrape/enqueue", response_model=Union[AsyncTaskResponse, IndexingResult], tags=["Scrape"])
 async def enqueue_scrape_item_main(item: ItemSingle, redis_client: Redis = Depends(get_redis_client)):

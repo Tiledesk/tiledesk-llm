@@ -6,6 +6,7 @@ Handles service initialization, dependency injection, and core operations.
 import logging
 import os
 from typing import Dict, Any, Optional, List, Union
+import asyncio
 
 from tilellm.shared.utility import inject_llm_chat_async, inject_repo_async, inject_llm_async
 from tilellm.modules.pdf_ocr.models.pdf_scraping import PDFScrapingRequest
@@ -121,6 +122,8 @@ async def process_pdf_document_with_embeddings(
     try:
         # Process document from MinIO, file path, or direct content
         result = None
+        temp_file_path = None
+        
         if bucket_name and object_name:
             result = await processor.process_from_minio(
                 bucket_name=bucket_name,
@@ -134,8 +137,29 @@ async def process_pdf_document_with_embeddings(
                 doc_id=question.id,
                 doc_type=DocumentType.PDF
             )
+        elif question.is_url():
+            # Download from URL to temp file
+            import tempfile
+            import httpx
+            logger.info(f"Downloading PDF from URL: {question.file_content}")
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(question.file_content, follow_redirects=True, timeout=60)
+                    response.raise_for_status()
+                    tmp_file.write(response.content)
+                temp_file_path = tmp_file.name
+            
+            result = await processor.process_document(
+                file_path=temp_file_path,
+                doc_id=question.id,
+                doc_type=DocumentType.PDF
+            )
         else:
-            raise ValueError("Either bucket_name/object_name or file_path must be provided")
+            raise ValueError("Either bucket_name/object_name, file_path or a URL in file_content must be provided")
+        
+        # Cleanup temp file if created
+        if temp_file_path and os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
         
         # Generate captions for images if include_images is True
         if question.include_images and result and 'images' in result:
@@ -162,7 +186,7 @@ async def process_pdf_document_with_embeddings(
                 repo=repo,
                 llm_embeddings=llm_embeddings,
                 tables=result['tables'],
-                doc_id=question.id,
+                question=question,
                 namespace=namespace,
                 engine=question.engine,
                 sparse_encoder=question.sparse_encoder,
@@ -176,7 +200,7 @@ async def process_pdf_document_with_embeddings(
                 repo=repo,
                 llm_embeddings=llm_embeddings,
                 images=result['images'],
-                doc_id=question.id,
+                question=question,
                 namespace=namespace,
                 engine=question.engine,
                 sparse_encoder=question.sparse_encoder,
@@ -204,7 +228,7 @@ async def process_pdf_document_with_embeddings(
                 repo=repo,
                 llm_embeddings=llm_embeddings,
                 text_elements=result['text_elements'],
-                doc_id=question.id,
+                question=question,
                 namespace=namespace,
                 engine=question.engine,
                 sparse_encoder=question.sparse_encoder,
@@ -518,7 +542,7 @@ async def _index_text_chunks(
     repo,
     llm_embeddings,
     text_elements: list,
-    doc_id: str,
+    question: PDFScrapingRequest,
     namespace: str,
     engine,
     sparse_encoder: Union[str, TEIConfig, None] = None,
@@ -529,6 +553,7 @@ async def _index_text_chunks(
     Index text chunks to vector store.
     Uses ContextAwareChunker if hierarchy is available.
     """
+    doc_id = question.id
     if hierarchy:
         chunker = ContextAwareChunker()
         documents = chunker.chunk_with_structure(
@@ -538,12 +563,18 @@ async def _index_text_chunks(
         )
         for doc in documents:
             doc.metadata['namespace'] = namespace
+            doc.metadata['file_name'] = question.file_name
+            doc.metadata['file_content'] = question.file_content
+            doc.metadata['source'] = question.file_name
             if tags:
                 doc.metadata['tags'] = tags
     else:
         from langchain_core.documents import Document
         documents = []
         for element in text_elements:
+            # Yield control back to event loop for heartbeat
+            await asyncio.sleep(0)
+            
             text = element.get('text', '')
             if not text or not text.strip():
                 continue
@@ -555,7 +586,9 @@ async def _index_text_chunks(
                 'page': element.get('page', 0),
                 'type': element.get('type', 'text'),
                 'chunk_type': 'text',
-                'source': f"docling_{doc_id}",
+                'source': question.file_name,
+                'file_name': question.file_name,
+                'file_content': question.file_content,
                 'namespace': namespace
             }
             if tags:
@@ -578,7 +611,8 @@ async def _index_text_chunks(
         documents=documents,
         namespace=namespace,
         embedding_model=llm_embeddings,
-        sparse_encoder=sparse_encoder  # Can be configured from request if needed
+        sparse_encoder=sparse_encoder,  # Can be configured from request if needed
+        metadata_id=doc_id
     )
     
     logger.info(f"Successfully indexed {len(documents)} text chunks")
@@ -588,7 +622,7 @@ async def _index_tables_to_vector_store(
     repo,
     llm_embeddings,
     tables: list,
-    doc_id: str,
+    question: PDFScrapingRequest,
     namespace: str,
     engine,
     sparse_encoder: Union[str, TEIConfig, None] = None,
@@ -602,8 +636,10 @@ async def _index_tables_to_vector_store(
     if not tables:
         return
     
+    doc_id = question.id
     documents = []
     for table_data in tables:
+        await asyncio.sleep(0)
         table_id = table_data.get('id')
         
         # Use semantic description if available, otherwise fallback to basic description
@@ -623,7 +659,9 @@ async def _index_tables_to_vector_store(
             'page': table_data.get('page', 0),
             'answerable_questions': str(table_data.get('answerable_questions', [])),
             'columns': str(table_data.get('columns', [])),
-            'source': f"docling_{doc_id}",
+            'source': question.file_name,
+            'file_name': question.file_name,
+            'file_content': question.file_content,
             'namespace': namespace
         }
         if tags:
@@ -646,7 +684,8 @@ async def _index_tables_to_vector_store(
         documents=documents,
         namespace=namespace,
         embedding_model=llm_embeddings,
-        sparse_encoder=sparse_encoder
+        sparse_encoder=sparse_encoder,
+        metadata_id=doc_id
     )
     
     logger.info(f"Successfully indexed {len(documents)} table descriptions")
@@ -656,7 +695,7 @@ async def _index_images_to_vector_store(
     repo,
     llm_embeddings,
     images: list,
-    doc_id: str,
+    question: PDFScrapingRequest,
     namespace: str,
     engine,
     sparse_encoder: Union[str, TEIConfig, None] = None,
@@ -670,8 +709,10 @@ async def _index_images_to_vector_store(
     if not images:
         return
     
+    doc_id = question.id
     documents = []
     for image_data in images:
+        await asyncio.sleep(0)
         image_id = image_data.get('id')
         caption = image_data.get('caption')
         
@@ -689,7 +730,9 @@ async def _index_images_to_vector_store(
             'page': image_data.get('page', 0),
             'surrounding_text': image_data.get('surrounding_text', ''),
             'path': image_data.get('path', ''),
-            'source': f"docling_{doc_id}",
+            'source': question.file_name,
+            'file_name': question.file_name,
+            'file_content': question.file_content,
             'namespace': namespace
         }
         if tags:
@@ -712,7 +755,8 @@ async def _index_images_to_vector_store(
         documents=documents,
         namespace=namespace,
         embedding_model=llm_embeddings,
-        sparse_encoder=sparse_encoder
+        sparse_encoder=sparse_encoder,
+        metadata_id=doc_id
     )
     
     logger.info(f"Successfully indexed {len(documents)} image captions")
@@ -787,8 +831,20 @@ async def process_pdf_markdown_extraction(
             file_path_to_use = temp_file_path
         elif file_path:
             file_path_to_use = file_path
+        elif question.is_url():
+            # Download from URL to temp file
+            import tempfile
+            import httpx
+            logger.info(f"Downloading PDF from URL for Markdown extraction: {question.file_content}")
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(question.file_content, follow_redirects=True, timeout=60)
+                    response.raise_for_status()
+                    tmp_file.write(response.content)
+                temp_file_path = tmp_file.name
+            file_path_to_use = temp_file_path
         else:
-            raise ValueError("Either bucket_name/object_name or file_path must be provided")
+            raise ValueError("Either bucket_name/object_name, file_path or a URL in file_content must be provided")
         
         # Initialize LangGraph agent
         agent = MarkdownExtractionAgent()
@@ -826,6 +882,9 @@ async def process_pdf_markdown_extraction(
             'metadata_id': doc_id,
             'doc_id': doc_id,
             'source_type': 'markdown_extraction',
+            'source': question.file_name,
+            'file_name': question.file_name,
+            'file_content': question.file_content,
             'has_images': len(images) > 0,
             'has_tables': len(tables) > 0,
             'num_pages': metadata.get('num_pages', 0),
@@ -842,6 +901,7 @@ async def process_pdf_markdown_extraction(
         )
 
         for doc in documents:
+            await asyncio.sleep(0)
             doc.metadata['namespace'] = namespace
             if question.tags and 'tags' not in doc.metadata:
                 doc.metadata['tags'] = question.tags
@@ -857,7 +917,8 @@ async def process_pdf_markdown_extraction(
                 documents=documents,
                 namespace=namespace,
                 embedding_model=llm_embeddings,
-                sparse_encoder=question.sparse_encoder
+                sparse_encoder=question.sparse_encoder,
+                metadata_id=doc_id
             )
             logger.info(f"Successfully indexed {len(documents)} Markdown chunks")
         

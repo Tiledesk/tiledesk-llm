@@ -1,41 +1,41 @@
 {
-  "loggers": {
-    "myapp": {
-      "level": "DEBUG",
-      "propagate": false,
-      "handlers": [
-        "stdout",
-        "stderr"
-      ]
-    }
-  },
   "version": 1,
   "disable_existing_loggers": false,
-  "handlers": {
-    "stdout": {
-      "formatter": "simple",
-      "class": "logging.StreamHandler",
-      "stream": "ext://sys.stdout",
-      "level": "DEBUG"
-    },
-    "stderr": {
-      "level": "ERROR",
-      "formatter": "simple",
-      "class": "logging.StreamHandler",
-      "stream": "ext://sys.stderr"
-    }
-  },
-
-  "root": {
-    "level": "INFO",
-    "handlers": [
-      "stdout","stderr"
-    ],
-     "propagate": false
-  },
   "formatters": {
     "simple": {
       "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    },
+    "truncated_formatter": {
+      "()": "tilellm.shared.logging_utils.TruncatingFormatter",
+      "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+      "max_length": 1500
     }
+  },
+  "handlers": {
+    "stdout": {
+      "class": "logging.StreamHandler",
+      "formatter": "truncated_formatter",
+      "stream": "ext://sys.stdout",
+      "level": "INFO"
+    },
+    "file_handler": {
+      "class": "logging.handlers.RotatingFileHandler",
+      "formatter": "simple",
+      "filename": "app.log",
+      "maxBytes": 10485760,
+      "backupCount": 5,
+      "level": "INFO"
+    }
+  },
+  "loggers": {
+    "tilellm": {"level": "INFO", "handlers": ["stdout", "file_handler"], "propagate": false },
+    "gunicorn.error": { "level": "INFO", "handlers": ["stdout", "file_handler"], "propagate": false },
+    "gunicorn.access": { "level": "INFO", "handlers": ["stdout", "file_handler"], "propagate": false },
+    "uvicorn.error": { "level": "INFO", "handlers": ["stdout", "file_handler"], "propagate": false },
+    "uvicorn.access": { "level": "INFO", "handlers": ["stdout", "file_handler"], "propagate": false }
+  },
+  "root": {
+    "level": "INFO",
+    "handlers": ["stdout", "file_handler"]
   }
 }

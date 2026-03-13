@@ -17,8 +17,8 @@ redis_port = redis_conf.get("port", 6379)
 redis_db = redis_conf.get("db", 0)
 redis_password = redis_conf.get("password", None)
 
-# Construct Redis URL
-query_params = "?max_connections=100&socket_timeout=5.0&socket_connect_timeout=5.0&socket_keepalive=True&retry_on_timeout=True&health_check_interval=30"
+# Construct Redis URL with more generous timeouts for heavy tasks
+query_params = "?max_connections=100&socket_timeout=60.0&socket_connect_timeout=30.0&socket_keepalive=True&retry_on_timeout=True&health_check_interval=60"
 redis_url = os.environ.get("REDIS_URL", f"redis://{redis_host}:{redis_port}/{redis_db}{query_params}")
 
 # Overwrite with env if present (optional, but good practice)

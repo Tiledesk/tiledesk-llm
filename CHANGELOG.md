@@ -6,6 +6,15 @@
 ### **Copyright**: Tiledesk SRL
 
 ---
+## [2026-03-13]
+### 0.9.0
+- Fixed: Resolved `BlockingIOError` in containerized environments by implementing a custom `TruncatingFormatter` for stdout.
+- Added: Enhanced logging observability with a dual-handler system: truncated console output and full-length rotating file logs.
+- Added: Dynamic logging configuration via environment variables (`LOG_FILE_PATH`, `LOG_LEVEL_STDOUT`, `LOG_LEVEL_FILE`).
+- Updated: Standardized Gunicorn and Uvicorn log formats to ensure consistency across the application stack.
+- Fixed: Refactored `handle_exception` utility to use standard logging with `exc_info=True` instead of direct `traceback.print_exc()`, ensuring full error persistence in rotating logs and preventing stdout buffer overflows.
+
+---
 ## [2026-03-02]
 ### 0.9.0-rc4
 - Fixed: tags management in `add_item` function, when `type="text"`

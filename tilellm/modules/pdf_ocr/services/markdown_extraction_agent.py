@@ -19,6 +19,9 @@ from typing import Dict, Any, List, Optional, TypedDict, Annotated
 from dataclasses import dataclass, field
 from enum import Enum
 
+# Silence noisy RapidOCR logs
+logging.getLogger("RapidOCR").setLevel(logging.ERROR)
+
 try:
     from docling.document_converter import DocumentConverter, PdfFormatOption
     from docling.datamodel.pipeline_options import PdfPipelineOptions

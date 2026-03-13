@@ -6,6 +6,9 @@ from io import BytesIO
 from enum import Enum
 from typing import Optional, Dict, Any
 
+# Silence noisy RapidOCR logs
+logging.getLogger("RapidOCR").setLevel(logging.ERROR)
+
 import pandas as pd
 from minio import Minio
 import duckdb
@@ -253,6 +256,7 @@ class ProductionDocumentProcessor:
             # TEXTS
             texts = getattr(doc, 'texts', [])
             for item in texts:
+                await asyncio.sleep(0)
                 text_content = getattr(item, 'text', '')
                 if not text_content: continue
                 
@@ -274,8 +278,9 @@ class ProductionDocumentProcessor:
                 extracted_something = True
 
             # TABLES
-            tables = getattr(doc, 'tables', [])
-            for item in tables:
+            doc_tables = getattr(doc, 'tables', [])
+            for item in doc_tables:
+                await asyncio.sleep(0)
                 df = item.export_to_dataframe(doc) if hasattr(item, 'export_to_dataframe') else pd.DataFrame()
                 
                 prov = getattr(item, 'prov', None)
@@ -296,6 +301,7 @@ class ProductionDocumentProcessor:
             # PICTURES
             pictures = getattr(doc, 'pictures', [])
             for item in pictures:
+                await asyncio.sleep(0)
                 image_data = item.get_image(doc) if hasattr(item, 'get_image') else getattr(item, 'image', None)
                 
                 prov = getattr(item, 'prov', None)
@@ -322,6 +328,7 @@ class ProductionDocumentProcessor:
                      elements = []
 
                  for element in elements:
+                    await asyncio.sleep(0)
                     bbox = element.bbox if hasattr(element, 'bbox') else None
                     label = getattr(element, 'label', '').lower()
                     

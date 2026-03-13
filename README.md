@@ -118,18 +118,22 @@ This project uses [Poetry](https://python-poetry.org/) for dependency management
 
 The application is configured via environment variables.
 
-| Variable               | Description                                                                 | Default     |
-| ---------------------- | --------------------------------------------------------------------------- | ----------- |
-| `JWT_SECRET_KEY`       | **Required.** A 256-bit secret key for signing JWTs.                        | `None`      |
-| `REDIS_URL`            | **Required.** The connection URL for your Redis instance.                   | `None`      |
-| `WORKERS`              | The number of worker processes. A good starting point is `2 * CPU cores + 1`. | `None`      |
-| `TIMEOUT`              | Worker timeout in seconds.                                                  | `180`       |
-| `MAXREQUESTS`          | The maximum number of requests a worker will process before restarting.     | `1200`      |
-| `MAXRJITTER`           | The maximum jitter to add to `MAXREQUESTS`.                                 | `5`         |
-| `GRACEFULTIMEOUT`      | Timeout for a graceful worker restart.                                      | `30`        |
-| `TOKENIZERS_PARALLELISM` | Set to `false` to avoid warnings with HuggingFace tokenizers.               | `None`      |
-| `ENABLE_PROFILER`      | Set to `True` to enable the `fastapi-cprofile` profiler.                    | `False`     |
-| `LOG_LEVEL`            | Logging level (`DEBUG`, `INFO`, `WARNING`, `ERROR`).                        | `INFO`      |
+| Variable                 | Description                                                                     | Default   |
+|--------------------------|---------------------------------------------------------------------------------|-----------|
+| `JWT_SECRET_KEY`         | **Required.** A 256-bit secret key for signing JWTs.                            | `None`    |
+| `REDIS_URL`              | **Required.** The connection URL for your Redis instance.                       | `None`    |
+| `WORKERS`                | The number of worker processes. A good starting point is `2 * CPU cores + 1`.   | `None`    |
+| `TIMEOUT`                | Worker timeout in seconds.                                                      | `180`     |
+| `MAXREQUESTS`            | The maximum number of requests a worker will process before restarting.         | `1200`    |
+| `MAXRJITTER`             | The maximum jitter to add to `MAXREQUESTS`.                                     | `5`       |
+| `GRACEFULTIMEOUT`        | Timeout for a graceful worker restart.                                          | `30`      |
+| `TOKENIZERS_PARALLELISM` | Set to `false` to avoid warnings with HuggingFace tokenizers.                   | `None`    |
+| `ENABLE_PROFILER`        | Set to `True` to enable the `fastapi-cprofile` profiler.                        | `False`   |
+| `PYTHONUNBUFFERED`       | Set for logging                                                                 | `1`       |
+| `LOG_LEVEL_STDOUT`       | Set standard output log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`).            | `INFO`    |
+| `LOG_LEVEL_FILE`         | Set file output, with rotate,  log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`). | `INFO`    |
+| `LOG_LEVEL_SYS`          | Set system log level (`DEBUG`, `INFO`, `WARNING`, `ERROR`).                     | `INFO`    |
+| `LOG_FILE_PATH`          | Set log file path.                                                              | `app.log` |
 
 ---
 

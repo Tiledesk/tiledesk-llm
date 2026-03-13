@@ -250,12 +250,16 @@ async def fetch_question_vectors(question_answer, sparse_encoder, llm_embeddings
 
 # Function to retrieve documents based on search results
 def retrieve_documents_old(question_answer, results):
+    if not results.get("matches"):
+        raise ValueError("No chunks found with the current filters.")
     documents = [Document(page_content=match["metadata"]["text"], metadata=match["metadata"]) for match in results["matches"]]
     retriever = HybridRetriever(documents=documents, k=question_answer.top_k)
     return retriever
 
 # Function to retrieve documents based on search results
 def retrieve_documents(question_answer, results, contextualized_query=None):
+    if not results.get("matches"):
+        raise ValueError("No chunks found with the current filters.")
     # Aggiunto
     retrieval_k = question_answer.top_k * question_answer.reranking_multiplier if question_answer.reranking else question_answer.top_k
 
@@ -282,6 +286,8 @@ async def aretrieve_documents(question_answer, results, contextualized_query=Non
     """
     Async version of retrieve_documents that uses async reranking when available.
     """
+    if not results.get("matches"):
+        raise ValueError("No chunks found with the current filters.")
     # Aggiunto
     retrieval_k = question_answer.top_k * question_answer.reranking_multiplier if question_answer.reranking else question_answer.top_k
 
@@ -559,11 +565,21 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                     .assign(only_answer=lambda text: text["answer"].answer)
                 )
                 result = await chain_w_citations.ainvoke(chain_input)
+                
+                # Check if no context found
+                if not result.get("context"):
+                    raise ValueError("No chunks found with the current filters.")
+                    
                 citations = result['answer'].citations
                 result['answer'] = result['answer'].answer
             else:
                 rag_chain_simple = create_retrieval_chain(retriever, create_stuff_documents_chain(llm, qa_prompt_final))
                 result = await rag_chain_simple.ainvoke(chain_input)
+                
+                # Check if no context found
+                if not result.get("context"):
+                    raise ValueError("No chunks found with the current filters.")
+                
                 citations = None
 
             end_time = datetime.now() if question_answer.debug else 0
@@ -665,6 +681,10 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
             config={"configurable": {"session_id": uuid.uuid4().hex}}
         )
 
+        # Check if no context found
+        if not result.get("context"):
+            raise ValueError("No chunks found with the current filters.")
+
 
         end_time = datetime.now() if question_answer.debug else 0
         duration = (end_time - start_time).total_seconds() if question_answer.debug else 0.0
@@ -695,7 +715,9 @@ def format_result(result, citations, question_answer, callback_handler, question
     docs = result["context"]
     ids, sources, content_chunks = extract_ids_sources(docs, question_answer.debug)
     source = format_sources(citations, sources, question_answer.citations)
-    metadata_id = ids[0]
+    
+    # Avoid IndexError if no documents are found
+    metadata_id = ids[0] if ids else None
 
     if callback_handler:
         prompt_token_size = callback_handler.total_tokens
@@ -736,15 +758,17 @@ def extract_ids_sources(docs, debug):
     if debug:
         content_chunks = []
         for doc in docs:
-            ids.append(doc.metadata['id'])
-            sources.append(doc.metadata['source'])
+            ids.append(doc.metadata.get('id'))
+            sources.append(doc.metadata.get('source'))
             content_chunks.append(doc.page_content)
     else:
         for doc in docs:
-            ids.append(doc.metadata['id'])
-            sources.append(doc.metadata['source'])
-    ids = list(set(ids))
-    sources = list(set(sources))
+            ids.append(doc.metadata.get('id'))
+            sources.append(doc.metadata.get('source'))
+    
+    # Filter out None values and get unique elements
+    ids = list(set([i for i in ids if i is not None]))
+    sources = list(set([s for s in sources if s is not None]))
     return ids, sources, content_chunks
 
 
@@ -759,7 +783,8 @@ def format_sources(citations, sources, with_citations):
 
 # Function to handle exceptions
 def handle_exception(e, question_answer):
-    traceback.print_exc()
+    logger.error(f"Exception in controller: {repr(e)}", exc_info=True)
+    # traceback.print_exc()
     question_answer_list = []
     if question_answer.chat_history_dict is not None:
         for key, entry in question_answer.chat_history_dict.items():
@@ -768,11 +793,13 @@ def handle_exception(e, question_answer):
     chat_history_dict = {str(i): entry for i, entry in enumerate(chat_entries)}
 
     result_to_return = RetrievalResult(
+        answer="No answer",
+        success=False,
         namespace=question_answer.namespace,
         error_message=repr(e),
         chat_history_dict=chat_history_dict
     )
-    raise fastapi.exceptions.HTTPException(status_code=400, detail=result_to_return.model_dump())
+    return JSONResponse(status_code=400, content=result_to_return.model_dump())
 
 def load_session_history(history) -> BaseChatMessageHistory:
     chat_history = ChatMessageHistory()

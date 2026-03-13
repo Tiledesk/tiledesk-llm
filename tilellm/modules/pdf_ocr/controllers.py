@@ -51,38 +51,63 @@ async def scrape_pdf(request: PDFScrapingRequest):
         queue_service = get_redis_queue_service()
         job_service = get_job_service()
         
-        # 1. Create a job entry to get a unique ID
-        job_id = job_service.create_job(file_name=request.file_name)
+        # 1. Create a job entry to track this request.
+        # Use request.id if provided, as it is the document reference ID.
+        job_id = job_service.create_job(file_name=request.file_name, job_id=request.id)
+        
+        # Ensure the request object also has the ID set
+        if not request.id:
+            request.id = job_id
         
         if request.use_docling:
             # New Advanced Pipeline
             
             # Prepare content
-            if request.is_url():
-                response = requests.get(request.file_content, timeout=30)
-                response.raise_for_status()
-                pdf_content = response.content
+            is_url = request.is_url()
+            bucket_name = None
+            object_name = None
+            
+            if is_url:
+                # Content is a URL, worker will download it
+                logger.info(f"PDF content is a URL: {request.file_content}")
             else:
-                pdf_content = base64.b64decode(request.file_content)
+                # Content is Base64, try to upload to MinIO to offload Redis
+                try:
+                    pdf_content = base64.b64decode(request.file_content)
+                except Exception as e:
+                    raise ValueError(f"Invalid Base64 content: {e}")
+                    
+                # Upload to MinIO if available
+                if queue_service.minio_client:
+                    bucket_name = queue_service.minio_bucket
+                    object_name = f"{job_id}.pdf"
+                    try:
+                        queue_service.minio_client.put_object(
+                            bucket_name=bucket_name,
+                            object_name=object_name,
+                            data=io.BytesIO(pdf_content),
+                            length=len(pdf_content),
+                            content_type='application/pdf'
+                        )
+                        logger.info(f"Uploaded PDF content to MinIO: {bucket_name}/{object_name}")
+                    except Exception as e:
+                        logger.warning(f"Failed to upload to MinIO, will send content via Taskiq: {e}")
+                        bucket_name = None
+                        object_name = None
+                else:
+                    logger.warning("MinIO client not available, will send content via Taskiq")
                 
-            # Upload to MinIO (reusing queue service's client for convenience)
-            object_name = f"{job_id}.pdf"
-            bucket_name = queue_service.minio_bucket
-            
-            queue_service.minio_client.put_object(
-                bucket_name=bucket_name,
-                object_name=object_name,
-                data=io.BytesIO(pdf_content),
-                length=len(pdf_content),
-                content_type='application/pdf'
-            )
-            
-            # Prepare config with job ID as document ID
-            config = request.model_dump(mode='python') # Original dump, serialize later if needed
+            # Prepare config with the document ID
+            config = request.model_dump(mode='python') 
             config['id'] = job_id
             
+            # Optimization: If we have a MinIO reference, replace large Base64 content in config
+            # to avoid saturating Redis (Connection error 6379) during massive tasks.
+            if not is_url and bucket_name and object_name:
+                config['file_content'] = f"minio://{bucket_name}/{object_name}"
+            
             if ENABLE_TASKIQ and TASKIQ_AVAILABLE:
-                logger.info("TaskIQ enabled, queuing PDF processing task")
+                logger.info(f"Taskiq enabled, queuing PDF processing task for doc {job_id}")
                 # Trigger Taskiq task
                 task_payload = serialize_with_secrets(config)
                 await process_pdf_document_task.kiq(
@@ -95,15 +120,12 @@ async def scrape_pdf(request: PDFScrapingRequest):
                 message = "PDF processing job (Advanced Docling) has been successfully queued."
             else:
                 # Fallback: Process synchronously (blocking)
-                # Note: This will block the API response until processing finishes!
-                logger.info("TaskIQ disabled or unavailable, processing PDF synchronously")
-                # We need to construct the request object again or pass config
-                # process_pdf_document_with_embeddings expects 'request' object
+                logger.info(f"Taskiq disabled or unavailable, processing PDF doc {job_id} synchronously")
                 
-                # Update request object with ID if not present
-                request.id = job_id
+                # Update request object with optimized content reference if needed
+                if not is_url and bucket_name and object_name:
+                    request.file_content = config['file_content']
                 
-                # We already uploaded to MinIO, so use that
                 await process_pdf_document_with_embeddings(
                     question=request,
                     bucket_name=bucket_name,

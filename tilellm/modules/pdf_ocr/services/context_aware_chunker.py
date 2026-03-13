@@ -78,6 +78,8 @@ class ContextAwareChunker:
             section_path = get_path(section_id)
             section_text_parts = []
             section_metadata = {
+                "id": doc_id,
+                "metadata_id": doc_id,
                 "doc_id": doc_id,
                 "section_id": section_id,
                 "section_path": section_path,

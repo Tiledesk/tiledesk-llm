@@ -128,7 +128,6 @@ python -m gunicorn \
           --max-requests $MAXREQUESTS \
           --max-requests-jitter $MAXRJITTER \
           --graceful-timeout $GRACEFULTIMEOUT \
-          --log-config-json log_conf.json \
           --worker-class uvicorn.workers.UvicornWorker \
           tilellm.__main__:app &
 

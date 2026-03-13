@@ -19,17 +19,19 @@ class PDFJobService:
     def __init__(self):
         self.jobs: Dict[str, PDFScrapingJob] = {}
     
-    def create_job(self, file_name: str) -> str:
+    def create_job(self, file_name: str, job_id: Optional[str] = None) -> str:
         """
         Create a new PDF processing job and store it in memory.
         
         Args:
             file_name: The name of the file for the job.
+            job_id: Optional user-provided job ID.
             
         Returns:
-            The generated Job ID.
+            The generated or provided Job ID.
         """
-        job_id = str(uuid.uuid4())
+        if not job_id:
+            job_id = str(uuid.uuid4())
         
         job = PDFScrapingJob(
             job_id=job_id,

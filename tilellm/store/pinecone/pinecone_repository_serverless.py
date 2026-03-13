@@ -147,9 +147,9 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                 for doc in query_response.matches:
                     doc_id = doc['id']
                     # Creiamo una copia dei metadati per evitare modifiche indesiderate
-                    # e rimuoviamo 'text' che diventerà page_content
+                    # e rimuoviamo il campo di testo che diventerà page_content
                     doc_metadata = doc['metadata'].copy()
-                    page_content = doc_metadata.pop('text', '')  # Rimuove 'text' e lo usa per page_content
+                    page_content = doc_metadata.pop(question_answer.engine.text_key, '')  # Rimuove il campo di testo e lo usa per page_content
 
                     # Crea un'istanza di Document e aggiungila all'array
                     document = Document(
@@ -166,8 +166,11 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                                                      filter=filter_dict
                                                      )
 
-            end_time = datetime.datetime.now() if question_answer.debug else 0
+            end_time = datetime.now() if question_answer.debug else 0
             duration = (end_time - start_time).total_seconds() if question_answer.debug else 0.0
+
+            if not results:
+                raise ValueError("No chunks found with the current filters.")
 
             retrieval = RetrievalChunksResult(success=True,
                                               namespace=question_answer.namespace,

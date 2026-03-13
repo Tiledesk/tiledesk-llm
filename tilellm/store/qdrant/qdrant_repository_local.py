@@ -332,21 +332,62 @@ class QdrantRepository(VectorStoreRepository):
         collection_name = engine.index_name
 
         try:
+            # 1.5 Create payload indexes if they don't exist
+            try:
+                qdrant_client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name="metadata.namespace",
+                    field_schema="keyword"
+                )
+                qdrant_client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name="metadata.id",
+                    field_schema="keyword"
+                )
+                logger.info(f"Payload indexes created for 'metadata.namespace' and 'metadata.id' in collection '{collection_name}'.")
+            except Exception as e:
+                # Ignore if already exists, but log other errors
+                if "already exists" not in str(e).lower() and "already present" not in str(e).lower():
+                    logger.warning(f"Could not create payload indexes: {e}")
+
             # 2. Clear namespace before adding new documents
-            logger.info(f"Clearing namespace '{namespace}' before upserting.")
-            delete_filter = models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="metadata.namespace",
-                        match=models.MatchValue(value=namespace)
-                    )
-                ]
+            # If metadata_id is provided, clear only that specific document
+            metadata_id = kwargs.get('metadata_id')
+            if metadata_id:
+                logger.info(f"Clearing document '{metadata_id}' from namespace '{namespace}' before upserting.")
+                delete_filter = models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="metadata.namespace",
+                            match=models.MatchValue(value=namespace)
+                        ),
+                        models.FieldCondition(
+                            key="metadata.id",
+                            match=models.MatchValue(value=metadata_id)
+                        )
+                    ]
+                )
+            else:
+                logger.info(f"No metadata_id provided. Clearing entire namespace '{namespace}' before upserting.")
+                delete_filter = models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="metadata.namespace",
+                            match=models.MatchValue(value=namespace)
+                        )
+                    ]
+                )
+
+            # Use executor for synchronous delete
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(
+                None,
+                lambda: qdrant_client.delete(
+                    collection_name=collection_name,
+                    points_selector=models.FilterSelector(filter=delete_filter)
+                )
             )
-            qdrant_client.delete(
-                collection_name=collection_name,
-                points_selector=models.FilterSelector(filter=delete_filter)
-            )
-            logger.info(f"Cleared namespace '{namespace}' in collection '{collection_name}'.")
+            logger.info(f"Cleared existing points for filter in collection '{collection_name}'.")
 
             # 3. Prepare data and embeddings
             doc_batch_size = 32 # Reduced to match TEI server batch limit
@@ -363,17 +404,20 @@ class QdrantRepository(VectorStoreRepository):
                 # Generate dense embeddings
                 dense_embeds = await embedding_model.aembed_documents(batch_contents)
 
-                # Generate sparse embeddings
-                sparse_embeds = sparse_encoder.encode_documents(batch_contents)
+                # Generate sparse embeddings (run in executor to avoid blocking event loop)
+                sparse_embeds = await loop.run_in_executor(
+                    None,
+                    sparse_encoder.encode_documents,
+                    batch_contents
+                )
 
-                # 4. Upsert to Qdrant
+                # 4. Upsert to Qdrant (run in executor as client is synchronous)
                 points_to_upsert = []
                 for j, content in enumerate(batch_contents):
                     # Combine metadata and ensure namespace is present
                     combined_metadata = {
                         **batch_metadatas[j],
                         "namespace": namespace, # Ensure namespace is in metadata
-                        "page_content": content # Store page_content in payload for retrieval
                     }
 
                     points_to_upsert.append(
@@ -386,14 +430,21 @@ class QdrantRepository(VectorStoreRepository):
                                     values=sparse_embeds[j]['values']
                                 )
                             },
-                            payload={"metadata": combined_metadata} # Qdrant payload stores metadata
+                            payload={
+                                "metadata": combined_metadata,
+                                "page_content": content # Store page_content at root for retrieval
+                            } 
                         )
                     )
                 
-                response = qdrant_client.upsert(
-                    collection_name=collection_name,
-                    points=points_to_upsert,
-                    wait=True # Wait for the operation to complete
+                # Run synchronous upsert in an executor
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: qdrant_client.upsert(
+                        collection_name=collection_name,
+                        points=points_to_upsert,
+                        wait=True
+                    )
                 )
                 point_ids_generated.extend([p.id for p in points_to_upsert])
                 logger.info(f"Upserted batch {i//doc_batch_size + 1} with {len(points_to_upsert)} points to namespace '{namespace}'. Status: {response.status.name}")
@@ -894,6 +945,9 @@ class QdrantRepository(VectorStoreRepository):
             end_time = datetime.datetime.now() if question_answer.debug else 0
             duration = (end_time - start_time).total_seconds() if question_answer.debug else 0.0
 
+            if not results:
+                raise ValueError("No chunks found with the current filters.")
+
             retrieval = RetrievalChunksResult(success=True,
                                               namespace=question_answer.namespace,
                                               chunks=[chunk.page_content for chunk in results],
@@ -1171,26 +1225,41 @@ class QdrantRepository(VectorStoreRepository):
                 for point in all_points:
                     logger.debug(point)
                     point_id = point.id
-                    metadata = point.payload.get("metadata")
+                    metadata = point.payload.get("metadata") if point.payload else {}
 
-                    metadata_id = metadata.get('id') if metadata else None
-                    metadata_source = metadata.get('source') if metadata else None
-                    metadata_type = metadata.get('type') if metadata else None
-                    metadata_date = metadata.get('date', 'Date not defined') if metadata else None
+                    # Ensure metadata is at least an empty dict to avoid errors
+                    if metadata is None:
+                        metadata = {}
+
+                    # Robust metadata extraction with fallbacks to avoid validation errors
+                    metadata_id = metadata.get('id') or metadata.get('metadata_id') or str(point_id)
+                    metadata_source = metadata.get('source') or metadata.get('file_name') or "unknown"
+                    
+                    # Try different type keys used in different modules
+                    metadata_type = (
+                        metadata.get('type') or 
+                        metadata.get('doc_type') or 
+                        metadata.get('chunk_type') or 
+                        "unknown"
+                    )
+                    
+                    metadata_date = metadata.get('date', 'Date not defined')
                     text_content = point.payload.get("page_content") if with_text else None
 
                     logger.debug(f"Point ID: {point_id}")
-                    logger.debug(f"  Metadata Name: {metadata_id}")
+                    logger.debug(f"  Metadata ID: {metadata_id}")
                     logger.debug(f"  Metadata Source: {metadata_source}")
                     logger.debug(f"  Metadata Type: {metadata_type}")
-                    logger.debug(f"  Metadata Type: {metadata_date}")
                     logger.debug("-" * 20)
-                    result.append(RepositoryQueryResult(id=point_id,
-                                                        metadata_id=metadata_id,
-                                                        metadata_source=metadata_source,
-                                                        metadata_type=metadata_type,
-                                                        date=metadata_date,
-                                                        text=text_content))
+                    
+                    result.append(RepositoryQueryResult(
+                        id=str(point_id),
+                        metadata_id=str(metadata_id),
+                        metadata_source=str(metadata_source),
+                        metadata_type=str(metadata_type),
+                        date=str(metadata_date),
+                        text=text_content
+                    ))
 
             res = RepositoryItems(matches=result)
             logger.debug(res)
