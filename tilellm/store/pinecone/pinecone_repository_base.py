@@ -1,5 +1,6 @@
 import uuid
 from abc import abstractmethod
+import os
 
 import time
 import asyncio
@@ -119,13 +120,15 @@ class CachedVectorStore:
         logger.info(f'Creating new index {self.engine.index_name}...')
         try:
             if self.engine.type == "serverless":
+                serverless_cloud = os.environ.get("PINECONE_SERVERLESS_CLOUD", "aws")
+                serverless_region = os.environ.get("PINECONE_SERVERLESS_REGION", "us-east-1")
                 await self._pc_client.create_index(
                     name=self.engine.index_name,
                     dimension=self.emb_dimension,
                     metric=self.engine.metric,
                     spec=pinecone.ServerlessSpec(
-                        cloud="aws",
-                        region="us-west-2"
+                        cloud=serverless_cloud,
+                        region=serverless_region
                     )
                 )
             else:  # Pod type
@@ -815,11 +818,13 @@ class PineconeRepositoryBase(VectorStoreRepository):
             logger.debug(f'Create index {engine.index_name} and embeddings ...')
 
             if engine.type == "serverless": #os.environ.get("PINECONE_TYPE") == "serverless":
+                serverless_cloud = os.environ.get("PINECONE_SERVERLESS_CLOUD", "aws")
+                serverless_region = os.environ.get("PINECONE_SERVERLESS_REGION", "us-east-1")
                 await pc.create_index(engine.index_name,   # const.PINECONE_INDEX,
                                 dimension=emb_dimension,
                                 metric=engine.metric,
-                                spec=pinecone.ServerlessSpec(cloud="aws",
-                                                             region="us-west-2"
+                                spec=pinecone.ServerlessSpec(cloud=serverless_cloud,
+                                                             region=serverless_region
                                                              )
                                 )
             else:
@@ -948,7 +953,6 @@ async def _create_vector_store_instance(engine, embeddings, emb_dimension) -> Ca
     # opzionale: warm-up client/host
     await cached_vs._ensure_client_and_host()
     return cached_vs
-
 
 
 

@@ -94,7 +94,7 @@ class QuestionAnswer(BaseModel):
     tags: Optional[Union[str, List[str]]] = None
     llm: Optional[str] = Field(default="openai")
     gptkey: Optional[SecretStr] = "sk"
-    model: Union[str, LlmEmbeddingModel] = Field(default="gpt-3.5-turbo")
+    model: Union[str, LlmEmbeddingModel] = Field(default="gpt-4.1-nano")
     sparse_encoder: Union[str, "TEIConfig", None] = Field(default="splade") #bge-m3
     temperature: float = Field(default=0.0)
     top_k: int = Field(default=5)

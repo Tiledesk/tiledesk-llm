@@ -14,6 +14,7 @@ from fastapi import (FastAPI,
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi_cprofile.profiler import CProfileMiddleware
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
 
 import asyncio
 from redis.asyncio import Redis, from_url
@@ -35,7 +36,14 @@ from tilellm.models.schemas import (RepositoryItem,
                                     RepositoryDescNamespaceResult, RepositoryItems, SimpleAnswer,
                                     RepositoryEngine, RetrievalChunksResult)
 from tilellm.models.schemas.general_schemas import AsyncTaskResponse
-from tilellm.modules.knowledge_graph.models.schemas import TaskPollResponse
+try:
+    from tilellm.modules.knowledge_graph.models.schemas import TaskPollResponse
+except ImportError:
+    class TaskPollResponse(BaseModel):
+        task_id: str
+        status: str
+        result: dict | None = None
+        error: str | None = None
 
 try:
     from tilellm.modules.task_executor.tasks import task_scrape_item_single
