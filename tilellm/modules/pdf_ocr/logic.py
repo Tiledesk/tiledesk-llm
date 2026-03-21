@@ -10,6 +10,9 @@ import asyncio
 
 from tilellm.shared.utility import inject_llm_chat_async, inject_repo_async, inject_llm_async
 from tilellm.modules.pdf_ocr.models.pdf_scraping import PDFScrapingRequest
+from tilellm.tools.document_tools import _extract_file_name
+from tilellm.models.chunk_metadata import CommonChunkMetadata
+from tilellm.shared.situated_context import enrich_chunks_with_situated_context
 from .services.docling_processor import ProductionDocumentProcessor, DocumentType
 from .services.pdf_entity_extractor import PDFEntityExtractor
 from .services.context_aware_chunker import ContextAwareChunker
@@ -30,6 +33,79 @@ except ImportError:
     Relationship = None
 
 logger = logging.getLogger(__name__)
+
+
+def _bbox_center(bbox):
+    if not bbox or len(bbox) < 4:
+        return (0.0, 0.0)
+    return ((bbox[0] + bbox[2]) / 2.0, (bbox[1] + bbox[3]) / 2.0)
+
+
+def _bbox_distance(b1, b2):
+    c1 = _bbox_center(b1)
+    c2 = _bbox_center(b2)
+    return ((c1[0] - c2[0]) ** 2 + (c1[1] - c2[1]) ** 2) ** 0.5
+
+
+def _compute_cross_modal_refs(text_elements: list, tables: list, images: list, max_surrounding_chars: int = 300):
+    """
+    Compute cross-modal references between text, table, and image elements.
+
+    For each table/image:
+      - sets 'surrounding_text': concatenated text of the closest text elements on the same page
+      - sets 'ref_text_ids': IDs of those text elements
+
+    For each text element:
+      - sets 'ref_tables': list of table IDs on the same page sorted by bbox proximity
+      - sets 'ref_images': list of image IDs on the same page sorted by bbox proximity
+    """
+    # Build page-keyed indexes
+    text_by_page: Dict[int, list] = {}
+    for el in text_elements:
+        p = el.get('page', 0)
+        text_by_page.setdefault(p, []).append(el)
+
+    table_by_page: Dict[int, list] = {}
+    for t in tables:
+        p = t.get('page', 0)
+        table_by_page.setdefault(p, []).append(t)
+
+    image_by_page: Dict[int, list] = {}
+    for img in images:
+        p = img.get('page', 0)
+        image_by_page.setdefault(p, []).append(img)
+
+    # Surrounding text for tables
+    for table in tables:
+        page = table.get('page', 0)
+        bbox = table.get('bbox')
+        page_texts = text_by_page.get(page, [])
+        sorted_texts = sorted(page_texts, key=lambda el: _bbox_distance(el.get('bbox'), bbox))
+        surrounding = ' '.join(el.get('text', '') for el in sorted_texts[:3] if el.get('text'))
+        table['surrounding_text'] = surrounding[:max_surrounding_chars]
+        table['ref_text_ids'] = [el['id'] for el in sorted_texts[:3] if 'id' in el]
+
+    # Surrounding text for images
+    for image in images:
+        page = image.get('page', 0)
+        bbox = image.get('bbox')
+        page_texts = text_by_page.get(page, [])
+        sorted_texts = sorted(page_texts, key=lambda el: _bbox_distance(el.get('bbox'), bbox))
+        surrounding = ' '.join(el.get('text', '') for el in sorted_texts[:3] if el.get('text'))
+        image['surrounding_text'] = surrounding[:max_surrounding_chars]
+        image['ref_text_ids'] = [el['id'] for el in sorted_texts[:3] if 'id' in el]
+
+    # ref_tables / ref_images for text elements
+    for el in text_elements:
+        page = el.get('page', 0)
+        bbox = el.get('bbox')
+        page_tables = table_by_page.get(page, [])
+        page_images = image_by_page.get(page, [])
+        sorted_tables = sorted(page_tables, key=lambda t: _bbox_distance(t.get('bbox'), bbox))
+        sorted_images = sorted(page_images, key=lambda i: _bbox_distance(i.get('bbox'), bbox))
+        # Keep top-3 closest on the same page
+        el['ref_tables'] = [t['id'] for t in sorted_tables[:3] if 'id' in t]
+        el['ref_images'] = [i['id'] for i in sorted_images[:3] if 'id' in i]
 
 
 async def _invoke_llm_chat(
@@ -179,6 +255,17 @@ async def process_pdf_document_with_embeddings(
                 text_elements=result.get('text_elements')
             )
         
+        # Compute cross-modal references (surrounding_text, ref_tables, ref_images)
+        if result:
+            _compute_cross_modal_refs(
+                text_elements=result.get('text_elements', []),
+                tables=result.get('tables', []),
+                images=result.get('images', [])
+            )
+
+        # Track whether we've already done the first delete for this doc
+        _first_index_done = False
+
         # Index tables to vector store if requested
         if question.index_tables_to_vector_store and question.include_tables and result and 'tables' in result:
             namespace = question.namespace if question.namespace else "default"
@@ -190,8 +277,10 @@ async def process_pdf_document_with_embeddings(
                 namespace=namespace,
                 engine=question.engine,
                 sparse_encoder=question.sparse_encoder,
-                tags=question.tags if question.tags else None
+                tags=question.tags if question.tags else None,
+                skip_delete=_first_index_done
             )
+            _first_index_done = True
 
         # Index images to vector store if requested
         if question.index_images_to_vector_store and question.include_images and result and 'images' in result:
@@ -204,8 +293,10 @@ async def process_pdf_document_with_embeddings(
                 namespace=namespace,
                 engine=question.engine,
                 sparse_encoder=question.sparse_encoder,
-                tags=question.tags if question.tags else None
+                tags=question.tags if question.tags else None,
+                skip_delete=_first_index_done
             )
+            _first_index_done = True
         
         # Extract entities using GraphRAG if requested
         if question.extract_entities and result and 'text_elements' in result and KNOWLEDGE_GRAPH_AVAILABLE:
@@ -233,9 +324,11 @@ async def process_pdf_document_with_embeddings(
                 engine=question.engine,
                 sparse_encoder=question.sparse_encoder,
                 hierarchy=result.get('hierarchy'),
-                tags=question.tags if question.tags else None
+                tags=question.tags if question.tags else None,
+                skip_delete=_first_index_done,
+                llm=llm
             )
-        
+
         # Ensure result is not None (should be dict)
         if result is None:
             raise RuntimeError("Processor returned None result")
@@ -547,13 +640,16 @@ async def _index_text_chunks(
     engine,
     sparse_encoder: Union[str, TEIConfig, None] = None,
     hierarchy: Optional[Dict[str, Any]] = None,
-    tags: Optional[List[str]] = None
+    tags: Optional[List[str]] = None,
+    skip_delete: bool = False,
+    llm=None
 ):
     """
     Index text chunks to vector store.
     Uses ContextAwareChunker if hierarchy is available.
     """
     doc_id = question.id
+    resolved_file_name = question.file_name or _extract_file_name(question.source or "")
     if hierarchy:
         chunker = ContextAwareChunker()
         documents = chunker.chunk_with_structure(
@@ -563,9 +659,9 @@ async def _index_text_chunks(
         )
         for doc in documents:
             doc.metadata['namespace'] = namespace
-            doc.metadata['file_name'] = question.file_name
+            doc.metadata['file_name'] = resolved_file_name
             doc.metadata['file_content'] = question.file_content
-            doc.metadata['source'] = question.file_name
+            doc.metadata['source'] = resolved_file_name
             if tags:
                 doc.metadata['tags'] = tags
     else:
@@ -574,25 +670,27 @@ async def _index_text_chunks(
         for element in text_elements:
             # Yield control back to event loop for heartbeat
             await asyncio.sleep(0)
-            
+
             text = element.get('text', '')
             if not text or not text.strip():
                 continue
 
-            meta = {
-                'id': doc_id,
-                'metadata_id': doc_id,
-                'doc_id': doc_id,
-                'page': element.get('page', 0),
-                'type': element.get('type', 'text'),
-                'chunk_type': 'text',
-                'source': question.file_name,
-                'file_name': question.file_name,
-                'file_content': question.file_content,
-                'namespace': namespace
-            }
-            if tags:
-                meta['tags'] = tags
+            meta = CommonChunkMetadata(
+                id=doc_id,
+                metadata_id=doc_id,
+                doc_id=doc_id,
+                namespace=namespace,
+                source=resolved_file_name,
+                file_name=resolved_file_name,
+                file_content=question.file_content,
+                page=element.get('page', 1),
+                heading_path=element.get('heading_path', ''),
+                type=element.get('type', 'text'),
+                chunk_type='text',
+                ref_tables=str(element.get('ref_tables', [])),
+                ref_images=str(element.get('ref_images', [])),
+                tags=tags if tags else None,
+            ).to_metadata_dict()
             doc = Document(
                 page_content=text,
                 metadata=meta
@@ -604,17 +702,26 @@ async def _index_text_chunks(
         return
     
     logger.info(f"Indexing {len(documents)} text chunks to vector store for doc {doc_id}")
-    
+
+    # Situated context enrichment (Contextual Retrieval, optional)
+    if question.use_situated_context and llm:
+        try:
+            documents = await enrich_chunks_with_situated_context(documents, llm)
+            logger.info(f"Situated context applied to {len(documents)} text chunks.")
+        except Exception as sc_err:
+            logger.warning(f"Situated context enrichment failed, continuing without: {sc_err}")
+
     # Use repository to index documents
     await repo.aadd_documents(
         engine=engine,
         documents=documents,
         namespace=namespace,
         embedding_model=llm_embeddings,
-        sparse_encoder=sparse_encoder,  # Can be configured from request if needed
-        metadata_id=doc_id
+        sparse_encoder=sparse_encoder,
+        metadata_id=doc_id,
+        skip_delete=skip_delete
     )
-    
+
     logger.info(f"Successfully indexed {len(documents)} text chunks")
 
 
@@ -626,7 +733,8 @@ async def _index_tables_to_vector_store(
     namespace: str,
     engine,
     sparse_encoder: Union[str, TEIConfig, None] = None,
-    tags: Optional[List[str]] = None
+    tags: Optional[List[str]] = None,
+    skip_delete: bool = False
 ):
     """
     Index table semantic descriptions to vector store.
@@ -637,35 +745,38 @@ async def _index_tables_to_vector_store(
         return
     
     doc_id = question.id
+    resolved_file_name = question.file_name or _extract_file_name(question.source or "")
     documents = []
     for table_data in tables:
         await asyncio.sleep(0)
         table_id = table_data.get('id')
-        
+
         # Use semantic description if available, otherwise fallback to basic description
         semantic_desc = table_data.get('semantic_description') or table_data.get('description')
-        
+
         if not semantic_desc:
             continue
-        
+
         # Create document for vector store
-        meta = {
-            'id': doc_id,
-            'metadata_id': doc_id,
-            'doc_id': doc_id,
-            'table_id': table_id,
-            'type': 'table',
-            'chunk_type': 'table_description',
-            'page': table_data.get('page', 0),
-            'answerable_questions': str(table_data.get('answerable_questions', [])),
-            'columns': str(table_data.get('columns', [])),
-            'source': question.file_name,
-            'file_name': question.file_name,
-            'file_content': question.file_content,
-            'namespace': namespace
-        }
-        if tags:
-            meta['tags'] = tags
+        meta = CommonChunkMetadata(
+            id=doc_id,
+            metadata_id=doc_id,
+            doc_id=doc_id,
+            namespace=namespace,
+            source=resolved_file_name,
+            file_name=resolved_file_name,
+            file_content=question.file_content,
+            page=table_data.get('page', 1),
+            type='table',
+            chunk_type='table_description',
+            table_id=table_id or '',
+            answerable_questions=str(table_data.get('answerable_questions', [])),
+            columns=str(table_data.get('columns', [])),
+            surrounding_text=table_data.get('surrounding_text', ''),
+            parquet_path=table_data.get('parquet_path', ''),
+            md_path=table_data.get('md_path', ''),
+            tags=tags if tags else None,
+        ).to_metadata_dict()
         doc = Document(
             page_content=semantic_desc,
             metadata=meta
@@ -685,9 +796,10 @@ async def _index_tables_to_vector_store(
         namespace=namespace,
         embedding_model=llm_embeddings,
         sparse_encoder=sparse_encoder,
-        metadata_id=doc_id
+        metadata_id=doc_id,
+        skip_delete=skip_delete
     )
-    
+
     logger.info(f"Successfully indexed {len(documents)} table descriptions")
 
 
@@ -699,7 +811,8 @@ async def _index_images_to_vector_store(
     namespace: str,
     engine,
     sparse_encoder: Union[str, TEIConfig, None] = None,
-    tags: Optional[List[str]] = None
+    tags: Optional[List[str]] = None,
+    skip_delete: bool = False
 ):
     """
     Index image captions to vector store.
@@ -710,33 +823,33 @@ async def _index_images_to_vector_store(
         return
     
     doc_id = question.id
+    resolved_file_name = question.file_name or _extract_file_name(question.source or "")
     documents = []
     for image_data in images:
         await asyncio.sleep(0)
         image_id = image_data.get('id')
         caption = image_data.get('caption')
-        
+
         if not caption:
             continue
-        
+
         # Create document for vector store
-        meta = {
-            'id': doc_id,
-            'metadata_id': doc_id,
-            'doc_id': doc_id,
-            'image_id': image_id,
-            'type': 'image',
-            'chunk_type': 'image_caption',
-            'page': image_data.get('page', 0),
-            'surrounding_text': image_data.get('surrounding_text', ''),
-            'path': image_data.get('path', ''),
-            'source': question.file_name,
-            'file_name': question.file_name,
-            'file_content': question.file_content,
-            'namespace': namespace
-        }
-        if tags:
-            meta['tags'] = tags
+        meta = CommonChunkMetadata(
+            id=doc_id,
+            metadata_id=doc_id,
+            doc_id=doc_id,
+            namespace=namespace,
+            source=resolved_file_name,
+            file_name=resolved_file_name,
+            file_content=question.file_content,
+            page=image_data.get('page', 1),
+            type='image',
+            chunk_type='image_caption',
+            image_id=image_id or '',
+            surrounding_text=image_data.get('surrounding_text', ''),
+            path=image_data.get('path', ''),
+            tags=tags if tags else None,
+        ).to_metadata_dict()
         doc = Document(
             page_content=caption,
             metadata=meta
@@ -756,9 +869,10 @@ async def _index_images_to_vector_store(
         namespace=namespace,
         embedding_model=llm_embeddings,
         sparse_encoder=sparse_encoder,
-        metadata_id=doc_id
+        metadata_id=doc_id,
+        skip_delete=skip_delete
     )
-    
+
     logger.info(f"Successfully indexed {len(documents)} image captions")
 
 
@@ -893,6 +1007,17 @@ async def process_pdf_markdown_extraction(
         if question.tags:
             source_metadata['tags'] = question.tags
 
+        # Build page_line_map from "## Page N" markers inserted by MarkdownExtractionAgent.
+        # Maps each line index → page number so each chunk gets an accurate 'page' field.
+        import re as _re
+        _page_line_map: Dict[int, int] = {}
+        _current_page = 1
+        for _ln, _line in enumerate(markdown_content.split('\n')):
+            _m = _re.match(r'^##\s+Page\s+(\d+)', _line.strip())
+            if _m:
+                _current_page = int(_m.group(1))
+            _page_line_map[_ln] = _current_page
+
         # Use semantic section-based chunking for better results
         documents = chunker.chunk_with_semantic_splitting(
             markdown_content=markdown_content,
@@ -905,12 +1030,13 @@ async def process_pdf_markdown_extraction(
             doc.metadata['namespace'] = namespace
             if question.tags and 'tags' not in doc.metadata:
                 doc.metadata['tags'] = question.tags
+            # Assign page from page_line_map using chunk start_line
+            start_line = doc.metadata.get('start_line', 0)
+            doc.metadata['page'] = _page_line_map.get(start_line, 1)
         
         logger.info(f"Created {len(documents)} Markdown chunks for indexing")
         
         # Index chunks to vector store
-        from pprint import pprint
-        pprint(documents)
         if documents:
             await repo.aadd_documents(
                 engine=question.engine,

@@ -47,6 +47,7 @@ def get_service_config():
             "task_executor": True,
             "graphrag": False,
             "graphrag_falkor": False,
+            "raptor": False,
             "pdf_ocr": False,
             "conversion": True,
             "tools_registry": True
@@ -55,6 +56,7 @@ def get_service_config():
             "task_executor": True,
             "graphrag": False,
             "graphrag_falkor": True,
+            "raptor": False,
             "pdf_ocr": False,
             "conversion": True,
             "tools_registry": True
@@ -63,6 +65,7 @@ def get_service_config():
             "task_executor": True,
             "graphrag": False,
             "graphrag_falkor": True,
+            "raptor": False,
             "pdf_ocr": True,
             "conversion": True,
             "tools_registry": True
@@ -71,6 +74,7 @@ def get_service_config():
             "task_executor": True,
             "graphrag": False,
             "graphrag_falkor": True,
+            "raptor": True,
             "pdf_ocr": True,
             "conversion": True,
             "tools_registry": True
@@ -85,6 +89,8 @@ def get_service_config():
             "task_executor": _str_to_bool(os.environ.get("ENABLE_TASKIQ", "true")),
             "graphrag": _str_to_bool(os.environ.get("ENABLE_GRAPHRAG", "false")), # Disable Neo4j by default
             "graphrag_falkor": _str_to_bool(os.environ.get("ENABLE_GRAPHRAG_FALKOR", "false")),
+            "raptor": _str_to_bool(os.environ.get("ENABLE_RAPTOR", "false")),
+            "compliance": _str_to_bool(os.environ.get("ENABLE_COMPLIANCE", "true")),
             "pdf_ocr": _str_to_bool(os.environ.get("ENABLE_PDF_OCR", "false")),
             "conversion": _str_to_bool(os.environ.get("ENABLE_CONVERSION", "true")),
             "tools_registry": _str_to_bool(os.environ.get("ENABLE_TOOLS_REGISTRY", "true")),

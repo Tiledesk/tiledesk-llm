@@ -1,10 +1,12 @@
 """
-Service to enqueue PDF processing jobs into a Redis queue after uploading the source file to MinIO.
+Service to enqueue PDF processing jobs into a Redis queue for the legacy OCR worker.
+This service requires MinIO for the legacy pipeline - PDFs are uploaded to MinIO before queuing.
 """
 
 import os
 import base64
 import json
+import logging
 import redis.asyncio as redis
 import requests
 import io
@@ -17,20 +19,28 @@ from minio.error import S3Error
 from tilellm.modules.pdf_ocr.models.pdf_scraping import PDFScrapingRequest
 from tilellm.shared.utility import get_service_config
 
+logger = logging.getLogger(__name__)
+
+
 class RedisQueueService:
     """
-    Handles PDF preparation, uploads to MinIO, and enqueues jobs for the external OCR worker.
+    Handles PDF preparation, uploads to MinIO, and enqueues jobs for the legacy OCR worker.
+    
+    DEPRECATED: This service is for the legacy OCR pipeline only.
+    For the new Docling-based pipeline, use TaskiqService instead.
+    
+    Requires MinIO to be available - will raise RuntimeError on initialization if MinIO is not reachable.
     """
     def __init__(self):
         config = get_service_config()
-        
+
         # Redis Config
         redis_conf = config.get("redis", {})
         self.redis_host = redis_conf.get("host", "localhost")
         self.redis_port = int(redis_conf.get("port", 6379))
         self.redis_db = int(redis_conf.get("db", 0))
         self.ocr_queue_name = redis_conf.get("queue_name", "tiledesk_ocr_queue")
-        
+
         # MinIO Config
         minio_conf = config.get("minio", {})
         self.minio_endpoint = minio_conf.get("endpoint", "localhost:9000")
@@ -41,32 +51,52 @@ class RedisQueueService:
         self.minio_bucket = minio_conf.get("bucket_pdfs", "tiledesk-ocr-pdfs")
 
         # 1. Redis Client (Async)
-        # We don't connect immediately in init to avoid async issues in constructor
         self.redis_client = redis.Redis(
-            host=self.redis_host, 
-            port=self.redis_port, 
-            db=self.redis_db, 
+            host=self.redis_host,
+            port=self.redis_port,
+            db=self.redis_db,
             decode_responses=True
         )
 
-        # 2. Connect to MinIO (Sync is fine for now, or could use minio_storage_service)
-        try:
-            self.minio_client = Minio(
-                self.minio_endpoint,
-                access_key=self.minio_access,
-                secret_key=self.minio_secret,
-                secure=self.minio_secure
-            )
-            # Ensure the bucket exists
-            found = self.minio_client.bucket_exists(self.minio_bucket)
-            if not found:
-                self.minio_client.make_bucket(self.minio_bucket)
-                print(f"Created MinIO bucket: {self.minio_bucket}")
-            else:
-                print(f"MinIO bucket '{self.minio_bucket}' already exists.")
-        except S3Error as e:
-            print(f"FATAL: Could not connect to MinIO at {self.minio_endpoint}. Error: {e}")
-            raise RuntimeError("Failed to connect to MinIO") from e
+        # 2. Connect to MinIO (Sync is fine for now)
+        # This service REQUIRES MinIO for the legacy pipeline
+        self.minio_client = None
+        self._minio_error = None
+        
+        if Minio is None:
+            self._minio_error = "Minio package not installed"
+            logger.error("Minio package is not installed")
+        else:
+            try:
+                self.minio_client = Minio(
+                    self.minio_endpoint,
+                    access_key=self.minio_access,
+                    secret_key=self.minio_secret,
+                    secure=self.minio_secure
+                )
+                # Ensure the bucket exists
+                found = self.minio_client.bucket_exists(self.minio_bucket)
+                if not found:
+                    self.minio_client.make_bucket(self.minio_bucket)
+                    logger.info(f"Created MinIO bucket: {self.minio_bucket}")
+                else:
+                    logger.info(f"MinIO bucket '{self.minio_bucket}' already exists.")
+            except S3Error as e:
+                self._minio_error = f"Could not connect to MinIO at {self.minio_endpoint}: {e}"
+                logger.error(f"FATAL: Could not connect to MinIO. Error: {e}")
+                raise RuntimeError(f"Failed to connect to MinIO: {e}") from e
+            except Exception as e:
+                self._minio_error = f"Unexpected error connecting to MinIO: {e}"
+                logger.error(f"FATAL: Unexpected error connecting to MinIO. Error: {e}")
+                raise RuntimeError(f"Failed to connect to MinIO: {e}") from e
+
+    def is_minio_available(self) -> bool:
+        """Check if MinIO is available for this service."""
+        return self.minio_client is not None and self._minio_error is None
+
+    def get_minio_error(self) -> str:
+        """Get the MinIO connection error message if any."""
+        return self._minio_error or ""
 
     async def submit(self, job_id: str, request: PDFScrapingRequest):
         """

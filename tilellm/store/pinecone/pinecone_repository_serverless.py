@@ -18,9 +18,9 @@ from tilellm.shared.tags_query_parser import build_tags_filter
 from tilellm.store.vector_store_repository import VectorStoreIndexingError
 
 from tilellm.tools.document_tools import (get_content_by_url,
-                                          get_content_by_url_with_bs,
                                           load_document,
                                           handle_regex_custom_chunk,
+                                          _extract_file_name,
                                           )
 
 from tilellm.store.pinecone.pinecone_repository_base import PineconeRepositoryBase
@@ -42,19 +42,11 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
 
     async def perform_hybrid_search(self, question_answer, index, dense_vector, sparse_vector, filter: Optional[Dict] = None):
-        import pinecone
-        
-        # Determine index type (hybrid or dense)
-        pc = pinecone.Pinecone(api_key=question_answer.engine.apikey.get_secret_value())
-        index_info = pc.describe_index(question_answer.engine.index_name)
-        metric = index_info.metric  # "cosine" or "dotproduct"
-        is_hybrid = metric == "dotproduct"
-        
+        # sparse_vector presence is the sole hybrid signal — the metric check was removed
+        # because engine.metric defaults to 'cosine' but the index may still be hybrid.
         try:
-            if sparse_vector is None or not is_hybrid:
-                # Dense search only
-                if sparse_vector is not None and not is_hybrid:
-                    logger.warning(f"Index is dense (metric={metric}), ignoring sparse vector.")
+            if sparse_vector is None:
+                # Dense-only search
                 results = await index.query(
                     top_k=question_answer.top_k,
                     vector=dense_vector,
@@ -81,30 +73,22 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
 
     async def initialize_embeddings_and_index(self, question_answer, llm_embeddings, emb_dimension=None, embedding_config_key=None, cache_suffix=None):
-        import pinecone
-        
         emb_dimension = await self.get_embeddings_dimension(question_answer.embedding)
-        
-        # Determine index type (hybrid or dense)
-        pc = pinecone.Pinecone(api_key=question_answer.engine.apikey.get_secret_value())
-        index_info = pc.describe_index(question_answer.engine.index_name)
-        metric = index_info.metric  # "cosine" or "dotproduct"
-        is_hybrid = metric == "dotproduct"
-        
+
         # Normalize sparse_encoder (empty string treated as None)
         sparse_encoder_param = question_answer.sparse_encoder
         if sparse_encoder_param == "":
             sparse_encoder_param = None
-        
-        if is_hybrid and sparse_encoder_param is not None:
+
+        # Use sparse_encoder presence as the hybrid signal (consistent with aadd_documents / Qdrant).
+        if sparse_encoder_param is not None:
             sparse_encoder = TiledeskSparseEncoders(sparse_encoder_param)
+            # Hybrid search requires dotproduct metric — align cache key with aadd_documents write path
+            if (question_answer.engine.metric or "cosine").lower() != "dotproduct":
+                question_answer.engine.metric = "dotproduct"
         else:
             sparse_encoder = None
-            if is_hybrid and sparse_encoder_param is None:
-                logger.warning("Index is hybrid (dotproduct) but sparse_encoder not provided. Using dense embeddings only.")
-            elif not is_hybrid and sparse_encoder_param is not None:
-                logger.warning(f"Index is dense (metric={metric}), ignoring sparse_encoder parameter.")
-        
+
         vector_store = await self.create_index(question_answer.engine, llm_embeddings, emb_dimension, embedding_config_key, cache_suffix)
         index = await vector_store.async_index
 
@@ -216,7 +200,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
         try:
 
-            if item.type in ['url', 'pdf', 'docx', 'txt', 'md']:
+            if item.type in ['url', 'pdf', 'docx', 'txt', 'md', 'xlsx', 'xls', 'csv']:
                 documents = await self.fetch_documents(type_source=item.type,
                                                        source=item.source,
                                                        scrape_type=item.scrape_type,
@@ -228,6 +212,15 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                                               documents=documents,
                                               embeddings=embedding_obj
                                               )
+                if getattr(item, 'use_situated_context', False) and chunks:
+                    try:
+                        from tilellm.shared.situated_context import enrich_chunks_with_situated_context, build_llm_from_item
+                        situated_llm = await build_llm_from_item(item)
+                        if situated_llm:
+                            chunks = await enrich_chunks_with_situated_context(chunks, situated_llm)
+                            logger.info(f"Situated context applied to {len(chunks)} chunks.")
+                    except Exception as sc_err:
+                        logger.warning(f"Situated context enrichment failed, continuing without: {sc_err}")
             elif item.type == 'regex_custom':
                 documents = await self.fetch_documents(type_source=item.type,
                                                        source=item.source,
@@ -344,7 +337,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
         cost = 0
 
         try:
-            if item.type in ['url', 'pdf', 'docx', 'txt', 'md']:
+            if item.type in ['url', 'pdf', 'docx', 'txt', 'md', 'xlsx', 'xls', 'csv']:
                 documents = await self.fetch_documents(type_source = item.type,
                                                        source=item.source,
                                                        scrape_type=item.scrape_type,
@@ -403,6 +396,16 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
             if len(chunks) == 0:
                 raise Exception("No chunks generated from source")
+
+            if getattr(item, 'use_situated_context', False) and chunks:
+                try:
+                    from tilellm.shared.situated_context import enrich_chunks_with_situated_context, build_llm_from_item
+                    situated_llm = await build_llm_from_item(item)
+                    if situated_llm:
+                        chunks = await enrich_chunks_with_situated_context(chunks, situated_llm)
+                        logger.info(f"Situated context applied to {len(chunks)} chunks.")
+                except Exception as sc_err:
+                    logger.warning(f"Situated context enrichment failed, continuing without: {sc_err}")
 
             contents = [chunk.page_content for chunk in chunks]
             total_tokens, cost = self.calc_embedding_cost(chunks, item.embedding)
@@ -531,6 +534,12 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             document.metadata["embedding"] = str(item.embedding)
             if item.tags:
                 document.metadata["tags"] = item.tags
+            # Ensure file_name and page are always present (safety net for loaders
+            # that do not set them, e.g. Docx2txtLoader, URL scrapers).
+            if not document.metadata.get("file_name"):
+                document.metadata["file_name"] = _extract_file_name(item.source or "")
+            if "page" not in document.metadata:
+                document.metadata["page"] = 1
             processed_document = self.process_document_metadata(document, document.metadata)
             chunks.extend(self.chunk_data_extended(
                 data=[processed_document],
@@ -544,10 +553,6 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
     @staticmethod
     async def process_contents(type_source, source, metadata, content):
-        if type_source == 'urlbs':
-            doc_array = get_content_by_url_with_bs(source)
-            return [Document(page_content=doc, metadata=MetadataItem(**metadata).model_dump()) for doc in doc_array]
-
         document = Document(page_content=content, metadata=MetadataItem(**metadata).model_dump(exclude_none=True))
         return [document]
 
@@ -634,46 +639,54 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
 
     async def aadd_documents(self, engine: Engine, documents: List[Document], namespace: str, embedding_model: any, sparse_encoder: Union[str, TEIConfig, None] = None, **kwargs):
-        import pinecone
-        
-        # Get index metric to determine if hybrid or dense
-        pc = pinecone.Pinecone(api_key=engine.apikey.get_secret_value())
-        index_info = pc.describe_index(engine.index_name)
-        metric = index_info.metric  # "cosine" or "dotproduct"
-        is_hybrid = metric == "dotproduct"
-        
         # Normalize sparse_encoder (empty string treated as None)
         if sparse_encoder == "":
             sparse_encoder = None
-        
-        if is_hybrid:
-            logger.info(f"Adding {len(documents)} documents to namespace '{namespace}' with hybrid embeddings (Serverless, metric={metric}).")
-            if sparse_encoder is None:
-                logger.warning("Index is hybrid (dotproduct) but sparse_encoder not provided. Using dense embeddings only.")
-                sparse_encoder_obj = None
-            else:
-                sparse_encoder_obj = TiledeskSparseEncoders(sparse_encoder)
-        else:
-            logger.info(f"Adding {len(documents)} documents to namespace '{namespace}' with dense embeddings only (Serverless, metric={metric}).")
-            if sparse_encoder is not None:
-                logger.warning(f"Index is dense (metric={metric}), ignoring sparse_encoder parameter.")
-            sparse_encoder_obj = None
 
-        # 1. Get Pinecone Index
+        # Use sparse_encoder presence as the hybrid signal — consistent with Qdrant behavior.
+        # When sparse_encoder is provided the caller explicitly requests hybrid indexing.
+        # Pinecone serverless hybrid requires a dotproduct-metric index; warn if mismatch.
+        is_hybrid = sparse_encoder is not None
+        metric = (engine.metric or "cosine").lower()
+
+        if is_hybrid:
+            if metric != "dotproduct":
+                # Pinecone serverless hybrid search requires dotproduct metric.
+                # Override engine.metric so the index is created with the correct metric.
+                logger.info(
+                    f"Hybrid mode requested (sparse_encoder='{sparse_encoder}') but engine.metric='{metric}'. "
+                    f"Overriding to 'dotproduct' as required by Pinecone serverless hybrid search."
+                )
+                engine.metric = "dotproduct"
+            sparse_encoder_obj = TiledeskSparseEncoders(sparse_encoder)
+            logger.info(f"Adding {len(documents)} documents to namespace '{namespace}' with hybrid embeddings (Serverless).")
+        else:
+            sparse_encoder_obj = None
+            logger.info(f"Adding {len(documents)} documents to namespace '{namespace}' with dense embeddings only (Serverless).")
+
+        # 1. Get Pinecone Index (engine.metric is already set correctly above)
         emb_dimension = await self.get_embeddings_dimension(embedding_model)
         vector_store_instance = await self.create_index(engine, embedding_model, emb_dimension)
         index = await vector_store_instance.async_index
 
+        skip_delete = kwargs.get('skip_delete', False)
+        metadata_id = kwargs.get('metadata_id')
+
         try:
             # 2. Clear namespace before adding new documents (handle missing namespace)
-            try:
-                logger.info(f"Clearing namespace '{namespace}' before upserting.")
-                await index.delete(delete_all=True, namespace=namespace)
-            except Exception as e:
-                if "Namespace not found" in str(e):
-                    logger.info(f"Namespace '{namespace}' does not exist, skipping deletion.")
-                else:
-                    raise
+            if not skip_delete:
+                try:
+                    if metadata_id:
+                        logger.info(f"Deleting docs with id='{metadata_id}' from namespace '{namespace}'.")
+                        await index.delete(namespace=namespace, filter={"id": {"$eq": metadata_id}})
+                    else:
+                        logger.info(f"Clearing namespace '{namespace}' before upserting.")
+                        await index.delete(delete_all=True, namespace=namespace)
+                except Exception as e:
+                    if "Namespace not found" in str(e):
+                        logger.info(f"Namespace '{namespace}' does not exist, skipping deletion.")
+                    else:
+                        raise
 
             # 3. Prepare data and embeddings in batches
             doc_batch_size = 50  # Recommended batch size for Pinecone

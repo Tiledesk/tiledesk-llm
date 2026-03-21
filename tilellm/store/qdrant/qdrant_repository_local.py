@@ -35,7 +35,7 @@ from tilellm.shared.sparse_util import hybrid_score_norm
 from tilellm.shared.timed_cache import TimedCache
 from tilellm.shared.utility import _hash_api_key
 from tilellm.store.vector_store_repository import VectorStoreRepository, VectorStoreIndexingError
-from tilellm.tools.document_tools import fetch_documents, get_content_by_url_with_bs, calc_embedding_cost, handle_regex_custom_chunk
+from tilellm.tools.document_tools import fetch_documents, calc_embedding_cost, handle_regex_custom_chunk, _extract_file_name
 from tilellm.tools.sparse_encoders import TiledeskSparseEncoders
 
 logger = logging.getLogger(__name__)
@@ -352,8 +352,11 @@ class QdrantRepository(VectorStoreRepository):
 
             # 2. Clear namespace before adding new documents
             # If metadata_id is provided, clear only that specific document
+            skip_delete = kwargs.get('skip_delete', False)
             metadata_id = kwargs.get('metadata_id')
-            if metadata_id:
+            if skip_delete:
+                logger.info(f"skip_delete=True, skipping deletion for namespace '{namespace}'.")
+            elif metadata_id:
                 logger.info(f"Clearing document '{metadata_id}' from namespace '{namespace}' before upserting.")
                 delete_filter = models.Filter(
                     must=[
@@ -378,16 +381,30 @@ class QdrantRepository(VectorStoreRepository):
                     ]
                 )
 
-            # Use executor for synchronous delete
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(
-                None,
-                lambda: qdrant_client.delete(
-                    collection_name=collection_name,
-                    points_selector=models.FilterSelector(filter=delete_filter)
-                )
-            )
-            logger.info(f"Cleared existing points for filter in collection '{collection_name}'.")
+            if not skip_delete:
+                # Use executor for synchronous delete.
+                # If the collection does not exist yet there is nothing to delete;
+                # in that case we reset the readiness flag so that _ensure_client()
+                # creates it before the upsert below.
+                loop = asyncio.get_event_loop()
+                try:
+                    await loop.run_in_executor(
+                        None,
+                        lambda: qdrant_client.delete(
+                            collection_name=collection_name,
+                            points_selector=models.FilterSelector(filter=delete_filter)
+                        )
+                    )
+                    logger.info(f"Cleared existing points for filter in collection '{collection_name}'.")
+                except Exception as del_err:
+                    err_str = str(del_err).lower()
+                    if "not found" in err_str or "doesn't exist" in err_str or "404" in str(del_err):
+                        logger.info(f"Collection '{collection_name}' does not exist yet – will be created on upsert.")
+                        # Force re-creation before the upsert step
+                        cached_vs_wrapper._collection_ready = False
+                        await cached_vs_wrapper._ensure_client()
+                    else:
+                        raise
 
             # 3. Prepare data and embeddings
             doc_batch_size = 32 # Reduced to match TEI server batch limit
@@ -630,7 +647,7 @@ class QdrantRepository(VectorStoreRepository):
                 else:
                     logger.error(f"Could not create payload index (it might already exist or another error): {e}")
 
-            if item.type in ['url', 'pdf', 'docx', 'txt', 'md']:
+            if item.type in ['url', 'pdf', 'docx', 'txt', 'md', 'xlsx', 'xls', 'csv']:
                 documents = await fetch_documents(type_source=item.type,
                                                   source=item.source,
                                                   scrape_type=item.scrape_type,
@@ -641,6 +658,15 @@ class QdrantRepository(VectorStoreRepository):
                                                     documents=documents,
                                                     embeddings=embedding_obj
                                                     )
+                if getattr(item, 'use_situated_context', False) and chunks:
+                    try:
+                        from tilellm.shared.situated_context import enrich_chunks_with_situated_context, build_llm_from_item
+                        situated_llm = await build_llm_from_item(item)
+                        if situated_llm:
+                            chunks = await enrich_chunks_with_situated_context(chunks, situated_llm)
+                            logger.info(f"Situated context applied to {len(chunks)} chunks.")
+                    except Exception as sc_err:
+                        logger.warning(f"Situated context enrichment failed, continuing without: {sc_err}")
             elif item.type == 'regex_custom':
                 documents = await fetch_documents(type_source=item.type,
                                                   source=item.source,
@@ -776,7 +802,7 @@ class QdrantRepository(VectorStoreRepository):
                 else:
                     logger.error(f"Could not create payload index (it might already exist or another error): {e}")
 
-            if item.type in ['url', 'pdf', 'docx', 'txt', 'md']:
+            if item.type in ['url', 'pdf', 'docx', 'txt', 'md', 'xlsx', 'xls', 'csv']:
                 documents = await self.fetch_documents(type_source=item.type,
                                                        source=item.source,
                                                        scrape_type=item.scrape_type,
@@ -839,6 +865,15 @@ class QdrantRepository(VectorStoreRepository):
             if len(chunks) == 0:
                 raise Exception("No chunks generated from source")
 
+            if getattr(item, 'use_situated_context', False) and chunks:
+                try:
+                    from tilellm.shared.situated_context import enrich_chunks_with_situated_context, build_llm_from_item
+                    situated_llm = await build_llm_from_item(item)
+                    if situated_llm:
+                        chunks = await enrich_chunks_with_situated_context(chunks, situated_llm)
+                        logger.info(f"Situated context applied to {len(chunks)} chunks.")
+                except Exception as sc_err:
+                    logger.warning(f"Situated context enrichment failed, continuing without: {sc_err}")
 
             contents = [chunk.page_content for chunk in chunks]
             total_tokens, cost = calc_embedding_cost(chunks, item.embedding)
@@ -1674,6 +1709,11 @@ class QdrantRepository(VectorStoreRepository):
             document.metadata["namespace"] = item.namespace
             if item.tags:
                 document.metadata["tags"] = item.tags
+            # Ensure file_name and page are always present.
+            if not document.metadata.get("file_name"):
+                document.metadata["file_name"] = _extract_file_name(item.source or "")
+            if "page" not in document.metadata:
+                document.metadata["page"] = 1
             processed_document = self.process_document_metadata(document, document.metadata)
             chunks.extend(self.chunk_data_extended(
                 data=[processed_document],
@@ -1700,10 +1740,6 @@ class QdrantRepository(VectorStoreRepository):
 
     @staticmethod
     async def process_contents(type_source, source, metadata, content):
-        if type_source == 'urlbs':
-            doc_array = get_content_by_url_with_bs(source)
-            return [Document(page_content=doc, metadata=MetadataItem(**metadata).model_dump()) for doc in doc_array]
-
         document = Document(page_content=content, metadata=MetadataItem(**metadata).model_dump())
         return [document]
 

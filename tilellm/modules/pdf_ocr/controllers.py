@@ -1,5 +1,6 @@
 import io
 import os
+import uuid
 import base64
 import requests
 import logging
@@ -10,21 +11,9 @@ from pydantic import SecretStr
 from tilellm.modules.pdf_ocr.models.pdf_scraping import (
     PDFScrapingRequest, PDFScrapingAcceptResponse, PDFScrapingStatusResponse
 )
+from tilellm.modules.pdf_ocr.services.taskiq_service import get_taskiq_service
 from tilellm.modules.pdf_ocr.services.redis_queue_service import get_redis_queue_service
 from tilellm.modules.pdf_ocr.services.job_service import get_job_service
-#from tilellm.modules.pdf_ocr.tasks import process_pdf_document_task
-from tilellm.modules.task_executor.tasks import process_pdf_document_task
-from tilellm.modules.pdf_ocr.logic import process_pdf_document_with_embeddings
-from tilellm.shared.llm_config import serialize_with_secrets
-
-try:
-    from tilellm.modules.task_executor.broker import broker as _broker  # noqa: F401
-    TASKIQ_AVAILABLE = True
-except Exception:
-    TASKIQ_AVAILABLE = False
-
-ENABLE_TASKIQ = os.environ.get("ENABLE_TASKIQ", "false").lower() == "true"
-ENABLE_TASKIQ = ENABLE_TASKIQ and TASKIQ_AVAILABLE
 
 logger = logging.getLogger(__name__)
 
@@ -34,119 +23,92 @@ router = APIRouter(
     tags=["PDF OCR"]
 )
 
+
 @router.post("/scrape", response_model=PDFScrapingAcceptResponse, tags=["PDF OCR"])
 async def scrape_pdf(request: PDFScrapingRequest):
     """
     Submit PDF document for scraping. The job is added to a queue for background processing.
-    
+
     - **file_name**: Original file name with extension (e.g., 'document.pdf')
-    - **file_content**: File content encoded as Base64 or a public URL (http/https)
+    - **file_content**: 
+      - For Docling pipeline (use_docling=true): Must be a public URL (http/https)
+      - For Legacy pipeline (use_docling=false): Base64 or URL (requires MinIO)
     - **webhook_url**: Optional URL to notify when processing is complete
     - **use_docling**: If True, uses the new advanced Docling-based pipeline.
-    
+      This pipeline does NOT require MinIO - the worker downloads from URL.
+    - **id**: Optional custom job ID (will be used as document reference ID)
+
     Returns a job ID for tracking the processing status.
     """
     try:
-        # Get the required services
-        queue_service = get_redis_queue_service()
+        # doc_id is the stable document identity in the vector store.
+        # If the caller provides request.id we honour it so that re-submitting
+        # the same document replaces the previous version (aadd_documents deletes
+        # the namespace before upserting).
+        doc_id = request.id if request.id else str(uuid.uuid4())
+        request.id = doc_id
+
         job_service = get_job_service()
-        
-        # 1. Create a job entry to track this request.
-        # Use request.id if provided, as it is the document reference ID.
-        job_id = job_service.create_job(file_name=request.file_name, job_id=request.id)
-        
-        # Ensure the request object also has the ID set
-        if not request.id:
-            request.id = job_id
-        
+
         if request.use_docling:
-            # New Advanced Pipeline
-            
-            # Prepare content
-            is_url = request.is_url()
-            bucket_name = None
-            object_name = None
-            
-            if is_url:
-                # Content is a URL, worker will download it
-                logger.info(f"PDF content is a URL: {request.file_content}")
-            else:
-                # Content is Base64, try to upload to MinIO to offload Redis
-                try:
-                    pdf_content = base64.b64decode(request.file_content)
-                except Exception as e:
-                    raise ValueError(f"Invalid Base64 content: {e}")
-                    
-                # Upload to MinIO if available
-                if queue_service.minio_client:
-                    bucket_name = queue_service.minio_bucket
-                    object_name = f"{job_id}.pdf"
-                    try:
-                        queue_service.minio_client.put_object(
-                            bucket_name=bucket_name,
-                            object_name=object_name,
-                            data=io.BytesIO(pdf_content),
-                            length=len(pdf_content),
-                            content_type='application/pdf'
-                        )
-                        logger.info(f"Uploaded PDF content to MinIO: {bucket_name}/{object_name}")
-                    except Exception as e:
-                        logger.warning(f"Failed to upload to MinIO, will send content via Taskiq: {e}")
-                        bucket_name = None
-                        object_name = None
-                else:
-                    logger.warning("MinIO client not available, will send content via Taskiq")
-                
-            # Prepare config with the document ID
-            config = request.model_dump(mode='python') 
-            config['id'] = job_id
-            
-            # Optimization: If we have a MinIO reference, replace large Base64 content in config
-            # to avoid saturating Redis (Connection error 6379) during massive tasks.
-            if not is_url and bucket_name and object_name:
-                config['file_content'] = f"minio://{bucket_name}/{object_name}"
-            
-            if ENABLE_TASKIQ and TASKIQ_AVAILABLE:
-                logger.info(f"Taskiq enabled, queuing PDF processing task for doc {job_id}")
-                # Trigger Taskiq task
-                task_payload = serialize_with_secrets(config)
-                await process_pdf_document_task.kiq(
-                    doc_id=job_id,
-                    bucket_name=bucket_name,
-                    object_name=object_name,
-                    webhook_url=request.webhook_url,
-                    config=task_payload
+            # New Advanced Pipeline (Docling-based)
+            # This pipeline does NOT require MinIO
+
+            # Validate that file_content is a URL (not Base64)
+            if not request.is_url():
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "For Docling pipeline (use_docling=true), file_content must be a public URL (http/https). "
+                        "Base64 content is not supported. Please upload the PDF to a publicly accessible location "
+                        "and provide the URL, or use the legacy pipeline (use_docling=false) with MinIO."
+                    )
                 )
-                message = "PDF processing job (Advanced Docling) has been successfully queued."
+
+            logger.info(f"PDF content is a URL: {request.file_content}")
+
+            taskiq_service = get_taskiq_service()
+
+            if taskiq_service.is_available():
+                # Submit to Taskiq; task_id is the Taskiq-generated key for status polling.
+                result = await taskiq_service.submit(doc_id=doc_id, request=request)
+                job_id = result["task_id"]
+                message = result.get("message", "PDF processing job (Advanced Docling) has been successfully queued.")
+                job_service.register_task(task_id=job_id, doc_id=doc_id, file_name=request.file_name)
             else:
-                # Fallback: Process synchronously (blocking)
-                logger.info(f"Taskiq disabled or unavailable, processing PDF doc {job_id} synchronously")
-                
-                # Update request object with optimized content reference if needed
-                if not is_url and bucket_name and object_name:
-                    request.file_content = config['file_content']
-                
-                await process_pdf_document_with_embeddings(
-                    question=request,
-                    bucket_name=bucket_name,
-                    object_name=object_name
-                )
-                message = "PDF processing completed synchronously (Taskiq disabled)."
-            
+                # Fallback: Process synchronously – use doc_id directly as job_id.
+                logger.info(f"Taskiq disabled or unavailable, processing PDF doc_id={doc_id} synchronously")
+                result = await taskiq_service.process_synchronously(request=request)
+                job_id = doc_id
+                message = result.get("message", "PDF processing completed synchronously (Taskiq disabled).")
+
         else:
-            # Old Pipeline
-            # 2. Submit the job to the Redis queue for the worker to process
-            await queue_service.submit(job_id=job_id, request=request)
+            # Legacy Pipeline (requires MinIO)
+            queue_service = get_redis_queue_service()
+
+            if not queue_service.is_minio_available():
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        f"Legacy PDF pipeline requires MinIO. Error: {queue_service.get_minio_error()}. "
+                        "Consider using use_docling=true with a public URL for the new pipeline that works without MinIO."
+                    )
+                )
+
+            await queue_service.submit(job_id=doc_id, request=request)
+            job_id = doc_id
             message = "PDF processing job has been successfully queued."
-        
+
         return PDFScrapingAcceptResponse(
             job_id=job_id,
             message=message,
-            estimated_time=120  # A rough estimate in seconds
+            estimated_time=120
         )
-        
+
+    except HTTPException:
+        raise
     except RuntimeError as e:
-        # This will catch Redis connection errors from the service constructor
+        # This will catch Redis/MinIO connection errors from the service constructor
         raise HTTPException(status_code=503, detail=f"Job queuing service is unavailable: {str(e)}")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=f"Invalid request: {str(e)}")
@@ -160,24 +122,27 @@ async def scrape_pdf(request: PDFScrapingRequest):
 async def get_scraping_status(job_id: str):
     """
     Get the status of a PDF scraping job.
-    
+
     - **job_id**: The job identifier returned from the /scrape endpoint.
-    
+
     Returns the current job status. Note: status is updated by an external worker.
     """
     try:
         job_service = get_job_service()
-        status_response = job_service.get_status_response(job_id)
-        
+        status_response = await job_service.get_status_response(job_id)
+
         if not status_response:
             raise HTTPException(
                 status_code=404,
                 detail=f"Job with ID '{job_id}' not found"
             )
-        
+
         return status_response
-        
+
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"Error retrieving job status: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error retrieving job status: {str(e)}")
 
 
@@ -185,21 +150,51 @@ async def get_scraping_status(job_id: str):
 async def health_check():
     """
     Check if the PDF OCR queuing service and its dependencies are healthy.
+    
+    Returns health status for both the new Taskiq-based pipeline and the legacy Redis/MinIO pipeline.
     """
     try:
-        # Check connection to Redis via the queue service
-        get_redis_queue_service()
-        # Check in-memory job service
+        # Check Taskiq service (new pipeline)
+        taskiq_service = get_taskiq_service()
+        taskiq_healthy = taskiq_service.is_available()
+        
+        # Check job service (used by both pipelines)
         get_job_service()
         
-        return {
-            "status": "healthy",
-            "message": "PDF queuing service is running and connected to Redis."
+        # Check legacy Redis queue service (only for old pipeline)
+        redis_healthy = True
+        redis_error = None
+        try:
+            queue_service = get_redis_queue_service()
+            redis_healthy = queue_service.is_minio_available()
+            if not redis_healthy:
+                redis_error = queue_service.get_minio_error()
+        except RuntimeError as e:
+            redis_healthy = False
+            redis_error = str(e)
+
+        health_status = {
+            "status": "healthy" if taskiq_healthy else "degraded",
+            "message": "PDF OCR service is running.",
+            "pipelines": {
+                "docling": {
+                    "status": "healthy" if taskiq_healthy else "unavailable",
+                    "message": "Taskiq-based pipeline (URL only, no MinIO required)" + (" (enabled)" if taskiq_healthy else " (disabled)")
+                },
+                "legacy": {
+                    "status": "healthy" if redis_healthy else "unavailable",
+                    "message": "Redis/MinIO-based pipeline (deprecated)",
+                    "error": redis_error if not redis_healthy else None
+                }
+            }
         }
-    except RuntimeError as e:
+        
+        return health_status
+        
+    except Exception as e:
         return {
             "status": "unhealthy",
-            "message": f"PDF queuing service is not available: {e}"
+            "message": f"PDF queuing service health check failed: {e}"
         }
 
 
@@ -207,20 +202,20 @@ async def health_check():
 async def get_document_sections(doc_id: str):
     """
     Get document structure (sections) for a processed PDF.
-    
+
     Args:
         doc_id: Document identifier returned from /scrape endpoint
-    
+
     Returns:
         Document structure including sections, hierarchy, and metadata
     """
     try:
         from tilellm.modules.knowledge_graph.repository.repository import GraphRepository
         from tilellm.modules.pdf_ocr.services.document_structure_extractor import DocumentStructureExtractor
-        
+
         # Initialize graph repository
         graph_repo = GraphRepository()
-        
+
         # Query for Document node
         query = """
         MATCH (d:Document {id: $doc_id})
@@ -237,16 +232,16 @@ async def get_document_sections(doc_id: str):
                collect(DISTINCT sub.id) as subsections,
                collect(DISTINCT e.id) as elements
         """
-        
+
         try:
             result = graph_repo.execute_query(query, {'doc_id': doc_id})
-            
+
             if not result:
                 raise HTTPException(
                     status_code=404,
                     detail=f"Document {doc_id} not found or not processed"
                 )
-            
+
             # Build hierarchical structure
             sections = []
             for row in result:
@@ -259,7 +254,7 @@ async def get_document_sections(doc_id: str):
                     'elements': row.get('elements', [])
                 }
                 sections.append(section)
-            
+
             return {
                 'doc_id': doc_id,
                 'sections': sections,
@@ -267,7 +262,7 @@ async def get_document_sections(doc_id: str):
                     'total_sections': len(sections)
                 }
             }
-            
+
         except HTTPException:
             raise
         except Exception as e:
@@ -277,7 +272,7 @@ async def get_document_sections(doc_id: str):
                 status_code=500,
                 detail=f"Error retrieving document structure: {str(e)}"
             )
-            
+
     except Exception as e:
         raise HTTPException(
             status_code=503,
@@ -294,29 +289,29 @@ async def search_document_elements(
 ):
     """
     Search for elements within a document using vector similarity.
-    
+
     Args:
         doc_id: Document identifier
         query: Search query text
         element_type: Filter by element type (text, table, image)
         top_k: Number of results to return
-    
+
     Returns:
         List of matching elements with scores
     """
     try:
         from tilellm.modules.pdf_ocr.logic import process_pdf_document_with_embeddings
-        
+
         # For now, return a placeholder response
         # Full implementation would use vector store search with doc_id filter
-        
+
         return {
             'doc_id': doc_id,
             'query': query,
             'results': [],
             'message': 'Search functionality requires vector store integration'
         }
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=500,

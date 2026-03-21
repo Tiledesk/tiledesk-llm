@@ -1,9 +1,11 @@
+import os
 import re
 import time
 
 import logging
 
 from typing import List, Optional, Sequence, Any
+from urllib.parse import urlparse
 
 import requests
 from bs4 import BeautifulSoup, Comment
@@ -22,6 +24,61 @@ from langchain_core.documents import Document
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_file_name(source: str) -> str:
+    """Extract a clean file name from a URL or local path.
+
+    Handles presigned MinIO/S3 URLs, plain HTTP URLs, and local file paths.
+    Returns the basename of the path component, without query strings.
+    Falls back to the full source string if parsing fails.
+    """
+    if not source:
+        return ""
+    try:
+        parsed = urlparse(source)
+        if parsed.scheme in ("http", "https", "s3", "minio"):
+            # Strip query string and fragment, take basename of path
+            name = os.path.basename(parsed.path.rstrip("/"))
+            return name if name else source
+        # Local path or unknown scheme
+        return os.path.basename(source) or source
+    except Exception:
+        return source
+
+
+async def _handle_trafilatura_scrape(url: str) -> list[Document]:
+    """Extract main content from a URL using Trafilatura.
+
+    Trafilatura strips navigation, ads, JS artifacts and returns clean text.
+    Runs the blocking fetch in a thread executor to avoid blocking the event loop.
+    Returns an empty list when content is too short or extraction fails.
+    """
+    import asyncio
+    try:
+        import trafilatura
+    except ImportError:
+        raise ImportError(
+            "trafilatura is not installed. Add it to your dependencies: pip install trafilatura"
+        )
+
+    loop = asyncio.get_event_loop()
+    downloaded = await loop.run_in_executor(None, trafilatura.fetch_url, url)
+    if not downloaded:
+        return []
+
+    text = trafilatura.extract(
+        downloaded,
+        include_tables=True,
+        include_images=False,
+        include_links=False,
+        output_format="txt",
+        favor_precision=True,
+    )
+    if not text or len(text.strip()) < 100:
+        return []
+
+    return [Document(page_content=text.strip(), metadata={"source": url})]
 
 
 async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Document]:
@@ -68,18 +125,50 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
 
     try:
         if scrape_type == 0:
+            # Try Trafilatura first: fast, no browser, strips JS/ads/nav automatically.
+            try:
+                docs = await _handle_trafilatura_scrape(url)
+                if docs:
+                    return clean_documents_metadata(docs)
+                logger.warning(
+                    f"Trafilatura returned empty content for {url}, "
+                    "falling back to UnstructuredURLLoader"
+                )
+            except ImportError:
+                logger.warning("trafilatura not available, falling back to UnstructuredURLLoader")
+            except Exception as traf_err:
+                logger.warning(
+                    f"Trafilatura failed for {url}: {traf_err}, "
+                    "falling back to UnstructuredURLLoader"
+                )
             return await handle_unstructured_loader(
                 urls,
                 mode="elements",
                 strategy="fast",
-                browser_headers = browser_headers
+                browser_headers=browser_headers,
             )
 
         elif scrape_type == 1:
+            # Try Trafilatura first for cleaner extraction.
+            try:
+                docs = await _handle_trafilatura_scrape(url)
+                if docs:
+                    return clean_documents_metadata(docs)
+                logger.warning(
+                    f"Trafilatura returned empty content for {url}, "
+                    "falling back to UnstructuredURLLoader"
+                )
+            except ImportError:
+                logger.warning("trafilatura not available, falling back to UnstructuredURLLoader")
+            except Exception as traf_err:
+                logger.warning(
+                    f"Trafilatura failed for {url}: {traf_err}, "
+                    "falling back to UnstructuredURLLoader"
+                )
             return await handle_unstructured_loader(
                 urls,
                 mode="single",
-                browser_headers = browser_headers
+                browser_headers=browser_headers,
             )
         elif scrape_type == 2:
             return await handle_playwright_scrape(url, params_type_4, browser_headers = browser_headers)
@@ -682,17 +771,28 @@ def custom_html_transform(html_content, selectors_to_extract=None, unwanted_tags
 
     return result
 
+from tilellm.tools.structured_loaders import StructuredDocxLoader, ExcelLoader, CSVLoader
+
 def load_document(url: str, type_source: str):
     # import os
     # name, extension = os.path.splitext(file)
 
     if type_source == 'pdf':
-
         logger.info(f'Loading {url}')
+        logger.warning(
+            "PyPDFLoader is being used for PDF processing. "
+            "For complex PDFs (tables, images, formulas) use the /api/pdf/scrape endpoint with Docling."
+        )
         loader = PyPDFLoader(url)
     elif type_source == 'docx':
-        logger.info(f'Loading {url}')
-        loader = Docx2txtLoader(url)
+        logger.info(f'Loading structured docx {url}')
+        loader = StructuredDocxLoader(url)
+    elif type_source == 'xlsx' or type_source == 'xls':
+        logger.info(f'Loading excel {url}')
+        loader = ExcelLoader(url)
+    elif type_source == 'csv':
+        logger.info(f'Loading csv {url}')
+        loader = CSVLoader(url)
     elif type_source == 'txt':
         logger.info(f'Loading {url}')
         loader = TextLoader(url)
@@ -712,8 +812,38 @@ def load_document(url: str, type_source: str):
         return None
 
     data = loader.load()
-    # from pprint import pprint
-    # pprint(data)
+
+    # Normalize metadata: ensure file_name and page are always present.
+    file_name = _extract_file_name(url)
+    for doc in data:
+        doc.metadata["file_name"] = file_name
+        if "page" in doc.metadata:
+            # PyPDFLoader returns 0-indexed pages; convert to 1-indexed.
+            doc.metadata["page"] = int(doc.metadata["page"]) + 1
+        else:
+            # Docx2txtLoader / TextLoader / UnstructuredMarkdownLoader / ExcelLoader / CSVLoader:
+            # no page tracking — default to 1.
+            if "page" not in doc.metadata:
+                doc.metadata["page"] = 1
+
+    # Build heading_path for markdown documents.
+    # UnstructuredMarkdownLoader mode="elements" marks headings with category='Title'.
+    if type_source == 'md':
+        heading_stack = []  # list of (depth, text)
+        for doc in data:
+            cat = doc.metadata.get("category", "")
+            if cat == "Title":
+                depth = doc.metadata.get("category_depth", 1)
+                if not isinstance(depth, int):
+                    depth = 1
+                title_text = doc.page_content.strip()
+                heading_stack = [(l, t) for l, t in heading_stack if l < depth]
+                heading_stack.append((depth, title_text))
+            doc.metadata["heading_path"] = " > ".join(t for _, t in heading_stack)
+    else:
+        for doc in data:
+            doc.metadata.setdefault("heading_path", "")
+
     return data
 
 
@@ -725,50 +855,6 @@ def load_from_wikipedia(query, lang='en', load_max_docs=2):
     return data
 
 
-def get_content_by_url_with_bs(url: str):
-    html = requests.get(url)
-    # urls = [url]
-    # Load HTML
-    # loader = await AsyncChromiumLoader(urls)
-    # html = loader.load()
-
-    from bs4 import BeautifulSoup
-    soup = BeautifulSoup(html.content, 'html.parser')
-
-    # Estrai tutte le sezioni h1
-    h1_tags = soup.find_all('h1')
-
-    testi = []
-    for index, h1_tag in enumerate(h1_tags):
-        # Trova il tag <table> successivo al tag <h1>
-        next_a = h1_tag.find_next_sibling('a')
-        next_desc = h1_tag.find_next_sibling('h2')
-
-
-        next_table = h1_tag.find_next_sibling('table')
-
-        # Se esiste, estrai le righe (tr) all'interno della tabella
-        testo_tabella =""
-        if next_table:
-            rows = next_table.find_all('tr')
-            # Stampa il contenuto delle righe
-            for row in rows:
-                # Estrai i td
-                tds = row.find_all('td')
-                # Se ci sono almeno due td
-                if len(tds) >= 2:
-                    # Stampa il testo del primo td, i due punti e il testo del secondo td
-                    testo_tabella+=f"  {tds[0].get_text(strip=True)}: {tds[1].get_text(strip=True)}"
-
-        testo_doc = f"Product: {h1_tag.text}, URL: {next_a['href']} description: {next_desc.text}.  Measurements: {testo_tabella}"
-        testi.append(testo_doc)
-
-        # Aggiungi una riga vuota tra i segmenti
-        # if index < len(h1_tags) - 1:
-        #    print()  # Stampa una riga vuota tra i segmenti
-
-
-    return testi
 
 
 

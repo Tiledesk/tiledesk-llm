@@ -418,7 +418,24 @@ class ProductionDocumentProcessor:
                 data=parquet_buffer.getvalue(),
                 content_type='application/parquet'
             )
-            
+
+            # Also save as Markdown (human-readable, no extra deps)
+            md_path = f"{doc_id}/tables/{table_id}.md"
+            try:
+                header = '| ' + ' | '.join(str(c) for c in df.columns) + ' |'
+                separator = '| ' + ' | '.join(['---'] * len(df.columns)) + ' |'
+                rows = ['| ' + ' | '.join(str(v) for v in row) + ' |' for row in df.values]
+                md_content = '\n'.join([header, separator] + rows)
+                self.minio_service.upload_data(
+                    bucket_name=self.minio_bucket_tables,
+                    object_name=md_path,
+                    data=md_content.encode('utf-8'),
+                    content_type='text/markdown'
+                )
+                table_data['md_path'] = md_path
+            except Exception as md_err:
+                logger.warning(f"Could not save table as markdown to MinIO: {md_err}")
+
         # Register in DuckDB
         safe_table_name = f"tbl_{table_id.replace('-', '_')}"
         self.duckdb_conn.register(safe_table_name, df)
@@ -433,6 +450,7 @@ class ProductionDocumentProcessor:
         # Store description for later use by logic layer
         table_data['surrounding_text'] = surrounding_text
         table_data['parquet_path'] = parquet_path
+        table_data.setdefault('md_path', '')
         table_data['duckdb_table'] = safe_table_name
         
         # Store Metadata

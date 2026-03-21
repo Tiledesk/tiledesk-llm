@@ -32,3 +32,9 @@ class GraphState(TypedDict):
     # Configurazione
     metadata: Optional[dict[str, Any]]
 
+    # Intent routing (v2 qa agent)
+    intent: Optional[str]           # "qa" | "compliance"
+    parsed_csv: Optional[str]       # requisiti estratti dal messaggio (CSV grezzo)
+    compliance_domain: Optional[str]  # dominio rilevato: e_procurement | medical_devices | …
+    compliance_report: Optional[dict]  # ComplianceReport.model_dump() dopo il check
+

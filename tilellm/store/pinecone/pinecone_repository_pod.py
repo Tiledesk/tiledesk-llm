@@ -18,7 +18,6 @@ from tilellm.shared.embeddings.embedding_client_manager import inject_embedding_
 from tilellm.shared.tags_query_parser import build_tags_filter
 from tilellm.store.vector_store_repository import VectorStoreIndexingError
 from tilellm.tools.document_tools import (get_content_by_url,
-                                          get_content_by_url_with_bs,
                                           load_document,
                                           handle_regex_custom_chunk
                                           )
@@ -113,7 +112,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
         cost = 0
 
         try:
-            if type_source in ['url', 'pdf', 'docx','txt', 'md']:
+            if type_source in ['url', 'pdf', 'docx', 'txt', 'md', 'xlsx', 'xls', 'csv']:
 
                 documents = []
                 if type_source in ['url', 'txt', 'md']:
@@ -204,25 +203,6 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 logger.debug(f"ids: {ids}")
                 total_tokens, cost = self.calc_embedding_cost(chunks, embedding_name)
                 logger.info(f"chunks: {len(chunks)}, total_tokens: {total_tokens}, cost: {cost: .6f}")
-
-            elif type_source == 'urlbs':
-                doc_array = get_content_by_url_with_bs(source)
-                chunks = list()
-                for doc in doc_array:
-                    metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding_name).model_dump(exclude_none=True)
-                    if item.tags:
-                        metadata["tags"] = item.tags
-                    document = Document(page_content=doc, metadata=metadata)
-                    chunks.append(document)
- 
-                if len(chunks) == 0:
-                    raise Exception("No chunks generated from source")
-
-                total_tokens, cost = self.calc_embedding_cost(chunks, embedding_name)
-                ids = await vector_store.aadd_documents(chunks,
-                                                       namespace=namespace
-                                                       )
-                logger.debug(f"ids: {ids}")
 
             else:
                 metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding_name).model_dump(exclude_none=True)

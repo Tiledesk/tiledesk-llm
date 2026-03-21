@@ -7,6 +7,9 @@ import sys
 import fakeredis.aioredis
 import asyncio
 
+# --- Enable PDF OCR module for tests ---
+os.environ["ENABLE_PDF_OCR"] = "true"
+
 # --- Add project root to Python path ---
 # This ensures that the 'tilellm' module can be imported by the test runner
 current_file_path = os.path.dirname(__file__)

@@ -56,6 +56,9 @@ class ItemSingle(BaseModel):
     chunk_regex: Optional[str] = None
     parameters_scrape_type_4: Optional[Any] = None # Will be importing ParametersScrapeType4
     engine: Engine
+    use_situated_context: bool = Field(default=False, description="Prepend situated context to each chunk before embedding (Contextual Retrieval). Requires llm_provider + gptkey.")
+    llm_provider: Optional[str] = Field(default=None, description="LLM provider for situated context: openai|anthropic|google")
+    llm_model: Optional[str] = Field(default=None, description="LLM model name for situated context generation.")
 
     @model_validator(mode='after')
     def validate_browser_headers(self):

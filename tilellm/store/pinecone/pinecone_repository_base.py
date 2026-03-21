@@ -37,36 +37,88 @@ from tilellm.tools.sparse_encoders import TiledeskSparseEncoders
 logger = logging.getLogger(__name__)
 
 class CachedVectorStore:
+    """
+    Lightweight wrapper that caches the resolved Pinecone index host so that
+    management API calls (list_indexes / describe_index) are made only once.
+
+    Design principles
+    -----------------
+    * No persistent PineconeAsyncio client is stored.  Management operations use a
+      short-lived ``async with PineconeAsyncio(...)`` block whose aiohttp session is
+      closed immediately after the block exits → no "Unclosed client session" warnings.
+    * ``get_index()`` instantiates a throw-away PineconeAsyncio only as a factory to
+      produce an IndexAsyncio.  Because no management calls are made through it, its
+      internal aiohttp session is never opened and can be silently GC'd.
+    * The IndexAsyncio returned by ``get_index()`` carries its own session; callers
+      are responsible for ``await index.close()`` when done.
+    """
+
     def __init__(self, engine, embeddings, emb_dimension):
         self.engine = engine
         self.embeddings = embeddings
         self.emb_dimension = emb_dimension
-        self._pc_client = None
-        self._host = None
+        self._host: Optional[str] = None
         self._lock = asyncio.Lock()
-        self._loop = None
         self._last_check = 0.0
-        self._check_every_sec = 60  # throttling
+        self._check_every_sec = 60
 
-    async def _ensure_client_and_host(self):
-        cur_loop = asyncio.get_running_loop()
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    async def _ensure_host(self):
+        """
+        Resolve self._host using a short-lived management client.
+        The ``async with`` block guarantees the management session is closed
+        even if an exception is raised.
+        """
         async with self._lock:
-            if self._pc_client is None or self._loop is not cur_loop:
-                # (ri)crea client sul loop corrente
-                if self._pc_client:
-                    try:
-                        await self._pc_client.close()
-                    except Exception as e:
-                        logger.debug(f"Exception on Session close {repr(e)}")
-                        pass
-                self._pc_client = pinecone.PineconeAsyncio(api_key=self.engine.apikey.get_secret_value())
-                self._loop = cur_loop
-                self._host = None
-            if self._host is None:
-                existing = await self._pc_client.list_indexes()
-                if self.engine.index_name not in existing.names():
-                    await self._create_index_if_not_exists()
-                self._host = (await self._pc_client.describe_index(self.engine.index_name)).host
+            if self._host is not None:
+                return
+            async with pinecone.PineconeAsyncio(
+                api_key=self.engine.apikey.get_secret_value()
+            ) as pc:
+                names = (await pc.list_indexes()).names()
+                if self.engine.index_name not in names:
+                    await self._create_index_with_client(pc)
+                self._host = (await pc.describe_index(self.engine.index_name)).host
+            # pc.__aexit__ closes the aiohttp session here
+
+    async def _create_index_with_client(self, pc):
+        """Create the Pinecone index using an already-open management client."""
+        from pinecone.exceptions import PineconeApiException
+
+        logger.info(f"Creating new index '{self.engine.index_name}' "
+                    f"(metric={self.engine.metric}, dim={self.emb_dimension})...")
+        try:
+            if self.engine.type == "serverless":
+                await pc.create_index(
+                    name=self.engine.index_name,
+                    dimension=self.emb_dimension,
+                    metric=self.engine.metric,
+                    spec=pinecone.ServerlessSpec(cloud="aws", region="us-west-2")
+                )
+            else:
+                await pc.create_index(
+                    name=self.engine.index_name,
+                    dimension=self.emb_dimension,
+                    metric=self.engine.metric,
+                    spec=pinecone.PodSpec(pod_type="p1", pods=1, environment="us-west4-gpc")
+                )
+            logger.info(f"Index '{self.engine.index_name}' create request sent.")
+        except PineconeApiException as e:
+            if e.status == 409:
+                logger.info(f"Index '{self.engine.index_name}' already created by another process (409 ignored).")
+            else:
+                raise
+
+        while not (await pc.describe_index(self.engine.index_name)).status["ready"]:
+            logger.debug(f"Waiting for index '{self.engine.index_name}' to become ready...")
+            await asyncio.sleep(1)
+
+    # ------------------------------------------------------------------
+    # Public interface
+    # ------------------------------------------------------------------
 
     async def get_vector_store(self):
         idx = await self.get_index()
@@ -77,8 +129,16 @@ class CachedVectorStore:
         )
 
     async def get_index(self):
-        await self._ensure_client_and_host()
-        return self._pc_client.IndexAsyncio(name=self.engine.index_name, host=self._host)
+        """
+        Return an IndexAsyncio backed by its own aiohttp session.
+        Caller MUST close it with ``await index.close()``.
+
+        A throw-away PineconeAsyncio is used purely as a factory; it makes no
+        management API calls so its internal session is never opened.
+        """
+        await self._ensure_host()
+        pc = pinecone.PineconeAsyncio(api_key=self.engine.apikey.get_secret_value())
+        return pc.IndexAsyncio(name=self.engine.index_name, host=self._host)
 
     async def test_connection(self):
         now = time.time()
@@ -86,80 +146,28 @@ class CachedVectorStore:
             return True
         try:
             idx = await self.get_index()
-            await idx.describe_index_stats()
-            self._last_check = now
-            return True
+            try:
+                await idx.describe_index_stats()
+                self._last_check = now
+                return True
+            finally:
+                await idx.close()
         except Exception as e:
-            # recovery soft se sessione chiusa
-            if "Session is closed" in str(e):
+            logger.warning(f"Pinecone connection test failed for '{self.engine.index_name}': {e}")
+            # If host resolution is stale, reset it so the next call re-resolves.
+            if any(kw in str(e).lower() for kw in ("session", "closed", "not found", "404")):
                 async with self._lock:
-                    if self._pc_client:
-                        try:
-                            await self._pc_client.close()
-                        except Exception as e:
-                            logger.debug(f"Exception on Session close {repr(e)}")
-                            pass
-                    self._pc_client = None
                     self._host = None
-                # retry singolo
-                try:
-                    idx = await self.get_index()
-                    await idx.describe_index_stats()
-                    self._last_check = time.time()
-                    return True
-                except Exception as e:
-                    logger.debug(f"Exception {repr(e)}")
-                    return False
             return False
 
-    async def _create_index_if_not_exists(self):
-        """Crea l'indice se non esiste."""
-        from pinecone.exceptions import PineconeApiException
-
-        logger.info(f'Creating new index {self.engine.index_name}...')
-        try:
-            if self.engine.type == "serverless":
-                await self._pc_client.create_index(
-                    name=self.engine.index_name,
-                    dimension=self.emb_dimension,
-                    metric=self.engine.metric,
-                    spec=pinecone.ServerlessSpec(
-                        cloud="aws",
-                        region="us-west-2"
-                    )
-                )
-            else:  # Pod type
-                await self._pc_client.create_index(
-                    name=self.engine.index_name,
-                    dimension=self.emb_dimension,
-                    metric=self.engine.metric,
-                    spec=pinecone.PodSpec(
-                        pod_type="p1",
-                        pods=1,
-                        environment="us-west4-gpc"
-                    )
-                )
-            logger.info(f"Index '{self.engine.index_name}' create request sent.")
-        except PineconeApiException as e:
-            if e.status == 409:
-                # Un altro worker ha creato l'indice in contemporanea: race condition innocua
-                logger.info(f"Index '{self.engine.index_name}' già creato da un altro processo (409 Conflict ignorato).")
-            else:
-                raise
-
-        # Attendi che l'indice sia pronto (sia nel caso di creazione che di race condition)
-        while not (await self._pc_client.describe_index(self.engine.index_name)).status["ready"]:
-            logger.debug(f"Waiting for index {self.engine.index_name} to be ready...")
-            await asyncio.sleep(1)
-
     async def close(self):
-        if self._pc_client:
-            try:
-                await self._pc_client.close()
-            finally:
-                self._pc_client = None
-                self._host = None
-                self._loop = None
+        """Reset cached host. No persistent client to close."""
+        async with self._lock:
+            self._host = None
+
+    # Backward-compat alias used by _create_vector_store_instance warm-up
+    async def _ensure_client_and_host(self):
+        await self._ensure_host()
 
 
 
@@ -186,9 +194,15 @@ class PineconeRepositoryBase(VectorStoreRepository):
 
 
         try:
-            # 2. Clear namespace before adding new documents
-            logger.info(f"Clearing namespace '{namespace}' before upserting.")
-            await index.delete(delete_all=True, namespace=namespace)
+            # 2. Clear namespace before adding new documents (namespace may not exist yet)
+            try:
+                logger.info(f"Clearing namespace '{namespace}' before upserting.")
+                await index.delete(delete_all=True, namespace=namespace)
+            except Exception as e:
+                if "Namespace not found" in str(e) or "namespace not found" in str(e).lower():
+                    logger.info(f"Namespace '{namespace}' does not exist, skipping deletion.")
+                else:
+                    raise
 
             # 3. Prepare data and embeddings
             doc_batch_size = 50 # Pinecone has limits on request size. Adjust as needed.
@@ -916,9 +930,10 @@ class PineconeRepositoryBase(VectorStoreRepository):
     @staticmethod
     async def create_index_cache_wrapper(engine, embeddings, emb_dimension, embedding_config_key=None, cache_suffix=None) -> CachedVectorStore:
         cache_key = (
-            _hash_api_key(engine.apikey.get_secret_value()) ,
+            _hash_api_key(engine.apikey.get_secret_value()),
             engine.index_name,
             engine.type,
+            (engine.metric or "cosine").lower(),   # hybrid (dotproduct) vs dense (cosine) need separate instances
             embedding_config_key if embedding_config_key is not None else "default"
         )
         if cache_suffix is not None:

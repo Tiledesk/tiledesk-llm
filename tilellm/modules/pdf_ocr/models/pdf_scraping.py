@@ -38,6 +38,7 @@ class PDFScrapingRequest(ItemSingle):
     extract_entities: bool = Field(False, description="Whether to extract semantic entities using GraphRAG.")
     extract_structure: bool = Field(True, description="Whether to extract hierarchical document structure.")
     extract_md_simple: bool = Field(False, description="If True, extracts a single Markdown document from the entire PDF with enhanced image/table descriptions, then indexes it with MD-specific chunking.")
+    use_situated_context: bool = Field(False, description="Prepend situated context to each text chunk before embedding (Contextual Retrieval). Uses the configured LLM.")
 
     def is_url(self) -> bool:
         """Check if file_content is a URL."""
@@ -80,12 +81,12 @@ class PDFPage(BaseModel):
 
 class PDFScrapingResponse(BaseModel):
     """
-    Model for PDF scraping response.
+    Model for PDF scraping response (full result, typically delivered via webhook).
     """
     file_name: str = Field(..., description="Original file name.")
     total_pages: int = Field(..., description="Total number of pages processed.")
-    pages: List[PDFPage] = Field(..., description="List of processed pages.")
-    markdown_content: str = Field(..., description="Complete markdown representation of the document.")
+    pages: List[PDFPage] = Field(default_factory=list, description="List of processed pages.")
+    markdown_content: Optional[str] = Field(None, description="Complete markdown representation of the document.")
     processing_time: Optional[float] = Field(None, description="Total processing time in seconds.")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata about the processing.")
 
@@ -111,7 +112,7 @@ class PDFScrapingJob(BaseModel):
     started_at: Optional[float] = Field(None, description="Job start timestamp.")
     completed_at: Optional[float] = Field(None, description="Job completion timestamp.")
     error_message: Optional[str] = Field(None, description="Error message if job failed.")
-    result: Optional[PDFScrapingResponse] = Field(None, description="Processing result if completed.")
+    result: Optional[Dict[str, Any]] = Field(None, description="Lightweight processing summary if completed.")
 
 
 class PDFScrapingAcceptResponse(BaseModel):
@@ -127,10 +128,12 @@ class PDFScrapingAcceptResponse(BaseModel):
 class PDFScrapingStatusResponse(BaseModel):
     """
     Model for PDF scraping status response.
+    The full document result (pages, markdown) is delivered via webhook.
+    This response contains only lightweight summary data.
     """
     job_id: str = Field(..., description="Unique job identifier.")
     status: PDFScrapingStatus = Field(..., description="Current job status.")
     progress: Optional[float] = Field(None, description="Processing progress (0-100).")
     message: Optional[str] = Field(None, description="Status message.")
-    result: Optional[PDFScrapingResponse] = Field(None, description="Processing result if completed.")
+    result: Optional[Dict[str, Any]] = Field(None, description="Lightweight processing summary (num_chunks, num_images, etc.).")
     error_message: Optional[str] = Field(None, description="Error message if failed.")

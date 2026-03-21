@@ -1,4 +1,3 @@
-import os
 import logging
 from typing import Optional, Dict, Any
 
@@ -6,7 +5,7 @@ from typing import Optional, Dict, Any
 import httpx
 
 
-from taskiq import Context, TaskiqDepends, TaskiqState
+from taskiq import TaskiqDepends, TaskiqState
 from tilellm.modules.task_executor.broker import broker
 
 
@@ -40,7 +39,7 @@ async def task_graph_create(request_dict: dict, state: TaskiqState = TaskiqDepen
         logger.info(f"TASK [{task_id}] => {request_dict}")
         request = GraphCreateRequest(**request_dict)
         logger.info(f"Starting graph_create task for namespace: {request.namespace}")
-        # ✅ Invia heartbeat iniziale
+        # ✅ Send Initial heartbeat
         await state.send_heartbeat()
 
         #result = await kg_logic.create_graph(request)
@@ -459,6 +458,9 @@ async def process_pdf_document_task(
     """
     Taskiq task to process a PDF document using the advanced logic layer.
     Can process from local path OR MinIO bucket/object.
+    
+    Returns a lightweight result for Taskiq result_backend (no large mark down content).
+    Full result is sent to webhook if configured.
     """
     logger.info(f"Task started: process_pdf_document_task for {doc_id}")
 
@@ -479,7 +481,7 @@ async def process_pdf_document_task(
         from tilellm.modules.pdf_ocr.logic import process_pdf_document_with_embeddings
 
         # Process using logic layer with dependency injection
-        result = await process_pdf_document_with_embeddings(
+        full_result = await process_pdf_document_with_embeddings(
             question=request,
             bucket_name=bucket_name,
             object_name=object_name,
@@ -487,21 +489,52 @@ async def process_pdf_document_task(
             # repo, llm, llm_embeddings will be injected by decorators
         )
 
-        # Notify webhook if provided
+        # Build lightweight result for Taskiq result_backend
+        # Excludes large fields like Markdown_preview, Markdown_content, etc.
+        light_result = {
+            "job_id": doc_id,
+            "status": "completed",
+            "progress": 100,
+            "message": "Job completed successfully",
+            "result": {
+                "markdown_length": full_result.get("markdown_length", 0),
+                "num_chunks": full_result.get("num_chunks", 0),
+                "num_images": full_result.get("num_images", 0),
+                "num_tables": full_result.get("num_tables", 0),
+                "metadata": full_result.get("metadata", {})
+            },
+            "error_message": None
+        }
+
+        # Notify webhook with FULL result (if configured)
         if webhook_url:
             import httpx
             async with httpx.AsyncClient() as client:
                 await client.post(webhook_url, json={
                     "status": "completed",
                     "doc_id": doc_id,
-                    "result": result
+                    "result": full_result  # Full result to webhook
                 })
 
         logger.info(f"Task finished: process_pdf_document_task for {doc_id}")
-        return result
+        
+        # Return lightweight result - Taskiq will save this to result_backend
+        return light_result
 
     except Exception as e:
         logger.error(f"Task failed: {e}", exc_info=True)
+        
+        # Build lightweight error result for Taskiq
+        light_result = {
+            "job_id": doc_id,
+            "status": "failed",
+            "progress": 100,
+            "message": "Job failed",
+            "result": None,
+            "error_message": str(e)
+        }
+        
+        # Notify webhook with error
         if webhook_url:
             import httpx
             async with httpx.AsyncClient() as client:
@@ -510,4 +543,6 @@ async def process_pdf_document_task(
                     "doc_id": doc_id,
                     "error": str(e)
                 })
-        raise e
+        
+        # Return error result - Taskiq will save this to result_backend
+        return light_result

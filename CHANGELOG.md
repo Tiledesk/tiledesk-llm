@@ -6,6 +6,25 @@
 ### **Copyright**: Tiledesk SRL
 
 ---
+## [2026-03-14]
+### 0.10.0-rc1
+- Added: `CommonChunkMetadata` Pydantic schema (`tilellm/models/chunk_metadata.py`) as the canonical metadata contract shared across all ingestion pipelines and vector stores, with safe defaults and `extra="allow"` for forward compatibility.
+- Added: `tilellm/shared/situated_context.py` implementing Anthropic's Contextual Retrieval technique: `enrich_chunks_with_situated_context()` prepends an LLM-generated situating sentence to each chunk before embedding, with concurrency control via semaphore and graceful fallback on LLM error.
+- Added: `use_situated_context` flag (default `False`) to `ItemSingle` and `PDFScrapingRequest`; also `llm_provider` and `llm_model` fields to `ItemSingle` to configure the LLM used for enrichment without requiring the full QA model stack.
+- Added: `tilellm/shared/markdown_utils.py` exposing `MarkdownChunker` as a shared utility importable outside the `pdf_ocr` module.
+- Added: `heading_path` metadata field populated by `load_document()` for Markdown documents using the element hierarchy from `UnstructuredMarkdownLoader` (e.g. `"Introduction > Background > Methods"`).
+- Added: `_compute_cross_modal_refs()` in `pdf_ocr/logic.py` computing real bbox-proximity-based `surrounding_text` for tables and images, and `ref_tables`/`ref_images` cross-references for text chunks, replacing the previous `"Element on page N"` stub.
+- Added: Tables saved as `.md` (pipe-delimited Markdown) on MinIO in addition to Parquet (`{doc_id}/tables/{table_id}.md`); `md_path` propagated to vector store metadata.
+- Fixed: Namespace collision in `pdf_ocr` pipeline where sequential `aadd_documents` calls (tables → images → text) each deleted the previous call's vectors. Resolved via `skip_delete` kwarg on `aadd_documents` (Pinecone, Milvus, Qdrant) tracked by `_first_index_done` in the orchestrator.
+- Fixed: Pinecone `aadd_documents` now deletes by `metadata_id` filter instead of `delete_all=True` when `metadata_id` is provided, preventing accidental namespace wipe of other documents.
+- Fixed: `id` and `metadata_id` standard fields added to all metadata dicts in `pdf_ocr` `_index_*` functions, ensuring Tiledesk filter compatibility.
+- Added: `trafilatura>=2.0` as dependency; `get_content_by_url()` now tries Trafilatura first (fast path, strips JS/ads/nav) for `scrape_type=0` and `scrape_type=1`, with automatic fallback to `UnstructuredURLLoader` on empty content or failure.
+- Added: `_extract_file_name()` helper in `document_tools.py` extracting clean filenames from HTTP URLs, presigned MinIO/S3 URLs, and local paths; `load_document()` now always sets `file_name` and normalises `page` (PyPDFLoader 0-indexed → 1-indexed; DOCX/TXT/MD default to 1).
+- Added: `file_name` and `page` safety net in `chunk_documents` for Pinecone Serverless, Qdrant, and Milvus repositories.
+- Added: Warning log when `PyPDFLoader` is used on a PDF, recommending the `/api/pdf/scrape` endpoint with Docling for complex documents.
+- Updated: `pdf_ocr` `_index_text_chunks`, `_index_tables_to_vector_store`, and `_index_images_to_vector_store` use `CommonChunkMetadata` for metadata construction.
+
+---
 ## [2026-03-13]
 ### 0.9.0
 - Fixed: Resolved `BlockingIOError` in containerized environments by implementing a custom `TruncatingFormatter` for stdout.

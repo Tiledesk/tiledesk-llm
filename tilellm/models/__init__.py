@@ -20,6 +20,8 @@ from .llm import (ItemSingle as ItemSingle,
                   ToolOptions as ToolOptions,
                   rebuild_llm_models)
 
+from .chunk_metadata import CommonChunkMetadata as CommonChunkMetadata
+
 # Risolvi le forward references di Pydantic (DOPO che ChatEntry è caricato)
 rebuild_models()
 rebuild_retrieval_models()

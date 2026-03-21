@@ -930,7 +930,7 @@ async def create_embedding_instance(question):
         # Modalità legacy o configurazione semplice
         embedding_config = {
             "legacy_mode": True,
-            "model_name": getattr(question, 'embedding', 'text-embedding-ada-002'),
+            "model_name": getattr(question, 'embedding', 'text-embedding-3-small'),
             "api_key": getattr(question, 'gptkey', None)
         }
 
