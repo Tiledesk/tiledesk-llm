@@ -8,10 +8,10 @@ import csv
 import io
 from typing import Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, Field, SecretStr, computed_field, model_validator
 
 from tilellm.models import Engine, LlmEmbeddingModel
-from tilellm.models.llm import TEIConfig
+from tilellm.models.llm import PineconeRerankerConfig, TEIConfig
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +166,35 @@ class ComplianceRequest(BaseModel):
     debug: bool = Field(default=False)
     search_type: str = Field(default_factory=lambda: "similarity")
 
+    # Reranking (mirrors QuestionAnswer pattern)
+    reranking: Union[bool, TEIConfig, PineconeRerankerConfig] = Field(
+        default=False,
+        description=(
+            "Enable reranking. "
+            "True = use reranker_model (CrossEncoder); "
+            "TEIConfig = TEI reranker service; "
+            "PineconeRerankerConfig = Pinecone managed reranker."
+        ),
+    )
+    reranking_multiplier: int = Field(
+        default=3,
+        description="Retrieve top_k * reranking_multiplier chunks, then rerank to top_k.",
+    )
+    reranker_model: str = Field(
+        default="cross-encoder/ms-marco-MiniLM-L-6-v2",
+        description="CrossEncoder model name used when reranking=True.",
+    )
+
+    @computed_field(return_type=Optional[Union[str, TEIConfig, PineconeRerankerConfig]])
+    @property
+    def reranker_config(self) -> Optional[Union[str, TEIConfig, PineconeRerankerConfig]]:
+        """Resolved reranker config passed to TileReranker; None when reranking is disabled."""
+        if self.reranking is False:
+            return None
+        if self.reranking is True:
+            return self.reranker_model
+        return self.reranking
+
     # Behaviour
     max_concurrent_requirements: int = Field(
         default=3,
@@ -214,6 +243,7 @@ class ComplianceResult(BaseModel):
     evidence_document: str              # file_name of the source chunk
     evidence_page: int                  # page number (1-indexed)
     evidence_section: str               # heading_path of the source chunk
+    evidence_chunk_index: int = 0       # 1-based index of cited chunk (0 = fallback to first)
     evidence_chunk_ids: List[str] = []  # doc_ids of retrieved chunks (debug)
 
 

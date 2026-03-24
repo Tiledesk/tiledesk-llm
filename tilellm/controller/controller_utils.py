@@ -7,7 +7,6 @@ import traceback
 import uuid
 from typing import List, Optional, Dict
 
-import fastapi
 
 from langchain_core.documents import Document
 from langchain_core.messages import ToolMessage
@@ -235,19 +234,7 @@ async def fetch_question_vectors(question_answer, sparse_encoder, llm_embeddings
      dense_vector, sparse_vector = await asyncio.gather(*tasks)
      return dense_vector, sparse_vector
 
-# Function to perform hybrid search
-#async def perform_hybrid_search(question_answer, index, dense_vector, sparse_vector):
-#    dense, sparse = hybrid_score_norm(dense_vector, sparse_vector, alpha=question_answer.alpha)
-#    results = await index.query(
-#        top_k=question_answer.top_k,
-#        vector=dense,
-#        sparse_vector=sparse,
-#        namespace=question_answer.namespace,
-#        include_metadata=True
-#    )
-#    return results
-
-
+#
 # Function to retrieve documents based on search results
 def retrieve_documents_old(question_answer, results):
     if not results.get("matches"):
@@ -380,12 +367,20 @@ async def create_contextualize_query(llm, question_answer):
     if question_answer.chat_history_dict:
         c_h, _ = preprocess_chat_history(question_answer)
         # Se c'è history, contestualizza la query
-        contextualized_query =  (await llm.ainvoke(
+        raw_content = (await llm.ainvoke(
             contextualize_q_prompt.format_messages(
                 chat_history=c_h,
                 input=question_answer.question
             )
         )).content
+        # GPT-5.x returns content as a list of content blocks; normalize to str
+        if isinstance(raw_content, list):
+            contextualized_query = "".join(
+                block.get("text", "") if isinstance(block, dict) else str(block)
+                for block in raw_content
+            )
+        else:
+            contextualized_query = raw_content
     else:
         # Se non c'è history, usa la query originale
         contextualized_query = question_answer.question
@@ -565,7 +560,8 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                     .assign(only_answer=lambda text: text["answer"].answer)
                 )
                 result = await chain_w_citations.ainvoke(chain_input)
-                
+
+
                 # Check if no context found
                 if not result.get("context"):
                     raise ValueError("No chunks found with the current filters.")
@@ -575,7 +571,6 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
             else:
                 rag_chain_simple = create_retrieval_chain(retriever, create_stuff_documents_chain(llm, qa_prompt_final))
                 result = await rag_chain_simple.ainvoke(chain_input)
-                
                 # Check if no context found
                 if not result.get("context"):
                     raise ValueError("No chunks found with the current filters.")
@@ -680,7 +675,6 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
             {"input": question_answer.question},
             config={"configurable": {"session_id": uuid.uuid4().hex}}
         )
-
         # Check if no context found
         if not result.get("context"):
             raise ValueError("No chunks found with the current filters.")

@@ -98,6 +98,10 @@ class QuestionAnswer(BaseModel):
     llm: Optional[str] = Field(default="openai")
     gptkey: Optional[SecretStr] = "sk"
     model: Union[str, LlmEmbeddingModel] = Field(default="gpt-3.5-turbo")
+    thinking: Optional[ReasoningConfig] = Field(
+        default=None,
+        description="Reasoning configuration for advanced models (GPT-5, Claude 4/4.5, Gemini 2.5/3.0, DeepSeek)"
+    )
     sparse_encoder: Union[str, "TEIConfig", None] = Field(default="splade") #bge-m3
     temperature: float = Field(default=0.0)
     top_k: int = Field(default=5)
@@ -138,10 +142,37 @@ class QuestionAnswer(BaseModel):
         elif isinstance(self.model, LlmEmbeddingModel):
             model_name = self.model.name
 
-        # Se è gpt-5 o gpt-5-*, forza temperature a 1.0
-        if model_name and model_name.startswith("gpt-5"):
+        # Se è gpt-5 o superiore, forza temperature a 1.0 e abilita reasoning_effort
+        is_gpt_5_plus = False
+        if model_name and model_name.startswith("gpt-"):
+            try:
+                # Estrae il numero dopo "gpt-" (es: gpt-5, gpt-5.1, gpt-6)
+                parts = model_name.split("-")
+                if len(parts) > 1:
+                    version_part = parts[1].split(".")[0]
+                    # Rimuove eventuali suffissi non numerici (es: 5mini -> 5)
+                    version_digits = "".join(filter(str.isdigit, version_part))
+                    if version_digits and int(version_digits) >= 5:
+                        is_gpt_5_plus = True
+            except (IndexError, ValueError):
+                pass
+
+        if is_gpt_5_plus:
             self.temperature = 1.0
             self.top_p = None
+
+            if self.thinking is None:
+                self.thinking = ReasoningConfig(
+                    reasoning_effort="low",
+                    reasoning_summary="auto",
+                    show_thinking_stream=False
+                )
+
+            elif self.thinking.reasoning_effort is None:
+                self.thinking.reasoning_effort = "low"
+                self.thinking.reasoning_summary = "auto"
+                self.thinking.show_thinking_stream = False
+
             return self
 
         # Se è claude-4 o claude-sonnet-4-*, rimuovi top_p se presente
@@ -242,7 +273,7 @@ class QuestionToLLM(BaseModel):
     question: Union[str, List[MultimodalContent]]
     llm_key: Union[SecretStr, AWSAuthentication]
     llm: str
-    model: Union[str, LlmEmbeddingModel] = Field(default="gpt-3.5-turbo")
+    model: Union[str, LlmEmbeddingModel] = Field(default="gpt-4o")
     temperature: float = Field(default=0.0)
     max_tokens: int = Field(default=128)
     top_p: Optional[float] = Field(default=1.0)
@@ -289,10 +320,30 @@ class QuestionToLLM(BaseModel):
         elif isinstance(self.model, LlmEmbeddingModel):
             model_name = self.model.name
 
-        # Se è gpt-5 o gpt-5-*, forza temperature a 1.0
-        if model_name and model_name.startswith("gpt-5"):
+        # Se è gpt-5 o superiore, forza temperature a 1.0 e abilita reasoning_effort
+        is_gpt_5_plus = False
+        if model_name and model_name.startswith("gpt-"):
+            try:
+                # Estrae il numero dopo "gpt-" (es: gpt-5, gpt-5.1, gpt-6)
+                parts = model_name.split("-")
+                if len(parts) > 1:
+                    version_part = parts[1].split(".")[0]
+                    # Rimuove eventuali suffissi non numerici (es: 5mini -> 5)
+                    version_digits = "".join(filter(str.isdigit, version_part))
+                    if version_digits and int(version_digits) >= 5:
+                        is_gpt_5_plus = True
+            except (IndexError, ValueError):
+                pass
+
+        if is_gpt_5_plus:
             self.temperature = 1.0
             self.top_p = None
+
+            if self.thinking is None:
+                self.thinking = ReasoningConfig(reasoning_effort="medium")
+            elif self.thinking.reasoning_effort is None:
+                self.thinking.reasoning_effort = "medium"
+
             return self
 
         # Se è claude-4 o claude-sonnet-4-*, rimuovi top_p se presente

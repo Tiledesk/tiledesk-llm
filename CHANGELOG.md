@@ -6,6 +6,11 @@
 ### **Copyright**: Tiledesk SRL
 
 ---
+## [2026-03-24]
+### 0.10.0-rc2
+- Fixed: Chat history management for gpt-5.x.
+
+---
 ## [2026-03-14]
 ### 0.10.0-rc1
 - Added: `CommonChunkMetadata` Pydantic schema (`tilellm/models/chunk_metadata.py`) as the canonical metadata contract shared across all ingestion pipelines and vector stores, with safe defaults and `extra="allow"` for forward compatibility.

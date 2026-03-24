@@ -16,8 +16,12 @@ LLM and repository are injected by the shared decorators @inject_llm_chat_async 
 import asyncio
 import json
 import logging
+import re
+import unicodedata
+from difflib import SequenceMatcher
 from typing import List, Tuple
 
+from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from tilellm.models import QuestionAnswer
@@ -49,12 +53,16 @@ Text: {req_text}
 
 Based ONLY on the retrieved evidence above, evaluate whether the requirement is satisfied.
 Respond with a single valid JSON object (no markdown fences) with exactly these keys:
-  "judgment"      : one of {valid_judgments}
-  "confidence"    : float between 0.0 and 1.0
-  "evidence_text" : direct quote from the evidence that best supports your judgment (empty string if none)
-  "justification" : 1-3 sentences explaining your judgment
+  "judgment"           : one of {valid_judgments}
+  "confidence"         : float between 0.0 and 1.0
+  "source_chunk_index" : integer — the [N] index of the chunk (from the labels above) whose text \
+best supports your judgment; use 0 if no chunk is relevant
+  "evidence_text"      : verbatim quote (copy-paste) from the chosen chunk that best supports \
+your judgment; empty string if none
+  "justification"      : 1-3 sentences explaining your judgment
 
-If there is no relevant evidence, set judgment to "not_verifiable" and confidence to 0.0."""
+If there is no relevant evidence, set judgment to "not_verifiable", confidence to 0.0, \
+source_chunk_index to 0, and evidence_text to ""."""
 
 
 # ---------------------------------------------------------------------------
@@ -77,32 +85,93 @@ def _build_evidence_block(chunks: List[str], metadata: List[dict]) -> str:
     return "\n".join(lines)
 
 
-def _pick_best_source(
-    chunks: List[str], metadata: List[dict], evidence_text: str
-) -> Tuple[str, int, str]:
-    """
-    Return (file_name, page, heading_path) of the chunk whose text best matches
-    the LLM-quoted *evidence_text*.  Falls back to the first chunk.
-    """
-    if not metadata:
-        return ("", 1, "")
+def _normalize(text: str) -> str:
+    """Lowercase, collapse whitespace, strip punctuation — for fuzzy comparison."""
+    text = unicodedata.normalize("NFKD", text.lower())
+    text = re.sub(r"[^\w\s]", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
-    if evidence_text:
-        snippet = evidence_text[:80]
-        for chunk, meta in zip(chunks, metadata):
-            if snippet in chunk:
-                return (
-                    meta.get("file_name", meta.get("source", "")),
-                    int(meta.get("page", 1)),
-                    meta.get("heading_path", ""),
-                )
 
-    meta = metadata[0]
+def _meta_fields(meta: dict) -> Tuple[str, int, str]:
     return (
         meta.get("file_name", meta.get("source", "")),
         int(meta.get("page", 1)),
         meta.get("heading_path", ""),
     )
+
+
+def _pick_best_source(
+    chunks: List[str],
+    metadata: List[dict],
+    evidence_text: str,
+    source_index: int = 0,
+) -> Tuple[str, int, str, int]:
+    """
+    Return (file_name, page, heading_path, matched_chunk_1based) for the chunk
+    that best matches the LLM-quoted evidence.
+
+    Resolution order (most to least reliable):
+    1. LLM-provided source_chunk_index  — direct, no string matching needed
+    2. Exact substring match on evidence_text (tries 200 / 80 / 40 char snippets)
+    3. Fuzzy difflib match (SequenceMatcher ratio >= 0.35)
+    4. First chunk fallback (with a warning so the caller can inspect)
+    """
+    if not metadata:
+        return ("", 1, "", 0)
+
+    # 1. Primary: LLM explicitly told us which chunk it used
+    if 1 <= source_index <= len(metadata):
+        logger.debug("Citation resolved via source_chunk_index=%d", source_index)
+        return (*_meta_fields(metadata[source_index - 1]), source_index)
+
+    if evidence_text:
+        # 2. Exact substring — progressively shorter snippets
+        for snippet_len in (200, 80, 40):
+            snippet = evidence_text[:snippet_len].strip()
+            if not snippet:
+                continue
+            for i, (chunk, meta) in enumerate(zip(chunks, metadata), 1):
+                if snippet in chunk:
+                    logger.debug("Citation resolved via substring match (len=%d), chunk %d", snippet_len, i)
+                    return (*_meta_fields(meta), i)
+
+        # 3. Fuzzy match via difflib
+        ev_norm = _normalize(evidence_text[:300])
+        best_score, best_i = 0.0, -1
+        for i, chunk in enumerate(chunks):
+            score = SequenceMatcher(None, ev_norm, _normalize(chunk[:600])).ratio()
+            if score > best_score:
+                best_score, best_i = score, i
+        if best_score >= 0.35 and best_i >= 0:
+            logger.debug("Citation resolved via fuzzy match (score=%.2f), chunk %d", best_score, best_i + 1)
+            return (*_meta_fields(metadata[best_i]), best_i + 1)
+
+    # 4. Last resort — first chunk, with a warning
+    logger.warning(
+        "Could not attribute citation to any chunk — falling back to chunk 1. "
+        "evidence_text[:80]=%r  source_index=%d",
+        evidence_text[:80], source_index,
+    )
+    return (*_meta_fields(metadata[0]), 0)
+
+
+async def _rerank_chunks(
+    query: str,
+    chunks: List[str],
+    metadata: List[dict],
+    reranker_config,
+    top_k: int,
+) -> Tuple[List[str], List[dict]]:
+    """Re-order chunks by relevance to *query* using TileReranker, keep top_k."""
+    from tilellm.tools.reranker import TileReranker  # deferred import
+
+    docs = [Document(page_content=c, metadata=m) for c, m in zip(chunks, metadata)]
+    reranker = TileReranker(reranker_config)
+    loop = asyncio.get_event_loop()
+    reranked: List[Document] = await loop.run_in_executor(
+        None, lambda: reranker.rerank_documents(query, docs, top_k)
+    )
+    return [d.page_content for d in reranked], [d.metadata for d in reranked]
 
 
 async def _judge_requirement(
@@ -160,11 +229,12 @@ async def _judge_requirement(
         judgment = "not_verifiable"
 
     confidence = float(parsed.get("confidence", 0.0))
+    source_index = int(parsed.get("source_chunk_index", 0))
     evidence_text = str(parsed.get("evidence_text", ""))
     justification = str(parsed.get("justification", "LLM response could not be parsed."))
 
-    evidence_doc, evidence_page, evidence_section = _pick_best_source(
-        chunks, metadata, evidence_text
+    evidence_doc, evidence_page, evidence_section, matched_idx = _pick_best_source(
+        chunks, metadata, evidence_text, source_index
     )
 
     return ComplianceResult(
@@ -179,6 +249,7 @@ async def _judge_requirement(
         evidence_document=evidence_doc,
         evidence_page=evidence_page,
         evidence_section=evidence_section,
+        evidence_chunk_index=matched_idx,
         evidence_chunk_ids=chunk_ids,
     )
 
@@ -231,6 +302,12 @@ async def check_compliance(
 
     async def _process_one(req: RequirementItem) -> ComplianceResult:
         async with semaphore:
+            reranker_config = request.reranker_config
+            search_top_k = (
+                request.top_k * request.reranking_multiplier
+                if reranker_config
+                else request.top_k
+            )
             qa = QuestionAnswer(
                 question=req.text,
                 namespace=request.namespace,
@@ -241,7 +318,7 @@ async def check_compliance(
                 model=request.model,
                 temperature=request.temperature,
                 max_tokens=request.max_tokens,
-                top_k=request.top_k,
+                top_k=search_top_k,
                 search_type=request.search_type,
             )
             try:
@@ -252,6 +329,14 @@ async def check_compliance(
                 logger.warning(f"Retrieval failed for requirement '{req.id}': {e}")
                 chunks = []
                 metadata = []
+
+            if reranker_config and chunks:
+                try:
+                    chunks, metadata = await _rerank_chunks(
+                        req.text, chunks, metadata, reranker_config, request.top_k
+                    )
+                except Exception as e:
+                    logger.warning(f"Reranking failed for requirement '{req.id}': {e} — proceeding without reranking")
 
             return await _judge_requirement(req, chunks, metadata, request.config, llm)
 

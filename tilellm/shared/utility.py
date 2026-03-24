@@ -1082,9 +1082,32 @@ async def _create_llm_instance(question):
         if client_base_config.get("default_headers"):
             client_config["default_headers"] = client_base_config["default_headers"]
 
-
-        if provider_param == "openai" or provider_param == "vllm":
+        thinking_config = question.thinking if hasattr(question, 'thinking') and question.thinking else None
+        if provider_param == "openai":
             from langchain_openai import ChatOpenAI
+
+
+            # Aggiungi parametri specifici per GPT-5 reasoning
+            if thinking_config:
+                client_config["max_completion_tokens"] = client_config.pop("max_tokens", None)
+                # Costruisci il dizionario reasoning se ci sono parametri
+                reasoning_dict = {}
+                if thinking_config.reasoning_effort:
+                    reasoning_dict["effort"] = thinking_config.reasoning_effort
+                if thinking_config.reasoning_summary:
+                    reasoning_dict["summary"] = thinking_config.reasoning_summary
+
+                # Passa il dizionario reasoning solo se ha contenuti
+                if reasoning_dict:
+                    client_config["reasoning"] = reasoning_dict
+                    # Usa il nuovo formato response per reasoning models
+                    client_config["output_version"] = "responses/v1"
+            print(f"========================> {client_config}")
+            return ChatOpenAI(**client_config)
+
+        elif question.llm == "vllm":
+            from langchain_openai import ChatOpenAI # vLLM uses OpenAI compatible API
+            client_config["max_completion_tokens"] = client_config.pop("max_tokens", None)
             return ChatOpenAI(**client_config)
 
         elif provider_param == "anthropic":

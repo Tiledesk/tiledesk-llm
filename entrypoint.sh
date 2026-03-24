@@ -53,7 +53,7 @@ if [ -z "$GRACEFULTIMEOUT" ]; then
 fi
 
 # --- Configurazione TaskIQ (variabili separate da Gunicorn) ---
-TASKIQ_WORKER_COUNT=${TASKIQ_WORKERS:-2}       # Numero di worker taskiq (CPU cores - 1)
+TASKIQ_WORKER_COUNT=${TASKIQ_WORKERS:-1}       # Numero di worker taskiq (CPU cores - 1)
 PREFETCH=${TASKIQ_PREFETCH:-1}                 # CRITICO: 1 task alla volta
 TASKIQ_LOG_LEVEL=${TASKIQ_LOG_LEVEL:-INFO}     # 'debug' solo per troubleshooting
 SHUTDOWN_TIMEOUT=${TASKIQ_SHUTDOWN_TIMEOUT:-30} # Tempo per shutdown graceful
