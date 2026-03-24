@@ -47,11 +47,13 @@ def _extract_file_name(source: str) -> str:
         return source
 
 
-async def _handle_trafilatura_scrape(url: str) -> list[Document]:
+async def _handle_trafilatura_scrape(url: str, headers: Optional[dict] = None) -> list[Document]:
     """Extract main content from a URL using Trafilatura.
 
     Trafilatura strips navigation, ads, JS artifacts and returns clean text.
-    Runs the blocking fetch in a thread executor to avoid blocking the event loop.
+    If custom headers are provided (e.g. Authorization: Bearer token), the HTTP
+    request is made via httpx so the headers are forwarded; otherwise the built-in
+    trafilatura.fetch_url() is used.
     Returns an empty list when content is too short or extraction fails.
     """
     import asyncio
@@ -63,7 +65,21 @@ async def _handle_trafilatura_scrape(url: str) -> list[Document]:
         )
 
     loop = asyncio.get_event_loop()
-    downloaded = await loop.run_in_executor(None, trafilatura.fetch_url, url)
+
+    if headers:
+        try:
+            resp = await loop.run_in_executor(
+                None,
+                lambda: requests.get(url, headers=headers, timeout=30, allow_redirects=True)
+            )
+            resp.raise_for_status()
+            downloaded = resp.text
+        except Exception as http_err:
+            logger.warning(f"requests fetch failed for {url}: {http_err}")
+            return []
+    else:
+        downloaded = await loop.run_in_executor(None, trafilatura.fetch_url, url)
+
     if not downloaded:
         return []
 
@@ -127,7 +143,7 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
         if scrape_type == 0:
             # Try Trafilatura first: fast, no browser, strips JS/ads/nav automatically.
             try:
-                docs = await _handle_trafilatura_scrape(url)
+                docs = await _handle_trafilatura_scrape(url, headers=browser_headers)
                 if docs:
                     return clean_documents_metadata(docs)
                 logger.warning(
@@ -151,7 +167,7 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
         elif scrape_type == 1:
             # Try Trafilatura first for cleaner extraction.
             try:
-                docs = await _handle_trafilatura_scrape(url)
+                docs = await _handle_trafilatura_scrape(url, headers=browser_headers)
                 if docs:
                     return clean_documents_metadata(docs)
                 logger.warning(

@@ -177,7 +177,8 @@ class EmbeddingSessionManager:
 
         api_key = config.get("api_key")
         if api_key:
-            key_parts.append(str(api_key)[:20])  # Solo primi 20 caratteri
+            key_str = str(api_key.get_secret_value()) if hasattr(api_key, 'get_secret_value') else str(api_key)
+            key_parts.append(_hash_api_key(key_str))
 
         if config.get("provider") == "huggingface":
             device_default = "cuda" if torch and torch.cuda.is_available() else "cpu"
@@ -420,7 +421,8 @@ class CachedAsyncEmbeddingFactory:
 
         api_key = config.get("api_key")
         if api_key:
-            key_parts.append(_hash_api_key(str(api_key)))
+            key_str = str(api_key.get_secret_value()) if hasattr(api_key, 'get_secret_value') else str(api_key)
+            key_parts.append(_hash_api_key(key_str))
 
         if config.get("provider") == "huggingface":
             device_default = "cuda" if torch and torch.cuda.is_available() else "cpu"

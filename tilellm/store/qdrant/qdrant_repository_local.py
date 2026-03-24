@@ -658,15 +658,6 @@ class QdrantRepository(VectorStoreRepository):
                                                     documents=documents,
                                                     embeddings=embedding_obj
                                                     )
-                if getattr(item, 'use_situated_context', False) and chunks:
-                    try:
-                        from tilellm.shared.situated_context import enrich_chunks_with_situated_context, build_llm_from_item
-                        situated_llm = await build_llm_from_item(item)
-                        if situated_llm:
-                            chunks = await enrich_chunks_with_situated_context(chunks, situated_llm)
-                            logger.info(f"Situated context applied to {len(chunks)} chunks.")
-                    except Exception as sc_err:
-                        logger.warning(f"Situated context enrichment failed, continuing without: {sc_err}")
             elif item.type == 'regex_custom':
                 documents = await fetch_documents(type_source=item.type,
                                                   source=item.source,
@@ -716,6 +707,16 @@ class QdrantRepository(VectorStoreRepository):
 
                 #from pprint import pprint
                 #pprint(chunks)
+
+            if getattr(item, 'use_situated_context', False) and chunks:
+                try:
+                    from tilellm.shared.situated_context import enrich_chunks_with_situated_context, build_llm_from_item
+                    situated_llm = await build_llm_from_item(item)
+                    if situated_llm:
+                        chunks = await enrich_chunks_with_situated_context(chunks, situated_llm)
+                        logger.info(f"Situated context applied to {len(chunks)} chunks.")
+                except Exception as sc_err:
+                    logger.warning(f"Situated context enrichment failed, continuing without: {sc_err}")
 
             logger.debug(documents)
 

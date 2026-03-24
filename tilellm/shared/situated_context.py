@@ -111,7 +111,7 @@ async def build_llm_from_item(item) -> Optional[object]:
             return ChatAnthropic(model=llm_model or 'claude-haiku-4-5-20251001', anthropic_api_key=api_key, temperature=0.0, max_tokens=256)
         elif llm_provider == 'google':
             from langchain_google_genai import ChatGoogleGenerativeAI
-            return ChatGoogleGenerativeAI(model=llm_model or 'gemini-1.5-flash', google_api_key=api_key, temperature=0.0, max_tokens=256)
+            return ChatGoogleGenerativeAI(model=llm_model or 'gemini-2.5-flash', google_api_key=api_key, temperature=0.0, max_tokens=256)
         else:
             logger.warning(f"Situated context: unsupported LLM provider '{llm_provider}'")
             return None

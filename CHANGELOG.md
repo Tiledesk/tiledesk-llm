@@ -5,6 +5,13 @@
     * Andrea Sponziello
 ### **Copyright**: Tiledesk SRL
 
+
+---
+## [2026-03-24]
+### 0.10.0-rc3
+- Fixed: Situated context for text content.
+
+
 ---
 ## [2026-03-24]
 ### 0.10.0-rc2
