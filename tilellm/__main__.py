@@ -263,8 +263,6 @@ async def reader(channel: Redis):
         logger.debug(f"My role is {tilellm_role}")
 
 
-
-
 @asynccontextmanager
 async def redis_consumer(app: FastAPI):
     redis_client = None
@@ -329,7 +327,6 @@ async def redis_consumer(app: FastAPI):
 
         # Pulisci cache
         await TimedCache.async_clear_cache("vector_store_wrapper")
-
 
 
 app = FastAPI(lifespan=redis_consumer)
@@ -786,7 +783,6 @@ async def delete_namespace_main_post(namespace_to_delete: RepositoryNamespace):
         return JSONResponse(content={"success": "false", "message": f"namespace {namespace_to_delete.namespace} is not deleted. {repr(ex)}"})
 
 
-
 @app.get("/api/list/namespace/{token}", response_model=RepositoryNamespaceResult, tags=["Namespace"])
 async def list_namespace_main(token: str):
     """
@@ -1005,7 +1001,7 @@ def register_feature_routers(_app: FastAPI, base_package_dir: str):
     # Controlla se la directory dei moduli esiste.
     if not base_path.is_dir():
         # Se non esiste, stampa un messaggio informativo e termina la funzione.
-        print(f"ℹ️  Directory dei moduli '{base_package_dir}' non trovata. Nessun router dinamico sarà caricato.")
+        logger.warning(f"Directory dei moduli '{base_package_dir}' non trovata. Nessun router dinamico sarà caricato.")
         return
     # -----------------------
 
@@ -1023,7 +1019,8 @@ def register_feature_routers(_app: FastAPI, base_package_dir: str):
         "pdf_ocr": "pdf_ocr",
         "conversion": "conversion",
         "tools_registry": "tools_registry",
-        "api_v2":"api_v2"
+        "api_v2":"api_v2",
+        "ingestion": "ingestion"
     }
     
     # Se la configurazione non esiste o è vuota, abilita tutti i moduli (compatibilità all'indietro)
@@ -1043,7 +1040,9 @@ def register_feature_routers(_app: FastAPI, base_package_dir: str):
             
             # Determina se il modulo deve essere caricato
             should_load = False
-            if enable_all:
+            if module_name == "ingestion":
+                should_load = True
+            elif enable_all:
                 should_load = True
             elif config_key:
                 should_load = services_enabled.get(config_key, False)

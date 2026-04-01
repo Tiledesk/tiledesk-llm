@@ -8,9 +8,9 @@ from tilellm.models.vector_store import Engine
 
 class RepositoryQueryResult(BaseModel):
     id: str
-    metadata_id: str
-    metadata_source: str
-    metadata_type: str
+    metadata_id: Optional[str] = Field(default="")
+    metadata_source: Optional[str] = Field(default="")
+    metadata_type: Optional[str] = Field(default="")
     date: Optional[str] = Field(default="Date not defined")
     text: Optional[str] | None = None
 

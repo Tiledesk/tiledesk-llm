@@ -22,6 +22,7 @@ from tilellm.tools.document_tools import (get_content_by_url,
                                           handle_regex_custom_chunk,
                                           _extract_file_name,
                                           )
+from tilellm.modules.ingestion.text_processor import process_auto_detected_text
 
 from tilellm.store.pinecone.pinecone_repository_base import PineconeRepositoryBase
 
@@ -239,6 +240,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                     for document in documents
                 ]
             else:
+                # Direct text content — use auto-detection for format
                 metadata = MetadataItem(id=item.id,
                                         source=item.source,
                                         type=item.type,
@@ -247,21 +249,19 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                 if item.tags:
                     metadata["tags"] = item.tags
 
-                documents = await self.process_contents(type_source=item.type,
-                                                        source=item.source,
-                                                        metadata=metadata,
-                                                        content=item.content)
-
-                chunks.extend(self.chunk_data_extended(
-                    data=[documents[0]],
+                # Auto-detect format (markdown, tabular, or plain) and chunk appropriately
+                chunks.extend(await process_auto_detected_text(
+                    content=item.content,
+                    source=item.source,
+                    doc_id=item.id,
                     chunk_size=item.chunk_size,
                     chunk_overlap=item.chunk_overlap,
-                    semantic=item.semantic_chunk,
-                    embeddings=embedding_obj,
-                    breakpoint_threshold_type=item.breakpoint_threshold_type)
-                )
+                    metadata=metadata,
+                    semantic_chunk=item.semantic_chunk,
+                    embeddings=embedding_obj
+                ))
 
-            if getattr(item, 'use_situated_context', False) and chunks:
+            if getattr(item, 'situated_context', None) and chunks:
                 try:
                     from tilellm.shared.situated_context import enrich_chunks_with_situated_context, build_llm_from_item
                     situated_llm = await build_llm_from_item(item)
@@ -376,29 +376,30 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                     for document in documents
                 ]
             else:
+                # Direct text content — use auto-detection for format
                 metadata = MetadataItem(id=item.id,
                                         source=item.source,
                                         type=item.type,
                                         embedding=str(item.embedding)).model_dump()
                 if item.tags:
                     metadata["tags"] = item.tags
-                documents = await self.process_contents(type_source=item.type,
-                                                        source=item.source,
-                                                        metadata=metadata,
-                                                        content=item.content)
-                chunks.extend(self.chunk_data_extended(
-                    data=[documents[0]],
+
+                # Auto-detect format (markdown, tabular, or plain) and chunk appropriately
+                chunks.extend(await process_auto_detected_text(
+                    content=item.content,
+                    source=item.source,
+                    doc_id=item.id,
                     chunk_size=item.chunk_size,
                     chunk_overlap=item.chunk_overlap,
-                    semantic=item.semantic_chunk,
-                    embeddings=embedding_obj,
-                    breakpoint_threshold_type=item.breakpoint_threshold_type)
-                )
+                    metadata=metadata,
+                    semantic_chunk=item.semantic_chunk,
+                    embeddings=embedding_obj
+                ))
 
             if len(chunks) == 0:
                 raise Exception("No chunks generated from source")
 
-            if getattr(item, 'use_situated_context', False) and chunks:
+            if getattr(item, 'situated_context', None) and chunks:
                 try:
                     from tilellm.shared.situated_context import enrich_chunks_with_situated_context, build_llm_from_item
                     situated_llm = await build_llm_from_item(item)

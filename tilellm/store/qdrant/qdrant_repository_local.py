@@ -19,8 +19,7 @@ from tilellm.models.schemas import (RepositoryQueryResult,
 from tilellm.models import (MetadataItem,
                             Engine,
                             ItemSingle,
-                            QuestionAnswer,
-                            LlmEmbeddingModel
+                            QuestionAnswer
                             )
 
 from typing import Dict, List, Optional, Union
@@ -35,8 +34,9 @@ from tilellm.shared.sparse_util import hybrid_score_norm
 from tilellm.shared.timed_cache import TimedCache
 from tilellm.shared.utility import _hash_api_key
 from tilellm.store.vector_store_repository import VectorStoreRepository, VectorStoreIndexingError
-from tilellm.tools.document_tools import fetch_documents, calc_embedding_cost, handle_regex_custom_chunk, _extract_file_name
+from tilellm.tools.document_tools import fetch_documents, calc_embedding_cost, _extract_file_name
 from tilellm.tools.sparse_encoders import TiledeskSparseEncoders
+from tilellm.modules.ingestion.text_processor import process_auto_detected_text
 
 logger = logging.getLogger(__name__)
 
@@ -381,12 +381,14 @@ class QdrantRepository(VectorStoreRepository):
                     ]
                 )
 
+            # Get event loop for executor tasks (used in sparse embedding and upsert)
+            loop = asyncio.get_event_loop()
+
             if not skip_delete:
                 # Use executor for synchronous delete.
                 # If the collection does not exist yet there is nothing to delete;
                 # in that case we reset the readiness flag so that _ensure_client()
                 # creates it before the upsert below.
-                loop = asyncio.get_event_loop()
                 try:
                     await loop.run_in_executor(
                         None,
@@ -684,6 +686,7 @@ class QdrantRepository(VectorStoreRepository):
                     for document in documents
                 ]
             else:
+                # Direct text content — use auto-detection for format
                 metadata = MetadataItem(id=item.id,
                                         source=item.source,
                                         type=item.type,
@@ -691,24 +694,23 @@ class QdrantRepository(VectorStoreRepository):
                                         namespace=item.namespace).model_dump()
                 if item.tags:
                     metadata["tags"] = item.tags
-                documents = await self.process_contents(type_source=item.type,
-                                                        source=item.source,
-                                                        metadata=metadata,
-                                                        content=item.content)
 
-                chunks.extend(self.chunk_data_extended(
-                    data=[documents[0]],
+                # Auto-detect format (markdown, tabular, or plain) and chunk appropriately
+                chunks.extend(await process_auto_detected_text(
+                    content=item.content,
+                    source=item.source,
+                    doc_id=item.id,
                     chunk_size=item.chunk_size,
                     chunk_overlap=item.chunk_overlap,
-                    semantic=item.semantic_chunk,
-                    embeddings=embedding_obj,
-                    breakpoint_threshold_type=item.breakpoint_threshold_type)
-                )
+                    metadata=metadata,
+                    semantic_chunk=item.semantic_chunk,
+                    embeddings=embedding_obj
+                ))
 
                 #from pprint import pprint
                 #pprint(chunks)
 
-            if getattr(item, 'use_situated_context', False) and chunks:
+            if getattr(item, 'situated_context', None) and chunks:
                 try:
                     from tilellm.shared.situated_context import enrich_chunks_with_situated_context, build_llm_from_item
                     situated_llm = await build_llm_from_item(item)
@@ -844,29 +846,30 @@ class QdrantRepository(VectorStoreRepository):
                 ]
 
             else:
+                # Direct text content — use auto-detection for format
                 metadata = MetadataItem(id=item.id,
                                         source=item.source,
                                         type=item.type,
                                         embedding=str(item.embedding)).model_dump()
                 if item.tags:
                     metadata["tags"] = item.tags
-                documents = await self.process_contents(type_source=item.type,
-                                                        source=item.source,
-                                                        metadata=metadata,
-                                                        content=item.content)
-                chunks.extend(self.chunk_data_extended(
-                    data=[documents[0]],
+
+                # Auto-detect format (markdown, tabular, or plain) and chunk appropriately
+                chunks.extend(await process_auto_detected_text(
+                    content=item.content,
+                    source=item.source,
+                    doc_id=item.id,
                     chunk_size=item.chunk_size,
                     chunk_overlap=item.chunk_overlap,
-                    semantic=item.semantic_chunk,
-                    embeddings=embedding_obj,
-                    breakpoint_threshold_type=item.breakpoint_threshold_type)
-                )
+                    metadata=metadata,
+                    semantic_chunk=item.semantic_chunk,
+                    embeddings=embedding_obj
+                ))
 
             if len(chunks) == 0:
                 raise Exception("No chunks generated from source")
 
-            if getattr(item, 'use_situated_context', False) and chunks:
+            if getattr(item, 'situated_context', None) and chunks:
                 try:
                     from tilellm.shared.situated_context import enrich_chunks_with_situated_context, build_llm_from_item
                     situated_llm = await build_llm_from_item(item)
@@ -1125,6 +1128,85 @@ class QdrantRepository(VectorStoreRepository):
             logger.error(f"Errore durante l'eliminazione dei punti: {e}")
             raise e
 
+    async def get_by_doc_id(self, engine:Engine, namespace: str, doc_id: str):
+        """
+        GEt from Qdrant all item from namespace given document id
+        :param engine:
+        :param namespace:
+        :param doc_id:
+        :return:
+        """
+        try:
+            if engine.deployment == "local":
+                client = AsyncQdrantClient(host=engine.host, port=engine.port)
+            else:
+                client = AsyncQdrantClient(url=engine.host+":"+str(engine.port),api_key=engine.apikey.get_secret_value())
+
+            result = []
+            all_object_filter = models.Filter(
+                must=[models.FieldCondition(
+                    key="metadata.doc_id",
+                    match=models.MatchValue(value=doc_id)
+                ),
+                    models.FieldCondition(
+                    key="metadata.namespace",
+                    match=models.MatchValue(value=namespace)
+                )
+                ]
+            )
+            result = []
+            
+            if await client.collection_exists(engine.index_name):
+                # collection = client.get_collection(namespace)
+
+                all_points = []
+                next_page_offset = None
+
+                while True:
+                    # Esegue la richiesta di scroll
+                    # payload_selector include solo i campi specifici che ci interessano
+                    # limit imposta il numero di punti da recuperare per ogni richiesta (puoi aumentarlo o diminuirlo)
+                    # offset è utilizzato per la paginazione
+                    scroll_result, next_page_offset = await client.scroll(
+                        collection_name=engine.index_name,
+                        scroll_filter=all_object_filter,
+                        offset=next_page_offset,
+                        limit=100,  # Puoi modificare il limite per recuperare più o meno punti per volta
+                        with_payload=['page_content','metadata'],  # Specifica i campi di metadata da recuperare
+                        with_vectors=False  # Non recuperare i vettori, a meno che non ti servano
+
+                    )
+
+                    all_points.extend(scroll_result)
+
+                    # Se non ci sono più punti o l'offset è nullo, abbiamo finito
+                    if next_page_offset is None:
+                        break
+
+                logger.debug(f"Qdrant total vector in {namespace}: {len(all_points)}")
+                result = []
+                for point in all_points:
+                    metadata = point.payload.get("metadata")
+                    result.append(RepositoryQueryResult(id=point.id,
+                                                        metadata_id=metadata.get('id'),
+                                                        metadata_source=metadata.get('source'),
+                                                        metadata_type=metadata.get('type', ''),
+                                                        date=metadata.get('date', 'Date not defined'),
+                                                        text=point.payload.get("page_content")
+                                                        # su pod content, su Serverless text
+                                                        )
+                                  )
+
+            res = RepositoryItems(matches=result)
+            logger.debug(res)
+            return res
+        except Exception as ex:
+
+            logger.error(ex)
+
+            raise ex
+
+
     async def get_ids_namespace(self, engine: Engine, metadata_id: str, namespace: str) -> RepositoryItems:
         """
         Get from Qdrant all items from namespace given document id
@@ -1186,7 +1268,7 @@ class QdrantRepository(VectorStoreRepository):
                     result.append(RepositoryQueryResult(id=point.id,
                                                         metadata_id=metadata.get('id'),
                                                         metadata_source=metadata.get('source'),
-                                                        metadata_type=metadata.get('type'),
+                                                        metadata_type=metadata.get('type', ''),
                                                         date=metadata.get('date', 'Date not defined'),
                                                         text=point.payload.get("page_content")
                                                         # su pod content, su Serverless text
@@ -1448,7 +1530,7 @@ class QdrantRepository(VectorStoreRepository):
                     result.append(RepositoryQueryResult(id=point.id,
                                                         metadata_id=metadata.get('id'),
                                                         metadata_source=metadata.get('source'),
-                                                        metadata_type=metadata.get('type'),
+                                                        metadata_type=metadata.get('type', ''),
                                                         date=metadata.get('date', 'Date not defined'),
                                                         text=point.payload.get("page_content")
                                                         # su pod content, su Serverless text

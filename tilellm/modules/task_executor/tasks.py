@@ -1,5 +1,6 @@
 import logging
 from typing import Optional, Dict, Any
+from tilellm.modules.raptor.repository import RaptorRepository
 
 
 import httpx
@@ -13,7 +14,7 @@ from tilellm.modules.task_executor.broker import broker
 
 logger = logging.getLogger(__name__)
 
-async def send_webhook(url: str, payload: dict):
+async def send_webhook(url: Optional[str], payload: dict):
     if not url:
         return
     try:
@@ -375,6 +376,108 @@ async def task_falkor_community_analysis(request_dict: dict) -> dict:
 EXPIRATION_SECONDS = 48 * 60 * 60
 
 
+@broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "raptor_build"})
+async def task_raptor_build(request_dict: dict) -> dict:
+    """
+    Task to build RAPTOR tree.
+    """
+    from tilellm.modules.raptor.services.raptor_service import RaptorService
+    from tilellm.modules.raptor.repository import RaptorRepository
+    from tilellm.modules.raptor.config_loader import get_raptor_config_from_env
+    from tilellm.shared.utility import inject_llm_chat_async, inject_repo_async
+    import redis.asyncio as redis
+    
+    webhook_url = request_dict.get("webhook_url")
+    try:
+        # Convert dict back to Pydantic model
+        from tilellm.modules.raptor.models.models import RaptorRequest
+        request = RaptorRequest(**request_dict)
+        logger.info(f"Starting raptor_build task for doc_id: {request.doc_id}")
+        
+        # Setup dependencies using injection pattern similar to controllers
+        @inject_llm_chat_async
+        @inject_repo_async
+        async def _build_raptor_tree_injected(
+            req: RaptorRequest,
+            repo=None,
+            llm=None,
+            llm_embeddings=None,
+            **kwargs,
+        ):
+            from tilellm.modules.raptor.services.raptor_service import RaptorService
+            from tilellm.modules.raptor.config_loader import get_raptor_config_from_env
+            
+            config = req.config or get_raptor_config_from_env()
+            
+            # Get RAPTOR repository
+            raptor_repo = await get_raptor_repo()
+            service = RaptorService(repo=raptor_repo)
+            
+            # Retrieve chunks from vector store (similar to controller logic)
+            from tilellm.modules.raptor.controllers import _retrieve_document_chunks, _to_documents
+            chunks = await _retrieve_document_chunks(
+                namespace=req.namespace,
+                doc_id=req.doc_id,
+                chunk_ids=req.chunk_ids,
+                vector_repo=repo,
+                engine=req.engine,
+            )
+            
+            # Ensure chunks is a List[Document] (defensive programming)
+            if not isinstance(chunks, list):
+                chunks = _to_documents(chunks)
+            
+            return await service.build_raptor_tree(
+                chunks=chunks,
+                namespace=req.namespace,
+                doc_id=req.doc_id,
+                llm=llm,
+                embeddings=llm_embeddings,
+                vector_repo=repo,
+                engine=req.engine,
+                config=config,
+                sparse_encoder=req.sparse_encoder,
+            )
+        
+        # Execute the injected function
+        result = await _build_raptor_tree_injected(request)
+        
+        logger.info(f"Finished raptor_build task for doc_id: {request.doc_id}")
+        if webhook_url:
+            # Convert RaptorResponse to dict for webhook payload
+            if hasattr(result, 'model_dump'):
+                payload = result.model_dump()
+            elif hasattr(result, 'dict'):
+                payload = result.dict()
+            else:
+                payload = dict(result)
+            await send_webhook(webhook_url, payload)
+        # Return dict for Taskiq result_backend
+        if hasattr(result, 'model_dump'):
+            return result.model_dump()
+        elif hasattr(result, 'dict'):
+            return result.dict()
+        else:
+            return dict(result)
+    except Exception as e:
+        logger.error(f"Error in raptor_build task: {e}")
+        if webhook_url:
+            await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
+        raise e
+
+
+# Helper function to get RAPTOR repository (similar to controllers.py)
+async def get_raptor_repo() -> RaptorRepository:
+    """Get RaptorRepository instance backed by Redis."""
+    import redis.asyncio as redis
+    from tilellm.shared.utility import get_service_config
+
+    config = get_service_config()
+    redis_url = f"redis://{config['redis']['host']}:{config['redis']['port']}/{config['redis']['db']}"
+    redis_client = redis.from_url(redis_url)
+    return RaptorRepository(redis_client=redis_client)
+
+
 @broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "scraping"})
 async def task_scrape_item_single(item_dict: dict) -> dict:
     """
@@ -509,14 +612,26 @@ async def process_pdf_document_task(
         # Notify webhook with FULL result (if configured)
         if webhook_url:
             import httpx
-            async with httpx.AsyncClient() as client:
-                await client.post(webhook_url, json={
-                    "status": "completed",
-                    "doc_id": doc_id,
-                    "result": full_result  # Full result to webhook
-                })
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(webhook_url, json={
+                        "status": "completed",
+                        "doc_id": doc_id,
+                        "result": full_result  # Full result to webhook
+                    })
 
-        logger.info(f"Task finished: process_pdf_document_task for {doc_id}")
+                response.raise_for_status()
+                logger.info(f"Task finished: process_pdf_document_task for {doc_id}")
+            except httpx.ConnectError:
+                logger.warning(f"Webhook unreachable, skipping: {webhook_url}")
+            except httpx.TimeoutException:
+                logger.warning(f"Webhook timed out, skipping: {webhook_url}")
+            except httpx.HTTPStatusError as e:
+                logger.warning(f"Webhook returned error {e.response.status_code}, skipping")
+            except Exception as e:
+                logger.warning(f"Webhook failed unexpectedly, skipping: {e}")
+
+
         
         # Return lightweight result - Taskiq will save this to result_backend
         return light_result
@@ -537,12 +652,24 @@ async def process_pdf_document_task(
         # Notify webhook with error
         if webhook_url:
             import httpx
-            async with httpx.AsyncClient() as client:
-                await client.post(webhook_url, json={
-                    "status": "failed",
-                    "doc_id": doc_id,
-                    "error": str(e)
-                })
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(webhook_url, json={
+                        "status": "failed",
+                        "doc_id": doc_id,
+                        "error": str(e)
+                    })
+                response.raise_for_status()
+                logger.error(f"Task finished with error: process_pdf_document_task for {doc_id}")
+            except httpx.ConnectError:
+                logger.warning(f"Webhook unreachable, skipping: {webhook_url}")
+            except httpx.TimeoutException:
+                logger.warning(f"Webhook timed out, skipping: {webhook_url}")
+            except httpx.HTTPStatusError as e:
+                logger.warning(f"Webhook returned error {e.response.status_code}, skipping")
+            except Exception as e:
+                logger.warning(f"Webhook failed unexpectedly, skipping: {e}")
+
         
         # Return error result - Taskiq will save this to result_backend
         return light_result

@@ -292,6 +292,83 @@ class PineconeRepositoryBase(VectorStoreRepository):
     async def delete_ids_namespace(self, engine: Engine, metadata_id: str, namespace: str):
         pass
 
+    async def get_by_doc_id(self, engine: Engine, namespace: str, doc_id: str) -> List[Document]:
+        """
+        Get from Pinecone all items from namespace given document id (doc_id metadata)
+        :param engine: Engine
+        :param namespace:
+        :param doc_id: document id
+        :return: List of Document
+        """
+        import pinecone
+
+        try:
+            pc = pinecone.Pinecone(
+                api_key=engine.apikey.get_secret_value()
+            )
+
+            index_info = pc.describe_index(engine.index_name)
+            host = index_info.host
+            dimension = index_info.dimension
+            index = pc.IndexAsyncio(name=engine.index_name, host=host)
+
+            all_docs = []
+            async with index as idx:
+                # First attempt: Use metadata filter on 'doc_id'
+                pc_res = await idx.query(
+                    vector=[0] * dimension,
+                    top_k=10000,
+                    filter={"doc_id": {"$eq": doc_id}},
+                    namespace=namespace,
+                    include_values=False,
+                    include_metadata=True
+                )
+                matches = pc_res.get('matches', [])
+                
+                # Fallback: if no matches found by 'doc_id', try 'id' (legacy/metadata_id)
+                if not matches:
+                    logger.debug(f"No matches for doc_id='{doc_id}'. Trying metadata filter on 'id'.")
+                    pc_res = await idx.query(
+                        vector=[0] * dimension,
+                        top_k=10000,
+                        filter={"id": {"$eq": doc_id}},
+                        namespace=namespace,
+                        include_values=False,
+                        include_metadata=True
+                    )
+                    matches = pc_res.get('matches', [])
+
+                # Second Fallback: Prefix search on Pinecone ID (doc_id#chunk_id)
+                if not matches:
+                    logger.debug(f"No matches for metadata filter. Trying prefix search for {doc_id}#.")
+                    async for ids in idx.list(prefix=f"{doc_id}#", namespace=namespace):
+                        if ids:
+                            fetch_response = await idx.fetch(ids=ids, namespace=namespace)
+                            for id, vector in fetch_response.vectors.items():
+                                doc_metadata = vector.metadata
+                                page_content = doc_metadata.pop(engine.text_key, '')
+                                all_docs.append(Document(
+                                    id=id,
+                                    metadata=doc_metadata,
+                                    page_content=page_content
+                                ))
+                    return all_docs
+
+                for obj in matches:
+                    doc_metadata = obj.get('metadata', {})
+                    page_content = doc_metadata.pop(engine.text_key, '')
+                    all_docs.append(Document(
+                        id=obj.get('id', ""),
+                        metadata=doc_metadata,
+                        page_content=page_content
+                    ))
+            
+            return all_docs
+
+        except Exception as ex:
+            logger.error(f"Error in Pinecone get_by_doc_id: {ex}")
+            return []
+
     async def delete_chunk_id_namespace(self, engine: Engine, chunk_id: str, namespace: str):
         """
         delete chunk from pinecone

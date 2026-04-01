@@ -351,8 +351,9 @@ async def create_contextualize_query(llm, question_answer):
     if not question_answer.contextualize_prompt:
         # NUOVO: NON contestualizza la query, restituisce quella originale
         # Massimo risparmio token per hybrid search
-        logger.info(f"Contextualize disabled - using original query: {question_answer.question}")
-        return question_answer.question
+        retrieval_q = question_answer.retrieval_query or question_answer.question
+        logger.info(f"Contextualize disabled - using retrieval query: {retrieval_q}")
+        return retrieval_q
 
     # CODICE ORIGINALE: contestualizza la query usando l'LLM
     contextualize_q_system_prompt = const.contextualize_q_system_prompt
@@ -367,10 +368,11 @@ async def create_contextualize_query(llm, question_answer):
     if question_answer.chat_history_dict:
         c_h, _ = preprocess_chat_history(question_answer)
         # Se c'è history, contestualizza la query
+        retrieval_q = question_answer.retrieval_query or question_answer.question
         raw_content = (await llm.ainvoke(
             contextualize_q_prompt.format_messages(
                 chat_history=c_h,
-                input=question_answer.question
+                input=retrieval_q
             )
         )).content
         # GPT-5.x returns content as a list of content blocks; normalize to str
@@ -382,8 +384,8 @@ async def create_contextualize_query(llm, question_answer):
         else:
             contextualized_query = raw_content
     else:
-        # Se non c'è history, usa la query originale
-        contextualized_query = question_answer.question
+        # Se non c'è history, usa la query di retrieval (o fallback a question originale)
+        contextualized_query = question_answer.retrieval_query or question_answer.question
 
     logger.info(f"Contextualized query (FULL): {contextualized_query}")
     # --- FINE MODIFICA ---

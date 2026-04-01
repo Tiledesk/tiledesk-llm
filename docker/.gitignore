@@ -1,0 +1,8 @@
+# Local environment files
+.env
+
+# Qdrant storage directory
+qdrant_storage/
+
+# Docker Compose override files
+docker-compose.override.yml

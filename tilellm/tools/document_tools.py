@@ -47,6 +47,71 @@ def _extract_file_name(source: str) -> str:
         return source
 
 
+def _extract_html_tables(html: str, source_url: str) -> List[Document]:
+    """Extract ``<table>`` elements from raw HTML and convert to markdown Documents.
+
+    Each table becomes a separate Document with:
+
+    * ``page_content`` — markdown representation of the table
+    * ``metadata.element_type`` = ``"table"``
+    * ``metadata.col_names`` — comma-separated column headers
+    * ``metadata.source`` — the originating URL
+    * ``metadata.table_index`` — 0-based position within the page
+
+    Tables with no data rows are skipped.
+    Returns an empty list when pandas is not available or no valid tables are found.
+    """
+    try:
+        import pandas as pd
+    except ImportError:
+        logger.debug("pandas not available — skipping HTML table extraction")
+        return []
+
+    soup = BeautifulSoup(html, "html.parser")
+    table_tags = soup.find_all("table")
+    if not table_tags:
+        return []
+
+    table_docs: List[Document] = []
+    for table_idx, table_tag in enumerate(table_tags):
+        table_html = str(table_tag)
+        try:
+            dfs = pd.read_html(table_html)
+        except Exception:
+            continue
+        if not dfs:
+            continue
+        df = dfs[0]
+        if len(df) < 1:
+            continue
+        # Sanitize auto-generated "Unnamed: N" column labels
+        df.columns = [
+            str(c).split("Unnamed:")[0].strip() or f"col_{i}"
+            for i, c in enumerate(df.columns)
+        ]
+        col_names = ", ".join(str(c) for c in df.columns if c)
+        try:
+            md = df.to_markdown(index=False)
+        except Exception:
+            md = df.to_string(index=False)
+
+        if not md or len(md.strip()) < 10:
+            continue
+
+        meta = {
+            "source": source_url,
+            "element_type": "table",
+            "type": "url",
+            "col_names": col_names,
+            "table_index": table_idx,
+        }
+        table_docs.append(Document(page_content=md.strip(), metadata=meta))
+
+    if table_docs:
+        logger.info("Extracted %d HTML table(s) from %s", len(table_docs), source_url)
+    return table_docs
+
+
 async def _handle_trafilatura_scrape(url: str, headers: Optional[dict] = None) -> list[Document]:
     """Extract main content from a URL using Trafilatura.
 
@@ -55,6 +120,8 @@ async def _handle_trafilatura_scrape(url: str, headers: Optional[dict] = None) -
     request is made via httpx so the headers are forwarded; otherwise the built-in
     trafilatura.fetch_url() is used.
     Returns an empty list when content is too short or extraction fails.
+    HTML tables are extracted separately and appended as additional Documents with
+    ``element_type=table`` and ``col_names`` metadata.
     """
     import asyncio
     try:
@@ -89,12 +156,14 @@ async def _handle_trafilatura_scrape(url: str, headers: Optional[dict] = None) -
         include_images=False,
         include_links=False,
         output_format="txt",
-        favor_precision=True,
+        favor_precision=True
     )
     if not text or len(text.strip()) < 100:
         return []
 
-    return [Document(page_content=text.strip(), metadata={"source": url})]
+    docs: List[Document] = [Document(page_content=text.strip(), metadata={"source": url})]
+    docs.extend(_extract_html_tables(downloaded, url))
+    return docs
 
 
 async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Document]:
@@ -357,7 +426,8 @@ async def scrape_page_fallback_selectors(url, browser_headers: Optional[dict] = 
 
         metadata = {"source": url, "scraping_method": "playwright_fallback"}
         doc = Document(page_content=transformed_content, metadata=metadata)
-        return [doc]
+        table_docs = _extract_html_tables(results, url)
+        return [doc] + table_docs
 
 def get_fallback_selectors():
     """Restituisce selettori di fallback più permissivi"""
@@ -482,7 +552,7 @@ async def scrape_page(url, params_type_4, browser_headers: Optional[dict] = None
 
             bs_transformer = BeautifulSoupTransformer()
 
-            return bs_transformer.transform_documents(
+            text_docs = bs_transformer.transform_documents(
                 docs,
                 tags_to_extract=params_type_4.tags_to_extract,
                 unwanted_tags=params_type_4.unwanted_tags,
@@ -490,6 +560,8 @@ async def scrape_page(url, params_type_4, browser_headers: Optional[dict] = None
                 remove_lines=params_type_4.remove_lines,
                 remove_comments=params_type_4.remove_comments
             )
+            table_docs = _extract_html_tables(results, url)
+            return list(text_docs) + table_docs
         finally:
             await browser.close()
 
@@ -620,7 +692,8 @@ async def scrape_page_complex(url, params_type_4, browser_headers: Optional[dict
                 metadata = {"source": url}
                 doc = Document(page_content=transformed_content, metadata=metadata)
                 print(doc)
-                return [doc]
+                table_docs = _extract_html_tables(results, url)
+                return [doc] + table_docs
             finally:
                 await browser.close()
 

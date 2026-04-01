@@ -12,6 +12,7 @@ Complete REST API documentation for Tiledesk LLM server.
 
 ## Table of Contents
 
+- [Unified Ingestion API](#unified-ingestion-api)
 - [Scraping & Indexing APIs](#scraping--indexing-apis)
 - [Question & Answer APIs](#question--answer-apis)
 - [Namespace Management APIs](#namespace-management-apis)
@@ -22,6 +23,80 @@ Complete REST API documentation for Tiledesk LLM server.
 - [Knowledge Graph APIs (FalkorDB)](#knowledge-graph-apis-falkordb)
 - [Authentication](#authentication)
 - [Data Models](#data-models)
+
+---
+
+## Unified Ingestion API
+
+### POST `/api/ingestion`
+
+Single entry point for all document ingestion. Automatically routes to the appropriate pipeline based on document type and configuration. The old endpoints (`/api/scrape/single`, `/api/pdf/scrape`) remain active for backward compatibility.
+
+**Routing logic:**
+
+| Condition | Pipeline |
+|-----------|----------|
+| `type = "pdf"` AND `use_ocr = true` | Advanced OCR pipeline (Docling) |
+| `hybrid = true` | Hybrid ingestion (`add_item_hybrid`) |
+| default | Standard ingestion (`add_item`) |
+
+**Request Body** (`ItemSingle`):
+```json
+{
+  "id": "doc-001",
+  "source": "https://example.com/document.pdf",
+  "type": "pdf",
+  "namespace": "my-docs",
+  "gptkey": "sk-...",
+  "embedding": "text-embedding-ada-002",
+  "engine": {
+    "name": "pinecone",
+    "type": "serverless",
+    "apikey": "your-pinecone-key",
+    "index_name": "tilellm",
+    "vector_size": 1536
+  },
+  "use_ocr": false,
+  "hybrid": false,
+  "use_situated_context": false,
+  "tags": ["finance", "2024"],
+  "chunk_size": 1000,
+  "chunk_overlap": 400
+}
+```
+
+**OCR-specific fields** (only when `use_ocr = true`, passed through to the Docling pipeline):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `use_ocr` | bool | `false` | Route to Docling OCR pipeline |
+| `use_situated_context` | bool | `false` | Prepend LLM-generated context to each chunk before embedding |
+| `llm_provider` | string | `null` | LLM provider for situated context (`openai`\|`anthropic`\|`google`) |
+| `llm_model` | string | `null` | LLM model for situated context generation |
+
+**Supported document types** (via `type` field):
+
+| `type` | Loader | Notes |
+|--------|--------|-------|
+| `url` | Trafilatura → Playwright fallback | 6 scraping strategies (`scrape_type` 0–5) |
+| `pdf` | PyPDFLoader (basic) / Docling (`use_ocr=true`) | Use `use_ocr=true` for tables, images, formulas |
+| `docx` | `StructuredDocxLoader` | Preserves heading hierarchy and tables |
+| `xlsx` / `xls` | `ExcelLoader` | Sheet-by-sheet, vertical chunking >100 rows |
+| `csv` | `CSVLoader` | Vertical chunking >100 rows |
+| `txt` | TextLoader | Plain text |
+| `md` | `UnstructuredMarkdownLoader` | Headings partially parsed |
+| `text` | Direct from `content` field | Inline content |
+| `regex_custom` | Playwright + user regex | Custom split pattern |
+
+**Response**: same as `/api/scrape/single`
+```json
+{ "message": "Item doc-001 created successfully" }
+```
+
+**Status Codes**:
+- `200`: Processed synchronously
+- `300`: Queued (if `webhook` is provided)
+- `400`: Validation error (e.g., `use_ocr=true` but missing `source`)
 
 ---
 

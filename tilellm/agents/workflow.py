@@ -2,8 +2,10 @@ from langgraph.graph import StateGraph, END
 from tilellm.agents.nodes import (
     input_guard_node,
     intent_router_node,
+    hyde_node,
     compliance_node,
     rag_node,
+    raptor_node,
     hallucination_grader_node,
     fail_safe_node,
 )
@@ -29,8 +31,10 @@ workflow = StateGraph(GraphState)
 # Nodi
 workflow.add_node("guardia", input_guard_node)
 workflow.add_node("intent_router", intent_router_node)
+workflow.add_node("hyde", hyde_node)
 workflow.add_node("compliance_node", compliance_node)
 workflow.add_node("rag_core", rag_node)
+workflow.add_node("raptor", raptor_node)
 workflow.add_node("validatore", hallucination_grader_node)
 workflow.add_node("fail_safe_node", fail_safe_node)
 
@@ -53,15 +57,33 @@ workflow.add_conditional_edges(
     lambda x: "compliance" if x.get("intent") == "compliance" else "qa",
     {
         "compliance": "compliance_node",
-        "qa": "rag_core",
+        "qa": "hyde",
     }
 )
 
 # Compliance chiude direttamente (already grounded=yes)
 workflow.add_edge("compliance_node", END)
 
-# --- LOGICA 3: Ciclo RAG <-> Validatore ---
+# HyDE -> Router (choose between RAPTOR or standard RAG)
+def _router_retrieval_method(state):
+    """Route to RAPTOR or standard RAG based on use_raptor flag."""
+    qa = state.get("question_answer")
+    if qa and qa.use_raptor:
+        return "raptor"
+    return "rag"
+
+workflow.add_conditional_edges(
+    "hyde",
+    _router_retrieval_method,
+    {
+        "raptor": "raptor",
+        "rag": "rag_core",
+    }
+)
+
+# --- LOGICA 3: Ciclo RAG/RAPTOR <-> Validatore ---
 workflow.add_edge("rag_core", "validatore")
+workflow.add_edge("raptor", "validatore")
 
 workflow.add_conditional_edges(
     "validatore",

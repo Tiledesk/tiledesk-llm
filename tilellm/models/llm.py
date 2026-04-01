@@ -14,6 +14,21 @@ if TYPE_CHECKING:
     from tilellm.models.chat import ChatEntry
 
 
+class SituatedContextConfig(BaseModel):
+    """Configuration for the dedicated LLM used by Contextual Retrieval (situated context).
+    Allows using a different/cheaper LLM for context generation than the main indexing LLM.
+
+    Example providers: openai, anthropic, google, groq, vllm (local), ollama (local)
+    """
+    enable: bool = Field(default=False, description="Enable Contextual Retrieval for this ingestion")
+    provider: str = Field(default="openai", description="LLM provider: openai|anthropic|google|groq|vllm|ollama")
+    model: Optional[str] = Field(default=None, description="Chat model name (e.g. gpt-4o-mini, claude-haiku)")
+    api_key: Optional[SecretStr] = Field(default=None, description="API key for the LLM provider")
+    url: Optional[str] = Field(default=None, description="Custom endpoint URL (for vLLM / Ollama local deployments)")
+    temperature: float = Field(default=0.0)
+    max_tokens: int = Field(default=256)
+
+
 class TEIConfig(BaseModel):
     provider: Literal["tei"] = "tei"
     name: str
@@ -56,9 +71,11 @@ class ItemSingle(BaseModel):
     chunk_regex: Optional[str] = None
     parameters_scrape_type_4: Optional[Any] = None # Will be importing ParametersScrapeType4
     engine: Engine
-    use_situated_context: bool = Field(default=False, description="Prepend situated context to each chunk before embedding (Contextual Retrieval). Requires llm_provider + gptkey.")
-    llm_provider: Optional[str] = Field(default=None, description="LLM provider for situated context: openai|anthropic|google")
-    llm_model: Optional[str] = Field(default=None, description="LLM model name for situated context generation.")
+    use_ocr: bool = Field(default=False, description="Whether to use OCR for PDF processing (routes to Advanced PDF pipeline).")
+    situated_context: Optional[SituatedContextConfig] = Field(
+        default=None,
+        description="Dedicated LLM configuration for Contextual Retrieval (situated context). Allows using a different/cheaper LLM for generating contextual sentences."
+    )
 
     @model_validator(mode='after')
     def validate_browser_headers(self):
@@ -125,6 +142,9 @@ class QuestionAnswer(BaseModel):
     conversation_summary: bool = Field(default=False, description="Whether to include a summary of the conversation")
     engine: Engine
     chat_history_dict: Optional[Dict[str, "ChatEntry"]] = None
+    use_hyde: bool = Field(default=False, description="Enable HyDE (Hypothetical Document Embeddings) retrieval")
+    retrieval_query: Optional[str] = Field(default=None, description="Override query for retrieval embedding only (used by HyDE and future Self-RAG)")
+    use_raptor: bool = Field(default=False, description="Enable RAPTOR (hierarchical tree-based retrieval) instead of standard RAG")
 
     #@field_validator("temperature")
     #def temperature_range(cls, v):

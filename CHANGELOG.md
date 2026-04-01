@@ -7,6 +7,31 @@
 
 
 ---
+## [2026-03-26]
+### 0.10.0-rc6
+- Added: `_extract_html_tables(html, source_url)` in `tilellm/tools/document_tools.py` — extracts all `<table>` elements from raw HTML using BeautifulSoup, converts each to a pandas DataFrame via `pd.read_html()`, renders as markdown (`df.to_markdown()` with `df.to_string()` fallback), and returns one `Document` per table with metadata: `element_type="table"`, `col_names` (comma-separated headers), `table_index`, `type="url"`. Tables with no data rows and tables where pandas fails to parse are silently skipped.
+- Added: HTML table extraction integrated into all scraping paths: Trafilatura (`scrape_type=0/1`, appended to text doc), Playwright+BS4 (`scrape_page`, `scrape_type=2`), Playwright+stealth (`scrape_page_complex`, `scrape_type=5`), and fallback selectors (`scrape_page_fallback_selectors`). In each path the raw HTML is available before the BS4/Trafilatura text-only transform, so table structure is preserved.
+- Docs: `docs/ROADMAP.md` — marked "HTML Tables from Web Scraping" as implemented; listed future TODOs (LLM semantic description, MinIO parquet upload — same as PDF tables).
+
+---
+## [2026-03-26]
+### 0.10.0-rc5
+- Added: Embedded image extraction for DOCX documents. `StructuredDocxLoader` now exposes `load_with_images()` returning `(documents, image_records)` and `_extract_images(doc)` which scans all paragraphs for modern `w:drawing` (via `a:blip r:embed`) and legacy `w:pict` (via `v:imagedata r:id`) image relationships. Each image is identified by `docx_img_{para_index}_{md5[:8]}`.
+- Added: `tilellm/modules/ingestion/docx_processor.py` — async pipeline `process_docx_with_images()` decorated with `@inject_llm_chat_async` + `@inject_repo_async`. Uploads images to MinIO (`{doc_id}/docx_images/`), generates vision LLM captions via `generate_image_caption` (same function used by pdf_ocr), populates `ref_images` in metadata of paragraphs within ±1 para_index, applies situated context if enabled, then indexes image captions + text/tables to vector store with the skip_delete pattern.
+- Added: Routing `type=docx + use_ocr=True` in `POST /api/ingestion` → `process_docx_with_images`. `_build_pdf_request` updated to also map `llm_provider → llm` and `llm_model → model` (required by `@inject_llm_chat_async`).
+- Refactored: `StructuredDocxLoader` — extracted `_open_doc()`, `_extract_documents(doc)` private helpers; `load()` backward-compatible; paragraphs now carry `_para_index` internal metadata key for cross-referencing with images.
+- Docs: `docs/ROADMAP.md` — marked Embedded Images in DOCX as done; added OCR Engine Analysis section documenting RapidOCR (current default), EasyOCR, Tesseract options via Docling, and a review of all advanced methods implemented in the pdf_ocr pipeline (`extract_md_simple=False`) with known issues table.
+- Docs: `docs/UNIFIED_INGESTION_PLAN.md` — section 4.4 DOCX fully updated with new pipeline diagram, metadata schema, and ref_images spec.
+
+---
+## [2026-03-26]
+### 0.10.0-rc4
+- Added: `POST /api/ingestion` unified ingestion endpoint (`tilellm/modules/ingestion/controllers.py`) — single entry point that routes to the correct pipeline based on document type and configuration: `pdf + use_ocr=True` → Docling OCR pipeline, `hybrid=True` → `add_item_hybrid`, default → `add_item`. Old endpoints `/api/scrape/single` and `/api/pdf/scrape` remain active for backward compatibility.
+- Fixed: `unified_ingestion` controller no longer reads the raw HTTP request body (`await request.json()`); instead builds `PDFScrapingRequest` from `item.model_dump()` via the new `_build_pdf_request()` helper, avoiding body-consumption issues and fragile field mapping.
+- Docs: Updated `docs/UNIFIED_INGESTION_PLAN.md` — section 1.1 marked as implemented, section 1.2 (HyDE) expanded with concrete TODOs and LangGraph integration notes.
+- Docs: Removed duplicate HyDE entry from `docs/ROADMAP.md` (was listed twice as sections 2 and 4).
+
+---
 ## [2026-03-24]
 ### 0.10.0-rc3
 - Fixed: Situated context for text content.

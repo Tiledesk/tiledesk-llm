@@ -18,6 +18,7 @@ Tiledesk LLM is a powerful backend service designed for Retrieval-Augmented Gene
 - [Configuration-Based Module Loading](#configuration-based-module-loading)
 - [Docker Compose Profiles](#docker-compose-profiles)
 - [API Documentation](#api-documentation)
+  - [Unified Ingestion API](#unified-ingestion-api)
   - [Scraping & Indexing APIs](#scraping--indexing-apis)
   - [Question & Answer APIs](#question--answer-apis)
   - [Namespace Management APIs](#namespace-management-apis)
@@ -25,6 +26,7 @@ Tiledesk LLM is a powerful backend service designed for Retrieval-Augmented Gene
   - [Tools Registry APIs](#tools-registry-apis)
   - [Authentication](#authentication)
 - [Advanced Features](#advanced-features)
+  - [Unified Ingestion](#unified-ingestion)
   - [Hybrid Search](#hybrid-search)
   - [Semantic Chunks](#semantic-chunks)
   - [Reranker](#reranker)
@@ -547,6 +549,17 @@ Each Dockerfile installs only the required dependencies for its profile.
 
 This section provides a detailed overview of the available API endpoints.
 
+### Unified Ingestion API
+
+#### `POST /api/ingestion`
+Unified ingestion endpoint. Single entry point that routes to the correct pipeline based on document type and configuration. Replaces the need to choose manually between `/api/scrape/single` and `/api/pdf/scrape`.
+
+- **Request Body**: `ItemSingle`
+- **Routing**: `pdf + use_ocr=true` → Docling OCR pipeline · `hybrid=true` → `add_item_hybrid` · default → `add_item`
+- **Backward compatibility**: Old endpoints remain active.
+
+See [`API_DOCUMENTATION.md`](./API_DOCUMENTATION.md#unified-ingestion-api) for the full field reference and supported document types.
+
 ### Scraping & Indexing APIs
 
 #### `POST /api/scrape/single`
@@ -655,6 +668,60 @@ Many endpoints are protected and require a JWT token passed as a path parameter 
 ---
 
 ## Advanced Features
+
+### Unified Ingestion
+
+`POST /api/ingestion` is the single entry point for all document ingestion. It replaces the need to call different endpoints depending on the document type or processing mode.
+
+**Routing rules:**
+- `type = "pdf"` + `use_ocr = true` → Docling-based OCR pipeline (text + tables + images)
+- `hybrid = true` → hybrid dense+sparse indexing (`add_item_hybrid`)
+- everything else → standard dense indexing (`add_item`)
+
+**Key fields on `ItemSingle`:**
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `use_ocr` | `false` | Route PDFs to the Docling OCR pipeline |
+| `hybrid` | `false` | Enable hybrid (dense + sparse) indexing |
+| `use_situated_context` | `false` | Prepend an LLM-generated situating sentence to each chunk before embedding (Contextual Retrieval) |
+| `llm_provider` | `null` | LLM provider for situated context generation (`openai`\|`anthropic`\|`google`) |
+| `llm_model` | `null` | LLM model name for situated context generation |
+
+**Example — OCR + situated context:**
+```bash
+curl -X POST http://localhost:8000/api/ingestion \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "annual-report-2024",
+    "source": "https://example.com/report.pdf",
+    "type": "pdf",
+    "use_ocr": true,
+    "use_situated_context": true,
+    "llm_provider": "openai",
+    "llm_model": "gpt-4o-mini",
+    "namespace": "finance",
+    "gptkey": "sk-...",
+    "embedding": "text-embedding-3-small",
+    "engine": { "name": "qdrant", "url": "http://localhost:6333", "index_name": "tilellm" }
+  }'
+```
+
+**Example — hybrid indexing of a DOCX:**
+```bash
+curl -X POST http://localhost:8000/api/ingestion \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "spec-v3",
+    "source": "https://example.com/spec.docx",
+    "type": "docx",
+    "hybrid": true,
+    "namespace": "specs",
+    "gptkey": "sk-...",
+    "embedding": "text-embedding-ada-002",
+    "engine": { "name": "pinecone", "type": "serverless", "apikey": "...", "index_name": "tilellm", "vector_size": 1536 }
+  }'
+```
 
 ### Hybrid Search
 Hybrid search combines semantic (vector) search with traditional keyword (sparse) search to improve relevance.

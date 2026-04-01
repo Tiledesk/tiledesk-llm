@@ -704,10 +704,15 @@ async def _index_text_chunks(
     logger.info(f"Indexing {len(documents)} text chunks to vector store for doc {doc_id}")
 
     # Situated context enrichment (Contextual Retrieval, optional)
-    if question.use_situated_context and llm:
+    sc_config = getattr(question, 'situated_context', None)
+    if sc_config and sc_config.enable:
         try:
-            documents = await enrich_chunks_with_situated_context(documents, llm)
-            logger.info(f"Situated context applied to {len(documents)} text chunks.")
+            from tilellm.shared.situated_context import build_llm_from_config
+            # Use dedicated LLM for situated context if configured, otherwise fall back to DI LLM
+            sc_llm = await build_llm_from_config(sc_config) or llm
+            if sc_llm:
+                documents = await enrich_chunks_with_situated_context(documents, sc_llm)
+                logger.info(f"Situated context applied to {len(documents)} text chunks.")
         except Exception as sc_err:
             logger.warning(f"Situated context enrichment failed, continuing without: {sc_err}")
 

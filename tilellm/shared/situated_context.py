@@ -8,10 +8,13 @@ Reference: https://www.anthropic.com/news/contextual-retrieval
 """
 import asyncio
 import logging
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING
 
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage
+
+if TYPE_CHECKING:
+    from tilellm.models.llm import SituatedContextConfig
 
 logger = logging.getLogger(__name__)
 
@@ -83,38 +86,89 @@ async def enrich_chunks_with_situated_context(
     return list(await asyncio.gather(*[_enrich_one(doc) for doc in documents]))
 
 
-async def build_llm_from_item(item) -> Optional[object]:
+async def build_llm_from_config(config: "SituatedContextConfig") -> Optional[object]:
     """
-    Build a minimal LLM instance from an ItemSingle-like object for situated context.
-    Returns None if LLM fields are not configured or are placeholder values.
-    """
-    llm_provider = getattr(item, 'llm_provider', None) or getattr(item, 'llm', None)
-    llm_model = getattr(item, 'llm_model', None) or (
-        item.model if isinstance(getattr(item, 'model', None), str) else
-        getattr(getattr(item, 'model', None), 'name', None)
-    )
-    api_key_obj = getattr(item, 'gptkey', None) or getattr(item, 'llm_key', None)
+    Build LLM instance from SituatedContextConfig.
+    Returns None if disabled or api_key is missing/invalid.
 
-    if not llm_provider or not api_key_obj:
+    Supports: openai, anthropic, google, groq, vllm (with custom url), ollama (with custom url)
+    """
+    if not config or not config.enable:
         return None
+
+    api_key_obj = config.api_key
+    api_key = (
+        api_key_obj.get_secret_value() if hasattr(api_key_obj, 'get_secret_value')
+        else str(api_key_obj or '')
+    )
+
+    if not api_key or api_key in ('', 'sk'):
+        logger.warning("SituatedContextConfig: api_key is missing or invalid")
+        return None
+
+    kwargs = dict(temperature=config.temperature, max_tokens=config.max_tokens)
 
     try:
-        api_key = api_key_obj.get_secret_value() if hasattr(api_key_obj, 'get_secret_value') else str(api_key_obj)
-        if not api_key or api_key in ('sk', ''):
+        if config.provider in ('openai', 'vllm'):
+            from langchain_openai import ChatOpenAI
+            init_kwargs = dict(model=config.model or 'gpt-4o-mini', api_key=api_key, **kwargs)
+            if config.url:
+                init_kwargs['base_url'] = config.url
+            return ChatOpenAI(**init_kwargs)
+
+        elif config.provider == 'anthropic':
+            from langchain_anthropic import ChatAnthropic
+            return ChatAnthropic(
+                model=config.model or 'claude-haiku-4-5-20251001',
+                anthropic_api_key=api_key,
+                **kwargs
+            )
+
+        elif config.provider == 'google':
+            from langchain_google_genai import ChatGoogleGenerativeAI
+            return ChatGoogleGenerativeAI(
+                model=config.model or 'gemini-2.5-flash',
+                google_api_key=api_key,
+                **kwargs
+            )
+
+        elif config.provider == 'groq':
+            from langchain_groq import ChatGroq
+            return ChatGroq(
+                model=config.model or 'llama3-8b-8192',
+                api_key=api_key,
+                **kwargs
+            )
+
+        elif config.provider == 'ollama':
+            from langchain_ollama import ChatOllama
+            return ChatOllama(
+                model=config.model or 'llama3',
+                base_url=config.url or 'http://localhost:11434',
+                **kwargs
+            )
+
+        else:
+            logger.warning(f"Situated context: unsupported provider '{config.provider}'")
             return None
 
-        if llm_provider in ('openai', 'vllm'):
-            from langchain_openai import ChatOpenAI
-            return ChatOpenAI(model=llm_model or 'gpt-4o-mini', api_key=api_key, temperature=0.0, max_tokens=256)
-        elif llm_provider == 'anthropic':
-            from langchain_anthropic import ChatAnthropic
-            return ChatAnthropic(model=llm_model or 'claude-haiku-4-5-20251001', anthropic_api_key=api_key, temperature=0.0, max_tokens=256)
-        elif llm_provider == 'google':
-            from langchain_google_genai import ChatGoogleGenerativeAI
-            return ChatGoogleGenerativeAI(model=llm_model or 'gemini-2.5-flash', google_api_key=api_key, temperature=0.0, max_tokens=256)
-        else:
-            logger.warning(f"Situated context: unsupported LLM provider '{llm_provider}'")
-            return None
     except Exception as e:
-        logger.warning(f"Could not build LLM for situated context: {e}")
+        logger.warning(f"Could not build LLM from SituatedContextConfig: {e}")
         return None
+
+
+async def build_llm_from_item(item) -> Optional[object]:
+    """
+    Build LLM instance for situated context from an ItemSingle-like object.
+
+    Prioritizes item.situated_context if configured.
+    Returns None if LLM is not properly configured.
+    """
+    # New schema: SituatedContextConfig
+    config = getattr(item, 'situated_context', None)
+    if config is not None:
+        return await build_llm_from_config(config)
+
+    # Fallback to legacy flat fields (should not occur with new schema)
+    logger.debug("No SituatedContextConfig found on item")
+    return None

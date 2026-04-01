@@ -108,6 +108,17 @@ class VectorStoreRepository(ABC):
 
 
     @abstractmethod
+    async def get_by_doc_id(self, engine: Engine, namespace:str, doc_id: str):
+        """
+        Get chunks from doc_id and namespace
+        :param engine
+        :param namespace:
+        :param doc_id:
+        :return:
+        """
+        pass
+
+    @abstractmethod
     async def list_namespaces(self,engine: Engine) -> RepositoryNamespaceResult:
         """
         Get list of all namespaces/collections from vector store

@@ -38,3 +38,5 @@ class GraphState(TypedDict):
     compliance_domain: Optional[str]  # dominio rilevato: e_procurement | medical_devices | …
     compliance_report: Optional[dict]  # ComplianceReport.model_dump() dopo il check
 
+    # HyDE (Hypothetical Document Embeddings)
+    hyde_document: Optional[str]    # documento ipotetico generato da HyDE per il retrieval

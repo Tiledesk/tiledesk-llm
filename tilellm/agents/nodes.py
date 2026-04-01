@@ -22,12 +22,67 @@ SEARCH_STRATEGIES = {
 
 
 # ---------------------------------------------------------------------------
+# Pydantic models for structured LLM outputs
+# ---------------------------------------------------------------------------
+
+class HyDEDocument(BaseModel):
+    hypothetical_document: str = Field(
+        description="A hypothetical passage that would directly answer the query"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Shared LLM getter (cached via TimedCache inside the decorator)
 # ---------------------------------------------------------------------------
 
 @inject_llm_chat_async
 async def _get_guard_llm(question_answer: QuestionAnswer, llm=None, **kwargs):
     return llm
+
+
+# ---------------------------------------------------------------------------
+# Node: hyde (Hypothetical Document Embeddings)
+# ---------------------------------------------------------------------------
+
+async def hyde_node(state: GraphState) -> dict:
+    """
+    Generate a hypothetical document based on the query for improved retrieval.
+
+    If use_hyde=False, this node passes through without modifications.
+    If use_hyde=True, generates a hypothetical passage and sets it as retrieval_query.
+    The original question is preserved for answer generation.
+    """
+    qa = state["question_answer"]
+
+    # Pass-through if HyDE is disabled
+    if not qa.use_hyde:
+        return {}
+
+    logger.info(f"HyDE enabled - generating hypothetical document for query: {qa.question}")
+
+    # Get LLM via DI
+    llm = await _get_guard_llm(qa)
+    structured_llm = llm.with_structured_output(HyDEDocument)
+
+    # Prompt for generating hypothetical document
+    prompt = f"""Generate a hypothetical document passage that would directly answer the following question.
+Write it as if it were an excerpt from a relevant document, without citations or sources.
+Be concise (2-3 paragraphs max).
+
+Question: {qa.question}"""
+
+    result = await structured_llm.ainvoke(prompt)
+
+    # Update question_answer: set retrieval_query to the hypothetical document
+    # The original question is preserved for answer generation
+    updated_qa = qa.model_copy(update={"retrieval_query": result.hypothetical_document})
+
+    logger.info(f"HyDE document generated (length={len(result.hypothetical_document)})")
+
+    return {
+        "question_answer": updated_qa,
+        "hyde_document": result.hypothetical_document,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -349,3 +404,75 @@ async def fail_safe_node(state: GraphState):
         "retrieval_result": safe_result,
         "metadata": {**metadata, "trace": trace, "status": "failed_verification"}
     }
+
+
+# ---------------------------------------------------------------------------
+# Node: raptor_node (RAPTOR-based retrieval)
+# ---------------------------------------------------------------------------
+
+async def raptor_node(state: GraphState):
+    """
+    RAPTOR-based retrieval with hierarchical tree traversal.
+
+    Replaces standard RAG when use_raptor=True in QuestionAnswer.
+    Retrieves from RAPTOR tree and generates answer with LLM.
+    """
+    iteration = state.get("retry_count", 0)
+    metadata = state.get("metadata") or {}
+    trace = list(metadata.get("trace", []))
+
+    original_qa = state["question_answer"]
+
+    # Build RAPTOR request from QuestionAnswer
+    from tilellm.modules.raptor.models.models import RaptorQARequest, RaptorRetrievalStrategy
+    from tilellm.modules.raptor.controllers import _raptor_qa_logic
+
+    raptor_request = RaptorQARequest(
+        question=original_qa.question,
+        namespace=original_qa.namespace,
+        doc_id=None,  # Search across all documents in namespace
+        strategy=RaptorRetrievalStrategy.COLLAPSED_TREE,
+        top_k=original_qa.top_k,
+        top_k_per_level=3,
+        engine=original_qa.engine,
+        gptkey=original_qa.gptkey,
+        model=original_qa.model,
+        llm=original_qa.llm,
+        embedding=original_qa.embedding,
+        temperature=original_qa.temperature,
+        max_tokens=original_qa.max_tokens,
+        debug=original_qa.debug,
+        sparse_encoder=original_qa.sparse_encoder,
+        use_hybrid=True if original_qa.sparse_encoder else False,
+        alpha=original_qa.alpha if hasattr(original_qa, 'alpha') and original_qa.alpha else 0.7,
+    )
+
+    trace.append({
+        "step": f"raptor_attempt_{iteration}",
+        "retrieval_method": "raptor_tree",
+        "strategy": "collapsed_tree",
+    })
+
+    try:
+        raptor_result = await _raptor_qa_logic(raptor_request)
+
+        # Convert RAPTOR response to RetrievalResult format
+        retrieval_result = RetrievalResult(
+            answer=raptor_result.answer,
+            sources=[{"title": f"Level {r.get('level')}", "url": ""} for r in raptor_result.retrieved_chunks[:3]],
+            content_chunks=[r.get("content", "") for r in raptor_result.retrieved_chunks],
+            status="success" if raptor_result.success else "failed",
+        )
+
+        return {
+            "retrieval_result": retrieval_result,
+            "retry_count": iteration + 1,
+            "metadata": {**metadata, "trace": trace},
+        }
+    except Exception as e:
+        logger.error(f"RAPTOR retrieval failed: {e}")
+        return {
+            "error_message": f"RAPTOR retrieval failed: {str(e)}",
+            "retry_count": iteration + 1,
+            "metadata": {**metadata, "trace": trace},
+        }

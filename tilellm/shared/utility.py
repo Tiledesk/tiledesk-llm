@@ -1102,7 +1102,6 @@ async def _create_llm_instance(question):
                     client_config["reasoning"] = reasoning_dict
                     # Usa il nuovo formato response per reasoning models
                     client_config["output_version"] = "responses/v1"
-            print(f"========================> {client_config}")
             return ChatOpenAI(**client_config)
 
         elif question.llm == "vllm":
