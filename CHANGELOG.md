@@ -7,6 +7,11 @@
 
 
 ---
+## [2026-04-02]
+### 0.10.0-rc7
+- Fixed: Hybrid upsert failing for text content — `MetadataItem.model_dump()` included `namespace: None` in vector metadata causing Pinecone `400 Bad Request`. Applied `exclude_none=True`.
+
+---
 ## [2026-03-26]
 ### 0.10.0-rc6
 - Added: `_extract_html_tables(html, source_url)` in `tilellm/tools/document_tools.py` — extracts all `<table>` elements from raw HTML using BeautifulSoup, converts each to a pandas DataFrame via `pd.read_html()`, renders as markdown (`df.to_markdown()` with `df.to_string()` fallback), and returns one `Document` per table with metadata: `element_type="table"`, `col_names` (comma-separated headers), `table_index`, `type="url"`. Tables with no data rows and tables where pandas fails to parse are silently skipped.

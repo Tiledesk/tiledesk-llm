@@ -380,7 +380,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                 metadata = MetadataItem(id=item.id,
                                         source=item.source,
                                         type=item.type,
-                                        embedding=str(item.embedding)).model_dump()
+                                        embedding=str(item.embedding)).model_dump(exclude_none=True)
                 if item.tags:
                     metadata["tags"] = item.tags
 
@@ -418,12 +418,13 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
             #indice = vector_store.async_index #index #get_pinecone_index(item.engine.index_name, pinecone_api_key=item.engine.apikey)
             idx = await vector_store.async_index
-            await self.upsert_vector_store_hybrid(idx,
-                                                  contents,
-                                                  chunks,
-                                                  item.id,
-                                                  namespace = item.namespace,
+            print(f"=======================>{item.namespace}")
+            await self.upsert_vector_store_hybrid(indice=idx,
+                                                  contents=contents,
+                                                  chunks=chunks,
+                                                  metadata_id=item.id,
                                                   engine=item.engine,
+                                                  namespace=item.namespace,
                                                   embeddings=embedding_obj,
                                                   sparse_vectors=doc_sparse_vectors,
                                                   doc_batch_size=item.doc_batch_size)
