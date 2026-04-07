@@ -5,6 +5,17 @@
     * Andrea Sponziello
 ### **Copyright**: Tiledesk SRL
 
+---
+## [2026-04-02]
+### 0.10.0
+- Feature: Unified ingestion for all document types (PDF, DOCX, HTML with scraping) through the new endpoint `POST /api/ingestion`. Automatic routing to the appropriate pipeline (OCR, hybrid, default) based on the provided options.
+- Feature: Automatic extraction of all HTML tables from web pages in every scraping path (Trafilatura, Playwright+BS4, Playwright+stealth, fallback selector). For each table, a specific document is generated with metadata (columns, index, type), converted to markdown, with structure preserved.
+- Feature: Extraction of embedded images for DOCX documents — the loader now finds both modern (`w:drawing`) and legacy (`w:pict`) images, stores them locally, and generates automatic captions with LLM vision. Captions are associated with/around the relevant text paragraphs and referenced in the `"ref_images"` metadata.
+- Improvement: Introduced the `CommonChunkMetadata` Pydantic schema as the single metadata contract between pipeline and vectorstore, with safe defaults and forward compatibility.
+- Feature: Optional generation of “situated context” via LLM for each ingested chunk, following Anthropic's Contextual Retrieval technique. Allows configuration of LLM provider and model directly from the API call.
+- Fix: Resolved bug in hybrid Pinecone upsert caused by unwanted inclusion of `namespace: None` in metadata (which resulted in error 400).
+- Fix: Improved chat history management for gpt-5.x and situational context for text content.
+- Docs: Updated roadmap and unified ingestion documentation detailing implementation status, pipelines, technical details of image and table extraction, OCR engines, and notes on future developments.
 
 ---
 ## [2026-04-02]
