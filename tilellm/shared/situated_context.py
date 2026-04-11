@@ -86,7 +86,7 @@ async def enrich_chunks_with_situated_context(
     return list(await asyncio.gather(*[_enrich_one(doc) for doc in documents]))
 
 
-async def build_llm_from_config(config: "SituatedContextConfig") -> Optional[object]:
+async def build_llm_from_config(config: "SituatedContextConfig", fallback_api_key: Optional[str] = None) -> Optional[object]:
     """
     Build LLM instance from SituatedContextConfig.
     Returns None if disabled or api_key is missing/invalid.
@@ -103,8 +103,11 @@ async def build_llm_from_config(config: "SituatedContextConfig") -> Optional[obj
     )
 
     if not api_key or api_key in ('', 'sk'):
-        logger.warning("SituatedContextConfig: api_key is missing or invalid")
-        return None
+        if fallback_api_key and fallback_api_key not in ('', 'sk'):
+            api_key = fallback_api_key
+        else:
+            logger.warning("SituatedContextConfig: api_key is missing or invalid")
+            return None
 
     kwargs = dict(temperature=config.temperature, max_tokens=config.max_tokens)
 
@@ -167,8 +170,12 @@ async def build_llm_from_item(item) -> Optional[object]:
     # New schema: SituatedContextConfig
     config = getattr(item, 'situated_context', None)
     if config is not None:
-        return await build_llm_from_config(config)
+        # Get global gptkey as fallback if available
+        gptkey_obj = getattr(item, 'gptkey', None)
+        fallback_api_key = (
+            gptkey_obj.get_secret_value() if hasattr(gptkey_obj, 'get_secret_value')
+            else str(gptkey_obj or '')
+        )
+        return await build_llm_from_config(config, fallback_api_key=fallback_api_key)
 
-    # Fallback to legacy flat fields (should not occur with new schema)
-    logger.debug("No SituatedContextConfig found on item")
     return None

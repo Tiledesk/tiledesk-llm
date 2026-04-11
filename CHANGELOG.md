@@ -7,6 +7,57 @@
 
 
 ---
+## [2026-04-11]
+### 0.10.1-rc1 (local inference performance — Fase 1)
+- Added: `tilellm/tools/_gpu_concurrency.py` — shared primitives for local GPU inference. Exposes `GLOBAL_GPU_LOCK` (single process-wide `threading.Lock` that serializes forward pass across **all** local models — reranker + sparse encoders — to prevent concurrent-allocation OOMs on the same CUDA device), `is_cuda_oom(exc)`, `cuda_empty_cache_safe()`, and `build_token_budget_batches()` (TEI-inspired greedy packing: sort by length + pack while `batch_size * max_len <= budget`).
+- Changed: `tilellm/tools/reranker.py` — `TileReranker._gpu_lock` now aliases `GLOBAL_GPU_LOCK` (was a local `Lock()`). `build_token_budget_batches` moved to `_gpu_concurrency.py` and re-exported from `reranker.py` for backward compatibility with `tests/unit/tools/test_local_reranker_batching.py`. No behavioral changes to the OOM-recovery path — existing tests unchanged.
+- Added: `TiledeskSpladeEncoder` (local path) — **fp16 on CUDA at load** (`self.splade.model.half()`, ~2× speedup, halved VRAM), **warmup dummy predict** on load (moves cuDNN autotune off the hot path), **token-budget batching** with `_run_sparse_batched_with_oom_recovery`, **`GLOBAL_GPU_LOCK`** serializing every forward pass (including `encode_queries`), **OOM recovery** with halving budget and max 3 retries. New ctor params: `token_budget_per_batch=2048`, `max_items_per_batch=16`, `max_oom_retries=3`. Removed `torch.cuda.empty_cache()` from the happy path (was called after every batch — 100–200 ms per call of wasted sync).
+- Added: `TiledeskBGEM3` (local path) — **warmup** on load (fp16 already handled internally by FlagEmbedding via `use_fp16=True`), **token-budget batching** + **`GLOBAL_GPU_LOCK`** + **OOM recovery** (same pattern as Splade). New ctor params: `token_budget_per_batch=2048`, `max_items_per_batch=8` (lower default — BGE-M3 is heavier), `max_oom_retries=3`. Removed `torch.cuda.empty_cache()` from the happy path.
+- Fixed: `TiledeskSparseEncoders._get_cached_encoder` — LRU eviction now properly releases VRAM (`del oldest_encoder` + `cuda_empty_cache_safe()`). Previously `OrderedDict.pop` only dropped the Python reference while PyTorch retained the CUDA allocation until the next GC cycle, causing gradual VRAM leaks across model swaps.
+- Fixed: `TiledeskSparseEncoders.clear_cache` — now clears inside `_cache_lock` (was racing with concurrent `_get_cached_encoder` calls) and uses `cuda_empty_cache_safe()` (previously crashed if `torch` import had failed because the `and` chain referenced `torch.cuda` before the None check).
+- Refactored: `_chunk_text` now takes `max_words` parameter (Splade uses 300 words / ~390 tokens given 512 ctx; default kept at 300 for other callers). Extracted `_estimate_text_tokens` helper (~1.3 tokens/word heuristic, same as reranker).
+- Expected impact: local reranker latency ~3–4 s → ~1–1.5 s (fp16 speedup + no `empty_cache` per batch); elimination of OOM failures under concurrent upserts (single lock serializes all forward passes); stable p99 latency under concurrency. `autocast`/`bfloat16` considered but not adopted — for our models (bge-reranker-v2-m3, Splade, BGE-M3) pure `.half()` is strictly better (same speedup, half the memory, no runtime casting). Documented as fallback if numerical issues arise.
+- Note: Remote paths unaffected — `TEIReranker`, `PineconeReranker`, `TEISparseEncoder` do not touch local GPU and inherit no changes.
+- Added: Semantic cache for recurring queries (`tilellm/shared/cache/semantic_cache.py`). Two-level architecture: L1 exact match (SHA-256 hash, 24h TTL) and L2 semantic match (cosine similarity on query embeddings computed in Python with numpy, 6h TTL). No additional infrastructure required — uses the existing Redis instance already in use by TaskIQ.
+- Added: `use_cache: bool = False` field to `QuestionAnswer` (`tilellm/models/llm.py`). Cache is opt-in per request; disabled by default.
+- Added: `cache_hit: Optional[bool]` and `cache_similarity: Optional[float]` fields to `GraphState` (`tilellm/models/graph_state.py`).
+- Added: `cache_lookup_node` and `cache_store_node` LangGraph nodes in `tilellm/agents/nodes.py`. `cache_lookup` is placed after `intent_router` (QA path only); `cache_store` is placed after `validatore` on successful response. On cache hit, `rag_core`/`raptor`/LLM are fully bypassed.
+- Added: Cache integration in `POST /api/qa` (`tilellm/__main__.py`) — same L1+L2 lookup/store logic for the non-agentic endpoint.
+- Added: Cache invalidation hooks in `add_item` and `add_item_hybrid` (`tilellm/controller/controller.py`) — strategy B (full namespace invalidation) on any document update.
+- Added: Cache invalidation in `DELETE /api/namespace/{namespace}` (`tilellm/__main__.py`).
+- Added: `GET /api/cache/stats` and `DELETE /api/cache/namespace/{namespace}` admin endpoints.
+- Added: Unit tests in `tests/unit/shared/test_semantic_cache.py` covering exact/semantic hit/miss, case-insensitive normalization, namespace invalidation isolation, stats, and `use_cache=False` bypass (uses `fakeredis`).
+- Docs: `docs/CACHE_IMPLEMENTATION_PLAN.md` updated to reflect implementation status.
+- Docs: `API_DOCUMENTATION.md` — added Semantic Cache APIs section; updated `QuestionAnswer` fields.
+- Config: Threshold and TTL configurable via env vars: `CACHE_SIMILARITY_THRESHOLD` (default 0.90), `CACHE_TTL_EXACT` (default 86400), `CACHE_TTL_SEMANTIC` (default 21600).
+
+---
+## [2026-04-07] (3)
+### 0.10.0-rc8 (evaluation)
+- Added: `evaluation/` standalone benchmark module (Opzione B — separato da `tests/`). Install with `pip install tilellm[evaluation]`.
+- Added: `evaluation/config.py` — `EvalConfig` dataclass with all pipeline flags + `matrix_configs()` helper for the 8-run benchmark matrix.
+- Added: `evaluation/datasets/` — loaders for HotpotQA (`hotpotqa_loader.py`), QASPER (`qasper_loader.py`), MS MARCO (`msmarco_loader.py`) via HuggingFace `datasets`. Shared `EvalSample` + `Passage` models in `base.py`.
+- Added: `evaluation/pipeline/ingest.py` — async ingest of passages via `POST /api/ingestion` with configurable concurrency (default 10).
+- Added: `evaluation/pipeline/query.py` — async querying via `POST /api/v2/qa` with tqdm progress bar, fills `sample.answer` + `sample.contexts`.
+- Added: `evaluation/pipeline/cleanup.py` — `DELETE /api/namespace/{ns}/{token}` after each run.
+- Added: `evaluation/evaluate.py` — RAGAS evaluation (5 metrics: faithfulness, answer_relevancy, context_precision, context_recall, answer_correctness) + `EvalReport` with RAG Score (harmonic mean) + JSON persistence.
+- Added: `evaluation/compare.py` — loads multiple `EvalReport` JSON files and renders a markdown comparison table sorted by RAG Score.
+- Added: `evaluation/run_benchmark.py` — CLI entrypoint: `python -m evaluation.run_benchmark [--matrix] [--dataset] [--hybrid] [--situated] [--hyde] [--raptor] ...`
+- Added: `ragas>=0.2.0`, `datasets>=2.0.0`, `tqdm>=4.0.0` as optional deps under `[evaluation]` extra in `pyproject.toml`.
+- Docs: `docs/RAGAS_EVALUATION_PLAN.md` — all phases marked as implemented.
+
+---
+## [2026-04-07] (2)
+### 0.10.0-rc8 (patch)
+- Fixed: `create_embedding_instance` returns a tuple `(model, dimension)` — unpacked correctly in `cache_lookup_node`, `cache_store_node`, and `/api/qa` cache blocks (`embedding_model, _ = await create_embedding_instance(...)`).
+- Added: L4 embedding cache (`tilellm/shared/cache/embedding_cache.py`) — `CachedEmbeddings` wraps any LangChain `Embeddings` object, caches `aembed_query` results in Redis with key `sha256(text)`, TTL configurable via `CACHE_TTL_EMBEDDING` (default 3600s). Integrated transparently in `create_embedding_instance`.
+- Added: pdf_ocr cache invalidation hook in `tilellm/modules/task_executor/tasks.py` — `SemanticCache.invalidate_namespace` called after `process_pdf_document_with_embeddings` completes successfully (before webhook notification).
+- Added: Prometheus metrics module `tilellm/shared/cache/metrics.py` with counters/histograms: `tiledesk_cache_requests_total`, `tiledesk_cache_lookup_duration_seconds`, `tiledesk_cache_store_duration_seconds`, `tiledesk_cache_invalidations_total`, `tiledesk_embedding_cache_requests_total`. Graceful no-op fallback if `prometheus-client` not installed.
+- Added: `GET /metrics` endpoint — standard Prometheus scrape endpoint (excluded from OpenAPI schema).
+- Added: `prometheus-client ^0.21.0` to `pyproject.toml` dependencies.
+- Docs: `docs/CACHE_IMPLEMENTATION_PLAN.md` — all 7 implementation phases now marked complete.
+
+---
 ## [2026-04-02]
 ### 0.10.0-rc7
 - Fixed: Hybrid upsert failing for text content — `MetadataItem.model_dump()` included `namespace: None` in vector metadata causing Pinecone `400 Bad Request`. Applied `exclude_none=True`.

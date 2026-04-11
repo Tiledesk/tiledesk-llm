@@ -1,74 +1,75 @@
 [tool.poetry]
 name = "tilellm"
-version = "0.10.0-rc7"
+version = "0.10.1-rc1"
 description = "tiledesk for RAG"
 authors = ["Gianluca Lorenzo <gianluca.lorenzo@gmail.com>"]
 repository = "https://github.com/Tiledesk/tiledesk-llm"
 license = "MIT"
 
 [build-system]
-requires = ["poetry-core>=1.0.0"]
+requires = ["poetry-core>=2.3.2"]
 build-backend = "poetry.core.masonry.api"
 
 
 [tool.poetry.dependencies]
 python = ">=3.12,<3.13"
-fastapi = "0.123.4" #"0.116.1" #"0.115.12"
+fastapi = "0.123.4"
 fastapi-cprofile = "0.0.2"
-jsonschema= "4.25.1"#"4.25.0"
+jsonschema= "4.25.1"
 redis= "^7.1.0"
-langchain = "1.1.0"#"0.3.27"
-langchain-core = "1.1.0" #nuova aggiunta
+prometheus-client = "^0.21.0"
+langchain = "1.2.15"#"1.1.0"
+langchain-core = "1.2.27"#"1.1.0" #nuova aggiunta
 jq =  "1.10.0"
-langchain-openai = "1.1.0"#"0.3.28"
-langchain-voyageai = "0.3.0"#"0.1.7"
-langchain-anthropic = "1.1.0"#"0.3.19"
+langchain-openai = "1.1.12"#"1.1.0"#"0.3.28"
+langchain-voyageai = "0.3.3"#"0.3.0"#"0.1.7"
+langchain-anthropic = "1.4.0"#"1.1.0"#"0.3.19"
 langchain-cohere= "0.5.0"#"0.4.5"
-langchain-google-genai= "3.2.0"#"2.1.9"
-langchain-groq = "1.1.0"#"0.3.7"
+langchain-google-genai= "4.2.1"#"3.2.0"#"2.1.9"
+langchain-groq = "1.1.2"#"1.1.0"#"0.3.7"
 
 langchain-deepseek = "1.0.1"#"0.1.4"
 pinecone-plugin-interface=  "0.0.7"
-python-dotenv = "1.2.1"
+python-dotenv ="1.2.2"# "1.2.1"
 langchain-community = "0.4.1"#"0.3.27"
-langchain-experimental = "0.4.0"#"0.3.4"
+langchain-experimental = "0.4.1"#"0.4.0"#"0.3.4"
 langchain-pinecone = "0.2.13"
-langchain-huggingface= "1.1.0"#"0.3.1"
-langchain-ollama= "1.0.0"#"0.3.6"
-langchain_xai= "1.1.0"
-langchain-mistralai = "1.1.0"#"0.2.11"
+langchain-huggingface= "1.2.1"#"1.1.0"#"0.3.1"
+langchain-ollama= "1.1.0"#"1.0.0"#"0.3.6"
+langchain_xai= "1.2.2"#"1.1.0"
+langchain-mistralai = "1.1.2"#"1.1.0"#"0.2.11"
 langchain-qdrant= "1.1.0"#"0.2.0"
-langchain-milvus="0.3.3"
-langchain-mcp-adapters = "0.1.14"#"0.1.9"
-langgraph = "1.0.4"#"0.6.4"
+langchain-milvus= "0.3.3"
+langchain-mcp-adapters = "0.2.2"#"0.1.14"#"0.1.9"
+langgraph = "1.1.6"#"1.0.9"#"0.6.4"
 
-openai = "2.8.1"#"1.107.0"
-cohere = "5.20.0"#"5.16.2"
+openai = "2.31.0"#"2.30.0"#"2.8.1"#"1.107.0"
+cohere = "5.21.1"#"5.20.0"#"5.16.2"
 
 pinecone = "7.3.0"#{extras = ["async"], version = "7.3.0"}
-qdrant-client= "1.17.0" #"1.15.1"
-pymilvus = "2.6.9"
+qdrant-client= "1.17.1"#"1.17.0" #"1.15.1"
+pymilvus = "2.6.11"#"2.6.9"
 
-tiktoken = "0.10.0"
-beautifulsoup4 = "4.13.4"
-unstructured = { version = "0.18.26", extras = ["md"] }
-markdown = "3.10"
-playwright ="1.57.0"# "1.56.0"
-playwright-stealth="2.0.0"
-pypdf= "6.4.1"#"5.9.0"
+tiktoken = "0.12.0"#"0.10.0"
+beautifulsoup4 = "4.14.3"#"4.13.4"
+unstructured = { version = "0.22.18", extras = ["md"] }
+markdown = "3.10.2"#"3.10"
+playwright = "1.58.0"#"1.57.0"# "1.56.0"
+playwright-stealth= "2.0.3"#"2.0.0"
+pypdf= "6.9.2"#"6.4.1"#"5.9.0"
 trafilatura = ">=2.0"
 docx2txt= "0.9"
 openpyxl="3.1.5"#"3.2.0b1"
 wikipedia= "1.4.0"
 html2text= "2025.4.15"
-psutil=  "7.2.1"#"7.1.3"#"7.0.0"
+psutil=  "7.2.2"#"7.2.1"#"7.1.3"#"7.0.0"
 httpx= "0.28.1"
-gql= "3.5.3"
-PyJWT= "2.10.1"
+gql= "4.0.0"#"3.5.3"
+PyJWT= "2.12.1"#"2.10.1"
 
-simsimd = "6.5.12"#"6.5.3"
-pandas = "2.3.3"
-PyMuPdf = "1.26.7"
+simsimd = "6.5.16"#"6.5.12"#"6.5.3"
+pandas = "3.0.2"#"2.3.3"
+PyMuPdf = "1.27.2"#"1.26.7"
 pdf2image= "1.17.0"
 
 
@@ -79,11 +80,15 @@ torch = {version = "2.9.1", optional = true}
 FlagEmbedding= {version = "1.3.5", optional = true}
 sentence-transformers = {version = "4.1.0", optional = true}
 
-docling = {version = "2.66.0", optional = true}
+docling = {version = "2.85.0", optional = true}
 pillow = {version = "^10.0.0", optional = true}
 
+ragas = {version = ">=0.2.0", optional = true}
+datasets = {version = ">=2.0.0", optional = true}
+tqdm = {version = ">=4.0.0", optional = true}
+
 minio = {version = "^7.2.0", optional = true}
-langchain-aws= {version = "1.1.0", optional = true}
+langchain-aws= {version = "1.4.3", optional = true}
 
 
 neo4j = {version = "^5.26.0", optional = true}
@@ -105,6 +110,7 @@ ml = ["torch", "FlagEmbedding", "pinecone-text", "sentence-transformers"]
 graph = ["neo4j", "minio", "langchain-aws", "duckdb", "parquet", "igraph", "networkx", "pyarrow", "taskiq", "taskiq-redis", "falkordb"]
 ocr = ["neo4j", "minio", "langchain-aws",  "docling", "pillow", "duckdb", "parquet", "igraph", "networkx", "pyarrow", "taskiq", "taskiq-redis", "falkordb"]
 raptor = ["umap-learn", "scikit-learn"]
+evaluation = ["ragas", "datasets", "tqdm"]
 all = ["torch", "FlagEmbedding", "pinecone-text", "sentence-transformers", "neo4j", "minio", "PyMuPdf", "pdf2image", "langchain-aws", "duckdb", "parquet", "igraph", "networkx", "pyarrow", "taskiq", "taskiq-redis", "docling", "pillow", "falkordb", "umap-learn", "scikit-learn"]
 
 [tool.poetry.dependencies.uvicorn]

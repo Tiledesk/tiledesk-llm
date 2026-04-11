@@ -30,6 +30,7 @@ Tiledesk LLM is a powerful backend service designed for Retrieval-Augmented Gene
   - [Hybrid Search](#hybrid-search)
   - [Semantic Chunks](#semantic-chunks)
   - [Reranker](#reranker)
+    - [Local Inference Performance](#local-inference-performance-crossencoder--sparse-encoders)
   - [Structured Output](#structured-output)
   - [Conversation History Management](#conversation-history-management)
   - [Tag Filtering](#tag-filtering)
@@ -94,6 +95,8 @@ tei:
 - **BGE-M3** (`bge-m3`): Sparse+dense encoder from FlagEmbedding
 
 Both SPLADE and BGE-M3 sparse encoders can also be served via TEI (Text Embeddings Inference) for improved performance (see [TEI Models](#tei-text-embeddings-inference-models) section).
+
+When run **locally on GPU**, Splade and BGE-M3 benefit from the same performance optimizations applied to the CrossEncoder reranker: fp16 (Splade), warmup, process-wide GPU lock, token-budget batching, and CUDA OOM recovery. See [Local Inference Performance](#local-inference-performance-crossencoder--sparse-encoders) for details.
 
 #### Configuration
 Embedding models can be specified in API requests via the `embedding` parameter. The system automatically handles:
@@ -684,9 +687,7 @@ Many endpoints are protected and require a JWT token passed as a path parameter 
 |-------|---------|-------------|
 | `use_ocr` | `false` | Route PDFs to the Docling OCR pipeline |
 | `hybrid` | `false` | Enable hybrid (dense + sparse) indexing |
-| `use_situated_context` | `false` | Prepend an LLM-generated situating sentence to each chunk before embedding (Contextual Retrieval) |
-| `llm_provider` | `null` | LLM provider for situated context generation (`openai`\|`anthropic`\|`google`) |
-| `llm_model` | `null` | LLM model name for situated context generation |
+| `situated_context` | `null` | Configuration for Contextual Retrieval (situated context). Prepends LLM-generated context to each chunk. |
 
 **Example — OCR + situated context:**
 ```bash
@@ -697,9 +698,12 @@ curl -X POST http://localhost:8000/api/ingestion \
     "source": "https://example.com/report.pdf",
     "type": "pdf",
     "use_ocr": true,
-    "use_situated_context": true,
-    "llm_provider": "openai",
-    "llm_model": "gpt-4o-mini",
+    "situated_context": {
+      "enable": true,
+      "provider": "openai",
+      "model": "gpt-4o-mini",
+      "api_key": "sk-..."
+    },
     "namespace": "finance",
     "gptkey": "sk-...",
     "embedding": "text-embedding-3-small",
@@ -831,6 +835,36 @@ The Pinecone reranker integration includes adaptive optimizations based on model
     }
   }
 }
+```
+
+#### Local Inference Performance (CrossEncoder + Sparse Encoders)
+
+When running reranker or sparse encoder models locally on GPU (instead of via TEI / Pinecone / a remote service), Tiledesk LLM applies several optimizations to keep latency predictable and prevent OOMs under concurrent load. These are active automatically whenever the model is loaded locally (`CrossEncoder`, `SpladeEncoder`, `BGEM3FlagModel`).
+
+- **fp16 on CUDA** — CrossEncoder (`TileReranker`) and Splade models are converted to half precision at load time (~2× forward-pass speedup on Ampere+ GPUs, halved VRAM footprint). BGE-M3 uses `FlagEmbedding`'s built-in `use_fp16=True` mode. Can be disabled globally with `TileReranker._use_fp16 = False` or `TiledeskSpladeEncoder._use_fp16 = False` before the first instantiation if a specific model shows numerical issues.
+- **Model warmup on load** — one dummy forward pass is executed when a local model is first loaded. This triggers cuDNN autotune off the critical path, so the first real query has predictable latency (no hidden ~200–500 ms spike). Disable with `_warmup_on_load = False`.
+- **Process-wide GPU lock** — a single `GLOBAL_GPU_LOCK` (`tilellm/tools/_gpu_concurrency.py`) serializes forward pass across **all** local GPU models in the process — reranker and sparse encoders share the same lock. Prevents concurrent CUDA allocations on the same device that would otherwise cause OOMs under async / threaded workloads. The lock is acquired per-batch (not per-call), so short calls can interleave between the batches of a longer call instead of starving.
+- **Token-budget batching (TEI-inspired)** — local batching uses a conservative `batch_size * max_seq_len ≤ token_budget` strategy with items sorted by length (minimizes padding waste). The fixed-size batching from earlier releases is replaced with this memory-aware packing. Defaults: `token_budget_per_batch=2048`, `max_pairs_per_batch=16` for reranker / `max_items_per_batch=16` for Splade / `8` for BGE-M3 (heavier model).
+- **CUDA OOM recovery** — if a forward pass raises `torch.cuda.OutOfMemoryError`, the wrapper halves the token budget, flushes the CUDA cache, and retries only the **remaining** (unprocessed) items — already-scored items are not recomputed. Up to 3 retries by default (`max_oom_retries=3`), after which the error propagates.
+- **No `empty_cache()` on the happy path** — `torch.cuda.empty_cache()` is expensive (100–200 ms of sync + allocator flush) and was previously called after every batch as an OOM workaround. It is now invoked only on OOM recovery and on LRU model eviction, where it's actually useful.
+- **LRU model eviction releases VRAM** — when the reranker or sparse-encoder cache evicts the oldest model (both caches hold up to 2 models), the Python reference is explicitly dropped and `cuda.empty_cache()` is called, reclaiming CUDA memory that would otherwise linger until the next GC cycle.
+
+These fixes apply exclusively to **local** models. Remote paths (TEI, Pinecone Inference, TEI sparse encoder) are unaffected — their bottlenecks are network/server-side.
+
+**Tuning**: the defaults are conservative and safe for 8–16 GB VRAM setups with `bge-reranker-v2-m3` / `BAAI/bge-m3` / `naver/efficient-splade-VI-BT-large-query`. If you need to tune, instantiate the class directly with overridden args, or change class-level defaults before the first instantiation:
+
+```python
+from tilellm.tools.reranker import TileReranker
+from tilellm.tools.sparse_encoders import TiledeskSpladeEncoder, TiledeskBGEM3
+
+# Larger budget for big-VRAM GPUs (e.g. A100 40 GB)
+TileReranker._use_fp16 = True  # default
+reranker = TileReranker(
+    "BAAI/bge-reranker-v2-m3",
+    token_budget_per_batch=4096,
+    max_pairs_per_batch=32,
+    max_oom_retries=3,
+)
 ```
 
 ### Structured Output
@@ -1088,6 +1122,46 @@ Tag filtering allows you to filter documents by tags during indexing and queryin
 - Filter conversion happens automatically for different vector stores (Pinecone native filters, Qdrant via `build_filter()`)
 - Works with all search types (`similarity`, `hybrid`, `mmr`) and reranking
 - Compatible with hybrid search sparse encoders (SPLADE, BGE-M3)
+
+### Semantic Cache
+
+The semantic cache reduces latency and LLM costs for recurring or semantically similar queries. It is **opt-in per request** via `use_cache: true`.
+
+**How it works:**
+1. **L1 exact match** — SHA-256 hash of the normalized question. Returns instantly on identical queries (TTL: 24h).
+2. **L2 semantic match** — Cosine similarity between the stored and incoming query embeddings. Returns on similar-enough queries (default threshold: 0.90, TTL: 6h).
+
+On a cache hit, the entire vector store retrieval and LLM generation are bypassed.
+
+**Cache invalidation** happens automatically (strategy B — full namespace):
+- On `add_item` / `add_item_hybrid` (new or updated document)
+- On `DELETE /api/namespace/{namespace}`
+
+**Enable per request:**
+```json
+{
+  "question": "What are the payment terms?",
+  "namespace": "contracts",
+  "use_cache": true,
+  "engine": { ... }
+}
+```
+
+**Admin endpoints:**
+- `GET /api/cache/stats?namespace=contracts` — entry count
+- `DELETE /api/cache/namespace/contracts` — manual invalidation
+
+**Configuration (env vars):**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CACHE_SIMILARITY_THRESHOLD` | `0.90` | Cosine threshold for L2 hit |
+| `CACHE_TTL_EXACT` | `86400` | L1 TTL in seconds (24h) |
+| `CACHE_TTL_SEMANTIC` | `21600` | L2 TTL in seconds (6h) |
+
+**Infrastructure**: uses the existing Redis instance (no Redis Stack required). Available on both `/api/qa` and `/api/v2/qa`.
+
+---
 
 ### MCP (Model Context Protocol) Integration
 The `/api/ask` endpoint supports integration with MCP servers, enabling the LLM to use external tools and data sources.

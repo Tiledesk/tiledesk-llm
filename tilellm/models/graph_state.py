@@ -40,3 +40,7 @@ class GraphState(TypedDict):
 
     # HyDE (Hypothetical Document Embeddings)
     hyde_document: Optional[str]    # documento ipotetico generato da HyDE per il retrieval
+
+    # Semantic cache
+    cache_hit: Optional[bool]           # True se la risposta è stata servita dalla cache
+    cache_similarity: Optional[float]   # cosine score del hit (1.0 per exact match)

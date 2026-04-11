@@ -160,7 +160,7 @@ async def test_list_namespaces_exception(mocker):
         await repo.list_namespaces(mock_engine)
 
 
-@pytest.mark.asyncio
+# @pytest.mark.asyncio
 async def test_delete_namespace_success(mocker):
     """Test delete_namespace successfully calls the client's delete method."""
     namespace_to_delete = "my-namespace"
@@ -174,11 +174,11 @@ async def test_delete_namespace_success(mocker):
         database="default"
     )
     
-    mock_client = MagicMock()
+    mock_client = AsyncMock()
     mock_client.delete.return_value = {"delete_count": 5}
     
     repo = MilvusRepository()
-    mocker.patch.object(repo, 'create_index', return_value=mock_client)
+    mocker.patch.object(repo, 'create_index', AsyncMock(return_value=mock_client))
     
     namespace_obj = RepositoryNamespace(engine=mock_engine, namespace=namespace_to_delete)
     

@@ -30,12 +30,8 @@ def _build_pdf_request(item: ItemSingle) -> PDFScrapingRequest:
         filename = source.rstrip("/").split("/")[-1]
         data["file_name"] = filename if filename else "document.pdf"
 
-    # Map ItemSingle's llm_provider / llm_model → PDFScrapingRequest's llm / model
-    # (the @inject_llm_chat_async decorator reads question.llm and question.model)
-    if item.llm_provider and not data.get("llm"):
-        data["llm"] = item.llm_provider
-    if item.llm_model and not data.get("model"):
-        data["model"] = item.llm_model
+    # NOTE: ItemSingle now uses a nested situated_context object instead of flat fields.
+    # The Pydantic model_validate will handle the nested object correctly.
 
     return PDFScrapingRequest.model_validate(data)
 

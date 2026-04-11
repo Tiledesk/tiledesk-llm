@@ -609,6 +609,16 @@ async def process_pdf_document_task(
             "error_message": None
         }
 
+        # Cache invalidation (strategy B): invalidate namespace after pdf_ocr completes
+        namespace = config.get("namespace") if config else None
+        if namespace:
+            try:
+                from tilellm.shared.cache import SemanticCache
+                await SemanticCache.invalidate_namespace(namespace)
+                logger.info(f"Cache invalidated for namespace={namespace} after pdf_ocr task")
+            except Exception as cache_exc:
+                logger.warning(f"Cache invalidation failed after pdf_ocr task: {cache_exc}")
+
         # Notify webhook with FULL result (if configured)
         if webhook_url:
             import httpx

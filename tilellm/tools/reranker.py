@@ -28,6 +28,14 @@ try:
 except ImportError:
     Pinecone = None
 
+# Shared GPU concurrency primitives (single source of truth)
+from tilellm.tools._gpu_concurrency import (
+    GLOBAL_GPU_LOCK,
+    is_cuda_oom,
+    cuda_empty_cache_safe,
+    build_token_budget_batches,  # re-exported below for backward compat
+)
+
 
 # ============================================================================
 # Pinecone Model Specifications
@@ -224,6 +232,24 @@ def aggregate_maxp_scores(chunked_scores: List[Tuple[Document, float]], doc_indi
     # Converti in lista ordinata per indice originale
     result = [doc_max_scores[idx] for idx in sorted(doc_max_scores.keys())]
     return result
+
+
+# ============================================================================
+# Local CrossEncoder batching helpers (token-budget strategy, TEI-inspired)
+# ============================================================================
+
+def estimate_pair_tokens(query: str, text: str, overhead: int = 8) -> int:
+    """
+    Stima il numero di token per una coppia (query, text).
+    Riusa estimate_tokens() esistente. `overhead` copre [CLS]/[SEP] e separatori.
+    """
+    return estimate_tokens(query) + estimate_tokens(text) + overhead
+
+
+# NOTE: build_token_budget_batches is now imported from tilellm.tools._gpu_concurrency
+# (single source of truth). It is still exposed at this module level via the import
+# above for backward compatibility with tests/unit/tools/test_local_reranker_batching.py.
+
 
 class TEIReranker:
     def __init__(self, config: "TEIConfig", max_tokens: int = 200, overlap_tokens: int = 40):
@@ -677,17 +703,42 @@ class TileReranker:
     _model_cache = OrderedDict()
     _max_cache_size = 2
     _logger = logging.getLogger(__name__)
-    _cache_lock = Lock()
+    _cache_lock = Lock()        # protegge la struttura LRU cache (local)
+    _gpu_lock = GLOBAL_GPU_LOCK  # serializza forward pass GPU tra TUTTI i modelli locali
+                                 # (reranker + sparse encoders) — single process-wide lock
 
-    def __init__(self, model_name: Union[str, "TEIConfig", "PineconeRerankerConfig"] = "BAAI/bge-reranker-v2-m3",
-                 max_tokens: int = 200, overlap_tokens: int = 40):
+    # Comportamento al caricamento del modello (class-level per coerenza con la cache LRU)
+    _use_fp16 = True          # converte il modello in fp16 su CUDA al caricamento (~2× speedup)
+    _warmup_on_load = True    # esegue una predict dummy al caricamento per triggerare cuDNN autotune
+
+    def __init__(
+        self,
+        model_name: Union[str, "TEIConfig", "PineconeRerankerConfig"] = "BAAI/bge-reranker-v2-m3",
+        max_tokens: int = 200,
+        overlap_tokens: int = 40,
+        token_budget_per_batch: int = 2048,
+        max_pairs_per_batch: int = 16,
+        max_oom_retries: int = 3,
+    ):
         """
-        Initialize TileReranker with Max-P strategy support.
+        Initialize TileReranker with Max-P strategy support and conservative
+        token-budget batching (TEI-inspired) for local CrossEncoder models.
 
         Args:
-            model_name: Model name or TEIConfig instance (or True to use default)
-            max_tokens: Maximum tokens per chunk for Max-P strategy (default: 200, molto conservativo)
-            overlap_tokens: Overlap tokens between chunks (default: 40)
+            model_name: Model name or TEIConfig/PineconeRerankerConfig instance.
+            max_tokens: Maximum tokens per chunk for Max-P strategy (default: 200).
+            overlap_tokens: Overlap tokens between chunks (default: 40).
+            token_budget_per_batch: Conservative token budget per batch for local models.
+                Controls memory per forward pass: batch_size * max_seq_len <= budget.
+                Default 2048 is safe for most 8-16 GB VRAM setups with bge-reranker-v2-m3.
+            max_pairs_per_batch: Hard cap on number of pairs per batch (default: 16).
+            max_oom_retries: Number of OOM recovery retries with halved budget (default: 3).
+
+        Note on fp16:
+            TileReranker._use_fp16 (class-level) controls whether CrossEncoder models
+            are converted to fp16 on CUDA at load time. Default True (~2× speedup).
+            Disable with ``TileReranker._use_fp16 = False`` before instantiation if
+            a specific model requires fp32 precision.
         """
         # Handle boolean True: use default model
         #if model_name is True:
@@ -709,6 +760,9 @@ class TileReranker:
 
         self.max_tokens = max_tokens
         self.overlap_tokens = overlap_tokens
+        self.token_budget_per_batch = token_budget_per_batch
+        self.max_pairs_per_batch = max_pairs_per_batch
+        self.max_oom_retries = max_oom_retries
         self.model = self._get_cached_model(self.model_name, self.config, max_tokens, overlap_tokens)
 
     @classmethod
@@ -719,10 +773,13 @@ class TileReranker:
             """Ottieni un modello dalla cache LRU"""
             if model_name not in cls._model_cache:
                 if len(cls._model_cache) >= cls._max_cache_size:
-                    # Rimuovi il modello meno recentemente usato
-                    oldest = next(iter(cls._model_cache))
-                    cls._logger.info(f"Removing old reranker from cache: {oldest}")
-                    cls._model_cache.pop(oldest)
+                    # Evict LRU: rimuovi il modello meno recentemente usato e libera VRAM
+                    oldest_key = next(iter(cls._model_cache))
+                    oldest_model = cls._model_cache.pop(oldest_key)
+                    cls._logger.info(f"Removing old reranker from cache: {oldest_key}")
+                    del oldest_model
+                    if torch is not None and cls._device == 'cuda':
+                        torch.cuda.empty_cache()
 
                 if config and hasattr(config, "provider"):
                     if config.provider == "tei":
@@ -739,7 +796,32 @@ class TileReranker:
                     if CrossEncoder is None:
                         raise ImportError("CrossEncoder is not available. Install 'sentence-transformers' package or 'ml' extras.")
                     cls._logger.info(f"Loading new Reranker model: {model_name}")
-                    cls._model_cache[model_name] = CrossEncoder(model_name, device=cls._device)
+                    ce = CrossEncoder(model_name, device=cls._device)
+
+                    # Converti in fp16 su CUDA: ~2× speedup, dimezza memoria, riduce OOM
+                    if cls._use_fp16 and cls._device == 'cuda' and torch is not None:
+                        try:
+                            ce.model = ce.model.half()
+                            cls._logger.info(f"Reranker {model_name} converted to fp16")
+                        except Exception as fp16_err:
+                            cls._logger.warning(
+                                f"fp16 conversion failed for {model_name}, using fp32: {fp16_err}"
+                            )
+
+                    # Warmup: predizione dummy per triggerare cuDNN autotune e JIT compilation.
+                    # Evita latenza imprevedibile sulla prima query reale.
+                    if cls._warmup_on_load and cls._device == 'cuda':
+                        try:
+                            _ = ce.predict(
+                                [("warmup query", "warmup text")],
+                                show_progress_bar=False,
+                                convert_to_numpy=True,
+                            )
+                            cls._logger.info(f"Reranker {model_name} warmup completed")
+                        except Exception as warmup_err:
+                            cls._logger.warning(f"Warmup predict failed for {model_name}: {warmup_err}")
+
+                    cls._model_cache[model_name] = ce
             else:
                 cls._logger.info(f"Using cached Reranker model: {model_name}")
 
@@ -749,11 +831,11 @@ class TileReranker:
         return model
 
 
-    def rerank_documents(self, query: str, documents: List[Document], top_k: int, batch_size: int = 8) -> List[Document]:
+    def rerank_documents(self, query: str, documents: List[Document], top_k: int, batch_size: int = 0) -> List[Document]:
         if isinstance(self.model, TEIReranker):
-             return self.model.rerank_documents(query, documents, top_k, batch_size)
+             return self.model.rerank_documents(query, documents, top_k, batch_size or 8)
         if isinstance(self.model, PineconeReranker):
-             return self.model.rerank_documents(query, documents, top_k, batch_size)
+             return self.model.rerank_documents(query, documents, top_k, batch_size or 8)
 
         if not documents:
             return []
@@ -772,41 +854,136 @@ class TileReranker:
         num_chunks = len(chunked_docs)
         num_originals = len(documents)
         if num_chunks > num_originals:
-            self._logger.info(f"Max-P Strategy (CrossEncoder): Split {num_originals} documents into {num_chunks} chunks "
-                            f"(max_tokens={self.max_tokens}, overlap={self.overlap_tokens})")
+            self._logger.info(
+                f"Max-P Strategy (CrossEncoder): Split {num_originals} documents into {num_chunks} chunks "
+                f"(max_tokens={self.max_tokens}, overlap={self.overlap_tokens})"
+            )
 
-        # ===== STEP 2: Rerank chunks =====
-        # Prepara le coppie query-chunk
-        query_doc_pairs = [(query, doc.page_content) for doc in chunked_docs]
+        # ===== STEP 2: Build pairs + token-length estimates =====
+        pairs = [(query, doc.page_content) for doc in chunked_docs]
+        pair_lengths = [estimate_pair_tokens(q, t) for q, t in pairs]
 
-        # Calcola i punteggi con context no_grad
-        # Disabilita il calcolo dei gradienti durante l'inferenza, riducendo il consumo di memoria.
-        if torch is not None:
-            with torch.no_grad():
-                scores_tensor = self.model.predict(query_doc_pairs)
-        else:
-            scores_tensor = self.model.predict(query_doc_pairs)
+        # batch_size param: se >0 lo usa come cap legacy, altrimenti usa istance default
+        effective_max_pairs = batch_size if batch_size > 0 else self.max_pairs_per_batch
 
-        # Converti immediatamente in lista Python e rilascia il tensore
-        if torch is not None and isinstance(scores_tensor, torch.Tensor):
-            scores = scores_tensor.cpu().numpy().tolist()  # Sposta su CPU e converte
-            del scores_tensor  # Rilascia esplicitamente il riferimento al tensore
-        else:
-            scores = scores_tensor  # Se non è un tensore (es. CPU)
+        # ===== STEP 3: Predict con token-budget batching + OOM recovery =====
+        scores = self._predict_local_with_oom_recovery(
+            pairs=pairs,
+            pair_lengths=pair_lengths,
+            token_budget=self.token_budget_per_batch,
+            max_pairs=effective_max_pairs,
+        )
 
-        # ===== STEP 3: Aggregate scores using Max-P =====
+        # ===== STEP 4: Aggregate scores using Max-P =====
         scored_chunks = list(zip(chunked_docs, scores))
         aggregated_docs = aggregate_maxp_scores(scored_chunks, doc_indices)
 
-        # Sort by score (descending)
         aggregated_docs.sort(key=lambda x: x[1], reverse=True)
-
-        # Liberazione esplicita della cache GPU se necessario
-        if torch is not None and self._device == 'cuda':
-            torch.cuda.empty_cache()
-            self._logger.info("Freed GPU memory after tensor conversion")
-
         return [doc for doc, _ in aggregated_docs[:top_k]]
+
+    def _predict_local_with_oom_recovery(
+        self,
+        pairs: List[Tuple[str, str]],
+        pair_lengths: List[int],
+        token_budget: int,
+        max_pairs: int,
+    ) -> List[float]:
+        """
+        Processa tutte le pair in batch token-budget-aware con OOM recovery.
+
+        Flusso:
+          1. Costruisce batch con build_token_budget_batches (ordine per lunghezza,
+             greedy packing entro il budget).
+          2. Per ogni batch acquisisce _gpu_lock (serializza forward pass concorrenti)
+             e chiama model.predict con convert_to_numpy=True.
+          3. Su torch.cuda.OutOfMemoryError: svuota la cache GPU, dimezza il budget,
+             ricostruisce i batch solo per le pair NON ancora processate e riprova.
+             Dopo max_oom_retries fallimenti consecutivi, rilancia l'eccezione.
+
+        Returns:
+            Lista di score (float) nell'ordine originale dell'input.
+        """
+        num_pairs = len(pairs)
+        scores: List[Optional[float]] = [None] * num_pairs
+        processed: set = set()
+
+        current_budget = token_budget
+        oom_retries = 0
+
+        while len(processed) < num_pairs:
+            # Indici non ancora processati
+            remaining_idx = [i for i in range(num_pairs) if i not in processed]
+            remaining_lengths = [pair_lengths[i] for i in remaining_idx]
+
+            # Costruisce batch nello spazio "remaining" (indici locali 0..len-1)
+            batches_local = build_token_budget_batches(
+                remaining_lengths,
+                token_budget=current_budget,
+                max_pairs_per_batch=max_pairs,
+            )
+            # Traduce in indici originali
+            batches = [[remaining_idx[j] for j in b] for b in batches_local]
+
+            self._logger.debug(
+                f"CrossEncoder batching: {len(remaining_idx)} pairs → {len(batches)} batches "
+                f"(budget={current_budget}, max_pairs={max_pairs})"
+            )
+
+            try:
+                for batch_idx, batch in enumerate(batches):
+                    batch_pairs = [pairs[i] for i in batch]
+                    # _gpu_lock serializza forward pass GPU tra thread concorrenti.
+                    # Acquisito per-batch (non per l'intera call) per non bloccare
+                    # lookup cache durante un forward pass lungo.
+                    with self._gpu_lock:
+                        # predict() usa torch.no_grad internamente.
+                        # convert_to_numpy=True: evita conversione tensore→numpy manuale.
+                        batch_scores = self.model.predict(
+                            batch_pairs,
+                            batch_size=len(batch_pairs),
+                            convert_to_numpy=True,
+                            show_progress_bar=False,
+                        )
+
+                    for j, orig_idx in enumerate(batch):
+                        scores[orig_idx] = float(batch_scores[j])
+                        processed.add(orig_idx)
+
+                # Tutti i batch completati con successo
+                break
+
+            except Exception as e:
+                is_oom = (
+                    torch is not None
+                    and hasattr(torch.cuda, "OutOfMemoryError")
+                    and isinstance(e, torch.cuda.OutOfMemoryError)
+                )
+                if not is_oom:
+                    raise
+
+                oom_retries += 1
+                if oom_retries > self.max_oom_retries:
+                    self._logger.error(
+                        f"CUDA OOM: esaurito budget dopo {oom_retries} retry "
+                        f"(budget={current_budget}, "
+                        f"processate {len(processed)}/{num_pairs} pair)"
+                    )
+                    raise
+
+                new_budget = max(256, current_budget // 2)
+                self._logger.warning(
+                    f"CUDA OOM (retry {oom_retries}/{self.max_oom_retries}): "
+                    f"dimezza token budget {current_budget} → {new_budget}, "
+                    f"pair già processate: {len(processed)}"
+                )
+                if torch is not None and self._device == 'cuda':
+                    torch.cuda.empty_cache()
+                current_budget = new_budget
+                # while loop ricostruisce i batch solo per le pair rimaste
+
+        assert all(s is not None for s in scores), \
+            f"Score mancanti: {scores.count(None)} su {num_pairs}"
+        return [float(s) for s in scores]
 
     async def arerank_documents(self, query: str, documents: List[Document], top_k: int, batch_size: int = 8) -> List[Document]:
         """
@@ -854,9 +1031,10 @@ class TileReranker:
     @classmethod
     def clear_cache(cls):
         """Clear the model cache and free up memory"""
-        cls._logger.info("Clearing BGE Reranker cache")
-        cls._model_cache.clear()
-        if torch.cuda.is_available():
+        cls._logger.info("Clearing Reranker cache")
+        with cls._cache_lock:
+            cls._model_cache.clear()
+        if torch is not None and torch.cuda.is_available():
             torch.cuda.empty_cache()
 
 

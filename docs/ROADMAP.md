@@ -187,14 +187,29 @@ Tables in web pages are now extracted as separate `Document` objects with struct
 
 ---
 
-### 11. Infrastructural Improvements
+### 11. Query & Retrieval Caching
+
+Multi-level semantic cache for recurring queries — see `docs/CACHE_IMPLEMENTATION_PLAN.md`.
+
+- [ ] Redis Stack backend (upgrade from `redis:alpine`)
+- [ ] L1 exact-match + L2 semantic cache (cosine ≥ 0.90) via Redis Vector Search
+- [ ] L4 embedding cache (wrap `embed_query`, reduce API costs)
+- [ ] LangGraph nodes: `cache_lookup_node` + `cache_store_node`
+- [ ] Invalidation hooks on `add_item` / `delete_namespace` / pdf_ocr completion
+- [ ] `GET /api/cache/stats` + `DELETE /api/cache/namespace/{ns}`
+
+**Estimated effort:** M | **Impact:** High (–40% LLM calls, ~200ms latency on hit)
+
+---
+
+### 12. Infrastructural Improvements
 
 | Item | Detail |
 |------|--------|
 | **Embedding dimension auto-detection** | Today hardcoded in some places (e.g. Pinecone pod). Make dynamic. |
 | **Validation agent** (Phase 4) | After ingestion: verify coverage (all chunks indexed?), auto-retry on partial failure |
 | **Auto-escalation scraping** | `scrape_type 0 → 3 → 5` automatic on failure (JS detection, stealth mode) |
-| **Retrieval benchmark** | End-to-end test suite on known datasets (DocVQA, ViDoRe) to measure impact of each feature |
+| **Retrieval benchmark** | RAGAS evaluation on HotpotQA + QASPER + MS MARCO — see `docs/RAGAS_EVALUATION_PLAN.md` |
 | **Monitoring / observability** | Dashboard LLM costs, embedding costs, retrieval latency per namespace |
 | **Tenant namespace design** | Clarify if `doc_id` is globally unique or needs `{tenant_id}/{doc_id}` |
 

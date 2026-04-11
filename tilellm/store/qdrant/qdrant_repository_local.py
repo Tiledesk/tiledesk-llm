@@ -720,8 +720,6 @@ class QdrantRepository(VectorStoreRepository):
                 except Exception as sc_err:
                     logger.warning(f"Situated context enrichment failed, continuing without: {sc_err}")
 
-            logger.debug(documents)
-
             if len(chunks) == 0:
                 raise Exception("No chunks generated from source")
 

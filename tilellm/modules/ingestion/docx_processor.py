@@ -93,7 +93,7 @@ async def process_docx_with_images(
     shared @inject_llm_chat_async / @inject_repo_async decorators work.
 
     Accepts all ItemSingle fields:
-      - use_situated_context: prepend Contextual Retrieval context to text chunks
+      - situated_context: dedicated LLM config for Contextual Retrieval
       - hybrid / sparse_encoder: passed to aadd_documents
       - tags: propagated to all chunk metadata
     """
@@ -210,18 +210,30 @@ async def process_docx_with_images(
         ).to_metadata_dict()
         image_caption_docs.append(Document(page_content=caption, metadata=meta))
 
-    # ── 6. Optional: situated context on text chunks ───────────────────────
+    # ── 6. Optional: situated context on all chunks ───────────────────────
     sc_config = getattr(question, 'situated_context', None)
-    if (sc_config and sc_config.enable) and llm and enriched_text_docs:
+    if (sc_config and sc_config.enable) and llm:
         try:
             from tilellm.shared.situated_context import build_llm_from_config
             # Use dedicated LLM for situated context if configured, otherwise fall back to DI LLM
             sc_llm = await build_llm_from_config(sc_config) or llm
             if sc_llm:
-                enriched_text_docs = await enrich_chunks_with_situated_context(
-                    enriched_text_docs, sc_llm
-                )
-                logger.info("Situated context applied to %d DOCX text chunks", len(enriched_text_docs))
+                # Extract global doc context from the first few text paragraphs
+                combined_text = " ".join(d.page_content[:200] for d in enriched_text_docs[:10])
+                doc_context = combined_text[:1500]
+
+                if enriched_text_docs:
+                    enriched_text_docs = await enrich_chunks_with_situated_context(
+                        enriched_text_docs, sc_llm, doc_context=doc_context
+                    )
+                    logger.info("Situated context applied to %d DOCX text chunks", len(enriched_text_docs))
+                
+                if image_caption_docs:
+                    image_caption_docs = await enrich_chunks_with_situated_context(
+                        image_caption_docs, sc_llm, doc_context=doc_context
+                    )
+                    logger.info("Situated context applied to %d DOCX image caption chunks", len(image_caption_docs))
+
         except Exception as exc:
             logger.warning("Situated context enrichment failed: %s", exc)
 

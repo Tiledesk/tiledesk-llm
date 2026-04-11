@@ -937,5 +937,13 @@ async def create_embedding_instance(question):
     # Chiamata asincrona
     embedding_obj, embedding_dimension = await factory.create(embedding_config)
 
+    # L4: wrap with embedding cache if Redis is available
+    try:
+        from tilellm.shared.cache.embedding_cache import CachedEmbeddings
+        model_key = f"{embedding_config.get('provider', 'unknown')}:{embedding_config.get('model_name', 'unknown')}"
+        embedding_obj = CachedEmbeddings(embedding_obj, model_key=model_key)
+    except Exception:
+        pass  # embedding cache is optional — fail silently
+
     return embedding_obj, embedding_dimension
 

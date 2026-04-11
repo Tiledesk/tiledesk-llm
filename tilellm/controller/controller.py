@@ -8,7 +8,6 @@ import re
 
 from langchain_core.messages import ToolMessage
 
-import fastapi
 import asyncio
 from fastapi.responses import JSONResponse
 
@@ -17,14 +16,13 @@ from langchain_core.documents import Document
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
-from langchain.agents import create_agent
-from langchain.agents.middleware import wrap_model_call, ModelRequest, ModelResponse
 from typing import Callable
 
 from tilellm.controller.controller_utils import preprocess_chat_history, \
     fetch_question_vectors, aretrieve_documents, create_chains, get_or_create_session_history, \
     generate_answer_with_history, handle_exception, initialize_retrievers, _create_event, extract_conversation_flow, \
     create_contextualize_query, get_all_filtered_tools
+from tilellm.controller.agent_middleware import MessageCleaningMiddleware
 from tilellm.shared.tags_query_parser import build_tags_filter
 from tilellm.controller.helpers import _get_question_list
 from tilellm.models.schemas import (
@@ -45,7 +43,7 @@ from tilellm.models import (
     )
 
 from tilellm.shared.utility import inject_repo_async, \
-    inject_llm_chat_async, inject_llm_async, inject_reason_llm_async, LLMInjectionError
+    inject_llm_chat_async, inject_llm_async, inject_reason_llm_async
 
 from tilellm.shared.mcp_prompt import MCP_BASE64_MANAGEMENT_TEMPLATE, \
     MCP_DOC_HEADER_TEMPLATE, MCP_DOC_INSTRUCTIONS_TEMPLATE, MCP_INTERNAL_TOOL_TEMPLATE
@@ -946,7 +944,7 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
     Invokes an MCP agent by handling multimodal inputs (text, images, documents).
     Cleanup Strategy:
         1. Normalizes input into a list of content items
-        2.Extracts and stores base64 documents/images in a separate storage
+        2. Extracts and stores base64 documents/images in a separate storage
         3. Replaces base64 with text references in messages
         4. Middleware further cleans messages before each LLM call
         5. The internal multimodal tool accesses storage when necessary
@@ -1314,61 +1312,17 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
 
             return content, False
 
-        @wrap_model_call
-        async def pre_model_cleaning_middleware(
-            request: ModelRequest,
-            handler: Callable[[ModelRequest], ModelResponse],
-        ) -> ModelResponse:
-            """Middleware called before each LLM invocation to clean messages."""
-            messages = request.messages
-            cleaned_messages = []
-
-            for msg in messages:
-                if not hasattr(msg, 'content'):
-                    cleaned_messages.append(msg)
-                    continue
-
-                content = msg.content
-
-                # Pulisci solo contenuto stringa
-                if isinstance(content, str):
-                    cleaned_content, was_cleaned = clean_message_content(content)
-
-                    if was_cleaned:
-                        # Ricostruisci messaggio con content pulito
-                        if msg.type == 'tool':
-                            cleaned_messages.append(ToolMessage(
-                                content=cleaned_content,
-                                tool_call_id=msg.tool_call_id,
-                                name=getattr(msg, 'name', None),
-                                id=getattr(msg, 'id', None)
-                            ))
-                        elif msg.type == 'ai':
-                            cleaned_messages.append(AIMessage(
-                                content=cleaned_content,
-                                tool_calls=getattr(msg, 'tool_calls', None),
-                                id=getattr(msg, 'id', None)
-                            ))
-                        elif msg.type == 'human':
-                            cleaned_messages.append(HumanMessage(content=cleaned_content))
-                        elif msg.type == 'system':
-                            cleaned_messages.append(SystemMessage(content=cleaned_content))
-                        else:
-                            cleaned_messages.append(msg)
-                    else:
-                        cleaned_messages.append(msg)
-                else:
-                    # Content non stringa → mantieni originale
-                    cleaned_messages.append(msg)
-
-            return await handler(request.override(messages=cleaned_messages))
+        from langchain.agents import create_agent
 
         # --- STEP 7: Creazione Agent con Middleware ---
+        # Crea il middleware per la pulizia dei messaggi
+        message_cleaner = MessageCleaningMiddleware(base64_storage)
+
         agent_executor = create_agent(
             model=chat_model,
             tools=all_tools,
             system_prompt=system_prompt,
-            middleware=[pre_model_cleaning_middleware]
+            middleware=[message_cleaner]
         )
 
         # --- STEP 8: Invocazione Agent ---
@@ -1827,79 +1781,7 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
         # --- AGGIORNA IL SYSTEM PROMPT ---
         system_instructions = MCP_BASE64_MANAGEMENT_TEMPLATE.format(storage_count=len(base64_storage))
 
-        @wrap_model_call
-        async def pre_model_cleaning_middleware(
-            request: ModelRequest,
-            handler: Callable[[ModelRequest], ModelResponse],
-        ) -> ModelResponse:
-            """
-            Middleware che pulisce i messaggi prima di ogni chiamata LLM.
-            """
-            current_messages = request.messages
-
-            logger.debug("[MIDDLEWARE] ========== CALLED ==========")
-            logger.debug(f"[MIDDLEWARE] Processing {len(current_messages)} messages")
-
-            # DEBUG: Analizza messaggi PRIMA della pulizia
-            total_size_before = 0
-            for idx, msg in enumerate(current_messages):
-                if hasattr(msg, 'content'):
-                    content = msg.content
-                    if isinstance(content, str):
-                        total_size_before += len(content)
-                        if len(content) > 10000:
-                            has_base64 = 'base64' in content or 'data:image' in content
-                            logger.debug(f"[MIDDLEWARE] ⚠️ Message {idx} ({msg.type}): LARGE STRING content, length={len(content)}, has_base64={has_base64}")
-                            if has_base64:
-                                # Mostra un piccolo sample
-                                sample_start = content[:100]
-                                logger.debug(f"[MIDDLEWARE] Sample start: {sample_start}...")
-                    elif isinstance(content, list):
-                        for item in content:
-                            if isinstance(item, dict):
-                                if item.get('type') == 'image_url':
-                                    url = item.get('image_url', {}).get('url', '')
-                                    total_size_before += len(url)
-                                    if len(url) > 10000:
-                                        logger.debug(f"[MIDDLEWARE] ⚠️ Message {idx} has LARGE image_url: {len(url)} chars")
-
-            logger.debug(f"[MIDDLEWARE] Total content size BEFORE: {total_size_before} chars (~{total_size_before//4} tokens)")
-
-            # Pulisci i messaggi
-            cleaned_state = process_messages_state_modifier({"messages": current_messages})
-            cleaned_messages = cleaned_state["messages"]
-
-            # DEBUG: Verifica messaggi DOPO la pulizia
-            total_size_after = 0
-            for idx, msg in enumerate(cleaned_messages):
-                if hasattr(msg, 'content'):
-                    content = msg.content
-                    if isinstance(content, str):
-                        total_size_after += len(content)
-                        if len(content) > 10000:
-                            logger.debug(f"[MIDDLEWARE] ❌ STILL LARGE AFTER! Message {idx}, length={len(content)}")
-
-            logger.debug(f"[MIDDLEWARE] Total content size AFTER: {total_size_after} chars (~{total_size_after//4} tokens)")
-            logger.debug(f"[MIDDLEWARE] Reduction: {total_size_before - total_size_after} chars")
-
-            # Conta quanti base64 sono stati estratti in questo step
-            extracted_count = len(base64_storage)
-            logger.debug(f"[MIDDLEWARE] Total refs in storage: {extracted_count}")
-
-            # DEBUG FINALE: Verifica tool_calls negli AIMessage puliti
-            for idx, cleaned_msg in enumerate(cleaned_messages):
-                if hasattr(cleaned_msg, 'tool_calls') and cleaned_msg.tool_calls:
-                    logger.debug(f"[MIDDLEWARE] Message {idx} (AIMessage) has {len(cleaned_msg.tool_calls)} tool_calls")
-                    for tc_idx, tc in enumerate(cleaned_msg.tool_calls):
-                        args = tc.get('args', {})
-                        if 'images_base64' in args:
-                            imgs = args['images_base64']
-                            if isinstance(imgs, list) and len(imgs) > 0:
-                                first_img = imgs[0] if len(imgs) > 0 else ''
-                                is_ref = first_img.startswith('<base64_ref_')
-                                logger.debug(f"[MIDDLEWARE] ⭐ tool_call {tc_idx} has images_base64: {len(imgs)} items, first={'REFERENCE' if is_ref else 'RAW BASE64'}, sample={first_img[:50]}")
-
-            return await handler(request.override(messages=cleaned_messages))
+        from langchain.agents import create_agent
 
         # Pulisci i messaggi iniziali
         cleaned_input = process_messages_state_modifier({"messages": processed_messages})
@@ -1907,12 +1789,15 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
 
         logger.info(f"Starting agent with {len(agent_input['messages'])} initial cleaned messages")
 
-        # Crea agent con middleware (LangChain 1.1)
+        # Crea il middleware per la pulizia dei messaggi
+        message_cleaner = MessageCleaningMiddleware(base64_storage)
+
+        # Crea agent con middleware class-based
         base_agent = create_agent(
             model=chat_model,
             tools=all_tools,
             system_prompt=system_instructions,
-            middleware=[pre_model_cleaning_middleware]  # ← CHIAVE! Pulisce ad ogni step
+            middleware=[message_cleaner]
         )
 
         # Invoca l'agent
@@ -2067,7 +1952,12 @@ async def add_item(item, repo=None) -> IndexingResult:
     :return: PineconeIndexingResult
     """
     try:
-        return await repo.add_item(item)
+        result = await repo.add_item(item)
+        # Cache invalidation strategy B: invalidate entire namespace on any document update
+        if item.namespace:
+            from tilellm.shared.cache import SemanticCache
+            await SemanticCache.invalidate_namespace(item.namespace)
+        return result
     except Exception as e:
         raise e
 
@@ -2079,7 +1969,12 @@ async def add_item_hybrid(item, repo=None) -> IndexingResult:
     :return:
     """
     try:
-        return await repo.add_item_hybrid(item)
+        result = await repo.add_item_hybrid(item)
+        # Cache invalidation strategy B: invalidate entire namespace on any document update
+        if item.namespace:
+            from tilellm.shared.cache import SemanticCache
+            await SemanticCache.invalidate_namespace(item.namespace)
+        return result
     except Exception as e:
         raise e
 

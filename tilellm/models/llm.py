@@ -145,6 +145,7 @@ class QuestionAnswer(BaseModel):
     use_hyde: bool = Field(default=False, description="Enable HyDE (Hypothetical Document Embeddings) retrieval")
     retrieval_query: Optional[str] = Field(default=None, description="Override query for retrieval embedding only (used by HyDE and future Self-RAG)")
     use_raptor: bool = Field(default=False, description="Enable RAPTOR (hierarchical tree-based retrieval) instead of standard RAG")
+    use_cache: bool = Field(default=False, description="Enable semantic cache for this query (L1 exact + L2 cosine similarity)")
 
     #@field_validator("temperature")
     #def temperature_range(cls, v):

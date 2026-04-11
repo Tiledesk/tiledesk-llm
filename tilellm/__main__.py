@@ -1,9 +1,22 @@
 import os
 import json
 import logging.config
+import warnings
+
+# Suppress Pydantic V2 serialization warnings emitted by the OpenAI SDK v2 when
+# calling model_dump() on ParsedResponse[T] (TypeVar-based generics).
+# These warnings are cosmetic: the structured output is correctly extracted by
+# langchain_openai. Root cause: openai SDK v2 + Pydantic V2 TypeVar generics
+# incompatibility (tracked upstream in openai-python).
+warnings.filterwarnings(
+    "ignore",
+    message="Pydantic serializer warnings",
+    category=UserWarning,
+    module=r"pydantic\.main",
+)
 
 from contextlib import asynccontextmanager
-from typing import Union
+from typing import Union, Optional
 from pathlib import Path
 from dotenv import load_dotenv
 from fastapi.exception_handlers import http_exception_handler
@@ -81,23 +94,32 @@ import sys
 def setup_logging():
     with open("log_conf.json", "r") as f:
         config = json.load(f)
-    # Leggi ENV e applica
 
-    # File handler
+    # Leggi ENV
+    log_level_stdout = os.getenv("LOG_LEVEL_STDOUT", "INFO").upper()
+    log_level_file = os.getenv("LOG_LEVEL_FILE", "INFO").upper()
+    log_level_sys = os.getenv("LOG_LEVEL_SYS", "INFO").upper()
+
+    # 1. Aggiorna Handler
+    config["handlers"]["stdout"]["level"] = log_level_stdout
+
     log_file_path = os.getenv("LOG_FILE_PATH", "app.log")
-    log_dir = Path(log_file_path).parent
-    log_dir.mkdir(parents=True, exist_ok=True)
+    Path(log_file_path).parent.mkdir(parents=True, exist_ok=True)
     config["handlers"]["file_handler"]["filename"] = log_file_path
-    config["handlers"]["file_handler"]["level"] = os.getenv("LOG_LEVEL_FILE", "INFO").upper()
+    config["handlers"]["file_handler"]["level"] = log_level_file
 
-    # stdout handler
-    config["handlers"]["stdout"]["level"] = os.getenv("LOG_LEVEL_STDOUT", "INFO").upper()
+    # 2. Aggiorna i Logger Specifici
+    # Imposta tilellm allo stesso livello dello stdout (o crea una ENV apposita)
+    if "tilellm" in config["loggers"]:
+        config["loggers"]["tilellm"]["level"] = log_level_stdout
 
-    # Livello dei logger Gunicorn/Uvicorn
-    sys_level = os.getenv("LOG_LEVEL_SYS", "INFO").upper()
-    for logger_name in ["gunicorn.error", "uvicorn.error"]:
+    # Aggiorna logger di sistema
+    for logger_name in ["gunicorn.error", "uvicorn.error", "gunicorn.access", "uvicorn.access"]:
         if logger_name in config["loggers"]:
-            config["loggers"][logger_name]["level"] = sys_level
+            config["loggers"][logger_name]["level"] = log_level_sys
+
+    # 3. Aggiorna il Root Logger (Importante come fallback)
+    config["root"]["level"] = log_level_stdout
 
     logging.config.dictConfig(config)
 
@@ -629,19 +651,56 @@ async def create_scrape_item_hybrid(item: ItemSingle, redis_client: Redis = Depe
 @app.post("/api/qa", response_model=Union[RetrievalResult, RetrievalChunksResult], tags=["Question & Answer"])
 async def post_ask_with_memory_main(question_answer: QuestionAnswer):
     """
-    Query and Aswer with chat history
-    :param question_answer:
-    :return: RetrievalResult
+    Query and Answer with chat history.
+    Pass use_cache=true to enable semantic cache (L1 exact + L2 cosine similarity).
     """
     logger.debug(question_answer)
 
     if question_answer.chunks_only:
-        result = await ask_for_chunks(question_answer)
+        return await ask_for_chunks(question_answer)
+
+    # Semantic cache lookup (only when use_cache=True)
+    if question_answer.use_cache:
+        from tilellm.shared.cache import SemanticCache
+        from tilellm.shared.embedding_factory import create_embedding_instance
+        try:
+            embedding_model, _ = await create_embedding_instance(question_answer)
+            query_text = question_answer.retrieval_query or question_answer.question
+            embedding = await embedding_model.aembed_query(query_text)
+            cached = await SemanticCache.lookup(
+                namespace=question_answer.namespace,
+                question=question_answer.question,
+                embedding=embedding,
+            )
+            if cached is not None:
+                result = RetrievalResult(**{k: v for k, v in cached.items() if not k.startswith("_")})
+                logger.info(f"/api/qa cache hit (level={cached.get('_cache_level')}, cosine={cached.get('_cache_similarity', 1.0):.4f})")
+                return result
+        except Exception as e:
+            logger.warning(f"/api/qa cache lookup failed ({e}), proceeding without cache")
+
+    if question_answer.search_type == 'hybrid':
+        result = await ask_hybrid_with_memory(question_answer)
     else:
-        if question_answer.search_type == 'hybrid':
-            result= await ask_hybrid_with_memory(question_answer)
-        else:
-            result = await ask_with_memory(question_answer)
+        result = await ask_with_memory(question_answer)
+
+    # Store in cache on success
+    if question_answer.use_cache:
+        from tilellm.shared.cache import SemanticCache
+        from tilellm.shared.embedding_factory import create_embedding_instance
+        try:
+            embedding_model, _ = await create_embedding_instance(question_answer)
+            query_text = question_answer.retrieval_query or question_answer.question
+            embedding = await embedding_model.aembed_query(query_text)
+            body = result.model_dump() if hasattr(result, "model_dump") else {}
+            await SemanticCache.store(
+                namespace=question_answer.namespace,
+                question=question_answer.question,
+                embedding=embedding,
+                body=body,
+            )
+        except Exception as e:
+            logger.warning(f"/api/qa cache store failed ({e})")
 
     logger.debug(result)
     return result
@@ -924,6 +983,9 @@ async def delete_namespace_main(token: str, namespace: str):
         namespace_to_delete = RepositoryNamespace(namespace=namespace, engine=engine)
 
         await delete_namespace(namespace_to_delete)
+        # Invalidate cache for this namespace (strategy B: full namespace invalidation)
+        from tilellm.shared.cache import SemanticCache
+        await SemanticCache.invalidate_namespace(namespace)
         return JSONResponse(content={"message": f"Namespace {namespace} deleted"})
     except Exception as ex:
         return JSONResponse(content={"success": "false",
@@ -979,6 +1041,33 @@ async def delete_item_id_namespace_main(token: str, metadata_id: str, namespace:
     except Exception as ex:
         logger.error(ex)
         raise HTTPException(status_code=400, detail=repr(ex))
+
+
+@app.get("/metrics", tags=["Observability"], include_in_schema=False)
+async def get_prometheus_metrics():
+    """Prometheus scrape endpoint — exposes cache hit/miss/latency counters."""
+    try:
+        from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+        from fastapi.responses import Response
+        return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    except ImportError:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"error": "prometheus_client not installed"}, status_code=501)
+
+
+@app.get("/api/cache/stats", tags=["Cache"])
+async def get_cache_stats(namespace: Optional[str] = None):
+    """Return semantic cache stats (entry count per namespace or all)."""
+    from tilellm.shared.cache import SemanticCache
+    return await SemanticCache.stats(namespace=namespace)
+
+
+@app.delete("/api/cache/namespace/{namespace}", tags=["Cache"])
+async def delete_cache_namespace(namespace: str):
+    """Manually invalidate all cache entries for a namespace."""
+    from tilellm.shared.cache import SemanticCache
+    deleted = await SemanticCache.invalidate_namespace(namespace)
+    return {"deleted": deleted, "namespace": namespace}
 
 
 @app.get("/")

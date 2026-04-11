@@ -4,13 +4,13 @@ import logging
 from typing import Optional, Literal
 
 from pydantic import BaseModel, Field
-from starlette.responses import JSONResponse
 
 from tilellm.controller.controller import ask_with_memory, ask_hybrid_with_memory
 from tilellm.models import QuestionAnswer
 from tilellm.models.graph_state import GraphState, ValidationScore
 from tilellm.models.schemas import RetrievalResult
 from tilellm.shared.utility import inject_llm_chat_async
+from tilellm.shared.cache import SemanticCache
 
 logger = logging.getLogger(__name__)
 
@@ -407,6 +407,115 @@ async def fail_safe_node(state: GraphState):
 
 
 # ---------------------------------------------------------------------------
+# Node: cache_lookup_node  (L1 exact + L2 semantic lookup)
+# ---------------------------------------------------------------------------
+
+async def cache_lookup_node(state: GraphState) -> dict:
+    """
+    Looks up the query in the semantic cache (L1 exact + L2 cosine).
+    If use_cache=False, passes through immediately.
+    On hit: populates retrieval_result and sets cache_hit=True so the workflow
+    can skip rag_core / raptor entirely.
+    """
+    qa = state["question_answer"]
+
+    if not qa.use_cache:
+        return {"cache_hit": False}
+
+    try:
+        from tilellm.shared.embedding_factory import create_embedding_instance
+        embedding_model, _ = await create_embedding_instance(qa)
+        query_text = qa.retrieval_query or qa.question
+        embedding = await embedding_model.aembed_query(query_text)
+    except Exception as e:
+        logger.warning(f"cache_lookup_node: embedding failed ({e}), skipping cache")
+        return {"cache_hit": False}
+
+    cached = await SemanticCache.lookup(
+        namespace=qa.namespace,
+        question=qa.question,
+        embedding=embedding,
+    )
+
+    if cached is None:
+        return {"cache_hit": False}
+
+    # Reconstruct RetrievalResult from cached body
+    try:
+        result = RetrievalResult(**{k: v for k, v in cached.items() if not k.startswith("_")})
+    except Exception as e:
+        logger.warning(f"cache_lookup_node: failed to deserialize cached entry ({e}), skipping")
+        return {"cache_hit": False}
+
+    similarity = cached.get("_cache_similarity", 1.0)
+    level = cached.get("_cache_level", "unknown")
+    logger.info(f"Cache hit ({level}, cosine={similarity:.4f}) for namespace={qa.namespace}")
+
+    metadata = state.get("metadata") or {}
+    trace = list(metadata.get("trace", []))
+    trace.append({
+        "step": "cache_lookup",
+        "hit": True,
+        "level": level,
+        "similarity": similarity,
+    })
+
+    return {
+        "retrieval_result": result,
+        "cache_hit": True,
+        "cache_similarity": similarity,
+        "is_grounded": "yes",   # skip hallucination check for cached responses
+        "metadata": {**metadata, "trace": trace},
+    }
+
+
+# ---------------------------------------------------------------------------
+# Node: cache_store_node  (store result in L1 + L2 after successful RAG)
+# ---------------------------------------------------------------------------
+
+async def cache_store_node(state: GraphState) -> dict:
+    """
+    Stores the RAG result in the semantic cache after a successful retrieval.
+    Only runs when use_cache=True and cache_hit=False (i.e., it was a miss).
+    """
+    qa = state["question_answer"]
+
+    if not qa.use_cache:
+        return {}
+
+    if state.get("cache_hit"):
+        return {}  # already from cache, nothing to store
+
+    retrieval = state.get("retrieval_result")
+    if retrieval is None:
+        return {}
+
+    try:
+        body = retrieval.model_dump() if hasattr(retrieval, "model_dump") else {}
+    except Exception:
+        return {}
+
+    try:
+        from tilellm.shared.embedding_factory import create_embedding_instance
+        embedding_model, _ = await create_embedding_instance(qa)
+        query_text = qa.retrieval_query or qa.question
+        embedding = await embedding_model.aembed_query(query_text)
+    except Exception as e:
+        logger.warning(f"cache_store_node: embedding failed ({e}), skipping store")
+        return {}
+
+    await SemanticCache.store(
+        namespace=qa.namespace,
+        question=qa.question,
+        embedding=embedding,
+        body=body,
+    )
+
+    logger.debug(f"cache_store_node: stored result for namespace={qa.namespace}")
+    return {}
+
+
+# ---------------------------------------------------------------------------
 # Node: raptor_node (RAPTOR-based retrieval)
 # ---------------------------------------------------------------------------
 
@@ -459,9 +568,10 @@ async def raptor_node(state: GraphState):
         # Convert RAPTOR response to RetrievalResult format
         retrieval_result = RetrievalResult(
             answer=raptor_result.answer,
+            namespace=raptor_result.namespace,
             sources=[{"title": f"Level {r.get('level')}", "url": ""} for r in raptor_result.retrieved_chunks[:3]],
             content_chunks=[r.get("content", "") for r in raptor_result.retrieved_chunks],
-            status="success" if raptor_result.success else "failed",
+            status="success" if raptor_result.success else "failed"
         )
 
         return {

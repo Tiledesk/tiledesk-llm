@@ -263,6 +263,14 @@ async def process_pdf_document_with_embeddings(
                 images=result.get('images', [])
             )
 
+        # Extract global doc_context for situated context (Contextual Retrieval)
+        doc_context = None
+        if result and 'text_elements' in result:
+            text_els = result.get('text_elements', [])
+            # Combine first 10 text elements to get about 1000-2000 chars of context
+            combined_text = " ".join(el.get('text', '')[:200] for el in text_els[:10])
+            doc_context = combined_text[:1500]
+
         # Track whether we've already done the first delete for this doc
         _first_index_done = False
 
@@ -278,7 +286,9 @@ async def process_pdf_document_with_embeddings(
                 engine=question.engine,
                 sparse_encoder=question.sparse_encoder,
                 tags=question.tags if question.tags else None,
-                skip_delete=_first_index_done
+                skip_delete=_first_index_done,
+                llm=llm,
+                doc_context=doc_context
             )
             _first_index_done = True
 
@@ -294,7 +304,9 @@ async def process_pdf_document_with_embeddings(
                 engine=question.engine,
                 sparse_encoder=question.sparse_encoder,
                 tags=question.tags if question.tags else None,
-                skip_delete=_first_index_done
+                skip_delete=_first_index_done,
+                llm=llm,
+                doc_context=doc_context
             )
             _first_index_done = True
         
@@ -326,7 +338,8 @@ async def process_pdf_document_with_embeddings(
                 hierarchy=result.get('hierarchy'),
                 tags=question.tags if question.tags else None,
                 skip_delete=_first_index_done,
-                llm=llm
+                llm=llm,
+                doc_context=doc_context
             )
 
         # Ensure result is not None (should be dict)
@@ -642,7 +655,8 @@ async def _index_text_chunks(
     hierarchy: Optional[Dict[str, Any]] = None,
     tags: Optional[List[str]] = None,
     skip_delete: bool = False,
-    llm=None
+    llm=None,
+    doc_context: Optional[str] = None
 ):
     """
     Index text chunks to vector store.
@@ -711,7 +725,9 @@ async def _index_text_chunks(
             # Use dedicated LLM for situated context if configured, otherwise fall back to DI LLM
             sc_llm = await build_llm_from_config(sc_config) or llm
             if sc_llm:
-                documents = await enrich_chunks_with_situated_context(documents, sc_llm)
+                documents = await enrich_chunks_with_situated_context(
+                    documents, sc_llm, doc_context=doc_context
+                )
                 logger.info(f"Situated context applied to {len(documents)} text chunks.")
         except Exception as sc_err:
             logger.warning(f"Situated context enrichment failed, continuing without: {sc_err}")
@@ -739,7 +755,9 @@ async def _index_tables_to_vector_store(
     engine,
     sparse_encoder: Union[str, TEIConfig, None] = None,
     tags: Optional[List[str]] = None,
-    skip_delete: bool = False
+    skip_delete: bool = False,
+    llm=None,
+    doc_context: Optional[str] = None
 ):
     """
     Index table semantic descriptions to vector store.
@@ -793,6 +811,21 @@ async def _index_tables_to_vector_store(
         return
     
     logger.info(f"Indexing {len(documents)} table descriptions to vector store for doc {doc_id}")
+
+    # Situated context enrichment (Contextual Retrieval, optional)
+    sc_config = getattr(question, 'situated_context', None)
+    if sc_config and sc_config.enable:
+        try:
+            from tilellm.shared.situated_context import build_llm_from_config
+            # Use dedicated LLM for situated context if configured, otherwise fall back to DI LLM
+            sc_llm = await build_llm_from_config(sc_config) or llm
+            if sc_llm:
+                documents = await enrich_chunks_with_situated_context(
+                    documents, sc_llm, doc_context=doc_context
+                )
+                logger.info(f"Situated context applied to {len(documents)} table descriptions.")
+        except Exception as sc_err:
+            logger.warning(f"Situated context enrichment for tables failed, continuing without: {sc_err}")
     
     # Index to vector store
     await repo.aadd_documents(
@@ -817,7 +850,9 @@ async def _index_images_to_vector_store(
     engine,
     sparse_encoder: Union[str, TEIConfig, None] = None,
     tags: Optional[List[str]] = None,
-    skip_delete: bool = False
+    skip_delete: bool = False,
+    llm=None,
+    doc_context: Optional[str] = None
 ):
     """
     Index image captions to vector store.
@@ -866,6 +901,21 @@ async def _index_images_to_vector_store(
         return
     
     logger.info(f"Indexing {len(documents)} image captions to vector store for doc {doc_id}")
+
+    # Situated context enrichment (Contextual Retrieval, optional)
+    sc_config = getattr(question, 'situated_context', None)
+    if sc_config and sc_config.enable:
+        try:
+            from tilellm.shared.situated_context import build_llm_from_config
+            # Use dedicated LLM for situated context if configured, otherwise fall back to DI LLM
+            sc_llm = await build_llm_from_config(sc_config) or llm
+            if sc_llm:
+                documents = await enrich_chunks_with_situated_context(
+                    documents, sc_llm, doc_context=doc_context
+                )
+                logger.info(f"Situated context applied to {len(documents)} image captions.")
+        except Exception as sc_err:
+            logger.warning(f"Situated context enrichment for images failed, continuing without: {sc_err}")
     
     # Index to vector store
     await repo.aadd_documents(
@@ -1040,6 +1090,23 @@ async def process_pdf_markdown_extraction(
             doc.metadata['page'] = _page_line_map.get(start_line, 1)
         
         logger.info(f"Created {len(documents)} Markdown chunks for indexing")
+
+        # Situated context enrichment (Contextual Retrieval, optional)
+        sc_config = getattr(question, 'situated_context', None)
+        if sc_config and sc_config.enable:
+            try:
+                from tilellm.shared.situated_context import build_llm_from_config
+                # Use dedicated LLM for situated context if configured, otherwise fall back to DI LLM
+                sc_llm = await build_llm_from_config(sc_config) or llm
+                if sc_llm:
+                    # Global doc context for Markdown
+                    doc_context = markdown_content[:1500]
+                    documents = await enrich_chunks_with_situated_context(
+                        documents, sc_llm, doc_context=doc_context
+                    )
+                    logger.info(f"Situated context applied to {len(documents)} Markdown chunks.")
+            except Exception as sc_err:
+                logger.warning(f"Situated context enrichment for Markdown failed: {sc_err}")
         
         # Index chunks to vector store
         if documents:

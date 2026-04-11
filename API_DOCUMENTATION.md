@@ -58,7 +58,12 @@ Single entry point for all document ingestion. Automatically routes to the appro
   },
   "use_ocr": false,
   "hybrid": false,
-  "use_situated_context": false,
+  "situated_context": {
+    "enable": true,
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "api_key": "sk-..."
+  },
   "tags": ["finance", "2024"],
   "chunk_size": 1000,
   "chunk_overlap": 400
@@ -70,9 +75,11 @@ Single entry point for all document ingestion. Automatically routes to the appro
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `use_ocr` | bool | `false` | Route to Docling OCR pipeline |
-| `use_situated_context` | bool | `false` | Prepend LLM-generated context to each chunk before embedding |
-| `llm_provider` | string | `null` | LLM provider for situated context (`openai`\|`anthropic`\|`google`) |
-| `llm_model` | string | `null` | LLM model for situated context generation |
+| `situated_context` | object | `null` | Configuration for Contextual Retrieval (situated context). Prepends LLM-generated context to each chunk. |
+| `situated_context.enable` | bool | `false` | Whether to enable situated context. |
+| `situated_context.provider` | string | `openai` | LLM provider (`openai`\|`anthropic`\|`google`\|`groq`\|`vllm`\|`ollama`). |
+| `situated_context.model` | string | `gpt-4o-mini` | LLM model for context generation. |
+| `situated_context.api_key` | string | `null` | API key for the provider. |
 
 **Supported document types** (via `type` field):
 
@@ -150,9 +157,11 @@ Indexes using hybrid search (vector + keyword).
 **Response**: Same as `/api/scrape/single`
 
 **Hybrid Parameters**:
-- `hybrid_batch_size`: Batch size for hybrid indexing (default: 10)
+- `hybrid_batch_size`: Batch size for hybrid indexing (default: 10). For **local** sparse encoders (`splade`, `bge-m3`) this is treated as a hard cap on items per batch; the effective batch size is additionally bounded by a token-aware budget (`batch_size * max_seq_len ≤ token_budget_per_batch`, default 2048). See README → [Local Inference Performance](../README.md#local-inference-performance-crossencoder--sparse-encoders) for the full list of tunables. TEI sparse encoder and TEI reranker are unaffected — they use the fixed value.
 - `doc_batch_size`: Batch size for generate embeddings (default: 100)
 - `sparse_encoder`: Encoder type - `"splade"` or `"bge-m3"` (default: `"splade"`)
+
+**Note on local GPU inference**: When `sparse_encoder` is `"splade"` or `"bge-m3"` and no TEI endpoint is configured (`TEI_SPARSE_ENCODER_URL` unset), the encoder is loaded and run locally. Local encoders automatically apply fp16 (Splade), warmup on load, a process-wide GPU lock shared with the reranker, token-budget batching, and CUDA OOM recovery with budget halving. These behaviors are not per-request — they are class-level defaults in `tilellm/tools/sparse_encoders.py`.
 
 ---
 
@@ -206,6 +215,9 @@ Query with conversation history on knowledge base.
   "search_type": "similarity",
   "chunks_only": false,
   "citations": false,
+  "use_hyde": false,
+  "use_raptor": false,
+  "use_cache": false,
   "chat_history_dict": {},
   "engine": { /* Engine object */ }
 }
@@ -232,7 +244,11 @@ Query with conversation history on knowledge base.
 - `search_type`: `"similarity"` | `"hybrid"` | `"mmr"`
 - `chunks_only`: If true, returns only chunks without generating answer
 - `citations`: If true, includes source citations (requires `max_tokens >= 1024`)
+- `use_hyde`: If true, generates a hypothetical document before retrieval to improve embedding quality
+- `use_raptor`: If true, uses RAPTOR hierarchical tree retrieval instead of standard RAG
+- `use_cache`: If true, enables semantic cache (L1 exact match + L2 cosine similarity). Default: `false`. On hit, returns cached response without calling the vector store or LLM. Cache is automatically invalidated when documents are added or the namespace is deleted.
 - `tags`: Optional tag filter. Can be a list of strings (`["python", "api"]`) or a boolean expression (`"(python|javascript)&!legacy"`). See [Tag Filtering](#tag-filtering) for details.
+- `reranking`: Enable reranking (bool or object, see README → Reranker). When using a **local** cross-encoder (no `provider` field), the model is loaded on GPU with fp16, warmup, process-wide GPU lock, token-budget batching, and CUDA OOM recovery. These optimizations are automatic and do not require any request-level configuration. Tunables (`token_budget_per_batch`, `max_pairs_per_batch`, `max_oom_retries`, `_use_fp16`, `_warmup_on_load`) are class-level defaults in `tilellm/tools/reranker.py::TileReranker` — see README → [Local Inference Performance](../README.md#local-inference-performance-crossencoder--sparse-encoders).
 
 ---
 
@@ -1187,8 +1203,57 @@ curl -X POST "http://localhost:8000/api/ask" \
 
 ---
 
+## Semantic Cache APIs
+
+The semantic cache reduces latency and LLM costs for recurring queries. Enable it per-request with `use_cache: true` in any `QuestionAnswer` payload. The cache uses L1 exact match and L2 cosine similarity (threshold: 0.90 by default, configurable via `CACHE_SIMILARITY_THRESHOLD` env var).
+
+Cache is automatically invalidated when:
+- A document is added/updated via `POST /api/scrape/single`, `POST /api/ingestion`, or `POST /api/pdf/scrape`
+- A namespace is deleted via `DELETE /api/namespace/{namespace}/{token}`
+
+### GET `/api/cache/stats`
+Returns entry counts for the semantic cache.
+
+**Query params**:
+- `namespace` (optional): filter stats to a specific namespace
+
+**Response**:
+```json
+{
+  "available": true,
+  "namespace": "my-bot",
+  "semantic_entries": 42
+}
+```
+
+---
+
+### DELETE `/api/cache/namespace/{namespace}`
+Manually invalidate all cache entries for a namespace.
+
+**Response**:
+```json
+{
+  "deleted": 15,
+  "namespace": "my-bot"
+}
+```
+
+---
+
+**Environment variables**:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CACHE_SIMILARITY_THRESHOLD` | `0.90` | Cosine similarity threshold for L2 semantic match |
+| `CACHE_TTL_EXACT` | `86400` | TTL in seconds for exact-match entries (24h) |
+| `CACHE_TTL_SEMANTIC` | `21600` | TTL in seconds for semantic entries (6h) |
+| `REDIS_URL` | `redis://localhost:6379/0` | Redis connection URL (shared with TaskIQ) |
+
+---
+
 ## Support
 
 **Repository**: https://github.com/Tiledesk/tiledesk-llm
 
-**Last updated**: 2025-12-30
+**Last updated**: 2026-04-07

@@ -47,20 +47,22 @@ class QuotedAnswerForStream(PartialQuotedAnswer):
     )
     complete: bool = True
 
+
 class RetrievalResult(BaseModel):
-    answer: Union[str, Dict[str, Any], list] = Field(default="No answer")
+    answer: Union[str, Dict[str, Any], list, "QuotedAnswer"] = Field(default="No answer")
     success: bool = Field(default=False)
     namespace: str
     id: str | None = None
     ids: Optional[List[str]] | None = None
     source: str | None = None
-    sources: Optional[List[str]] | None = None
+    sources: Optional[List[Union[str, Dict[str,str]]]] | None = None
     citations: Optional[List[Citation]] | None = None
     content_chunks: Optional[List[str]] | None = None
     prompt_token_size: int = Field(default=0)
     error_message: Optional[str] | None = None
     duration: Optional[float]= Field(default=0)
     chat_history_dict: Optional[Dict[str, "ChatEntry"]] = None
+    status: Optional[str] = Field(default=None)
 
 class RetrievalChunksResult(BaseModel):
     success: bool = Field(default=False)
