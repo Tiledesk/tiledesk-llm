@@ -1,7 +1,15 @@
 import datetime
 from typing import Dict, Optional, List, Union, Any, TYPE_CHECKING, Literal
 
-from pydantic import BaseModel, Field, SecretStr, field_validator, RootModel, model_validator, computed_field
+from pydantic import (
+    BaseModel,
+    Field,
+    SecretStr,
+    field_validator,
+    RootModel,
+    model_validator,
+    computed_field,
+)
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from tilellm.models.base import AWSAuthentication, ServerConfig
@@ -20,11 +28,24 @@ class SituatedContextConfig(BaseModel):
 
     Example providers: openai, anthropic, google, groq, vllm (local), ollama (local)
     """
-    enable: bool = Field(default=False, description="Enable Contextual Retrieval for this ingestion")
-    provider: str = Field(default="openai", description="LLM provider: openai|anthropic|google|groq|vllm|ollama")
-    model: Optional[str] = Field(default=None, description="Chat model name (e.g. gpt-4o-mini, claude-haiku)")
-    api_key: Optional[SecretStr] = Field(default=None, description="API key for the LLM provider")
-    url: Optional[str] = Field(default=None, description="Custom endpoint URL (for vLLM / Ollama local deployments)")
+
+    enable: bool = Field(
+        default=False, description="Enable Contextual Retrieval for this ingestion"
+    )
+    provider: str = Field(
+        default="openai",
+        description="LLM provider: openai|anthropic|google|groq|vllm|ollama",
+    )
+    model: Optional[str] = Field(
+        default=None, description="Chat model name (e.g. gpt-4o-mini, claude-haiku)"
+    )
+    api_key: Optional[SecretStr] = Field(
+        default=None, description="API key for the LLM provider"
+    )
+    url: Optional[str] = Field(
+        default=None,
+        description="Custom endpoint URL (for vLLM / Ollama local deployments)",
+    )
     temperature: float = Field(default=0.0)
     max_tokens: int = Field(default=256)
 
@@ -43,7 +64,9 @@ class PineconeRerankerConfig(BaseModel):
     name: str = Field(default="bge-reranker-v2-m3")
     top_n: Optional[int] = Field(default=None)
     rank_fields: Optional[List[str]] = Field(default_factory=lambda: ["chunk_text"])
-    parameters: Optional[Dict[str, Any]] = Field(default_factory=lambda: {"truncate": "END"})
+    parameters: Optional[Dict[str, Any]] = Field(
+        default_factory=lambda: {"truncate": "END"}
+    )
 
 
 class ItemSingle(BaseModel):
@@ -54,12 +77,16 @@ class ItemSingle(BaseModel):
     hybrid: Optional[bool] = Field(default=False)
     hybrid_batch_size: Optional[int] = Field(default=10)
     doc_batch_size: Optional[int] = Field(default=100)
-    sparse_encoder: Union[str, TEIConfig, None] = Field(default="splade") # spade|bge-m3 or TEIConfig
+    sparse_encoder: Union[str, TEIConfig, None] = Field(
+        default="splade"
+    )  # spade|bge-m3 or TEIConfig
     gptkey: SecretStr | None = None
     scrape_type: int = Field(default_factory=lambda: 0)
     embedding: Union[str, LlmEmbeddingModel] = Field(default="text-embedding-ada-002")
     browser_headers: Dict[str, str] = Field(
-        default_factory=lambda: {'user-agent': 'Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36'}
+        default_factory=lambda: {
+            "user-agent": "Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36"
+        }
     )
     namespace: str | None = None
     tags: Optional[List[str]] = None
@@ -69,31 +96,53 @@ class ItemSingle(BaseModel):
     chunk_size: int = Field(default_factory=lambda: 1000)
     chunk_overlap: int = Field(default_factory=lambda: 400)
     chunk_regex: Optional[str] = None
-    parameters_scrape_type_4: Optional[Any] = None # Will be importing ParametersScrapeType4
+    parameters_scrape_type_4: Optional[Any] = (
+        None  # Will be importing ParametersScrapeType4
+    )
     engine: Engine
-    use_ocr: bool = Field(default=False, description="Whether to use OCR for PDF processing (routes to Advanced PDF pipeline).")
+    use_ocr: bool = Field(
+        default=False,
+        description="Whether to use OCR for PDF processing (routes to Advanced PDF pipeline).",
+    )
+    id_project: Optional[str] = Field(
+        default=None,
+        description="Tiledesk project ID — required for analytics routing. "
+        "Must be provided by the caller (tiledesk-server passes it "
+        "when invoking tiledesk-llm on behalf of a project).",
+    )
+    request_id: Optional[str] = Field(
+        default=None,
+        description="Tiledesk conversation/request ID. Links indexing operations to a "
+        "specific customer conversation in the analytics platform.",
+    )
     situated_context: Optional[SituatedContextConfig] = Field(
         default=None,
-        description="Dedicated LLM configuration for Contextual Retrieval (situated context). Allows using a different/cheaper LLM for generating contextual sentences."
+        description="Dedicated LLM configuration for Contextual Retrieval (situated context). Allows using a different/cheaper LLM for generating contextual sentences.",
     )
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def validate_browser_headers(self):
-        if 'user-agent' not in self.browser_headers:
-            self.browser_headers['user-agent'] = 'Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36'
+        if "user-agent" not in self.browser_headers:
+            self.browser_headers["user-agent"] = (
+                "Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36"
+            )
         return self
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def check_scrape_type(self):
         # Questo import va qui per evitare dipendenze circolari
         from tilellm.models.scraping import ParametersScrapeType4
 
         if self.scrape_type in (2, 4, 5):
             if self.parameters_scrape_type_4 is None:
-                raise ValueError('parameters_scrape_type_4 must be provided when scrape_type is 2, 4 or 5')
+                raise ValueError(
+                    "parameters_scrape_type_4 must be provided when scrape_type is 2, 4 or 5"
+                )
             # Valida il dizionario in ParametersScrapeType4
             if isinstance(self.parameters_scrape_type_4, dict):
-                self.parameters_scrape_type_4 = ParametersScrapeType4(**self.parameters_scrape_type_4)
+                self.parameters_scrape_type_4 = ParametersScrapeType4(
+                    **self.parameters_scrape_type_4
+                )
         else:
             self.parameters_scrape_type_4 = None
         return self
@@ -103,10 +152,15 @@ class MetadataItem(BaseModel):
     id: str
     source: str | None = None
     type: str | None = None
-    embedding: Union[str,LlmEmbeddingModel] = Field(default_factory=lambda: "text-embedding-ada-002")
-    date: str = Field(default_factory=lambda: datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f"))
+    embedding: Union[str, LlmEmbeddingModel] = Field(
+        default_factory=lambda: "text-embedding-ada-002"
+    )
+    date: str = Field(
+        default_factory=lambda: datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")
+    )
     namespace: Optional[str] = None
     tags: Optional[list[str]] = None
+
 
 class QuestionAnswer(BaseModel):
     question: str
@@ -117,15 +171,17 @@ class QuestionAnswer(BaseModel):
     model: Union[str, LlmEmbeddingModel] = Field(default="gpt-3.5-turbo")
     thinking: Optional[ReasoningConfig] = Field(
         default=None,
-        description="Reasoning configuration for advanced models (GPT-5, Claude 4/4.5, Gemini 2.5/3.0, DeepSeek)"
+        description="Reasoning configuration for advanced models (GPT-5, Claude 4/4.5, Gemini 2.5/3.0, DeepSeek)",
     )
-    sparse_encoder: Union[str, "TEIConfig", None] = Field(default="splade") #bge-m3
+    sparse_encoder: Union[str, "TEIConfig", None] = Field(default="splade")  # bge-m3
     temperature: float = Field(default=0.0)
     top_k: int = Field(default=5)
     max_tokens: int = Field(default=512)
     top_p: Optional[float] = Field(default=1.0)
     stream: Optional[bool] = Field(default_factory=lambda: False)
-    embedding: Union[str,LlmEmbeddingModel] = Field(default_factory=lambda: "text-embedding-ada-002")
+    embedding: Union[str, LlmEmbeddingModel] = Field(
+        default_factory=lambda: "text-embedding-ada-002"
+    )
     similarity_threshold: float = Field(default_factory=lambda: 1.0)
     debug: bool = Field(default_factory=lambda: False)
     citations: bool = Field(default_factory=lambda: False)
@@ -133,22 +189,59 @@ class QuestionAnswer(BaseModel):
     system_context: Optional[str] = None
     search_type: str = Field(default_factory=lambda: "similarity")
     chunks_only: Optional[bool] = Field(default_factory=lambda: False)
-    reranking : Union[bool, "TEIConfig", "PineconeRerankerConfig"] = Field(default_factory=lambda: False)
+    reranking: Union[bool, "TEIConfig", "PineconeRerankerConfig"] = Field(
+        default_factory=lambda: False
+    )
     reranking_multiplier: int = 3  # moltiplicatore per top_k
     reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-    contextualize_prompt: Optional[bool] = Field(default=True, description="Enable/disable contextualize_q_system_prompt usage for query rewriting (retrieval)")
-    include_history_in_prompt: bool = Field(default=True, description="Include chat history directly in the LLM prompt for generation context")
-    max_history_messages: int = Field(default=10, description="Maximum number of history messages to include in the prompt")
-    conversation_summary: bool = Field(default=False, description="Whether to include a summary of the conversation")
+    contextualize_prompt: Optional[bool] = Field(
+        default=True,
+        description="Enable/disable contextualize_q_system_prompt usage for query rewriting (retrieval)",
+    )
+    include_history_in_prompt: bool = Field(
+        default=True,
+        description="Include chat history directly in the LLM prompt for generation context",
+    )
+    max_history_messages: int = Field(
+        default=10,
+        description="Maximum number of history messages to include in the prompt",
+    )
+    conversation_summary: bool = Field(
+        default=False, description="Whether to include a summary of the conversation"
+    )
     engine: Engine
     chat_history_dict: Optional[Dict[str, "ChatEntry"]] = None
-    use_hyde: bool = Field(default=False, description="Enable HyDE (Hypothetical Document Embeddings) retrieval")
-    retrieval_query: Optional[str] = Field(default=None, description="Override query for retrieval embedding only (used by HyDE and future Self-RAG)")
-    use_raptor: bool = Field(default=False, description="Enable RAPTOR (hierarchical tree-based retrieval) instead of standard RAG")
-    use_cache: bool = Field(default=False, description="Enable semantic cache for this query (L1 exact + L2 cosine similarity)")
+    use_hyde: bool = Field(
+        default=False,
+        description="Enable HyDE (Hypothetical Document Embeddings) retrieval",
+    )
+    retrieval_query: Optional[str] = Field(
+        default=None,
+        description="Override query for retrieval embedding only (used by HyDE and future Self-RAG)",
+    )
+    use_raptor: bool = Field(
+        default=False,
+        description="Enable RAPTOR (hierarchical tree-based retrieval) instead of standard RAG",
+    )
+    use_cache: bool = Field(
+        default=False,
+        description="Enable semantic cache for this query (L1 exact + L2 cosine similarity)",
+    )
+    id_project: Optional[str] = Field(
+        default=None,
+        description="Tiledesk project ID (used for analytics).",
+    )
+    request_id: Optional[str] = Field(
+        default=None,
+        description="Tiledesk conversation/request ID for analytics.",
+    )
+    agent_id: Optional[str] = Field(
+        default=None,
+        description="Tiledesk agent/bot ID for analytics.",
+    )
 
-    #@field_validator("temperature")
-    #def temperature_range(cls, v):
+    # @field_validator("temperature")
+    # def temperature_range(cls, v):
     #    """Ensures temperature is within valid range (usually 0.0 to 1.0)."""
     #    if not 0.0 <= v <= 1.0:
     #        raise ValueError("Temperature must be between 0.0 and 1.0.")
@@ -186,7 +279,7 @@ class QuestionAnswer(BaseModel):
                 self.thinking = ReasoningConfig(
                     reasoning_effort="low",
                     reasoning_summary="auto",
-                    show_thinking_stream=False
+                    show_thinking_stream=False,
                 )
 
             elif self.thinking.reasoning_effort is None:
@@ -215,7 +308,14 @@ class QuestionAnswer(BaseModel):
             elif self.llm in []:  # Aggiungi qui provider che richiedono top_p
                 self.temperature = None
             # Provider che accettano entrambi
-            elif self.llm in ["openai", "vllm", "groq", "deepseek", "mistralai", "ollama"]:
+            elif self.llm in [
+                "openai",
+                "vllm",
+                "groq",
+                "deepseek",
+                "mistralai",
+                "ollama",
+            ]:
                 # Mantieni entrambi
                 pass
             # Anthropic: gestione speciale per claude-4
@@ -252,15 +352,14 @@ class QuestionAnswer(BaseModel):
             raise ValueError("top_k must be a positive integer.")
         return v
 
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def check_citations_max_tokens(self):
         """Sets max_tokens to at least 1024 if citations=True."""
         if self.citations and self.max_tokens < 1024:
             self.max_tokens = 1024
         return self
 
-
-    @model_validator(mode='after')
+    @model_validator(mode="after")
     def validate_reranking_consistency(self):
         """
         Assicura che se reranking è True, esista un modello definito.
@@ -269,11 +368,14 @@ class QuestionAnswer(BaseModel):
             raise ValueError("reranker_model must be specified if reranking is True")
         return self
 
-
     # 2. Campo Calcolato per la configurazione risolta
-    @computed_field(return_type=Optional[Union[str, "TEIConfig", "PineconeRerankerConfig"]])
+    @computed_field(
+        return_type=Optional[Union[str, "TEIConfig", "PineconeRerankerConfig"]]
+    )
     @property
-    def reranker_config(self) -> Optional[Union[str, "TEIConfig", "PineconeRerankerConfig"]]:
+    def reranker_config(
+        self,
+    ) -> Optional[Union[str, "TEIConfig", "PineconeRerankerConfig"]]:
         """
         Restituisce la configurazione pronta per TileReranker.
         - Se False: None (nessun reranking)
@@ -302,34 +404,51 @@ class QuestionToLLM(BaseModel):
     debug: bool = Field(default_factory=lambda: False)
     thinking: Optional[ReasoningConfig] = Field(
         default=None,
-        description="Reasoning configuration for advanced models (GPT-5, Claude 4/4.5, Gemini 2.5/3.0, DeepSeek)"
+        description="Reasoning configuration for advanced models (GPT-5, Claude 4/4.5, Gemini 2.5/3.0, DeepSeek)",
     )
-    system_context: str = Field(default="You are a helpful AI bot. Always reply in the same language of the question.")
+    system_context: str = Field(
+        default="You are a helpful AI bot. Always reply in the same language of the question."
+    )
     chat_history_dict: Optional[Dict[str, "ChatEntry"]] = None
     n_messages: int = Field(default_factory=lambda: None)
     structured_output: Optional[bool] = Field(default=False)
     output_schema: Optional[Any] = Field(default=None)
     servers: Optional[Dict[str, ServerConfig]] = Field(default_factory=dict)
-    tools: Optional[List[str]] = Field(default=None, description="List of internal tool names from tool_registry")
+    tools: Optional[List[str]] = Field(
+        default=None, description="List of internal tool names from tool_registry"
+    )
 
     # Modalità di gestione history
     contextualize_prompt: Optional[bool] = Field(
-        default=False,description="If True, injects the history as text into the system prompt. "
-                                  "If False, passes the history as structured messages (recommended for modern LLMs)."
+        default=False,
+        description="If True, injects the history as text into the system prompt. "
+        "If False, passes the history as structured messages (recommended for modern LLMs).",
     )
 
     # Limitazione history
     max_history_messages: Optional[int] = Field(
         default=None,
         description="Maximum number of turns (question/answer pairs) to keep. None = unlimited. "
-                    "E.g.: 10 = last 10 turns (20 messages)."
+        "E.g.: 10 = last 10 turns (20 messages).",
     )
 
     # Summarization
     summarize_old_history: bool = Field(
         default=False,
         description="If True and max_history_messages is set, automatically summarizes the oldest history "
-                    "instead of discarding it. Requires an extra LLM call."
+        "instead of discarding it. Requires an extra LLM call.",
+    )
+    id_project: Optional[str] = Field(
+        default=None,
+        description="Tiledesk project ID (used for analytics).",
+    )
+    request_id: Optional[str] = Field(
+        default=None,
+        description="Tiledesk conversation/request ID for analytics.",
+    )
+    agent_id: Optional[str] = Field(
+        default=None,
+        description="Tiledesk agent/bot ID for analytics.",
     )
 
     @model_validator(mode="after")
@@ -386,7 +505,14 @@ class QuestionToLLM(BaseModel):
             elif self.llm in []:  # Aggiungi qui provider che richiedono top_p
                 self.temperature = None
             # Provider che accettano entrambi
-            elif self.llm in ["openai", "vllm", "groq", "deepseek", "mistralai", "ollama"]:
+            elif self.llm in [
+                "openai",
+                "vllm",
+                "groq",
+                "deepseek",
+                "mistralai",
+                "ollama",
+            ]:
                 # Mantieni entrambi
                 pass
             # Anthropic: gestione speciale per claude-4
@@ -412,7 +538,7 @@ class QuestionToLLM(BaseModel):
     @field_validator("n_messages")
     def n_messages_range(cls, v):
         """Ensures n_messages is within greater than 0"""
-        if v is not None and not v > 0: # Aggiungi la verifica per None
+        if v is not None and not v > 0:  # Aggiungi la verifica per None
             raise ValueError("n_messages must be greater than 0")
         return v
 
@@ -434,11 +560,12 @@ class QuestionToLLM(BaseModel):
     def create_mcp_client(self):
         """Crea un'istanza di MultiServerMCPClient dalla configurazione"""
         config_dict = {
-            name: server_config.model_dump(exclude_unset=True, exclude={"enabled_tools"})
+            name: server_config.model_dump(
+                exclude_unset=True, exclude={"enabled_tools"}
+            )
             for name, server_config in self.servers.items()
         }
         return MultiServerMCPClient(config_dict)
-
 
     def get_question_content(self) -> Union[str, List[Dict[str, Any]]]:
         """
@@ -470,5 +597,6 @@ class ToolOptions(RootModel[Dict[str, Any]]):
 # Risolvi forward references dopo che ChatEntry è caricato
 def rebuild_llm_models():
     from tilellm.models.chat import ChatEntry
+
     QuestionAnswer.model_rebuild()
     QuestionToLLM.model_rebuild()

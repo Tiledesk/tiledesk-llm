@@ -22,41 +22,44 @@ from dotenv import load_dotenv
 from fastapi.exception_handlers import http_exception_handler
 
 # Load .env early so all os.environ.get() calls pick up values from .env
-_env_path = Path(__file__).parent.parent / '.env'
+_env_path = Path(__file__).parent.parent / ".env"
 load_dotenv(_env_path)
 
-from fastapi import (FastAPI,
-                     Depends,
-                     HTTPException,
-                     Request)
+from fastapi import FastAPI, Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi_cprofile.profiler import CProfileMiddleware
 from fastapi.responses import JSONResponse
 
 import asyncio
+import time
 from redis.asyncio import Redis, from_url
 import aiohttp
 
 
 from tilellm.shared.timed_cache import TimedCache
 from tilellm.shared.utility import decode_jwt
-from tilellm.models import (ItemSingle,
-                            Engine,
-                            QuestionToLLM,
-                            QuestionAnswer)
-from tilellm.models.schemas import (RepositoryItem,
-                                    RepositoryNamespace,
-                                    ScrapeStatusReq,
-                                    ScrapeStatusResponse,
-                                    IndexingResult, RetrievalResult, RepositoryNamespaceResult,
-                                    RepositoryDescNamespaceResult, RepositoryItems, SimpleAnswer,
-                                    RepositoryEngine, RetrievalChunksResult)
+from tilellm.models import ItemSingle, Engine, QuestionToLLM, QuestionAnswer
+from tilellm.models.schemas import (
+    RepositoryItem,
+    RepositoryNamespace,
+    ScrapeStatusReq,
+    ScrapeStatusResponse,
+    IndexingResult,
+    RetrievalResult,
+    RepositoryNamespaceResult,
+    RepositoryDescNamespaceResult,
+    RepositoryItems,
+    SimpleAnswer,
+    RepositoryEngine,
+    RetrievalChunksResult,
+)
 from tilellm.models.schemas.general_schemas import AsyncTaskResponse
 from tilellm.modules.knowledge_graph.models.schemas import TaskPollResponse
 
 try:
     from tilellm.modules.task_executor.tasks import task_scrape_item_single
     from tilellm.modules.task_executor.broker import broker
+
     TASKIQ_AVAILABLE = True
 except ImportError:
     TASKIQ_AVAILABLE = False
@@ -68,23 +71,28 @@ ENABLE_TASKIQ = ENABLE_TASKIQ and TASKIQ_AVAILABLE
 
 from tilellm.shared.llm_config import serialize_with_secrets
 
+import tilellm.analytics as analytics
 
 from tilellm.store.redis_repository import redis_xgroup_create
-from tilellm.controller.controller import (ask_with_memory,
-                                           ask_hybrid_with_memory,
-                                           ask_for_chunks,
-                                           add_item,
-                                           add_item_hybrid,
-                                           delete_namespace,
-                                           delete_id_from_namespace,
-                                           delete_chunk_id_from_namespace,
-                                           get_ids_namespace,
-                                           get_listitems_namespace,
-                                           get_desc_namespace,
-                                           get_list_namespace,
-                                           get_sources_namespace,
-                                           ask_to_llm,
-                                           ask_reason_llm, ask_mcp_agent_llm, ask_mcp_agent_llm_simple)
+from tilellm.controller.controller import (
+    ask_with_memory,
+    ask_hybrid_with_memory,
+    ask_for_chunks,
+    add_item,
+    add_item_hybrid,
+    delete_namespace,
+    delete_id_from_namespace,
+    delete_chunk_id_from_namespace,
+    get_ids_namespace,
+    get_listitems_namespace,
+    get_desc_namespace,
+    get_list_namespace,
+    get_sources_namespace,
+    ask_to_llm,
+    ask_reason_llm,
+    ask_mcp_agent_llm,
+    ask_mcp_agent_llm_simple,
+)
 
 import logging
 
@@ -114,7 +122,12 @@ def setup_logging():
         config["loggers"]["tilellm"]["level"] = log_level_stdout
 
     # Aggiorna logger di sistema
-    for logger_name in ["gunicorn.error", "uvicorn.error", "gunicorn.access", "uvicorn.access"]:
+    for logger_name in [
+        "gunicorn.error",
+        "uvicorn.error",
+        "gunicorn.access",
+        "uvicorn.access",
+    ]:
         if logger_name in config["loggers"]:
             config["loggers"][logger_name]["level"] = log_level_sys
 
@@ -122,6 +135,7 @@ def setup_logging():
     config["root"]["level"] = log_level_stdout
 
     logging.config.dictConfig(config)
+
 
 setup_logging()
 
@@ -148,6 +162,7 @@ tilellm_role = os.environ.get("TILELLM_ROLE")
 
 security = HTTPBearer()
 
+
 async def get_redis_client():
     redis_client = None
     try:
@@ -166,6 +181,7 @@ async def reader(channel: Redis):
     """
 
     from tilellm.shared import const
+
     logger.debug(f"My role is {tilellm_role}")
     webhook = ""
     token = ""
@@ -176,9 +192,9 @@ async def reader(channel: Redis):
                 messages = await channel.xreadgroup(
                     groupname=const.STREAM_CONSUMER_GROUP,
                     consumername=const.STREAM_CONSUMER_NAME,
-                    streams={const.STREAM_NAME: '>'},
+                    streams={const.STREAM_NAME: ">"},
                     count=1,
-                    block=0  # Set block to 0 for non-blocking
+                    block=0,  # Set block to 0 for non-blocking
                 )
 
                 for stream, message_data in messages:
@@ -192,40 +208,78 @@ async def reader(channel: Redis):
                         logger.info(dict_str)
                         item = ast.literal_eval(dict_str)
                         item_single = ItemSingle(**item)
-                        scrape_status_response = ScrapeStatusResponse(status_message="Indexing started",
-                                                                      status_code=2
-                                                                      )
-                        add_to_queue = await channel.set(f"{item.get('namespace')}/{item.get('id')}",
-                                                         scrape_status_response.model_dump_json(),
-                                                         ex=expiration_in_seconds)
+                        scrape_status_response = ScrapeStatusResponse(
+                            status_message="Indexing started", status_code=2
+                        )
+                        add_to_queue = await channel.set(
+                            f"{item.get('namespace')}/{item.get('id')}",
+                            scrape_status_response.model_dump_json(),
+                            ex=expiration_in_seconds,
+                        )
 
                         logger.debug(f"Start {add_to_queue}")
 
-                        raw_webhook = item.get('webhook', "")
-                        if '?' in raw_webhook:
-                            webhook, raw_token = raw_webhook.split('?')
+                        raw_webhook = item.get("webhook", "")
+                        if "?" in raw_webhook:
+                            webhook, raw_token = raw_webhook.split("?")
 
-                            if raw_token.startswith('token='):
-                                _, token = raw_token.split('=')
+                            if raw_token.startswith("token="):
+                                _, token = raw_token.split("=")
                         else:
                             webhook = raw_webhook
 
                         logger.info(f"webhook: {webhook}, token: {token}")
 
                         if webhook:
-                            res = IndexingResult(id=item.get('id'), status=200)
+                            res = IndexingResult(id=item.get("id"), status=200)
                             try:
                                 async with aiohttp.ClientSession() as session:
-                                    res = await session.post(webhook,
-                                                             json=res.model_dump(exclude_none=True),
-                                                             headers={"Content-Type": "application/json",
-                                                                      "X-Auth-Token": token})
+                                    res = await session.post(
+                                        webhook,
+                                        json=res.model_dump(exclude_none=True),
+                                        headers={
+                                            "Content-Type": "application/json",
+                                            "X-Auth-Token": token,
+                                        },
+                                    )
                                     logger.info(f"200 {await res.json()}")
                             except Exception as ewh:
                                 logger.error(ewh)
                                 pass
 
-                        pc_result = await add_item(item_single)
+                        _idx_t0 = time.monotonic()
+                        _idx_error: str | None = None
+                        try:
+                            pc_result = await add_item(item_single)
+                        except Exception as _idx_exc:
+                            _idx_error = str(_idx_exc)
+                            pc_result = IndexingResult(
+                                id=item.get("id"), status=500, error=_idx_error
+                            )
+                        _idx_duration_ms = int((time.monotonic() - _idx_t0) * 1000)
+
+                        # Analytics: emit kb.content_indexed (fire-and-forget)
+                        from tilellm.analytics import events as an_events
+
+                        _emb_model = an_events.get_embedding_model_name(
+                            item_single.embedding
+                        )
+                        _engine_val = an_events.get_engine_value(item_single.engine)
+                        _et, _pl = an_events.content_indexed(
+                            kb_id=item_single.namespace,
+                            kb_name=item_single.namespace,
+                            embedding_model=_emb_model,
+                            engine=_engine_val,
+                            duration_ms=_idx_duration_ms,
+                            success=_idx_error is None,
+                            source_url=item_single.source,
+                            source_type=item_single.type,
+                            chunks_indexed=getattr(pc_result, "chunks", 0) or 0,
+                            error_message=_idx_error,
+                            request_id=item_single.request_id,
+                        )
+                        analytics.publish_nowait(_et, item_single.id_project, _pl)
+
                         # import datetime
                         # current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")
 
@@ -234,47 +288,61 @@ async def reader(channel: Redis):
 
                         # A POST request to the API
 
-                        scrape_status_response = ScrapeStatusResponse(status_message="Indexing finish",
-                                                                      status_code=3
-                                                                      )
-                        add_to_queue = await channel.set(f"{item.get('namespace')}/{item.get('id')}",
-                                                         scrape_status_response.model_dump_json(),
-                                                         ex=expiration_in_seconds)
+                        scrape_status_response = ScrapeStatusResponse(
+                            status_message="Indexing finish", status_code=3
+                        )
+                        add_to_queue = await channel.set(
+                            f"{item.get('namespace')}/{item.get('id')}",
+                            scrape_status_response.model_dump_json(),
+                            ex=expiration_in_seconds,
+                        )
 
                         logger.debug(f"End {add_to_queue}")
                         if webhook:
                             try:
                                 async with aiohttp.ClientSession() as session:
-                                    res = await session.post(webhook,
-                                                             json=pc_result.model_dump(exclude_none=True),
-                                                             headers={"Content-Type": "application/json",
-                                                                      "X-Auth-Token": token})
+                                    res = await session.post(
+                                        webhook,
+                                        json=pc_result.model_dump(exclude_none=True),
+                                        headers={
+                                            "Content-Type": "application/json",
+                                            "X-Auth-Token": token,
+                                        },
+                                    )
                                     logger.info(f"300 {await res.json()}")
                             except Exception as ewh:
                                 logger.error(ewh)
                                 pass
 
                         await channel.xack(
-                            const.STREAM_NAME,
-                            const.STREAM_CONSUMER_GROUP,
-                            message_id)
+                            const.STREAM_NAME, const.STREAM_CONSUMER_GROUP, message_id
+                        )
                         logger.info(f"xack to message_id: {message_id}")
 
             except Exception as e:
-                scrape_status_response = ScrapeStatusResponse(status_message="Error",
-                                                              status_code=4
-                                                              )
-                add_to_queue = await channel.set(f"{item.get('namespace')}/{item.get('id')}",
-                                                 scrape_status_response.model_dump_json(),
-                                                 ex=expiration_in_seconds)
+                scrape_status_response = ScrapeStatusResponse(
+                    status_message="Error", status_code=4
+                )
+                add_to_queue = await channel.set(
+                    f"{item.get('namespace')}/{item.get('id')}",
+                    scrape_status_response.model_dump_json(),
+                    ex=expiration_in_seconds,
+                )
 
                 logger.error(f"Error {add_to_queue}")
                 import traceback
+
                 if webhook:
-                    res = IndexingResult(id=item.get('id'), status=400, error=repr(e))
+                    res = IndexingResult(id=item.get("id"), status=400, error=repr(e))
                     async with aiohttp.ClientSession() as session:
-                        response = await session.post(webhook,  json=res.model_dump(exclude_none=True),
-                                                      headers={"Content-Type": "application/json", "X-Auth-Token": token})
+                        response = await session.post(
+                            webhook,
+                            json=res.model_dump(exclude_none=True),
+                            headers={
+                                "Content-Type": "application/json",
+                                "X-Auth-Token": token,
+                            },
+                        )
                         logger.error(response)
                         logger.error(f"{await response.json()}")
                     logger.error(f"Error {e}, webhook: {webhook}")
@@ -310,12 +378,14 @@ async def redis_consumer(app: FastAPI):
                 logger.error(f"Failed to start TaskIQ broker: {e}")
 
         logger.info("App startup complete - Redis & FalkorDB ready")
+        await analytics.init()
 
         yield
 
     finally:
         # ✅ 5. Cleanup ordinato allo shutdown
         logger.info("Shutting down Redis consumer...")
+        await analytics.shutdown()
 
         # Chiudi il broker Taskiq
         if ENABLE_TASKIQ and broker is not None:
@@ -326,7 +396,7 @@ async def redis_consumer(app: FastAPI):
                 logger.debug(f"TaskIQ broker shutdown error (ignored): {e}")
 
         # Cancella il task di lettura se attivo
-        if 'reader_task' in locals() and not reader_task.done():
+        if "reader_task" in locals() and not reader_task.done():
             reader_task.cancel()
             try:
                 await reader_task
@@ -336,6 +406,7 @@ async def redis_consumer(app: FastAPI):
         # Chiudi FalkorDB
         try:
             from tilellm.modules.knowledge_graph_falkor.logic import repository
+
             if repository:
                 await repository.close()
                 logger.info("FalkorDB connection closed")
@@ -372,17 +443,24 @@ async def debug_exception_handler(request: Request, exc: Exception):
     # Lo scriviamo nel file log con TUTTO il traceback
     logger.error(
         f"Uncaught Exception: {request.method} {request.url.path} - {type(exc).__name__}: {str(exc)}",
-        exc_info=True
+        exc_info=True,
     )
 
     # 3. Restituiamo una risposta di fallback per evitare che il client riceva il vuoto
     return JSONResponse(
         status_code=500,
-        content={"error": "Internal Server Error", "type": type(exc).__name__}
+        content={"error": "Internal Server Error", "type": type(exc).__name__},
     )
 
-@app.post("/api/scrape/enqueue", response_model=Union[AsyncTaskResponse, IndexingResult], tags=["Scrape"])
-async def enqueue_scrape_item_main(item: ItemSingle, redis_client: Redis = Depends(get_redis_client)):
+
+@app.post(
+    "/api/scrape/enqueue",
+    response_model=Union[AsyncTaskResponse, IndexingResult],
+    tags=["Scrape"],
+)
+async def enqueue_scrape_item_main(
+    item: ItemSingle, redis_client: Redis = Depends(get_redis_client)
+):
     """
     Enqueue item for async processing via Taskiq or process synchronously if Taskiq is disabled.
     When Taskiq is enabled, returns AsyncTaskResponse with task_id.
@@ -395,16 +473,15 @@ async def enqueue_scrape_item_main(item: ItemSingle, redis_client: Redis = Depen
 
     if ENABLE_TASKIQ:
         scrape_status_response = ScrapeStatusResponse(
-            status_message="Document added to queue",
-            status_code=0
+            status_message="Document added to queue", status_code=0
         )
         await redis_client.set(
             f"{item.namespace}/{item.id}",
             scrape_status_response.model_dump_json(),
-            ex=expiration_in_seconds
+            ex=expiration_in_seconds,
         )
 
-        payload = serialize_with_secrets(item.model_dump(mode='python'))
+        payload = serialize_with_secrets(item.model_dump(mode="python"))
         task = await task_scrape_item_single.kiq(payload)
 
         logger.info(f"Task enqueued with id: {task.task_id}")
@@ -414,22 +491,21 @@ async def enqueue_scrape_item_main(item: ItemSingle, redis_client: Redis = Depen
     token = ""
     try:
         scrape_status_response = ScrapeStatusResponse(
-            status_message="Indexing started",
-            status_code=2
+            status_message="Indexing started", status_code=2
         )
         await redis_client.set(
             f"{item.namespace}/{item.id}",
             scrape_status_response.model_dump_json(),
-            ex=expiration_in_seconds
+            ex=expiration_in_seconds,
         )
 
         logger.debug(f"Start processing item {item.id}")
 
         raw_webhook = item.webhook
-        if raw_webhook and '?' in raw_webhook:
-            webhook, raw_token = raw_webhook.split('?')
-            if raw_token.startswith('token='):
-                _, token = raw_token.split('=')
+        if raw_webhook and "?" in raw_webhook:
+            webhook, raw_token = raw_webhook.split("?")
+            if raw_token.startswith("token="):
+                _, token = raw_token.split("=")
         else:
             webhook = raw_webhook or ""
 
@@ -441,36 +517,37 @@ async def enqueue_scrape_item_main(item: ItemSingle, redis_client: Redis = Depen
             pc_result = await add_item(item)
 
         scrape_status_response = ScrapeStatusResponse(
-            status_message="Indexing finish",
-            status_code=3
+            status_message="Indexing finish", status_code=3
         )
         await redis_client.set(
             f"{item.namespace}/{item.id}",
             scrape_status_response.model_dump_json(),
-            ex=expiration_in_seconds
+            ex=expiration_in_seconds,
         )
 
         return JSONResponse(content=pc_result.model_dump(exclude_none=True))
 
     except Exception as e:
         scrape_status_response = ScrapeStatusResponse(
-            status_message="Error",
-            status_code=4
+            status_message="Error", status_code=4
         )
         await redis_client.set(
             f"{item.namespace}/{item.id}",
             scrape_status_response.model_dump_json(),
-            ex=expiration_in_seconds
+            ex=expiration_in_seconds,
         )
 
         logger.error(f"Error processing item {item.id}: {e}")
         import traceback
+
         traceback.print_exc()
         logger.error(e)
         return JSONResponse(status_code=400, content=e.args[0])
 
 
-@app.get("/api/enqueue/status/{task_id}", response_model=TaskPollResponse, tags=["Scrape"])
+@app.get(
+    "/api/enqueue/status/{task_id}", response_model=TaskPollResponse, tags=["Scrape"]
+)
 async def get_enqueue_task_status(task_id: str):
     """
     Check the status of an asynchronous scrape task.
@@ -491,22 +568,26 @@ async def get_enqueue_task_status(task_id: str):
             return TaskPollResponse(
                 task_id=task_id,
                 status="failed",
-                error=str(result.error) if hasattr(result, 'error') else str(result.return_value)
+                error=str(result.error)
+                if hasattr(result, "error")
+                else str(result.return_value),
             )
 
         return TaskPollResponse(
-            task_id=task_id,
-            status="success",
-            result=result.return_value
+            task_id=task_id, status="success", result=result.return_value
         )
 
     except Exception as e:
         logger.error(f"Failed to get task status: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve task status: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to retrieve task status: {str(e)}"
+        )
 
 
 @app.post("/api/scrape/single", response_model=IndexingResult, tags=["Scrape"])
-async def create_scrape_item_single(item: ItemSingle, redis_client: Redis = Depends(get_redis_client)):
+async def create_scrape_item_single(
+    item: ItemSingle, redis_client: Redis = Depends(get_redis_client)
+):
     """
     Add item to namespace
     :param item:
@@ -517,37 +598,68 @@ async def create_scrape_item_single(item: ItemSingle, redis_client: Redis = Depe
     token = ""
     try:
         logger.debug(item)
-        scrape_status_response = ScrapeStatusResponse(status_message="Indexing started",
-                                                      status_code=2
-                                                      )
-        add_to_queue = await redis_client.set(f"{item.namespace}/{item.id}",
-                                              scrape_status_response.model_dump_json(),
-                                              ex=expiration_in_seconds)
+        scrape_status_response = ScrapeStatusResponse(
+            status_message="Indexing started", status_code=2
+        )
+        add_to_queue = await redis_client.set(
+            f"{item.namespace}/{item.id}",
+            scrape_status_response.model_dump_json(),
+            ex=expiration_in_seconds,
+        )
 
         logger.debug(f"Start {add_to_queue}")
 
         raw_webhook = item.webhook
-        if '?' in raw_webhook:
-            webhook, raw_token = raw_webhook.split('?')
+        if "?" in raw_webhook:
+            webhook, raw_token = raw_webhook.split("?")
 
-            if raw_token.startswith('token='):
-                _, token = raw_token.split('=')
+            if raw_token.startswith("token="):
+                _, token = raw_token.split("=")
         else:
             webhook = raw_webhook
 
         logger.info(f"webhook: {webhook}, token: {token}")
 
-        if item.hybrid:
-            pc_result = await add_item_hybrid(item)
-        else:
-            pc_result = await add_item(item)
+        _idx_t0 = time.monotonic()
+        _idx_error: str | None = None
+        pc_result = None
+        try:
+            if item.hybrid:
+                pc_result = await add_item_hybrid(item)
+            else:
+                pc_result = await add_item(item)
+        except Exception as _idx_exc:
+            _idx_error = str(_idx_exc)
+            raise
+        finally:
+            _idx_duration_ms = int((time.monotonic() - _idx_t0) * 1000)
+            _et, _pl = analytics.events.content_indexed(
+                kb_id=item.namespace,
+                kb_name=item.namespace,
+                embedding_model=analytics.events.get_embedding_model_name(
+                    item.embedding
+                ),
+                engine=analytics.events.get_engine_value(item.engine),
+                duration_ms=_idx_duration_ms,
+                success=_idx_error is None,
+                source_url=item.source,
+                source_type=item.type,
+                chunks_indexed=(pc_result.chunks or 0)
+                if _idx_error is None and pc_result is not None
+                else 0,
+                error_message=_idx_error,
+                request_id=item.request_id,
+            )
+            analytics.publish_nowait(_et, item.id_project, _pl)
 
-        scrape_status_response = ScrapeStatusResponse(status_message="Indexing finish",
-                                                      status_code=3
-                                                      )
-        add_to_queue = await redis_client.set(f"{item.namespace}/{item.id}",
-                                              scrape_status_response.model_dump_json(),
-                                              ex=expiration_in_seconds)
+        scrape_status_response = ScrapeStatusResponse(
+            status_message="Indexing finish", status_code=3
+        )
+        add_to_queue = await redis_client.set(
+            f"{item.namespace}/{item.id}",
+            scrape_status_response.model_dump_json(),
+            ex=expiration_in_seconds,
+        )
 
         # logger.debug(f"End {add_to_queue}")
         # if webhook:
@@ -565,15 +677,18 @@ async def create_scrape_item_single(item: ItemSingle, redis_client: Redis = Depe
         return JSONResponse(content=pc_result.model_dump(exclude_none=True))
 
     except Exception as e:
-        scrape_status_response = ScrapeStatusResponse(status_message="Error",
-                                                      status_code=4
-                                                      )
-        add_to_queue = await redis_client.set(f"{item.namespace}/{item.id}",
-                                              scrape_status_response.model_dump_json(by_alias=True),
-                                              ex=expiration_in_seconds)
+        scrape_status_response = ScrapeStatusResponse(
+            status_message="Error", status_code=4
+        )
+        add_to_queue = await redis_client.set(
+            f"{item.namespace}/{item.id}",
+            scrape_status_response.model_dump_json(by_alias=True),
+            ex=expiration_in_seconds,
+        )
 
         logger.error(f"Error {add_to_queue}")
         import traceback
+
         # if webhook:
         #    res = PineconeIndexingResult(id=item.id, status=400, error=repr(e))
         #    async with aiohttp.ClientSession() as session:
@@ -584,12 +699,14 @@ async def create_scrape_item_single(item: ItemSingle, redis_client: Redis = Depe
         #    logger.error(f"Error {e}, webhook: {webhook}")
         traceback.print_exc()
         logger.error(e)
-        #raise HTTPException(status_code=400, detail=str(e))
+        # raise HTTPException(status_code=400, detail=str(e))
         return JSONResponse(status_code=400, content=e.args[0])
 
 
 @app.post("/api/scrape/hybrid", response_model=IndexingResult, tags=["Scrape"])
-async def create_scrape_item_hybrid(item: ItemSingle, redis_client: Redis = Depends(get_redis_client)):
+async def create_scrape_item_hybrid(
+    item: ItemSingle, redis_client: Redis = Depends(get_redis_client)
+):
     """
     Add item to namespace
     :param item:
@@ -601,44 +718,79 @@ async def create_scrape_item_hybrid(item: ItemSingle, redis_client: Redis = Depe
 
     try:
         logger.debug(item)
-        scrape_status_response = ScrapeStatusResponse(status_message="Indexing started",
-                                                      status_code=2
-                                                      )
-        add_to_queue = await redis_client.set(f"{item.namespace}/{item.id}",
-                                              scrape_status_response.model_dump_json(),
-                                              ex=expiration_in_seconds)
+        scrape_status_response = ScrapeStatusResponse(
+            status_message="Indexing started", status_code=2
+        )
+        add_to_queue = await redis_client.set(
+            f"{item.namespace}/{item.id}",
+            scrape_status_response.model_dump_json(),
+            ex=expiration_in_seconds,
+        )
 
         logger.debug(f"Start {add_to_queue}")
 
         raw_webhook = item.webhook
-        if '?' in raw_webhook:
-            webhook, raw_token = raw_webhook.split('?')
+        if "?" in raw_webhook:
+            webhook, raw_token = raw_webhook.split("?")
 
-            if raw_token.startswith('token='):
-                _, token = raw_token.split('=')
+            if raw_token.startswith("token="):
+                _, token = raw_token.split("=")
         else:
             webhook = raw_webhook
 
         logger.info(f"webhook: {webhook}, token: {token}")
 
-        pc_result = await add_item_hybrid(item)
+        _idx_t0 = time.monotonic()
+        _idx_error: str | None = None
+        pc_result = None
+        try:
+            pc_result = await add_item_hybrid(item)
+        except Exception as _idx_exc:
+            _idx_error = str(_idx_exc)
+            raise
+        finally:
+            _idx_duration_ms = int((time.monotonic() - _idx_t0) * 1000)
+            _et, _pl = analytics.events.content_indexed(
+                kb_id=item.namespace,
+                kb_name=item.namespace,
+                embedding_model=analytics.events.get_embedding_model_name(
+                    item.embedding
+                ),
+                engine=analytics.events.get_engine_value(item.engine),
+                duration_ms=_idx_duration_ms,
+                success=_idx_error is None,
+                source_url=item.source,
+                source_type=item.type,
+                chunks_indexed=(pc_result.chunks or 0)
+                if _idx_error is None and pc_result is not None
+                else 0,
+                error_message=_idx_error,
+                request_id=item.request_id,
+            )
+            analytics.publish_nowait(_et, item.id_project, _pl)
 
-        scrape_status_response = ScrapeStatusResponse(status_message="Indexing finish",
-                                                      status_code=3
-                                                      )
-        add_to_queue = await redis_client.set(f"{item.namespace}/{item.id}",
-                                              scrape_status_response.model_dump_json(),
-                                              ex=expiration_in_seconds)
+        scrape_status_response = ScrapeStatusResponse(
+            status_message="Indexing finish", status_code=3
+        )
+        add_to_queue = await redis_client.set(
+            f"{item.namespace}/{item.id}",
+            scrape_status_response.model_dump_json(),
+            ex=expiration_in_seconds,
+        )
 
-        return JSONResponse(content=pc_result.model_dump(exclude_none=True)) # {"message": f"Item {item.id} created successfully"})
+        return JSONResponse(
+            content=pc_result.model_dump(exclude_none=True)
+        )  # {"message": f"Item {item.id} created successfully"})
 
     except Exception as e:
-        scrape_status_response = ScrapeStatusResponse(status_message="Error",
-                                                      status_code=4
-                                                      )
-        add_to_queue = await redis_client.set(f"{item.namespace}/{item.id}",
-                                              scrape_status_response.model_dump_json(),
-                                              ex=expiration_in_seconds)
+        scrape_status_response = ScrapeStatusResponse(
+            status_message="Error", status_code=4
+        )
+        add_to_queue = await redis_client.set(
+            f"{item.namespace}/{item.id}",
+            scrape_status_response.model_dump_json(),
+            ex=expiration_in_seconds,
+        )
 
         logger.error(f"Error {add_to_queue}")
         import traceback
@@ -648,7 +800,11 @@ async def create_scrape_item_hybrid(item: ItemSingle, redis_client: Redis = Depe
         raise HTTPException(status_code=400, detail=repr(e))
 
 
-@app.post("/api/qa", response_model=Union[RetrievalResult, RetrievalChunksResult], tags=["Question & Answer"])
+@app.post(
+    "/api/qa",
+    response_model=Union[RetrievalResult, RetrievalChunksResult],
+    tags=["Question & Answer"],
+)
 async def post_ask_with_memory_main(question_answer: QuestionAnswer):
     """
     Query and Answer with chat history.
@@ -663,6 +819,7 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
     if question_answer.use_cache:
         from tilellm.shared.cache import SemanticCache
         from tilellm.shared.embedding_factory import create_embedding_instance
+
         try:
             embedding_model, _ = await create_embedding_instance(question_answer)
             query_text = question_answer.retrieval_query or question_answer.question
@@ -673,21 +830,31 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
                 embedding=embedding,
             )
             if cached is not None:
-                result = RetrievalResult(**{k: v for k, v in cached.items() if not k.startswith("_")})
-                logger.info(f"/api/qa cache hit (level={cached.get('_cache_level')}, cosine={cached.get('_cache_similarity', 1.0):.4f})")
+                result = RetrievalResult(
+                    **{k: v for k, v in cached.items() if not k.startswith("_")}
+                )
+                logger.info(
+                    f"/api/qa cache hit (level={cached.get('_cache_level')}, cosine={cached.get('_cache_similarity', 1.0):.4f})"
+                )
                 return result
         except Exception as e:
-            logger.warning(f"/api/qa cache lookup failed ({e}), proceeding without cache")
+            logger.warning(
+                f"/api/qa cache lookup failed ({e}), proceeding without cache"
+            )
 
-    if question_answer.search_type == 'hybrid':
+    if question_answer.search_type == "hybrid":
+        _qa_t0 = time.monotonic()
         result = await ask_hybrid_with_memory(question_answer)
     else:
+        _qa_t0 = time.monotonic()
         result = await ask_with_memory(question_answer)
+    _qa_latency_ms = int((time.monotonic() - _qa_t0) * 1000)
 
     # Store in cache on success
     if question_answer.use_cache:
         from tilellm.shared.cache import SemanticCache
         from tilellm.shared.embedding_factory import create_embedding_instance
+
         try:
             embedding_model, _ = await create_embedding_instance(question_answer)
             query_text = question_answer.retrieval_query or question_answer.question
@@ -703,6 +870,27 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
             logger.warning(f"/api/qa cache store failed ({e})")
 
     logger.debug(result)
+
+    # Analytics: emit kb.query_executed (fire-and-forget)
+    from tilellm.analytics import events as an_events
+
+    _reranker_model = an_events.get_reranker_model(question_answer)
+    _et, _pl = an_events.kb_query(
+        kb_id=question_answer.namespace,
+        kb_name=question_answer.namespace,
+        query_text=question_answer.question
+        if isinstance(question_answer.question, str)
+        else str(question_answer.question),
+        chunks_retrieved=len(result.content_chunks or [])
+        if hasattr(result, "content_chunks")
+        else 0,
+        reranking_applied=bool(question_answer.reranking),
+        reranker_model=_reranker_model,
+        latency_ms=_qa_latency_ms,
+        request_id=question_answer.request_id,
+    )
+    analytics.publish_nowait(_et, question_answer.id_project, _pl)
+
     return result
 
 
@@ -763,10 +951,10 @@ async def post_ask_to_llm_reason_main(question: QuestionToLLM):
     return await ask_reason_llm(question=question)
 
 
-@app.post("/api/scrape/status", response_model=
-          ScrapeStatusResponse, tags=["Scrape"])
-async def scrape_status_main(scrape_status_req: ScrapeStatusReq,
-                             redis_client: Redis = Depends(get_redis_client)):
+@app.post("/api/scrape/status", response_model=ScrapeStatusResponse, tags=["Scrape"])
+async def scrape_status_main(
+    scrape_status_req: ScrapeStatusReq, redis_client: Redis = Depends(get_redis_client)
+):
     """
     Check status of indexing
     :param scrape_status_req:
@@ -774,19 +962,24 @@ async def scrape_status_main(scrape_status_req: ScrapeStatusReq,
     :return:
     """
     try:
-        retrieved_data = await redis_client.get(f"{scrape_status_req.namespace}/{scrape_status_req.id}")
+        retrieved_data = await redis_client.get(
+            f"{scrape_status_req.namespace}/{scrape_status_req.id}"
+        )
         if retrieved_data:
             logger.debug(retrieved_data)
-            scrape_status_response = ScrapeStatusResponse.model_validate(json.loads(retrieved_data.decode('utf-8')))
+            scrape_status_response = ScrapeStatusResponse.model_validate(
+                json.loads(retrieved_data.decode("utf-8"))
+            )
             return JSONResponse(content=scrape_status_response.model_dump())
         else:
             try:
                 repository_engine = RepositoryEngine(engine=scrape_status_req.engine)
                 print(repository_engine.engine)
-                retrieved_pinecone_data = await get_ids_namespace(repository_engine,
-                                                                  metadata_id=scrape_status_req.id,
-                                                                  namespace=scrape_status_req.namespace)
-
+                retrieved_pinecone_data = await get_ids_namespace(
+                    repository_engine,
+                    metadata_id=scrape_status_req.id,
+                    namespace=scrape_status_req.namespace,
+                )
 
                 if retrieved_pinecone_data.matches:
                     logger.debug(retrieved_pinecone_data.matches[0].date)
@@ -794,21 +987,28 @@ async def scrape_status_main(scrape_status_req: ScrapeStatusReq,
                     scrape_status_response = ScrapeStatusResponse(
                         status_message=f"Indexing finished - verified in Pinecone metadata - date:{date_from_metadata}",
                         status_code=3,
-                        queue_order=-1)
+                        queue_order=-1,
+                    )
                     return JSONResponse(content=scrape_status_response.model_dump())
 
                 else:
                     raise Exception("Pinecone data not found")
             except Exception as int_ex:
-                raise Exception(f"{repr(int_ex)}, id: {scrape_status_req.id}, namespace: {scrape_status_req.namespace}")
+                raise Exception(
+                    f"{repr(int_ex)}, id: {scrape_status_req.id}, namespace: {scrape_status_req.namespace}"
+                )
 
     except Exception as ex:
         raise HTTPException(status_code=400, detail=repr(ex))
 
 
-@app.post("/api/delete/id", deprecated=True,
-          description="This endpoint is deprecated and  is no longer supported. "
-                      "Use method DELETE /api/id/{id}/namespace/{namespace}", tags=["Namespace"])
+@app.post(
+    "/api/delete/id",
+    deprecated=True,
+    description="This endpoint is deprecated and  is no longer supported. "
+    "Use method DELETE /api/id/{id}/namespace/{namespace}",
+    tags=["Namespace"],
+)
 async def delete_item_id_namespace_post(item_to_delete: RepositoryItem):
     """
     Delete items from namespace given document id via POST.
@@ -822,9 +1022,19 @@ async def delete_item_id_namespace_post(item_to_delete: RepositoryItem):
         logger.info(f"delete of id {metadata_id} dal namespace {namespace}")
         await delete_id_from_namespace(item_to_delete, metadata_id, namespace)
 
-        return JSONResponse(content={"success": True, "message": f"ids {metadata_id} in Namespace {namespace} deleted"})
+        return JSONResponse(
+            content={
+                "success": True,
+                "message": f"ids {metadata_id} in Namespace {namespace} deleted",
+            }
+        )
     except Exception as ex:
-        return JSONResponse(content={"success": False, "message": f"ids {metadata_id} in Namespace {namespace} not deleted due to {repr(ex)}"})
+        return JSONResponse(
+            content={
+                "success": False,
+                "message": f"ids {metadata_id} in Namespace {namespace} not deleted due to {repr(ex)}",
+            }
+        )
         # raise HTTPException(status_code=400, detail=repr(ex))
 
 
@@ -837,12 +1047,26 @@ async def delete_namespace_main_post(namespace_to_delete: RepositoryNamespace):
     """
     try:
         await delete_namespace(namespace_to_delete)
-        return JSONResponse(content={"success": "true", "message": f"{namespace_to_delete.namespace} is deleted from database"})
+        return JSONResponse(
+            content={
+                "success": "true",
+                "message": f"{namespace_to_delete.namespace} is deleted from database",
+            }
+        )
     except Exception as ex:
-        return JSONResponse(content={"success": "false", "message": f"namespace {namespace_to_delete.namespace} is not deleted. {repr(ex)}"})
+        return JSONResponse(
+            content={
+                "success": "false",
+                "message": f"namespace {namespace_to_delete.namespace} is not deleted. {repr(ex)}",
+            }
+        )
 
 
-@app.get("/api/list/namespace/{token}", response_model=RepositoryNamespaceResult, tags=["Namespace"])
+@app.get(
+    "/api/list/namespace/{token}",
+    response_model=RepositoryNamespaceResult,
+    tags=["Namespace"],
+)
 async def list_namespace_main(token: str):
     """
     Get all namespaces with id and vector count
@@ -850,7 +1074,7 @@ async def list_namespace_main(token: str):
     """
     try:
         engine_dec = decode_jwt(token)
-        #print(type(engine_dec))
+        # print(type(engine_dec))
         logger.debug("All Namespaces ")
         repository_engine = RepositoryEngine(**engine_dec)
         result = await get_list_namespace(repository_engine)
@@ -860,7 +1084,11 @@ async def list_namespace_main(token: str):
         raise HTTPException(status_code=400, detail=repr(ex))
 
 
-@app.get("/api/id/{metadata_id}/namespace/{namespace}/{token}", response_model=RepositoryItems, tags=["Namespace"])
+@app.get(
+    "/api/id/{metadata_id}/namespace/{namespace}/{token}",
+    response_model=RepositoryItems,
+    tags=["Namespace"],
+)
 async def get_items_id_namespace_main(token: str, metadata_id: str, namespace: str):
     """
     Get all items from namespace given id of document
@@ -881,7 +1109,11 @@ async def get_items_id_namespace_main(token: str, metadata_id: str, namespace: s
         raise HTTPException(status_code=400, detail=repr(ex))
 
 
-@app.get("/api/desc/namespace/{namespace}/{token}", response_model=RepositoryDescNamespaceResult, tags=["Namespace"])
+@app.get(
+    "/api/desc/namespace/{namespace}/{token}",
+    response_model=RepositoryDescNamespaceResult,
+    tags=["Namespace"],
+)
 async def list_namespace_items_desc_main(token: str, namespace: str):
     """
     Get description for given namespace
@@ -902,7 +1134,11 @@ async def list_namespace_items_desc_main(token: str, namespace: str):
         raise HTTPException(status_code=400, detail=repr(ex))
 
 
-@app.get("/api/listitems/namespace/{namespace}/{token}", response_model=RepositoryItems, tags=["Namespace"])
+@app.get(
+    "/api/listitems/namespace/{namespace}/{token}",
+    response_model=RepositoryItems,
+    tags=["Namespace"],
+)
 async def list_namespace_items_main(token: str, namespace: str):
     """
     Get all item with given namespace
@@ -921,10 +1157,14 @@ async def list_namespace_items_main(token: str, namespace: str):
         logger.error(ex)
         raise HTTPException(status_code=400, detail=repr(ex))
 
-@app.get("/api/listcompleteitems/namespace/{namespace}/all", response_model=RepositoryItems, tags=["Namespace"])
+
+@app.get(
+    "/api/listcompleteitems/namespace/{namespace}/all",
+    response_model=RepositoryItems,
+    tags=["Namespace"],
+)
 async def list_namespace_items_with_text(
-    namespace: str,
-    credentials: HTTPAuthorizationCredentials = Depends(security)
+    namespace: str, credentials: HTTPAuthorizationCredentials = Depends(security)
 ):
     """
     Get all items with given namespace
@@ -945,7 +1185,9 @@ async def list_namespace_items_with_text(
         raise HTTPException(status_code=400, detail=repr(ex))
 
 
-@app.get("/api/items", response_model=RepositoryItems, tags=["Namespace"])#?source={source}&namespace={namespace}&token={token}
+@app.get(
+    "/api/items", response_model=RepositoryItems, tags=["Namespace"]
+)  # ?source={source}&namespace={namespace}&token={token}
 async def get_items_source_namespace_main(source: str, namespace: str, token: str):
     """
     Get all item given the source and namespace
@@ -959,13 +1201,14 @@ async def get_items_source_namespace_main(source: str, namespace: str, token: st
         engine_dec = decode_jwt(token)
         repository_engine = RepositoryEngine(**engine_dec)
         from urllib.parse import unquote
+
         source = unquote(source)
         result = await get_sources_namespace(repository_engine, source, namespace)
 
         return JSONResponse(content=result.model_dump())
     except Exception as ex:
         logger.error(ex)
-        raise HTTPException(status_code=400, detail=repr(ex) )
+        raise HTTPException(status_code=400, detail=repr(ex))
 
 
 @app.delete("/api/namespace/{namespace}/{token}", tags=["Namespace"])
@@ -985,16 +1228,23 @@ async def delete_namespace_main(token: str, namespace: str):
         await delete_namespace(namespace_to_delete)
         # Invalidate cache for this namespace (strategy B: full namespace invalidation)
         from tilellm.shared.cache import SemanticCache
+
         await SemanticCache.invalidate_namespace(namespace)
         return JSONResponse(content={"message": f"Namespace {namespace} deleted"})
     except Exception as ex:
-        return JSONResponse(content={"success": "false",
-                                     "message": f"namespace is not deleted. {repr(ex)}"})
-        #raise HTTPException(status_code=400, detail=repr(ex))
+        return JSONResponse(
+            content={
+                "success": "false",
+                "message": f"namespace is not deleted. {repr(ex)}",
+            }
+        )
+        # raise HTTPException(status_code=400, detail=repr(ex))
 
 
 @app.delete("/api/chunk/{chunk_id}/namespace/{namespace}/{token}", tags=["Namespace"])
-async def delete_item_chunk_id_namespace_main(token: str, chunk_id: str, namespace: str):
+async def delete_item_chunk_id_namespace_main(
+    token: str, chunk_id: str, namespace: str
+):
     """
     Delete items from namespace identified by id and namespace
     :param token
@@ -1003,14 +1253,15 @@ async def delete_item_chunk_id_namespace_main(token: str, chunk_id: str, namespa
     :return:
     """
     try:
-
         logger.info(f"delete id {chunk_id} dal namespace {namespace}")
         engine_dec = decode_jwt(token)
         repository_engine = RepositoryEngine(**engine_dec)
 
         await delete_chunk_id_from_namespace(repository_engine, chunk_id, namespace)
 
-        return JSONResponse(content={"message": f"ids {chunk_id} in Namespace {namespace} deleted"})
+        return JSONResponse(
+            content={"message": f"ids {chunk_id} in Namespace {namespace} deleted"}
+        )
     except Exception as ex:
         print(repr(ex))
         logger.error(ex)
@@ -1030,14 +1281,15 @@ async def delete_item_id_namespace_main(token: str, metadata_id: str, namespace:
         logger.info(f"delete id {metadata_id} dal namespace {namespace}")
         engine_dec = decode_jwt(token)
         engine = Engine(**engine_dec["engine"])
-        item_to_delete = RepositoryItem(id=metadata_id,
-                                        namespace=namespace,
-                                        engine=engine
+        item_to_delete = RepositoryItem(
+            id=metadata_id, namespace=namespace, engine=engine
         )
-        #repository_engine = RepositoryEngine(**engine_dec)
+        # repository_engine = RepositoryEngine(**engine_dec)
         await delete_id_from_namespace(item_to_delete, metadata_id, namespace)
 
-        return JSONResponse(content={"message": f"ids {metadata_id} in Namespace {namespace} deleted"})
+        return JSONResponse(
+            content={"message": f"ids {metadata_id} in Namespace {namespace} deleted"}
+        )
     except Exception as ex:
         logger.error(ex)
         raise HTTPException(status_code=400, detail=repr(ex))
@@ -1049,16 +1301,21 @@ async def get_prometheus_metrics():
     try:
         from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
         from fastapi.responses import Response
+
         return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
     except ImportError:
         from fastapi.responses import JSONResponse
-        return JSONResponse({"error": "prometheus_client not installed"}, status_code=501)
+
+        return JSONResponse(
+            {"error": "prometheus_client not installed"}, status_code=501
+        )
 
 
 @app.get("/api/cache/stats", tags=["Cache"])
 async def get_cache_stats(namespace: Optional[str] = None):
     """Return semantic cache stats (entry count per namespace or all)."""
     from tilellm.shared.cache import SemanticCache
+
     return await SemanticCache.stats(namespace=namespace)
 
 
@@ -1066,6 +1323,7 @@ async def get_cache_stats(namespace: Optional[str] = None):
 async def delete_cache_namespace(namespace: str):
     """Manually invalidate all cache entries for a namespace."""
     from tilellm.shared.cache import SemanticCache
+
     deleted = await SemanticCache.invalidate_namespace(namespace)
     return {"deleted": deleted, "namespace": namespace}
 
@@ -1090,32 +1348,34 @@ def register_feature_routers(_app: FastAPI, base_package_dir: str):
     # Controlla se la directory dei moduli esiste.
     if not base_path.is_dir():
         # Se non esiste, stampa un messaggio informativo e termina la funzione.
-        logger.warning(f"Directory dei moduli '{base_package_dir}' non trovata. Nessun router dinamico sarà caricato.")
+        logger.warning(
+            f"Directory dei moduli '{base_package_dir}' non trovata. Nessun router dinamico sarà caricato."
+        )
         return
     # -----------------------
 
     # Carica la configurazione dei servizi
     service_config = get_service_config()
     services_enabled = service_config.get("services", {})
-    
+
     # Mappatura directory -> chiave di configurazione
     module_config_mapping = {
         "task_executor": "task_executor",
         "knowledge_graph": "graphrag",
         "knowledge_graph_falkor": "graphrag_falkor",
         "raptor": "raptor",
-        "compliance_checker":"compliance",
+        "compliance_checker": "compliance",
         "pdf_ocr": "pdf_ocr",
         "conversion": "conversion",
         "tools_registry": "tools_registry",
-        "api_v2":"api_v2",
-        "ingestion": "ingestion"
+        "api_v2": "api_v2",
+        "ingestion": "ingestion",
     }
-    
+
     # Se la configurazione non esiste o è vuota, abilita tutti i moduli (compatibilità all'indietro)
     enable_all = len(services_enabled) == 0
 
-    package_name = str(base_path).replace(os.path.sep, '.')
+    package_name = str(base_path).replace(os.path.sep, ".")
 
     logger.info(f"🔍 Sto cercando i servizi nella directory: '{base_path}'...")
     if not enable_all:
@@ -1126,7 +1386,7 @@ def register_feature_routers(_app: FastAPI, base_package_dir: str):
         if service_dir.is_dir():
             module_name = service_dir.name
             config_key = module_config_mapping.get(module_name)
-            
+
             # Determina se il modulo deve essere caricato
             should_load = False
             if module_name == "ingestion":
@@ -1138,12 +1398,16 @@ def register_feature_routers(_app: FastAPI, base_package_dir: str):
             else:
                 # Modulo non nella mappatura, caricamento di default (disabilitato per sicurezza)
                 should_load = False
-                logger.info(f"⚠️  Modulo '{module_name}' non mappato, verrà saltato. Aggiungilo a module_config_mapping per abilitarlo.")
-            
+                logger.info(
+                    f"⚠️  Modulo '{module_name}' non mappato, verrà saltato. Aggiungilo a module_config_mapping per abilitarlo."
+                )
+
             if not should_load:
-                logger.info(f"⏭️  Modulo '{module_name}' disabilitato in configurazione, salto.")
+                logger.info(
+                    f"⏭️  Modulo '{module_name}' disabilitato in configurazione, salto."
+                )
                 continue
-                
+
             controller_file = service_dir / "controllers.py"
 
             if controller_file.exists():
@@ -1152,15 +1416,23 @@ def register_feature_routers(_app: FastAPI, base_package_dir: str):
                 try:
                     module = importlib.import_module(module_path)
 
-                    if hasattr(module, "router") and isinstance(module.router, APIRouter):
-                        logger.info(f"✅ Trovato e registrato il router da: '{module_path}'")
+                    if hasattr(module, "router") and isinstance(
+                        module.router, APIRouter
+                    ):
+                        logger.info(
+                            f"✅ Trovato e registrato il router da: '{module_path}'"
+                        )
                         _app.include_router(module.router)
                         found_routers = True
                     else:
-                        logger.info(f"⚠️  Nel modulo '{module_path}' non è stato trovato un APIRouter chiamato 'router'.")
+                        logger.info(
+                            f"⚠️  Nel modulo '{module_path}' non è stato trovato un APIRouter chiamato 'router'."
+                        )
 
                 except Exception as e:
-                    logger.info(f"❌ Errore durante il caricamento di '{module_path}': {e}")
+                    logger.info(
+                        f"❌ Errore durante il caricamento di '{module_path}': {e}"
+                    )
             else:
                 logger.info(f"📁 Modulo '{module_name}' non ha controllers.py, salto.")
 
@@ -1173,9 +1445,11 @@ register_feature_routers(app, "tilellm/modules")
 
 def main():
     import uvicorn
-    uvicorn.run("tilellm.__main__:app", host="0.0.0.0", port=8000, reload=True, log_level="info")#, log_config=args.log_path
+
+    uvicorn.run(
+        "tilellm.__main__:app", host="0.0.0.0", port=8000, reload=True, log_level="info"
+    )  # , log_config=args.log_path
 
 
 if __name__ == "__main__":
-
     main()
