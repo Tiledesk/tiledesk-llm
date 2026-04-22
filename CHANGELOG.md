@@ -7,6 +7,15 @@
 
 ---
 ## [2026-04-22]
+### 0.10.1-rc4 (fix: situated context regression on per-row table chunks)
+
+Fixed a retrieval regression introduced when `situated_context` was enabled on table data: per-row chunks all received the same generic table-level description, causing near-identical embeddings and making row-level retrieval unreliable.
+
+- Added `_SITUATED_CONTEXT_TABLE_ROW_PROMPT` — a dedicated prompt for `element_type=table_rows` chunks that generates a specific natural-language sentence for each row referencing its actual cell values (e.g. *"Product Alpha (SKU: A001) costs €9.99."*). Previously, all rows shared one table-level description → embeddings collapsed → queries like *"price of product X"* returned wrong rows.
+- Fixed `doc_context` selection for table chunks: `enrich_chunks_with_situated_context` now uses `metadata["source"]` (the source URL) instead of the first 150 characters of pipe-delimited markdown content, which was useless as document context.
+- Added 12 unit tests in `tests/unit/shared/test_situated_context_table.py` covering prompt routing by `element_type`, source URL as doc_context, uniqueness of per-row responses, and integration with `enrich_chunks_with_situated_context`.
+
+---
 ### 0.10.1-rc3 (table-aware web ingestion)
 
 Optimization of the ingestion pipeline for web pages containing HTML tables (product catalogs, price lists, data tables). Tables are now preserved as structured chunks instead of being fragmented by the generic text splitter.

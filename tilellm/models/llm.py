@@ -87,7 +87,7 @@ class ItemSingle(BaseModel):
     sparse_encoder: Union[str, TEIConfig, None] = Field(default="splade") # spade|bge-m3 or TEIConfig
     gptkey: SecretStr | None = None
     scrape_type: int = Field(default_factory=lambda: 0)
-    embedding: Union[str, LlmEmbeddingModel] = Field(default="text-embedding-ada-002")
+    embedding: Union[str, LlmEmbeddingModel] = Field(default="text-embedding-3-small")
     browser_headers: Dict[str, str] = Field(
         default_factory=lambda: {'user-agent': 'Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36'}
     )

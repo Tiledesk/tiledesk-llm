@@ -51,15 +51,28 @@ Here is the context of the broader document this table was extracted from:
 {doc_context}
 </document_context>
 
-The following is a data table with columns: {col_names}
+The following is a complete data table with columns: {col_names}
 
 <table>
 {chunk_text}
 </table>
 
-Write 1-2 sentences that describe what this table or table excerpt represents \
-(e.g. its topic, the kind of data it holds, and what a reader could learn from it). \
+Write 1-2 sentences that describe what this table represents: its topic, \
+the kind of entities it lists, and what data it holds. \
 Reply with only the situating sentences, with no preamble or explanation."""
+
+_SITUATED_CONTEXT_TABLE_ROW_PROMPT = """\
+The following is a single row from a data table extracted from: {doc_context}
+The table has these columns: {col_names}
+
+<row>
+{chunk_text}
+</row>
+
+Write 1-2 sentences that describe the specific item or entity represented by this row, \
+referencing its actual values (not generic statements about the table structure). \
+For example: "Product Alpha (SKU: A001) costs €9.99 and belongs to the Electronics category." \
+Reply with only the descriptive sentences, with no preamble or explanation."""
 
 _TABLE_ELEMENT_TYPES = {"table", "table_rows"}
 
@@ -75,14 +88,26 @@ async def _generate_situated_context(
     Returns:
         (context_text, token_usage) where token_usage has input_tokens/output_tokens/total_tokens.
     """
-    is_table = (
-        chunk_metadata is not None
-        and chunk_metadata.get("element_type") in _TABLE_ELEMENT_TYPES
-    )
-    if is_table:
-        col_names = chunk_metadata.get("col_names", "")
+    element_type = chunk_metadata.get("element_type") if chunk_metadata else None
+    col_names = (chunk_metadata.get("col_names", "") if chunk_metadata else "") or ""
+    source = (chunk_metadata.get("source", "") if chunk_metadata else "") or ""
+
+    if element_type == "table_rows":
+        # Per-row chunks: generate a row-specific description so that each row gets
+        # a unique embedding that captures its actual cell values (e.g. "Product Alpha,
+        # SKU A001, price €9.99").  A generic table-level description would be
+        # identical for all rows and collapse their embeddings → bad retrieval.
+        table_doc_context = source or doc_context
+        prompt = _SITUATED_CONTEXT_TABLE_ROW_PROMPT.format(
+            doc_context=table_doc_context,
+            col_names=col_names,
+            chunk_text=chunk_text[:1200],
+        )
+    elif element_type == "table":
+        # Atomic/adaptive table: describe what the table represents as a whole.
+        table_doc_context = source or doc_context
         prompt = _SITUATED_CONTEXT_TABLE_PROMPT.format(
-            doc_context=doc_context,
+            doc_context=table_doc_context,
             col_names=col_names,
             chunk_text=chunk_text[:1200],
         )
@@ -127,8 +152,14 @@ async def enrich_chunks_with_situated_context(
         return SituatedContextResult(documents=documents)
 
     if doc_context is None:
-        combined = " ".join(d.page_content[:150] for d in documents[:8])
-        doc_context = combined[:800]
+        # For table chunks the first chars are pipe-delimited markdown — useless as
+        # document context.  Fall back to the source URL when available.
+        first_doc_meta = documents[0].metadata if documents else {}
+        if first_doc_meta.get("element_type") in _TABLE_ELEMENT_TYPES:
+            doc_context = first_doc_meta.get("source", "") or ""
+        else:
+            combined = " ".join(d.page_content[:150] for d in documents[:8])
+            doc_context = combined[:800]
 
     semaphore = asyncio.Semaphore(max_concurrent)
 
