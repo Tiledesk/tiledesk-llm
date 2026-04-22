@@ -1,6 +1,7 @@
 from .base import (LLMEmbeddingProviders as LLMEmbeddingProviders,
                    AWSAuthentication as AWSAuthentication,
                    ServerConfig as ServerConfig)
+from .document_type import DocumentType as DocumentType
 from .embedding import (LlmEmbeddingModel as LlmEmbeddingModel,
                         #EmbeddingModel as EmbeddingModel,
                         EMBEDDING_CONFIGS as EMBEDDING_CONFIGS,)
@@ -17,6 +18,8 @@ from .llm import (ItemSingle as ItemSingle,
                   MetadataItem as MetadataItem,
                   QuestionAnswer as QuestionAnswer,
                   QuestionToLLM as QuestionToLLM,
+                  SituatedContextConfig as SituatedContextConfig,
+                  TableOptions as TableOptions,
                   ToolOptions as ToolOptions,
                   rebuild_llm_models)
 

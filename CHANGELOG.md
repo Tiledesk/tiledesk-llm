@@ -6,6 +6,47 @@
 ### **Copyright**: Tiledesk SRL
 
 ---
+## [2026-04-22]
+### 0.10.1-rc3 (table-aware web ingestion)
+
+Optimization of the ingestion pipeline for web pages containing HTML tables (product catalogs, price lists, data tables). Tables are now preserved as structured chunks instead of being fragmented by the generic text splitter.
+
+#### New files
+- Added: `tilellm/modules/ingestion/table_chunker.py` — centralised table splitter with three strategies:
+  - `atomic` — one chunk per table, always.
+  - `per_row` — one chunk per data row, header repeated in each chunk. Best for product-catalog queries ("give me product X").
+  - `adaptive` (default) — atomic if total table size ≤ `max_table_chars` (default 8 000 chars ≈ 2 000 tokens), split by row groups otherwise. Balances cost and retrieval quality.
+  - Each chunk carries enriched metadata: `element_type` (`"table"` or `"table_rows"`), `chunk_type="table"`, `col_names`, `table_index`, `row_range` (string `"start-end"`, Pinecone-compatible), `total_rows`, `row_index`.
+  - Fallback: if markdown parsing fails, returns the document intact (graceful degradation).
+
+#### Modified files
+- Changed: `tilellm/models/llm.py` — new `TableOptions` Pydantic model (`enable`, `strategy`, `max_table_chars`, `header_repeat`). Added `table_options: Optional[TableOptions] = None` to `ItemSingle`. Default `TableOptions()` applies adaptively with zero config; `{"enable": false}` restores previous behaviour.
+- Changed: `tilellm/models/__init__.py` — exports `TableOptions` and `SituatedContextConfig`.
+- Changed: `tilellm/tools/document_tools.py`:
+  - `_extract_html_tables` — fallback when `tabulate` is not installed now produces proper pipe-delimited markdown natively (previously fell back to `df.to_string()` which has no `|` delimiters and broke downstream parsing).
+  - `handle_chromium_loader` — captures raw HTML before the transformer runs; calls `_extract_html_tables(raw_html, url)` and appends table Documents to the result. Covers **scrape_type 3** (Html2TextTransformer) and **scrape_type 4** (BeautifulSoupTransformer), which previously discarded table structure entirely. scrape_type 0/1/2/5 already extracted tables; behaviour unchanged.
+- Changed: `tilellm/store/pinecone/pinecone_repository_serverless.py` — `chunk_documents`: if `element_type == "table"` and `table_options.enable=True`, routes to `split_table_document` instead of `chunk_data_extended`. Non-table documents follow the existing splitter path unchanged.
+- Changed: `tilellm/store/qdrant/qdrant_repository_local.py` — same bypass as above.
+- Changed: `tilellm/store/milvus/milvus_repository.py` — same bypass as above.
+- Changed: `tilellm/shared/situated_context.py`:
+  - Added `_SITUATED_CONTEXT_TABLE_PROMPT` — table-aware prompt that injects `col_names` and instructs the LLM to describe the table's topic and data type (e.g. *"Product pricing table with columns SKU, Name, Price; this row describes product X."*).
+  - `_generate_situated_context` now accepts optional `chunk_metadata: dict` and selects the table prompt when `element_type` is `"table"` or `"table_rows"`.
+  - `enrich_chunks_with_situated_context` passes each doc's metadata to `_generate_situated_context` — fully backward-compatible (existing callers without table metadata use the original generic prompt).
+
+
+With `strategy="per_row"`, each product row becomes an independent chunk with its header repeated — optimal for queries like *"what is the price of product X?"*. With `strategy="adaptive"` (default), small tables remain as a single chunk and large ones are split by row groups.
+
+---
+## [2026-04-12]
+### 0.10.1-rc2 (unified ingestion — auto type detection)
+- Added: `tilellm/models/document_type.py` — `DocumentType(str, Enum)` with 11 canonical values: `auto`, `url`, `pdf`, `docx`, `text`, `txt`, `md`, `xlsx`, `xls`, `csv`, `regex_custom`. Extends `str` so all existing string comparisons in repositories are backward-compatible without modification.
+- Added: `tilellm/modules/ingestion/type_detector.py` — deterministic, zero-cost (no network, no LLM) auto-detection with 6-level priority chain: (1) magic bytes from base64 `file_content` — PDF (`%PDF`), OLE2/XLS (`\xD0\xCF\x11\xE0`), ZIP-ambiguous DOCX/XLSX falls through; (2) extension from `file_name`; (3) extension from `source` URL path (query-string/fragment stripped); (4) URL heuristic — `http(s)` source with no known file extension → `url`; (5) direct text content (`content` field, no source) → `text`; (6) no signal → `None`. Public API: `detect_document_type(source, content, file_name, file_content)` and `resolve_item_type(current_type, ...)`.
+- Changed: `ItemSingle.type` — from `str | None` to `Optional[DocumentType]` with full description of accepted values. Pydantic validates and rejects unknown values; `"auto"` and `None` both trigger auto-detection. Backward-compatible — callers that already pass `"pdf"`, `"docx"` etc. are unaffected.
+- Added: `DocumentType.TEXT = "text"` — new explicit type for direct text content passed in the `content` field. Routed to the `process_auto_detected_text` path in all repositories (markdown, tabular, or plain sub-format auto-detected at chunk time). Previously only worked implicitly via `type=None`; now first-class.
+- Changed: `tilellm/modules/ingestion/controllers.py` — `unified_ingestion` calls `_resolve_type(item)` at entry, applies `model_copy(update={"type": resolved})` to propagate the resolved type, logs auto-detection events. Routing conditions updated to `DocumentType` enum comparisons. Fixed latent bug: `type=None + source="file.pdf"` previously fell into the direct-text `else` branch (attempting `process_auto_detected_text(content=None)`); now correctly resolved to `pdf` before routing.
+- Added: `tests/unit/modules/ingestion/test_type_detector.py` — 51 tests across `TestMagicFromBase64`, `TestExtFromPath`, `TestDetectDocumentType`, `TestResolveItemType`. All pure-function, no network, no GPU.
+
+---
 ## [2026-04-02]
 ### 0.10.0
 - Feature: Unified ingestion for all document types (PDF, DOCX, HTML with scraping) through the new endpoint `POST /api/ingestion`. Automatic routing to the appropriate pipeline (OCR, hybrid, default) based on the provided options.

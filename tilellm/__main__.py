@@ -660,17 +660,18 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
         return await ask_for_chunks(question_answer)
 
     # Semantic cache lookup (only when use_cache=True)
+    query_embedding = None
     if question_answer.use_cache:
         from tilellm.shared.cache import SemanticCache
         from tilellm.shared.embedding_factory import create_embedding_instance
         try:
             embedding_model, _ = await create_embedding_instance(question_answer)
             query_text = question_answer.retrieval_query or question_answer.question
-            embedding = await embedding_model.aembed_query(query_text)
+            query_embedding = await embedding_model.aembed_query(query_text)
             cached = await SemanticCache.lookup(
                 namespace=question_answer.namespace,
                 question=question_answer.question,
-                embedding=embedding,
+                embedding=query_embedding,
             )
             if cached is not None:
                 result = RetrievalResult(**{k: v for k, v in cached.items() if not k.startswith("_")})
@@ -684,19 +685,15 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
     else:
         result = await ask_with_memory(question_answer)
 
-    # Store in cache on success
-    if question_answer.use_cache:
+    # Store in cache only on successful results, reusing the embedding computed at lookup
+    if question_answer.use_cache and query_embedding is not None and getattr(result, "success", True):
         from tilellm.shared.cache import SemanticCache
-        from tilellm.shared.embedding_factory import create_embedding_instance
         try:
-            embedding_model, _ = await create_embedding_instance(question_answer)
-            query_text = question_answer.retrieval_query or question_answer.question
-            embedding = await embedding_model.aembed_query(query_text)
             body = result.model_dump() if hasattr(result, "model_dump") else {}
             await SemanticCache.store(
                 namespace=question_answer.namespace,
                 question=question_answer.question,
-                embedding=embedding,
+                embedding=query_embedding,
                 body=body,
             )
         except Exception as e:

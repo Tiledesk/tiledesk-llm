@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field, SecretStr, field_validator, RootModel, mo
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from tilellm.models.base import AWSAuthentication, ServerConfig
+from tilellm.models.document_type import DocumentType
 from tilellm.models.embedding import LlmEmbeddingModel, EmbeddingModel
 from tilellm.models.schemas.multimodal_content import MultimodalContent
 from tilellm.models.schemas.general_schemas import ReasoningConfig
@@ -29,6 +30,27 @@ class SituatedContextConfig(BaseModel):
     max_tokens: int = Field(default=256)
 
 
+class TableOptions(BaseModel):
+    """Configuration for HTML/markdown table handling during web-page ingestion.
+
+    Tables extracted from web pages (``element_type=table`` documents) bypass the
+    generic recursive splitter and are routed through a dedicated chunker that
+    preserves row/column alignment.
+    """
+    enable: bool = Field(default=True, description="Enable dedicated table handling; when False tables pass through the generic splitter.")
+    strategy: Literal["atomic", "per_row", "adaptive"] = Field(
+        default="adaptive",
+        description=(
+            "Chunking strategy for tables. "
+            "'atomic' = one chunk per table. "
+            "'per_row' = one chunk per row with header repeated. "
+            "'adaptive' = atomic if size <= max_table_chars, otherwise split by row groups."
+        ),
+    )
+    max_table_chars: int = Field(default=8000, description="Size threshold (chars) for the adaptive strategy.")
+    header_repeat: bool = Field(default=True, description="Repeat the header row in every sub-chunk when splitting large tables.")
+
+
 class TEIConfig(BaseModel):
     provider: Literal["tei"] = "tei"
     name: str
@@ -49,7 +71,15 @@ class PineconeRerankerConfig(BaseModel):
 class ItemSingle(BaseModel):
     id: str
     source: str | None = None
-    type: str | None = None
+    type: Optional[DocumentType] = Field(
+        default=None,
+        description=(
+            "Document type for ingestion routing. "
+            "Accepted values: auto, url, pdf, docx, txt, md, xlsx, xls, csv, regex_custom. "
+            "Omit or pass 'auto' to let the system detect the format automatically "
+            "from magic bytes, file extension, or URL heuristics."
+        ),
+    )
     content: str | None = None
     hybrid: Optional[bool] = Field(default=False)
     hybrid_batch_size: Optional[int] = Field(default=10)
@@ -75,6 +105,10 @@ class ItemSingle(BaseModel):
     situated_context: Optional[SituatedContextConfig] = Field(
         default=None,
         description="Dedicated LLM configuration for Contextual Retrieval (situated context). Allows using a different/cheaper LLM for generating contextual sentences."
+    )
+    table_options: Optional[TableOptions] = Field(
+        default=None,
+        description="Dedicated handling for HTML tables extracted from web pages. When omitted the default TableOptions (adaptive strategy) is applied."
     )
 
     @model_validator(mode='after')
@@ -433,10 +467,14 @@ class QuestionToLLM(BaseModel):
 
     def create_mcp_client(self):
         """Crea un'istanza di MultiServerMCPClient dalla configurazione"""
+        import logging
+        _log = logging.getLogger(__name__)
         config_dict = {
             name: server_config.model_dump(exclude_unset=True, exclude={"enabled_tools"})
             for name, server_config in self.servers.items()
         }
+        for name, cfg in config_dict.items():
+            _log.info(f"MCP server '{name}' config (sanitized): transport={cfg.get('transport')}, url={cfg.get('url')}, headers_keys={list(cfg.get('headers', {}).keys()) if cfg.get('headers') else None}")
         return MultiServerMCPClient(config_dict)
 
 

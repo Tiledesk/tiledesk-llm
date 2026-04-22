@@ -211,6 +211,7 @@ async def process_docx_with_images(
         image_caption_docs.append(Document(page_content=caption, metadata=meta))
 
     # ── 6. Optional: situated context on all chunks ───────────────────────
+    sc_token_usage = None
     sc_config = getattr(question, 'situated_context', None)
     if (sc_config and sc_config.enable) and llm:
         try:
@@ -221,18 +222,29 @@ async def process_docx_with_images(
                 # Extract global doc context from the first few text paragraphs
                 combined_text = " ".join(d.page_content[:200] for d in enriched_text_docs[:10])
                 doc_context = combined_text[:1500]
+                sc_input = sc_output = sc_total = 0
 
                 if enriched_text_docs:
-                    enriched_text_docs = await enrich_chunks_with_situated_context(
+                    sc_r = await enrich_chunks_with_situated_context(
                         enriched_text_docs, sc_llm, doc_context=doc_context
                     )
+                    enriched_text_docs = sc_r.documents
+                    sc_input += sc_r.token_usage.get("input_tokens", 0)
+                    sc_output += sc_r.token_usage.get("output_tokens", 0)
+                    sc_total += sc_r.token_usage.get("total_tokens", 0)
                     logger.info("Situated context applied to %d DOCX text chunks", len(enriched_text_docs))
-                
+
                 if image_caption_docs:
-                    image_caption_docs = await enrich_chunks_with_situated_context(
+                    sc_r = await enrich_chunks_with_situated_context(
                         image_caption_docs, sc_llm, doc_context=doc_context
                     )
+                    image_caption_docs = sc_r.documents
+                    sc_input += sc_r.token_usage.get("input_tokens", 0)
+                    sc_output += sc_r.token_usage.get("output_tokens", 0)
+                    sc_total += sc_r.token_usage.get("total_tokens", 0)
                     logger.info("Situated context applied to %d DOCX image caption chunks", len(image_caption_docs))
+
+                sc_token_usage = {"input_tokens": sc_input, "output_tokens": sc_output, "total_tokens": sc_total}
 
         except Exception as exc:
             logger.warning("Situated context enrichment failed: %s", exc)
@@ -274,4 +286,5 @@ async def process_docx_with_images(
         "text_table_chunks": len(enriched_text_docs),
         "images_extracted": len(image_records),
         "image_chunks_indexed": len(image_caption_docs),
+        **({"situated_context_tokens": sc_token_usage} if sc_token_usage else {}),
     }

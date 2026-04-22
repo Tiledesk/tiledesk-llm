@@ -120,7 +120,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                                                          scrape_type,
                                                          parameters_scrape_type_4=parameters_scrape_type_4,
                                                          browser_headers=item.browser_headers)
-                else:  # type_source == 'pdf' or 'docx' or 'txt':
+                else:
                     documents = load_document(source, type_source)
 
                 if not documents:
@@ -159,23 +159,8 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                                                            )
                                   )
 
-
-                # from pprint import pprint
-                # pprint(documents)
-                logger.debug(documents)
                 if len(chunks) == 0:
                     raise Exception("No chunks generated from source")
-
-                ids = await vector_store.aadd_documents(chunks,
-                                                      namespace=namespace
-                                                      )
-                logger.debug(f"ids: {ids}")
-
-                total_tokens, cost = self.calc_embedding_cost(chunks, embedding_name)
-                # from pprint import pprint
-                # pprint(chunks)
-                logger.info(f"chunks: {len(chunks)}, total_tokens: {total_tokens}, cost: {cost: .6f}")
-
 
             elif type_source == 'regex_custom':
                 documents = await handle_regex_custom_chunk(source, item.chunk_regex, item.browser_headers)
@@ -189,23 +174,21 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 if item.tags:
                     base_metadata["tags"] = item.tags
 
-                # Unisci i metadati del documento con i metadati base
                 chunks = [
                     Document(
                         page_content=document.page_content,
-                        metadata={**document.metadata, **base_metadata}  # Merge dei due dizionari
+                        metadata={**document.metadata, **base_metadata}
                     )
                     for document in documents
                 ]
                 if len(chunks) == 0:
                     raise Exception("No chunks generated from source")
-                ids = await vector_store.aadd_documents(chunks, namespace=namespace)
-                logger.debug(f"ids: {ids}")
-                total_tokens, cost = self.calc_embedding_cost(chunks, embedding_name)
-                logger.info(f"chunks: {len(chunks)}, total_tokens: {total_tokens}, cost: {cost: .6f}")
 
             else:
-                metadata = MetadataItem(id=metadata_id, source=source, type=type_source, embedding=embedding_name).model_dump(exclude_none=True)
+                metadata = MetadataItem(id=metadata_id,
+                                        source=source,
+                                        type=type_source,
+                                        embedding=embedding_name).model_dump(exclude_none=True)
                 if item.tags:
                     metadata["tags"] = item.tags
                 document = Document(page_content=content, metadata=metadata)
@@ -224,17 +207,35 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                                           total_tokens=0,
                                           cost="0.000000",
                                           error="No chunks generated from source")
-                total_tokens, cost = self.calc_embedding_cost(chunks, embedding_name)
 
-                ids = await vector_store.aadd_documents(chunks,
-                                                       namespace=namespace
-                                                       )
+            # Situated context enrichment (unified for all branches)
+            sc_token_usage = None
+            if getattr(item, 'situated_context', None) and chunks:
+                try:
+                    from tilellm.shared.situated_context import enrich_chunks_with_situated_context, build_llm_from_item
+                    situated_llm = await build_llm_from_item(item)
+                    if situated_llm:
+                        sc_result = await enrich_chunks_with_situated_context(chunks, situated_llm)
+                        chunks = sc_result.documents
+                        sc_token_usage = sc_result.token_usage
+                        logger.info(f"Situated context applied to {len(chunks)} chunks. Tokens: {sc_token_usage}")
+                except Exception as sc_err:
+                    logger.warning(f"Situated context enrichment failed, continuing without: {sc_err}")
 
-                logger.debug(f"ids: {ids}")
-            #async with vector_store.async_index as index:
-            #    await index.close()
-            pinecone_result = IndexingResult(id=metadata_id, chunks=len(chunks), total_tokens=total_tokens,
-                                             cost=f"{cost:.6f}")
+            total_tokens, cost = self.calc_embedding_cost(chunks, embedding_name)
+            ids = await vector_store.aadd_documents(chunks, namespace=namespace)
+            logger.debug(f"ids: {ids}")
+            logger.info(f"chunks: {len(chunks)}, total_tokens: {total_tokens}, cost: {cost:.6f}")
+
+            pinecone_result = IndexingResult(
+                id=metadata_id,
+                chunks=len(chunks),
+                total_tokens=total_tokens,
+                cost=f"{cost:.6f}",
+                sc_input_tokens=sc_token_usage["input_tokens"] if sc_token_usage else None,
+                sc_output_tokens=sc_token_usage["output_tokens"] if sc_token_usage else None,
+                sc_total_tokens=sc_token_usage["total_tokens"] if sc_token_usage else None,
+            )
             return pinecone_result
 
         except Exception as ex:

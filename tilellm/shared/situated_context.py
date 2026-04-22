@@ -8,6 +8,7 @@ Reference: https://www.anthropic.com/news/contextual-retrieval
 """
 import asyncio
 import logging
+from dataclasses import dataclass, field
 from typing import List, Optional, TYPE_CHECKING
 
 from langchain_core.documents import Document
@@ -17,6 +18,17 @@ if TYPE_CHECKING:
     from tilellm.models.llm import SituatedContextConfig
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class SituatedContextResult:
+    """Return value of enrich_chunks_with_situated_context."""
+    documents: List[Document]
+    token_usage: dict = field(default_factory=lambda: {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "total_tokens": 0,
+    })
 
 _SITUATED_CONTEXT_PROMPT = """\
 Here is the context of the broader document this chunk comes from:
@@ -33,19 +45,64 @@ Write 1-2 sentences that situate this chunk within the broader document. \
 Mention the topic, section, or argument this chunk is part of. \
 Reply with only the situating sentences, with no preamble or explanation."""
 
+_SITUATED_CONTEXT_TABLE_PROMPT = """\
+Here is the context of the broader document this table was extracted from:
+<document_context>
+{doc_context}
+</document_context>
 
-async def _generate_situated_context(doc_context: str, chunk_text: str, llm) -> str:
-    """Call LLM to generate a situating sentence for one chunk."""
-    prompt = _SITUATED_CONTEXT_PROMPT.format(
-        doc_context=doc_context,
-        chunk_text=chunk_text[:1200]
+The following is a data table with columns: {col_names}
+
+<table>
+{chunk_text}
+</table>
+
+Write 1-2 sentences that describe what this table or table excerpt represents \
+(e.g. its topic, the kind of data it holds, and what a reader could learn from it). \
+Reply with only the situating sentences, with no preamble or explanation."""
+
+_TABLE_ELEMENT_TYPES = {"table", "table_rows"}
+
+
+async def _generate_situated_context(
+    doc_context: str,
+    chunk_text: str,
+    llm,
+    chunk_metadata: Optional[dict] = None,
+) -> tuple[str, dict]:
+    """Call LLM to generate a situating sentence for one chunk.
+
+    Returns:
+        (context_text, token_usage) where token_usage has input_tokens/output_tokens/total_tokens.
+    """
+    is_table = (
+        chunk_metadata is not None
+        and chunk_metadata.get("element_type") in _TABLE_ELEMENT_TYPES
     )
+    if is_table:
+        col_names = chunk_metadata.get("col_names", "")
+        prompt = _SITUATED_CONTEXT_TABLE_PROMPT.format(
+            doc_context=doc_context,
+            col_names=col_names,
+            chunk_text=chunk_text[:1200],
+        )
+    else:
+        prompt = _SITUATED_CONTEXT_PROMPT.format(
+            doc_context=doc_context,
+            chunk_text=chunk_text[:1200],
+        )
+    _empty_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
     try:
         response = await llm.ainvoke([HumanMessage(content=prompt)])
-        return response.content.strip()
+        usage = getattr(response, "usage_metadata", None) or _empty_usage
+        return response.content.strip(), {
+            "input_tokens": usage.get("input_tokens", 0),
+            "output_tokens": usage.get("output_tokens", 0),
+            "total_tokens": usage.get("total_tokens", 0),
+        }
     except Exception as e:
         logger.warning(f"Situated context LLM call failed: {e}")
-        return ""
+        return "", _empty_usage
 
 
 async def enrich_chunks_with_situated_context(
@@ -53,7 +110,7 @@ async def enrich_chunks_with_situated_context(
     llm,
     doc_context: Optional[str] = None,
     max_concurrent: int = 5
-) -> List[Document]:
+) -> "SituatedContextResult":
     """
     Enrich a list of Document chunks by prepending a situated context sentence.
 
@@ -64,10 +121,10 @@ async def enrich_chunks_with_situated_context(
         max_concurrent: Max concurrent LLM calls to avoid rate limits.
 
     Returns:
-        Same list of documents, with page_content prefixed with situated context.
+        SituatedContextResult with enriched documents and cumulative token_usage.
     """
     if not documents:
-        return documents
+        return SituatedContextResult(documents=documents)
 
     if doc_context is None:
         combined = " ".join(d.page_content[:150] for d in documents[:8])
@@ -75,15 +132,27 @@ async def enrich_chunks_with_situated_context(
 
     semaphore = asyncio.Semaphore(max_concurrent)
 
-    async def _enrich_one(doc: Document) -> Document:
+    async def _enrich_one(doc: Document) -> tuple[Document, dict]:
         async with semaphore:
-            ctx = await _generate_situated_context(doc_context, doc.page_content, llm)
+            ctx, usage = await _generate_situated_context(
+                doc_context, doc.page_content, llm, chunk_metadata=doc.metadata
+            )
             if ctx:
                 doc.page_content = f"{ctx}\n\n{doc.page_content}"
                 doc.metadata["has_situated_context"] = True
-        return doc
+        return doc, usage
 
-    return list(await asyncio.gather(*[_enrich_one(doc) for doc in documents]))
+    results = await asyncio.gather(*[_enrich_one(doc) for doc in documents])
+
+    enriched_docs = []
+    total_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+    for doc, usage in results:
+        enriched_docs.append(doc)
+        total_usage["input_tokens"] += usage["input_tokens"]
+        total_usage["output_tokens"] += usage["output_tokens"]
+        total_usage["total_tokens"] += usage["total_tokens"]
+
+    return SituatedContextResult(documents=enriched_docs, token_usage=total_usage)
 
 
 async def build_llm_from_config(config: "SituatedContextConfig", fallback_api_key: Optional[str] = None) -> Optional[object]:

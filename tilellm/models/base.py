@@ -1,6 +1,6 @@
 from enum import Enum
 from pydantic import BaseModel, Field, SecretStr, model_validator
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 
 class LLMEmbeddingProviders(str, Enum):
@@ -28,6 +28,7 @@ class ServerConfig(BaseModel):
     command: Optional[str] = None
     args: Optional[List[str]] = None
     api_key: Optional[SecretStr] = None
+    headers: Optional[Dict[str, str]] = Field(default=None, description="HTTP headers to send to the MCP server (e.g. x-composio-user-id for Composio)")
     enabled_tools: Optional[List[str]] = Field(default_factory=lambda: ["all"])
     parameters: Optional[dict] = Field(default_factory=dict)
 

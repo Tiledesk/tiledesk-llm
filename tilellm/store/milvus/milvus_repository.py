@@ -480,13 +480,16 @@ class MilvusRepository(VectorStoreRepository):
                     embeddings=embedding_obj
                 ))
 
+            sc_token_usage = None
             if getattr(item, 'situated_context', None) and chunks:
                 try:
                     from tilellm.shared.situated_context import enrich_chunks_with_situated_context, build_llm_from_item
                     situated_llm = await build_llm_from_item(item)
                     if situated_llm:
-                        chunks = await enrich_chunks_with_situated_context(chunks, situated_llm)
-                        logger.info(f"Situated context applied to {len(chunks)} chunks.")
+                        sc_result = await enrich_chunks_with_situated_context(chunks, situated_llm)
+                        chunks = sc_result.documents
+                        sc_token_usage = sc_result.token_usage
+                        logger.info(f"Situated context applied to {len(chunks)} chunks. Tokens: {sc_token_usage}")
                 except Exception as sc_err:
                     logger.warning(f"Situated context enrichment failed, continuing without: {sc_err}")
 
@@ -510,7 +513,10 @@ class MilvusRepository(VectorStoreRepository):
                 id=item.id,
                 chunks=len(chunks),
                 total_tokens=total_tokens,
-                cost=f"{cost:.6f}"
+                cost=f"{cost:.6f}",
+                sc_input_tokens=sc_token_usage["input_tokens"] if sc_token_usage else None,
+                sc_output_tokens=sc_token_usage["output_tokens"] if sc_token_usage else None,
+                sc_total_tokens=sc_token_usage["total_tokens"] if sc_token_usage else None,
             )
 
         except Exception as ex:
@@ -631,13 +637,16 @@ class MilvusRepository(VectorStoreRepository):
             if len(chunks) == 0:
                 raise Exception("No chunks generated from source")
 
+            sc_token_usage = None
             if getattr(item, 'situated_context', None) and chunks:
                 try:
                     from tilellm.shared.situated_context import enrich_chunks_with_situated_context, build_llm_from_item
                     situated_llm = await build_llm_from_item(item)
                     if situated_llm:
-                        chunks = await enrich_chunks_with_situated_context(chunks, situated_llm)
-                        logger.info(f"Situated context applied to {len(chunks)} chunks.")
+                        sc_result = await enrich_chunks_with_situated_context(chunks, situated_llm)
+                        chunks = sc_result.documents
+                        sc_token_usage = sc_result.token_usage
+                        logger.info(f"Situated context applied to {len(chunks)} chunks. Tokens: {sc_token_usage}")
                 except Exception as sc_err:
                     logger.warning(f"Situated context enrichment failed, continuing without: {sc_err}")
 
@@ -667,7 +676,10 @@ class MilvusRepository(VectorStoreRepository):
                 id=item.id,
                 chunks=len(chunks),
                 total_tokens=total_tokens,
-                cost=f"{cost:.6f}"
+                cost=f"{cost:.6f}",
+                sc_input_tokens=sc_token_usage["input_tokens"] if sc_token_usage else None,
+                sc_output_tokens=sc_token_usage["output_tokens"] if sc_token_usage else None,
+                sc_total_tokens=sc_token_usage["total_tokens"] if sc_token_usage else None,
             )
 
         except Exception as ex:
@@ -1458,6 +1470,10 @@ class MilvusRepository(VectorStoreRepository):
     async def chunk_documents(self, item, documents, embeddings):
         """Chunk documents based on item configuration."""
         logger.debug(f"in chunk_documents item: {item} \n documents {documents} emb: {embeddings}")
+        from tilellm.models.llm import TableOptions
+        from tilellm.modules.ingestion.table_chunker import split_table_document
+        table_opts = getattr(item, 'table_options', None) or TableOptions()
+
         chunks = []
         for document in documents:
             document.metadata["id"] = item.id
@@ -1472,14 +1488,23 @@ class MilvusRepository(VectorStoreRepository):
             if "page" not in document.metadata:
                 document.metadata["page"] = 1
             processed_document = self.process_document_metadata(document, document.metadata)
-            chunks.extend(self.chunk_data_extended(
-                data=[processed_document],
-                chunk_size=item.chunk_size,
-                chunk_overlap=item.chunk_overlap,
-                semantic=item.semantic_chunk,
-                embeddings=embeddings,
-                breakpoint_threshold_type=item.breakpoint_threshold_type)
-            )
+
+            if table_opts.enable and processed_document.metadata.get("element_type") == "table":
+                chunks.extend(split_table_document(
+                    processed_document,
+                    strategy=table_opts.strategy,
+                    max_table_chars=table_opts.max_table_chars,
+                    header_repeat=table_opts.header_repeat,
+                ))
+            else:
+                chunks.extend(self.chunk_data_extended(
+                    data=[processed_document],
+                    chunk_size=item.chunk_size,
+                    chunk_overlap=item.chunk_overlap,
+                    semantic=item.semantic_chunk,
+                    embeddings=embeddings,
+                    breakpoint_threshold_type=item.breakpoint_threshold_type)
+                )
         return chunks
 
     @staticmethod

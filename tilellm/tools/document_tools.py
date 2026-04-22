@@ -92,8 +92,18 @@ def _extract_html_tables(html: str, source_url: str) -> List[Document]:
         col_names = ", ".join(str(c) for c in df.columns if c)
         try:
             md = df.to_markdown(index=False)
+            if not md:
+                raise ValueError("to_markdown returned None")
         except Exception:
-            md = df.to_string(index=False)
+            # tabulate not installed or conversion failed — build pipe-delimited markdown manually
+            cols = list(df.columns)
+            header = "| " + " | ".join(str(c) for c in cols) + " |"
+            sep = "|" + "|".join([" --- "] * len(cols)) + "|"
+            rows = [
+                "| " + " | ".join(str(df.iloc[r, c]) for c in range(len(cols))) + " |"
+                for r in range(len(df))
+            ]
+            md = "\n".join([header, sep] + rows)
 
         if not md or len(md.strip()) < 10:
             continue
@@ -355,6 +365,7 @@ async def handle_chromium_loader(
         }
     
     docs = []
+    raw_htmls: List[tuple[str, str]] = []  # (html, url) collected before transformation
     for url in urls:
         async with async_playwright() as p:
             browser = await p.chromium.launch(
@@ -371,12 +382,13 @@ async def handle_chromium_loader(
                 )
                 await page.goto(url=url, wait_until="load", timeout=60000)
                 html = await page.content()
+                raw_htmls.append((html, url))
                 metadata = {"source": url}
                 doc = Document(page_content=html, metadata=metadata)
                 docs.append(doc)
             finally:
                 await browser.close()
-    
+
     # Controllo del contenuto minimo
     if not docs or any(len(doc.page_content.strip()) < 20 for doc in docs):
         raise ValueError("Insufficient or empty content")
@@ -385,6 +397,12 @@ async def handle_chromium_loader(
         docs = transformer.transform_documents(docs, **transform_kwargs)
     elif transformer:
         docs = transformer.transform_documents(docs)
+
+    # Extract structured tables from raw HTML before it was transformed to plain text.
+    # This covers scrape_type 3 (Html2TextTransformer) and scrape_type 4 (BS4Transformer)
+    # which would otherwise lose table row/column alignment.
+    for html, url in raw_htmls:
+        docs.extend(_extract_html_tables(html, url))
 
     return clean_documents_metadata(docs)
 
