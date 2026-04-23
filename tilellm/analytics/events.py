@@ -115,20 +115,22 @@ def kb_query(
         reranking_applied:   True when a reranker was used.
         latency_ms:          Total retrieval + generation latency.
         reranker_model:      Reranker model name (null when not applied).
-        reranker_latency_ms: Reranker-only latency (null when not applied).
+        reranker_latency_ms: Reranker-only latency (omitted when not applied).
         request_id:          Tiledesk conversation/request ID.
     """
-    return "kb.query_executed", {
-        "kb_id":              kb_id,
-        "kb_name":            kb_name,
-        "query_text":         query_text,
-        "chunks_retrieved":   chunks_retrieved,
-        "reranking_applied":  reranking_applied,
-        "reranker_model":     reranker_model,
-        "reranker_latency_ms": reranker_latency_ms,
-        "latency_ms":         latency_ms,
-        "request_id":         request_id,
+    payload: dict = {
+        "kb_id":             kb_id,
+        "kb_name":           kb_name,
+        "query_text":        query_text,
+        "chunks_retrieved":  chunks_retrieved,
+        "reranking_applied": reranking_applied,
+        "reranker_model":    reranker_model,
+        "latency_ms":        latency_ms,
+        "request_id":        request_id,
     }
+    if reranker_latency_ms is not None:
+        payload["reranker_latency_ms"] = reranker_latency_ms
+    return "kb.query_executed", payload
 
 
 def content_indexed(
