@@ -205,3 +205,6 @@ tilellm/modules/pdf_ocr/PDF_GRAPHRAG_INTEGRATION_PROPOSAL.md
 tilellm/modules/pdf_ocr/docs/AGENTIC_PDF_INGESTION_PLAN.md
 tilellm/modules/raptor/README.md
 /tests/integration/payloads/
+/docs/CACHE_IMPLEMENTATION_PLAN.md
+/docs/EVALUATION.md
+/docs/RAGAS_EVALUATION_PLAN.md
