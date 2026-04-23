@@ -135,7 +135,7 @@ def _build_envelope(
     return {
         "event_id": str(uuid.uuid4()),
         "event_type": event_type,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "id_project": id_project,
         "source_service": config.source_service,
         "event_version": config.event_version,
