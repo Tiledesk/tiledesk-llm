@@ -47,6 +47,22 @@ def _extract_file_name(source: str) -> str:
         return source
 
 
+def _extract_html_title(html: str) -> str:
+    """Return the text of the first <title> tag in raw HTML, stripped of whitespace.
+
+    Returns an empty string when the tag is absent, empty, or parsing fails.
+    BeautifulSoup is already available in this module.
+    """
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+        tag = soup.find("title")
+        if tag:
+            return tag.get_text(separator=" ", strip=True)
+    except Exception:
+        pass
+    return ""
+
+
 def _extract_html_tables(html: str, source_url: str) -> List[Document]:
     """Extract ``<table>`` elements from raw HTML and convert to markdown Documents.
 
@@ -173,6 +189,10 @@ async def _handle_trafilatura_scrape(url: str, headers: Optional[dict] = None) -
 
     docs: List[Document] = [Document(page_content=text.strip(), metadata={"source": url})]
     docs.extend(_extract_html_tables(downloaded, url))
+    title = _extract_html_title(downloaded)
+    if title:
+        for doc in docs:
+            doc.metadata["file_name"] = title
     return docs
 
 
@@ -401,8 +421,17 @@ async def handle_chromium_loader(
     # Extract structured tables from raw HTML before it was transformed to plain text.
     # This covers scrape_type 3 (Html2TextTransformer) and scrape_type 4 (BS4Transformer)
     # which would otherwise lose table row/column alignment.
+    url_title_map: dict[str, str] = {}
     for html, url in raw_htmls:
         docs.extend(_extract_html_tables(html, url))
+        title = _extract_html_title(html)
+        if title:
+            url_title_map[url] = title
+
+    for doc in docs:
+        title = url_title_map.get(doc.metadata.get("source", ""), "")
+        if title:
+            doc.metadata["file_name"] = title
 
     return clean_documents_metadata(docs)
 
@@ -445,7 +474,12 @@ async def scrape_page_fallback_selectors(url, browser_headers: Optional[dict] = 
         metadata = {"source": url, "scraping_method": "playwright_fallback"}
         doc = Document(page_content=transformed_content, metadata=metadata)
         table_docs = _extract_html_tables(results, url)
-        return [doc] + table_docs
+        all_docs = [doc] + table_docs
+        title = _extract_html_title(results)
+        if title:
+            for d in all_docs:
+                d.metadata["file_name"] = title
+        return all_docs
 
 def get_fallback_selectors():
     """Restituisce selettori di fallback più permissivi"""
@@ -579,7 +613,12 @@ async def scrape_page(url, params_type_4, browser_headers: Optional[dict] = None
                 remove_comments=params_type_4.remove_comments
             )
             table_docs = _extract_html_tables(results, url)
-            return list(text_docs) + table_docs
+            all_docs = list(text_docs) + table_docs
+            title = _extract_html_title(results)
+            if title:
+                for d in all_docs:
+                    d.metadata["file_name"] = title
+            return all_docs
         finally:
             await browser.close()
 
@@ -711,7 +750,12 @@ async def scrape_page_complex(url, params_type_4, browser_headers: Optional[dict
                 doc = Document(page_content=transformed_content, metadata=metadata)
                 print(doc)
                 table_docs = _extract_html_tables(results, url)
-                return [doc] + table_docs
+                all_docs = [doc] + table_docs
+                title = _extract_html_title(results)
+                if title:
+                    for d in all_docs:
+                        d.metadata["file_name"] = title
+                return all_docs
             finally:
                 await browser.close()
 

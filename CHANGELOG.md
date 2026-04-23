@@ -6,6 +6,29 @@
 ### **Copyright**: Tiledesk SRL
 
 ---
+## [2026-04-23]
+### 0.10.1-rc5 (feat: HTML page title as file_name + source_file_name in citations)
+
+Two complementary improvements for UX-friendly source attribution on HTML content:
+
+#### HTML page title as chunk `file_name`
+For web pages (all `type=url` scrape paths), `metadata.file_name` is now set to the text of the HTML `<title>` tag instead of the URL basename. A URL like `https://example.com/products/123` would previously produce `"123"` as the label; it now produces `"Product Alpha – Acme Store"`. The title is extracted from the raw HTML, so no extra network request is needed.
+
+- Added: `_extract_html_title(html: str) -> str` helper in `tilellm/tools/document_tools.py` — parses `<title>` via BeautifulSoup (already available), returns empty string on failure.
+- Changed: `_handle_trafilatura_scrape()` — sets `file_name` on all returned docs (text + table) from the `<title>` of the downloaded HTML. Covers scrape_type 0 and 1.
+- Changed: `handle_chromium_loader()` — builds a `{url → title}` map from `raw_htmls` before transformation; applies `file_name` to all resulting docs by matching `source`. Covers scrape_type 3 and 4.
+- Changed: `scrape_page()` — sets `file_name` on text and table docs from `<title>` of Playwright-fetched HTML. Covers scrape_type 2.
+- Changed: `scrape_page_complex()` — same pattern. Covers scrape_type 5.
+- Changed: `scrape_page_fallback_selectors()` — same pattern. Covers the robust fallback path.
+- Unchanged: `handle_unstructured_loader()` (rare fallback) — `file_name` still falls back to URL basename via repository safety net. Acceptable; UnstructuredURLLoader does not expose raw HTML.
+
+#### `source_file_name` in `Citation`
+Added `source_file_name` to the `Citation` object returned when `citations=true`. The field contains the human-readable file or page name stored in `metadata.file_name` at ingestion time (e.g. `"price-list.pdf"`, `"Home – Acme Corp"`). Useful for building labelled links in UX (`[source_file_name](source_name)`) instead of exposing raw URLs. The field is `null` when metadata is absent. Fully backward-compatible — existing consumers that ignore unknown fields are unaffected.
+
+- Changed: `tilellm/models/schemas/retrieval_schemas.py` — added `source_file_name: Optional[str] = None` to `Citation`.
+- Changed: `tilellm/controller/controller_utils.py` — `extract_ids_sources()` now builds a `{source_url → file_name}` map from retrieved document metadata; `format_result()` populates `Citation.source_file_name` via this map (post-LLM enrichment, no prompt change required).
+
+---
 ## [2026-04-22]
 ### 0.10.1-rc4 (fix: situated context regression on per-row table chunks)
 

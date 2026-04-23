@@ -20,7 +20,8 @@ from langchain_core.tools import BaseTool
 from starlette.responses import JSONResponse
 from tilellm.models.schemas import (RetrievalResult,
                                     QuotedAnswer,
-                                    Citation)
+                                    Citation,
+                                    _QuotedAnswer)
 from tilellm.models import ChatEntry, ServerConfig
 
 from tilellm.shared.sparse_util import HybridRetriever
@@ -587,7 +588,7 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                 rag_chain_from_docs = (
                     RunnablePassthrough.assign(context=(lambda x: format_docs_with_id(x["context"])))
                     | qa_prompt_final
-                    | llm.with_structured_output(QuotedAnswer)
+                    | llm.with_structured_output(_QuotedAnswer)
                 )
                 chain_w_citations = (
                     RunnablePassthrough.assign(context=retrieve_docs)
@@ -600,8 +601,8 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                 # Check if no context found
                 if not result.get("context"):
                     raise ValueError("No chunks found with the current filters.")
-                    
-                citations = result['answer'].citations
+
+                citations = [Citation.from_llm(c) for c in result['answer'].citations]
                 result['answer'] = result['answer'].answer
             else:
                 rag_chain_simple = create_retrieval_chain(retriever, create_stuff_documents_chain(llm, qa_prompt_final))
@@ -710,7 +711,7 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
             rag_chain_from_docs = (
                     RunnablePassthrough.assign(context=(lambda x: format_docs_with_id(x["context"])))
                     | qa_prompt
-                    | llm.with_structured_output(QuotedAnswer)
+                    | llm.with_structured_output(_QuotedAnswer)
             )
 
             chain_w_citations = (RunnablePassthrough.assign(context=retrieve_docs)
@@ -748,7 +749,7 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
         end_time = datetime.now() if question_answer.debug else 0
         duration = (end_time - start_time).total_seconds() if question_answer.debug else 0.0
 
-        citations = result['answer'].citations if question_answer.citations else None
+        citations = [Citation.from_llm(c) for c in result['answer'].citations] if question_answer.citations else None
         result['answer'], success = verify_answer(result['answer'].answer
                                                   if question_answer.citations else result['answer'])
         #return result, citations, success
@@ -798,8 +799,11 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
 # Function to format the result into the expected output structure
 def format_result(result, citations, question_answer, callback_handler, question_answer_list, success, duration=0.0):
     docs = result["context"]
-    ids, sources, content_chunks = extract_ids_sources(docs, question_answer.debug)
+    ids, sources, content_chunks, source_file_map = extract_ids_sources(docs, question_answer.debug)
     source = format_sources(citations, sources, question_answer.citations)
+    if citations:
+        for cit in citations:
+            cit.source_file_name = source_file_map.get(cit.source_name)
     
     # Avoid IndexError if no documents are found
     metadata_id = ids[0] if ids else None
@@ -840,21 +844,30 @@ def extract_ids_sources(docs, debug):
     ids = []
     sources = []
     content_chunks = None
+    source_file_map = {}
     if debug:
         content_chunks = []
         for doc in docs:
             ids.append(doc.metadata.get('id'))
             sources.append(doc.metadata.get('source'))
             content_chunks.append(doc.page_content)
+            src = doc.metadata.get('source')
+            fn = doc.metadata.get('file_name')
+            if src and fn:
+                source_file_map[src] = fn
     else:
         for doc in docs:
             ids.append(doc.metadata.get('id'))
             sources.append(doc.metadata.get('source'))
-    
+            src = doc.metadata.get('source')
+            fn = doc.metadata.get('file_name')
+            if src and fn:
+                source_file_map[src] = fn
+
     # Filter out None values and get unique elements
     ids = list(set([i for i in ids if i is not None]))
     sources = list(set([s for s in sources if s is not None]))
-    return ids, sources, content_chunks
+    return ids, sources, content_chunks, source_file_map
 
 
 # Function to format sources based on citations

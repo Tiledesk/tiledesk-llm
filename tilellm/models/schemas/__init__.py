@@ -2,6 +2,8 @@ from .general_schemas import (ReasoningAnswer as ReasoningAnswer,
                               SimpleAnswer as SimpleAnswer,
                               PromptTokenInfo as PromptTokenInfo,)
 from .retrieval_schemas import (Citation as Citation,
+                                _LLMCitation as _LLMCitation,
+                                _QuotedAnswer as _QuotedAnswer,
                                 QuotedAnswer as QuotedAnswer,
                                 PartialQuotedAnswer as PartialQuotedAnswer,
                                 QuotedAnswerForStream as QuotedAnswerForStream,

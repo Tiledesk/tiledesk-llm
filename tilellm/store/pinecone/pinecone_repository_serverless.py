@@ -447,6 +447,22 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             import traceback
             traceback.print_exc()
             logger.error(repr(ex))
+            ex_str = str(ex).lower()
+            # A "Malformed domain" / 401 response means the cached host URL is stale
+            # (index recreated, API key rotated, plan change).  Evict the cached wrapper
+            # so the next call re-resolves the correct host via describe_index().
+            if any(kw in ex_str for kw in ("malformed", "unauthorized", "401")):
+                from tilellm.shared.timed_cache import TimedCache
+                from tilellm.store.pinecone.pinecone_repository_base import _hash_api_key
+                stale_key = (
+                    _hash_api_key(item.engine.apikey.get_secret_value()),
+                    item.engine.index_name,
+                    item.engine.type,
+                    (item.engine.metric or "dotproduct").lower(),
+                    "default",
+                )
+                await TimedCache.async_remove("vector_store_wrapper", stale_key)
+                logger.warning(f"Evicted stale Pinecone host cache for index '{item.engine.index_name}' after 401/Malformed domain.")
             idx = await vector_store.async_index
             await idx.close()
             index_res =  IndexingResult(id=item.id,

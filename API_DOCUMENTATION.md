@@ -246,7 +246,8 @@ Query with conversation history on knowledge base.
   "citations": [
     {
       "source_id": 1,
-      "source_name": "https://example.com/doc"
+      "source_name": "https://example.com/doc",
+      "source_file_name": "Home – Acme Corp"
     }
   ],
   "duration": 2.5
@@ -1110,12 +1111,19 @@ Conversation history entry.
 ### Citation
 Source citation for answers.
 
-```python
+```json
 {
   "source_id": 1,
-  "source_name": "https://example.com/doc"
+  "source_name": "https://example.com/doc",
+  "source_file_name": "Home – Acme Corp"
 }
 ```
+
+| Field | Type | Description |
+|---|---|---|
+| `source_id` | `int` | Enumerated index of the source document in the retrieved context |
+| `source_name` | `str` | Full URL or file path of the source |
+| `source_file_name` | `str \| null` | Human-readable name from `metadata.file_name` (e.g. `"price-list.pdf"`, `"Home – Acme Corp"`). Use as link label: `[source_file_name](source_name)`. `null` if not present in metadata. |
 
 ---
 
