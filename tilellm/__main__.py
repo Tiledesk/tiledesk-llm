@@ -813,7 +813,28 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
     logger.debug(question_answer)
 
     if question_answer.chunks_only:
-        return await ask_for_chunks(question_answer)
+        _chunks_t0 = time.monotonic()
+        _chunks_result = await ask_for_chunks(question_answer)
+        _chunks_latency_ms = int((time.monotonic() - _chunks_t0) * 1000)
+        # Analytics: emit kb.query_executed for chunks_only (fire-and-forget)
+        from tilellm.analytics import events as an_events
+        _reranker_model = an_events.get_reranker_model(question_answer)
+        _et, _pl = an_events.kb_query(
+            kb_id=question_answer.namespace,
+            kb_name=question_answer.namespace,
+            query_text=question_answer.question
+            if isinstance(question_answer.question, str)
+            else str(question_answer.question),
+            chunks_retrieved=len(_chunks_result.chunks or [])
+            if hasattr(_chunks_result, "chunks")
+            else 0,
+            reranking_applied=bool(question_answer.reranking),
+            reranker_model=_reranker_model,
+            latency_ms=_chunks_latency_ms,
+            request_id=question_answer.request_id,
+        )
+        analytics.publish_nowait(_et, question_answer.id_project, _pl)
+        return _chunks_result
 
     # Semantic cache lookup (only when use_cache=True)
     query_embedding = None
@@ -837,6 +858,24 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
                 logger.info(
                     f"/api/qa cache hit (level={cached.get('_cache_level')}, cosine={cached.get('_cache_similarity', 1.0):.4f})"
                 )
+                # Analytics: emit kb.query_executed for cache hit (fire-and-forget)
+                from tilellm.analytics import events as an_events
+                _reranker_model = an_events.get_reranker_model(question_answer)
+                _et, _pl = an_events.kb_query(
+                    kb_id=question_answer.namespace,
+                    kb_name=question_answer.namespace,
+                    query_text=question_answer.question
+                    if isinstance(question_answer.question, str)
+                    else str(question_answer.question),
+                    chunks_retrieved=len(result.content_chunks or [])
+                    if hasattr(result, "content_chunks")
+                    else 0,
+                    reranking_applied=False,
+                    reranker_model=_reranker_model,
+                    latency_ms=0,
+                    request_id=question_answer.request_id,
+                )
+                analytics.publish_nowait(_et, question_answer.id_project, _pl)
                 return result
         except Exception as e:
             logger.warning(

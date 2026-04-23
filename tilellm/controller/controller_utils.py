@@ -1,5 +1,8 @@
 from datetime import datetime
 import asyncio
+import time
+
+import tilellm.analytics as analytics
 
 
 from fastapi.responses import StreamingResponse
@@ -485,6 +488,7 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                 message_id = str(uuid.uuid4())
                 start_time = datetime.now()
                 result_context = None
+                _llm_t0 = time.monotonic()
 
                 # Add citation prompt tail if needed
                 local_chain_input = chain_input.copy()
@@ -508,6 +512,8 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
 
                     if "context" in chunk and result_context is None: # Capture context once
                         result_context = chunk["context"]
+
+                _llm_latency_ms = int((time.monotonic() - _llm_t0) * 1000)
 
                 # Final processing after stream ends
                 citations = extract_citations(full_response) if question_answer.citations else []
@@ -533,6 +539,32 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                     duration=(end_time - start_time).total_seconds()
                 )
 
+                # Analytics: emit token_usage + model_call (fire-and-forget)
+                _cb = callback_handler
+                _model_str = getattr(question_answer, "model", None) or ""
+                if not isinstance(_model_str, str):
+                    _model_str = getattr(_model_str, "name", str(_model_str))
+                _et, _pl = analytics.events.token_usage(
+                    model=_model_str,
+                    prompt_tokens=getattr(_cb, "prompt_tokens", 0),
+                    completion_tokens=getattr(_cb, "completion_tokens", 0),
+                    total_tokens=getattr(_cb, "total_tokens", 0),
+                    operation="ask",
+                    source="rag",
+                    request_id=getattr(question_answer, "request_id", None),
+                    agent_id=getattr(question_answer, "agent_id", None),
+                )
+                analytics.publish_nowait(_et, question_answer.id_project, _pl)
+                _et, _pl = analytics.events.model_call(
+                    model=_model_str,
+                    provider=getattr(question_answer, "llm", None),
+                    operation="ask",
+                    latency_ms=_llm_latency_ms,
+                    success=True,
+                    request_id=getattr(question_answer, "request_id", None),
+                )
+                analytics.publish_nowait(_et, question_answer.id_project, _pl)
+
                 yield _create_event("metadata", {
                     "message_id": message_id,
                     "status": "completed",
@@ -549,6 +581,7 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
             )
         else: # NOT STREAMING
             start_time = datetime.now() if question_answer.debug else 0
+            _llm_t0 = time.monotonic()
             if question_answer.citations:
                 retrieve_docs = (lambda x: x["input"]) | retriever
                 rag_chain_from_docs = (
@@ -580,6 +613,7 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                 citations = None
 
             end_time = datetime.now() if question_answer.debug else 0
+            _llm_latency_ms = int((time.monotonic() - _llm_t0) * 1000)
             duration = (end_time - start_time).total_seconds() if question_answer.debug else 0.0
             result['answer'], success = verify_answer(result['answer'])
             result['chat_history'] = []
@@ -593,6 +627,33 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                 success=success,
                 duration=duration
             )
+
+            # Analytics: emit token_usage + model_call (fire-and-forget)
+            _cb = callback_handler
+            _model_str = getattr(question_answer, "model", None) or ""
+            if not isinstance(_model_str, str):
+                _model_str = getattr(_model_str, "name", str(_model_str))
+            _et, _pl = analytics.events.token_usage(
+                model=_model_str,
+                prompt_tokens=getattr(_cb, "prompt_tokens", 0),
+                completion_tokens=getattr(_cb, "completion_tokens", 0),
+                total_tokens=getattr(_cb, "total_tokens", 0),
+                operation="ask",
+                source="rag",
+                request_id=getattr(question_answer, "request_id", None),
+                agent_id=getattr(question_answer, "agent_id", None),
+            )
+            analytics.publish_nowait(_et, question_answer.id_project, _pl)
+            _et, _pl = analytics.events.model_call(
+                model=_model_str,
+                provider=getattr(question_answer, "llm", None),
+                operation="ask",
+                latency_ms=_llm_latency_ms,
+                success=True,
+                request_id=getattr(question_answer, "request_id", None),
+            )
+            analytics.publish_nowait(_et, question_answer.id_project, _pl)
+
             return JSONResponse(content=result_to_return.model_dump())
     
     # --- Standard Flow (contextualize_prompt=True) ---
@@ -673,10 +734,12 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                 output_messages_key="answer",
             )
         start_time = datetime.now() if question_answer.debug else 0
+        _llm_t0 = time.monotonic()
         result = await conversational_rag_chain.ainvoke(
             {"input": question_answer.question},
             config={"configurable": {"session_id": uuid.uuid4().hex}}
         )
+        _llm_latency_ms = int((time.monotonic() - _llm_t0) * 1000)
         # Check if no context found
         if not result.get("context"):
             raise ValueError("No chunks found with the current filters.")
@@ -701,6 +764,32 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                                          question_answer_list=question_answer_list,
                                          success=success,
                                          duration=duration)
+
+        # Analytics: emit token_usage + model_call (fire-and-forget)
+        _cb = callback_handler
+        _model_str = getattr(question_answer, "model", None) or ""
+        if not isinstance(_model_str, str):
+            _model_str = getattr(_model_str, "name", str(_model_str))
+        _et, _pl = analytics.events.token_usage(
+            model=_model_str,
+            prompt_tokens=getattr(_cb, "prompt_tokens", 0),
+            completion_tokens=getattr(_cb, "completion_tokens", 0),
+            total_tokens=getattr(_cb, "total_tokens", 0),
+            operation="ask",
+            source="rag",
+            request_id=getattr(question_answer, "request_id", None),
+            agent_id=getattr(question_answer, "agent_id", None),
+        )
+        analytics.publish_nowait(_et, question_answer.id_project, _pl)
+        _et, _pl = analytics.events.model_call(
+            model=_model_str,
+            provider=getattr(question_answer, "llm", None),
+            operation="ask",
+            latency_ms=_llm_latency_ms,
+            success=True,
+            request_id=getattr(question_answer, "request_id", None),
+        )
+        analytics.publish_nowait(_et, question_answer.id_project, _pl)
 
         return JSONResponse(content=result_to_return.model_dump())
 
@@ -827,6 +916,7 @@ async def get_streaming_response(runnable_with_history, question, callback_handl
         message_id = str(uuid.uuid4())
         start_time = datetime.now()
         result = dict()
+        _llm_t0 = time.monotonic()
 
         orig_question = q.question
         q.question = q.question+"\n"+const.stream_citations_tail if q.citations else q.question
@@ -859,6 +949,8 @@ async def get_streaming_response(runnable_with_history, question, callback_handl
                 result['input'] = chunk['input']
                 result['chat_history'] = chunk['chat_history']
 
+        _llm_latency_ms = int((time.monotonic() - _llm_t0) * 1000)
+
         citations = extract_citations(full_response) if question.citations else []
         # q_answer = QuotedAnswer(answer = full_response, citations=citations)
         # print(f"======={q_answer}")
@@ -878,6 +970,32 @@ async def get_streaming_response(runnable_with_history, question, callback_handl
                                          callback_handler=callback_handler,
                                          question_answer_list=question_answer_list,
                                          success=success)
+
+        # Analytics: emit token_usage + model_call (fire-and-forget)
+        _cb = callback_handler
+        _model_str = getattr(q, "model", None) or ""
+        if not isinstance(_model_str, str):
+            _model_str = getattr(_model_str, "name", str(_model_str))
+        _et, _pl = analytics.events.token_usage(
+            model=_model_str,
+            prompt_tokens=getattr(_cb, "prompt_tokens", 0),
+            completion_tokens=getattr(_cb, "completion_tokens", 0),
+            total_tokens=getattr(_cb, "total_tokens", 0),
+            operation="ask",
+            source="rag",
+            request_id=getattr(q, "request_id", None),
+            agent_id=getattr(q, "agent_id", None),
+        )
+        analytics.publish_nowait(_et, q.id_project, _pl)
+        _et, _pl = analytics.events.model_call(
+            model=_model_str,
+            provider=getattr(q, "llm", None),
+            operation="ask",
+            latency_ms=_llm_latency_ms,
+            success=True,
+            request_id=getattr(q, "request_id", None),
+        )
+        analytics.publish_nowait(_et, q.id_project, _pl)
 
         yield _create_event("metadata", {
             "message_id": message_id,

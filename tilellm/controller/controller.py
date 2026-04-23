@@ -344,7 +344,9 @@ async def ask_reason_llm(question, chat_model=None):
                 input_messages_key="input",
                 history_messages_key="chat_history",
             )
+            _llm_t0 = time.monotonic()
             result = await runnable_with_history.ainvoke(input_data, config=config)
+            _latency_ms = int((time.monotonic() - _llm_t0) * 1000)
 
             if hasattr(result, "model_dump"):
                 answer_content = result.model_dump()
@@ -356,6 +358,34 @@ async def ask_reason_llm(question, chat_model=None):
                 question.question,
                 json.dumps(answer_content),
             )
+
+            # Analytics: emit token_usage + model_call (fire-and-forget)
+            _usage = getattr(result, "usage_metadata", None) or {}
+            _model_str = (
+                question.model
+                if isinstance(question.model, str)
+                else getattr(question.model, "name", str(question.model))
+            )
+            _et, _pl = analytics.events.token_usage(
+                model=_model_str,
+                prompt_tokens=_usage.get("input_tokens", 0),
+                completion_tokens=_usage.get("output_tokens", 0),
+                total_tokens=_usage.get("total_tokens", 0),
+                operation="thinking",
+                source="chat",
+                request_id=question.request_id,
+                agent_id=question.agent_id,
+            )
+            analytics.publish_nowait(_et, question.id_project, _pl)
+            _et, _pl = analytics.events.model_call(
+                model=_model_str,
+                provider=question.llm,
+                operation="thinking",
+                latency_ms=_latency_ms,
+                success=True,
+                request_id=question.request_id,
+            )
+            analytics.publish_nowait(_et, question.id_project, _pl)
 
             return JSONResponse(
                 content=ReasoningAnswer(
@@ -531,7 +561,9 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None):
         # --- 5. RISPOSTA SINCRONA ---
         if question.structured_output and question.output_schema:
             structured_llm = chat_model.with_structured_output(question.output_schema)
+            _llm_t0 = time.monotonic()
             result_message = await structured_llm.ainvoke(messages)
+            _latency_ms = int((time.monotonic() - _llm_t0) * 1000)
 
             # The result is a Pydantic model, convert it to a dict
             if hasattr(result_message, "model_dump"):
@@ -548,6 +580,33 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None):
             )
             # Token info might not be available in the same way, handle gracefully
             prompt_token_info = _extract_token_info(result_message)
+
+            # Analytics: emit token_usage + model_call (fire-and-forget)
+            _model_str = (
+                question.model
+                if isinstance(question.model, str)
+                else getattr(question.model, "name", str(question.model))
+            )
+            _et, _pl = analytics.events.token_usage(
+                model=_model_str,
+                prompt_tokens=prompt_token_info.input_tokens,
+                completion_tokens=prompt_token_info.output_tokens,
+                total_tokens=prompt_token_info.total_tokens,
+                operation="ask",
+                source="chat",
+                request_id=question.request_id,
+                agent_id=question.agent_id,
+            )
+            analytics.publish_nowait(_et, question.id_project, _pl)
+            _et, _pl = analytics.events.model_call(
+                model=_model_str,
+                provider=question.llm,
+                operation="ask",
+                latency_ms=_latency_ms,
+                success=True,
+                request_id=question.request_id,
+            )
+            analytics.publish_nowait(_et, question.id_project, _pl)
 
             return JSONResponse(
                 content=SimpleAnswer(
@@ -857,6 +916,12 @@ async def _stream_generic_response(
     message_id = str(uuid.uuid4())
     start_time = datetime.now()
 
+    # Token accumulators for streaming
+    _stream_input_tokens = 0
+    _stream_output_tokens = 0
+    _stream_total_tokens = 0
+    _stream_t0 = time.monotonic()
+
     # Metadati iniziali
     yield _create_event(
         "metadata",
@@ -874,6 +939,13 @@ async def _stream_generic_response(
         stream = runnable.astream(input_data)
 
     async for chunk in stream:
+        # Accumulate usage_metadata when present (sent on the final chunk by LangChain)
+        _um = getattr(chunk, "usage_metadata", None)
+        if _um:
+            _stream_input_tokens += _um.get("input_tokens", 0)
+            _stream_output_tokens += _um.get("output_tokens", 0)
+            _stream_total_tokens += _um.get("total_tokens", 0)
+
         if hasattr(chunk, "content"):
             if chunk_processor:
                 # Usa il processor custom per casi speciali (es. reasoning)
@@ -901,13 +973,47 @@ async def _stream_generic_response(
 
             await asyncio.sleep(0.01)
 
+    _stream_latency_ms = int((time.monotonic() - _stream_t0) * 1000)
+
     # Aggiorna history usando il metodo centralizzato
     updated_history = _update_history(
         question.chat_history_dict, question.question, full_response
     )
 
-    # Token info (può essere 0 nello streaming)
-    prompt_token_info = PromptTokenInfo(input_tokens=0, output_tokens=0, total_tokens=0)
+    # Token info from accumulated streaming metadata
+    prompt_token_info = PromptTokenInfo(
+        input_tokens=_stream_input_tokens,
+        output_tokens=_stream_output_tokens,
+        total_tokens=_stream_total_tokens,
+    )
+
+    # Analytics: emit token_usage + model_call (fire-and-forget)
+    _model_str = (
+        question.model
+        if isinstance(question.model, str)
+        else getattr(question.model, "name", str(question.model))
+    )
+    _operation = "thinking" if response_class and response_class.__name__ == "ReasoningAnswer" else "ask"
+    _et, _pl = analytics.events.token_usage(
+        model=_model_str,
+        prompt_tokens=_stream_input_tokens,
+        completion_tokens=_stream_output_tokens,
+        total_tokens=_stream_total_tokens,
+        operation=_operation,
+        source="chat",
+        request_id=question.request_id,
+        agent_id=question.agent_id,
+    )
+    analytics.publish_nowait(_et, question.id_project, _pl)
+    _et, _pl = analytics.events.model_call(
+        model=_model_str,
+        provider=question.llm,
+        operation=_operation,
+        latency_ms=_stream_latency_ms,
+        success=True,
+        request_id=question.request_id,
+    )
+    analytics.publish_nowait(_et, question.id_project, _pl)
 
     end_time = datetime.now()
 
@@ -2183,7 +2289,9 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
 
         # Invoca l'agent
         logger.info("Invoking agent...")
+        _agent_t0 = time.monotonic()
         response = await base_agent.ainvoke(agent_input)
+        _agent_latency_ms = int((time.monotonic() - _agent_t0) * 1000)
 
         # PULIZIA FINALE: Pulisci i messaggi nella risposta (per sicurezza)
         if "messages" in response:
@@ -2219,6 +2327,62 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
             f"Token usage - Input: {total_input_tokens}, Output: {total_output_tokens}, Total: {total_tokens}"
         )
 
+        # Analytics: emit token_usage + model_call + tool_call (fire-and-forget)
+        _model_str = (
+            question.model
+            if isinstance(question.model, str)
+            else getattr(question.model, "name", str(question.model))
+        )
+        _et, _pl = analytics.events.token_usage(
+            model=_model_str,
+            prompt_tokens=total_input_tokens,
+            completion_tokens=total_output_tokens,
+            total_tokens=total_tokens,
+            operation="ask",
+            source="chat",
+            request_id=question.request_id,
+            agent_id=question.agent_id,
+        )
+        analytics.publish_nowait(_et, question.id_project, _pl)
+        _et, _pl = analytics.events.model_call(
+            model=_model_str,
+            provider=question.llm,
+            operation="ask",
+            latency_ms=_agent_latency_ms,
+            success=True,
+            request_id=question.request_id,
+        )
+        analytics.publish_nowait(_et, question.id_project, _pl)
+
+        # Emit ai.tool_call for each tool invocation found in the response messages
+        _tool_results: dict = {
+            msg.tool_call_id: msg
+            for msg in response.get("messages", [])
+            if hasattr(msg, "tool_call_id")
+        }
+        for msg in response.get("messages", []):
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    _tc_id = (
+                        tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                    )
+                    _tc_name = (
+                        tc.get("name") if isinstance(tc, dict) else getattr(tc, "name", "unknown")
+                    )
+                    _tc_result_msg = _tool_results.get(_tc_id)
+                    _tc_success = _tc_result_msg is not None and not getattr(
+                        _tc_result_msg, "is_error", False
+                    )
+                    _et, _pl = analytics.events.tool_call(
+                        tool_name=_tc_name,
+                        tool_provider="mcp",
+                        model=_model_str,
+                        latency_ms=0,
+                        success=_tc_success,
+                        request_id=question.request_id,
+                    )
+                    analytics.publish_nowait(_et, question.id_project, _pl)
+
         response_data = SimpleAnswer(
             answer=result.get(
                 "ai_message", "No answer"
@@ -2231,6 +2395,21 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
         return JSONResponse(content=response_data.model_dump())
 
     except Exception as e:
+        _model_str = (
+            question.model
+            if isinstance(question.model, str)
+            else getattr(question.model, "name", str(question.model))
+        )
+        _et, _pl = analytics.events.model_call(
+            model=_model_str,
+            provider=question.llm,
+            operation="ask",
+            latency_ms=0,
+            success=False,
+            error_type=type(e).__name__,
+            request_id=question.request_id,
+        )
+        analytics.publish_nowait(_et, question.id_project, _pl)
         return handle_agent_exception(e, "ask_mcp_agent_llm_simple")
 
 
