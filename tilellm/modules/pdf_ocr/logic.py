@@ -273,11 +273,18 @@ async def process_pdf_document_with_embeddings(
 
         # Track whether we've already done the first delete for this doc
         _first_index_done = False
+        _sc_tokens = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+        def _accumulate_sc(usage: dict):
+            if usage:
+                _sc_tokens["input_tokens"] += usage.get("input_tokens", 0)
+                _sc_tokens["output_tokens"] += usage.get("output_tokens", 0)
+                _sc_tokens["total_tokens"] += usage.get("total_tokens", 0)
 
         # Index tables to vector store if requested
         if question.index_tables_to_vector_store and question.include_tables and result and 'tables' in result:
             namespace = question.namespace if question.namespace else "default"
-            await _index_tables_to_vector_store(
+            _accumulate_sc(await _index_tables_to_vector_store(
                 repo=repo,
                 llm_embeddings=llm_embeddings,
                 tables=result['tables'],
@@ -289,13 +296,13 @@ async def process_pdf_document_with_embeddings(
                 skip_delete=_first_index_done,
                 llm=llm,
                 doc_context=doc_context
-            )
+            ))
             _first_index_done = True
 
         # Index images to vector store if requested
         if question.index_images_to_vector_store and question.include_images and result and 'images' in result:
             namespace = question.namespace if question.namespace else "default"
-            await _index_images_to_vector_store(
+            _accumulate_sc(await _index_images_to_vector_store(
                 repo=repo,
                 llm_embeddings=llm_embeddings,
                 images=result['images'],
@@ -307,9 +314,9 @@ async def process_pdf_document_with_embeddings(
                 skip_delete=_first_index_done,
                 llm=llm,
                 doc_context=doc_context
-            )
+            ))
             _first_index_done = True
-        
+
         # Extract entities using GraphRAG if requested
         if question.extract_entities and result and 'text_elements' in result and KNOWLEDGE_GRAPH_AVAILABLE:
             try:
@@ -327,7 +334,7 @@ async def process_pdf_document_with_embeddings(
         # After processing, index text chunks to vector store
         if question.include_text and result and 'text_elements' in result:
             namespace = question.namespace if question.namespace else "default"
-            await _index_text_chunks(
+            _accumulate_sc(await _index_text_chunks(
                 repo=repo,
                 llm_embeddings=llm_embeddings,
                 text_elements=result['text_elements'],
@@ -340,18 +347,20 @@ async def process_pdf_document_with_embeddings(
                 skip_delete=_first_index_done,
                 llm=llm,
                 doc_context=doc_context
-            )
+            ))
 
         # Ensure result is not None (should be dict)
         if result is None:
             raise RuntimeError("Processor returned None result")
-        
+
         metadata = result.get('metadata', {})
         text_elements = result.get('text_elements', [])
         tables = result.get('tables', [])
         images = result.get('images', [])
         formulas = result.get('formulas', [])
-        
+
+        sc_used = _sc_tokens["total_tokens"] > 0
+
         return {
             "status": "success",
             "doc_id": question.id,
@@ -361,7 +370,8 @@ async def process_pdf_document_with_embeddings(
                 "text_elements": len(text_elements),
                 "tables": len(tables),
                 "images": len(images),
-                "formulas": len(formulas)
+                "formulas": len(formulas),
+                **({"situated_context_tokens": _sc_tokens} if sc_used else {}),
             }
         }
         
@@ -713,10 +723,11 @@ async def _index_text_chunks(
     
     if not documents:
         logger.warning(f"No text elements to index for document {doc_id}")
-        return
-    
+        return {}
+
     logger.info(f"Indexing {len(documents)} text chunks to vector store for doc {doc_id}")
 
+    sc_token_usage = {}
     # Situated context enrichment (Contextual Retrieval, optional)
     sc_config = getattr(question, 'situated_context', None)
     if sc_config and sc_config.enable:
@@ -725,10 +736,12 @@ async def _index_text_chunks(
             # Use dedicated LLM for situated context if configured, otherwise fall back to DI LLM
             sc_llm = await build_llm_from_config(sc_config) or llm
             if sc_llm:
-                documents = await enrich_chunks_with_situated_context(
+                sc_result = await enrich_chunks_with_situated_context(
                     documents, sc_llm, doc_context=doc_context
                 )
-                logger.info(f"Situated context applied to {len(documents)} text chunks.")
+                documents = sc_result.documents
+                sc_token_usage = sc_result.token_usage
+                logger.info(f"Situated context applied to {len(documents)} text chunks. Tokens: {sc_token_usage}")
         except Exception as sc_err:
             logger.warning(f"Situated context enrichment failed, continuing without: {sc_err}")
 
@@ -744,6 +757,7 @@ async def _index_text_chunks(
     )
 
     logger.info(f"Successfully indexed {len(documents)} text chunks")
+    return sc_token_usage
 
 
 async def _index_tables_to_vector_store(
@@ -808,10 +822,11 @@ async def _index_tables_to_vector_store(
     
     if not documents:
         logger.warning(f"No table descriptions to index for document {doc_id}")
-        return
-    
+        return {}
+
     logger.info(f"Indexing {len(documents)} table descriptions to vector store for doc {doc_id}")
 
+    sc_token_usage = {}
     # Situated context enrichment (Contextual Retrieval, optional)
     sc_config = getattr(question, 'situated_context', None)
     if sc_config and sc_config.enable:
@@ -820,13 +835,15 @@ async def _index_tables_to_vector_store(
             # Use dedicated LLM for situated context if configured, otherwise fall back to DI LLM
             sc_llm = await build_llm_from_config(sc_config) or llm
             if sc_llm:
-                documents = await enrich_chunks_with_situated_context(
+                sc_result = await enrich_chunks_with_situated_context(
                     documents, sc_llm, doc_context=doc_context
                 )
-                logger.info(f"Situated context applied to {len(documents)} table descriptions.")
+                documents = sc_result.documents
+                sc_token_usage = sc_result.token_usage
+                logger.info(f"Situated context applied to {len(documents)} table descriptions. Tokens: {sc_token_usage}")
         except Exception as sc_err:
             logger.warning(f"Situated context enrichment for tables failed, continuing without: {sc_err}")
-    
+
     # Index to vector store
     await repo.aadd_documents(
         engine=engine,
@@ -839,6 +856,7 @@ async def _index_tables_to_vector_store(
     )
 
     logger.info(f"Successfully indexed {len(documents)} table descriptions")
+    return sc_token_usage
 
 
 async def _index_images_to_vector_store(
@@ -898,10 +916,11 @@ async def _index_images_to_vector_store(
     
     if not documents:
         logger.warning(f"No image captions to index for document {doc_id}")
-        return
-    
+        return {}
+
     logger.info(f"Indexing {len(documents)} image captions to vector store for doc {doc_id}")
 
+    sc_token_usage = {}
     # Situated context enrichment (Contextual Retrieval, optional)
     sc_config = getattr(question, 'situated_context', None)
     if sc_config and sc_config.enable:
@@ -910,10 +929,12 @@ async def _index_images_to_vector_store(
             # Use dedicated LLM for situated context if configured, otherwise fall back to DI LLM
             sc_llm = await build_llm_from_config(sc_config) or llm
             if sc_llm:
-                documents = await enrich_chunks_with_situated_context(
+                sc_result = await enrich_chunks_with_situated_context(
                     documents, sc_llm, doc_context=doc_context
                 )
-                logger.info(f"Situated context applied to {len(documents)} image captions.")
+                documents = sc_result.documents
+                sc_token_usage = sc_result.token_usage
+                logger.info(f"Situated context applied to {len(documents)} image captions. Tokens: {sc_token_usage}")
         except Exception as sc_err:
             logger.warning(f"Situated context enrichment for images failed, continuing without: {sc_err}")
     
@@ -929,6 +950,7 @@ async def _index_images_to_vector_store(
     )
 
     logger.info(f"Successfully indexed {len(documents)} image captions")
+    return sc_token_usage
 
 
 @inject_llm_chat_async
@@ -1091,6 +1113,7 @@ async def process_pdf_markdown_extraction(
         
         logger.info(f"Created {len(documents)} Markdown chunks for indexing")
 
+        sc_token_usage = None
         # Situated context enrichment (Contextual Retrieval, optional)
         sc_config = getattr(question, 'situated_context', None)
         if sc_config and sc_config.enable:
@@ -1101,13 +1124,15 @@ async def process_pdf_markdown_extraction(
                 if sc_llm:
                     # Global doc context for Markdown
                     doc_context = markdown_content[:1500]
-                    documents = await enrich_chunks_with_situated_context(
+                    sc_result = await enrich_chunks_with_situated_context(
                         documents, sc_llm, doc_context=doc_context
                     )
-                    logger.info(f"Situated context applied to {len(documents)} Markdown chunks.")
+                    documents = sc_result.documents
+                    sc_token_usage = sc_result.token_usage
+                    logger.info(f"Situated context applied to {len(documents)} Markdown chunks. Tokens: {sc_token_usage}")
             except Exception as sc_err:
                 logger.warning(f"Situated context enrichment for Markdown failed: {sc_err}")
-        
+
         # Index chunks to vector store
         if documents:
             await repo.aadd_documents(
@@ -1119,11 +1144,11 @@ async def process_pdf_markdown_extraction(
                 metadata_id=doc_id
             )
             logger.info(f"Successfully indexed {len(documents)} Markdown chunks")
-        
+
         # Cleanup temp file if created
         if temp_file_path and os.path.exists(temp_file_path):
             os.remove(temp_file_path)
-        
+
         return {
             "status": "success",
             "doc_id": doc_id,
@@ -1133,7 +1158,8 @@ async def process_pdf_markdown_extraction(
             "num_images": len(images),
             "num_tables": len(tables),
             "metadata": metadata,
-            "markdown_preview": markdown_content[:500] + "..." if len(markdown_content) > 500 else markdown_content
+            "markdown_preview": markdown_content[:500] + "..." if len(markdown_content) > 500 else markdown_content,
+            **({"situated_context_tokens": sc_token_usage} if sc_token_usage else {}),
         }
         
     except Exception as e:

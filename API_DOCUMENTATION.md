@@ -32,11 +32,23 @@ Complete REST API documentation for Tiledesk LLM server.
 
 Single entry point for all document ingestion. Automatically routes to the appropriate pipeline based on document type and configuration. The old endpoints (`/api/scrape/single`, `/api/pdf/scrape`) remain active for backward compatibility.
 
-**Routing logic:**
+**Type auto-detection**
+
+When `type` is omitted or set to `"auto"`, the system resolves the document type automatically using a 6-level priority chain (no network calls, no LLM):
+
+1. **Magic bytes** — reads the first bytes of `file_content` (base64): `%PDF` → `pdf`; OLE2 header → `xls`; ZIP header (DOCX/XLSX ambiguous) → falls through to extension.
+2. **Extension from `file_name`** — e.g. `report.docx` → `docx`.
+3. **Extension from `source` URL** — e.g. `https://example.com/data.xlsx` → `xlsx` (query string/fragment stripped).
+4. **URL heuristic** — `http(s)` source with no known file extension (`.html`, `.htm`, empty path) → `url`.
+5. **Direct text** — no source/file, but `content` field is populated → `text`.
+6. **No signal** — leaves type unresolved; repository direct-text branch handles it.
+
+**Routing logic (after type resolution):**
 
 | Condition | Pipeline |
 |-----------|----------|
 | `type = "pdf"` AND `use_ocr = true` | Advanced OCR pipeline (Docling) |
+| `type = "docx"` AND `use_ocr = true` | DOCX image-aware pipeline |
 | `hybrid = true` | Hybrid ingestion (`add_item_hybrid`) |
 | default | Standard ingestion (`add_item`) |
 
@@ -45,7 +57,7 @@ Single entry point for all document ingestion. Automatically routes to the appro
 {
   "id": "doc-001",
   "source": "https://example.com/document.pdf",
-  "type": "pdf",
+  "type": "auto",
   "namespace": "my-docs",
   "gptkey": "sk-...",
   "embedding": "text-embedding-ada-002",
@@ -83,17 +95,18 @@ Single entry point for all document ingestion. Automatically routes to the appro
 
 **Supported document types** (via `type` field):
 
-| `type` | Loader | Notes |
-|--------|--------|-------|
-| `url` | Trafilatura → Playwright fallback | 6 scraping strategies (`scrape_type` 0–5) |
-| `pdf` | PyPDFLoader (basic) / Docling (`use_ocr=true`) | Use `use_ocr=true` for tables, images, formulas |
-| `docx` | `StructuredDocxLoader` | Preserves heading hierarchy and tables |
-| `xlsx` / `xls` | `ExcelLoader` | Sheet-by-sheet, vertical chunking >100 rows |
-| `csv` | `CSVLoader` | Vertical chunking >100 rows |
-| `txt` | TextLoader | Plain text |
-| `md` | `UnstructuredMarkdownLoader` | Headings partially parsed |
-| `text` | Direct from `content` field | Inline content |
-| `regex_custom` | Playwright + user regex | Custom split pattern |
+| `type` | Source | Loader / Path | Notes |
+|--------|--------|---------------|-------|
+| `auto` | any | Auto-detected (see above) | Omit `type` or pass `"auto"` |
+| `url` | `source` URL | Trafilatura → Playwright fallback | 6 scraping strategies (`scrape_type` 0–5) |
+| `pdf` | `source` URL | PyPDFLoader (basic) / Docling (`use_ocr=true`) | Use `use_ocr=true` for tables, images, formulas |
+| `docx` | `source` URL | `StructuredDocxLoader` / image pipeline (`use_ocr=true`) | Preserves heading hierarchy and tables |
+| `xlsx` / `xls` | `source` URL | `ExcelLoader` | Sheet-by-sheet, vertical chunking >100 rows |
+| `csv` | `source` URL | `CSVLoader` | Vertical chunking >100 rows |
+| `txt` | `source` URL | `TextLoader` | Plain text fetched from URL |
+| `md` | `source` URL | `UnstructuredMarkdownLoader` | Headings partially parsed |
+| `text` | `content` field | `process_auto_detected_text` | **Direct inline content** — no source URL needed. Sub-format (plain / Markdown / tabular) detected at chunk time. |
+| `regex_custom` | `source` URL | Playwright + user regex | Custom split pattern via `chunk_regex` |
 
 **Response**: same as `/api/scrape/single`
 ```json
@@ -298,8 +311,10 @@ Direct LLM query with optional MCP servers and tools support.
 
 **MCP Server Configuration**:
 - `transport`: `"sse"` | `"stdio"` | `"streamable_http"`
-- For SSE & Streamable Http: provide `url` and optional `api_key`
+- For SSE & Streamable Http: provide `url` and optional `headers`
 - For stdio: provide `command` and `args`
+- `headers`: optional HTTP headers sent on every request (e.g. API keys, user identity)
+- `enabled_tools`: list of tool names to expose, or `["all"]` (default)
 
 **Routing Logic**:
 1. No MCP servers → Simple LLM call
@@ -1040,16 +1055,43 @@ Embedding model configuration.
 ### ServerConfig (MCP)
 MCP server configuration.
 
-```python
+```json
 {
-  "transport": "sse" | "stdio" | "streamable_http",
-  "url": "string (for SSE)",
-  "command": "string (for stdio)",
-  "args": ["string"] (for stdio),
-  "api_key": "string (optional)",
+  "transport": "sse | stdio | streamable_http",
+  "url": "string (required for SSE and streamable_http)",
+  "command": "string (required for stdio)",
+  "args": ["string"],
+  "headers": {"header-name": "value"},
+  "enabled_tools": ["all"],
   "parameters": {}
 }
 ```
+
+**`headers`** — arbitrary HTTP headers forwarded on every MCP request. Use this for:
+- Provider API keys (`"x-api-key": "<key>"`)
+- User-scoped identity (see Composio example below)
+
+#### Composio integration
+
+Composio requires the **user_id as a query parameter** in the URL and the **API key as an HTTP header**:
+
+```json
+"servers": {
+  "composio": {
+    "transport": "streamable_http",
+    "url": "https://backend.composio.dev/v3/mcp/<composio-token>/mcp?user_id=<entity-id>",
+    "headers": {
+      "x-api-key": "<composio-api-key>"
+    }
+  }
+}
+```
+
+| Parameter | Where | Description |
+|---|---|---|
+| `<composio-token>` | URL path | Composio MCP token (project-level) |
+| `user_id` | URL query param | Composio entity/user ID for account lookup |
+| `x-api-key` | HTTP header | Composio API key |
 
 ---
 
@@ -1198,6 +1240,30 @@ curl -X POST "http://localhost:8000/api/ask" \
       }
     },
     "tools": ["code-analyzer"]
+  }'
+```
+
+### Example 6: Query LLM with Composio MCP (Gmail, etc.)
+
+Composio requires the `user_id` as a URL query parameter and the API key as `x-api-key` header.
+
+```bash
+curl -X POST "http://localhost:8000/api/ask" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "question": "List my unread emails",
+    "llm_key": "your-openai-key",
+    "llm": "openai",
+    "model": "gpt-4o",
+    "servers": {
+      "composio": {
+        "transport": "streamable_http",
+        "url": "https://backend.composio.dev/v3/mcp/<composio-token>/mcp?user_id=<entity-id>",
+        "headers": {
+          "x-api-key": "<composio-api-key>"
+        }
+      }
+    }
   }'
 ```
 

@@ -558,10 +558,11 @@ This section provides a detailed overview of the available API endpoints.
 Unified ingestion endpoint. Single entry point that routes to the correct pipeline based on document type and configuration. Replaces the need to choose manually between `/api/scrape/single` and `/api/pdf/scrape`.
 
 - **Request Body**: `ItemSingle`
-- **Routing**: `pdf + use_ocr=true` → Docling OCR pipeline · `hybrid=true` → `add_item_hybrid` · default → `add_item`
-- **Backward compatibility**: Old endpoints remain active.
+- **Type field**: pass `"auto"` (or omit) to let the system detect the format from magic bytes, file extension, or URL heuristics. Explicit values: `url`, `pdf`, `docx`, `text`, `txt`, `md`, `xlsx`, `xls`, `csv`, `regex_custom`.
+- **Routing**: `pdf + use_ocr=true` → Docling OCR · `docx + use_ocr=true` → DOCX image pipeline · `hybrid=true` → `add_item_hybrid` · default → `add_item`
+- **Backward compatibility**: Old endpoints remain active; existing `type="pdf"` / `"docx"` / etc. callers are unaffected.
 
-See [`API_DOCUMENTATION.md`](./API_DOCUMENTATION.md#unified-ingestion-api) for the full field reference and supported document types.
+See [`API_DOCUMENTATION.md`](./API_DOCUMENTATION.md#unified-ingestion-api) for the full field reference, supported document types, and auto-detection rules.
 
 ### Scraping & Indexing APIs
 
@@ -676,8 +677,21 @@ Many endpoints are protected and require a JWT token passed as a path parameter 
 
 `POST /api/ingestion` is the single entry point for all document ingestion. It replaces the need to call different endpoints depending on the document type or processing mode.
 
-**Routing rules:**
+**Auto type detection**
+
+Omit `type` or pass `"auto"` and the system resolves the format automatically (deterministic, no network, no LLM):
+
+| Priority | Signal | Result |
+|----------|--------|--------|
+| 1 | Magic bytes in `file_content` (base64) | `pdf`, `xls` (unambiguous); ZIP falls through |
+| 2 | Extension from `file_name` | `pdf`, `docx`, `txt`, `md`, `xlsx`, `xls`, `csv` |
+| 3 | Extension from `source` URL | same as above |
+| 4 | `http(s)` source, no file extension | `url` |
+| 5 | `content` field present, no source | `text` |
+
+**Routing rules (after type resolution):**
 - `type = "pdf"` + `use_ocr = true` → Docling-based OCR pipeline (text + tables + images)
+- `type = "docx"` + `use_ocr = true` → DOCX image-aware pipeline
 - `hybrid = true` → hybrid dense+sparse indexing (`add_item_hybrid`)
 - everything else → standard dense indexing (`add_item`)
 
@@ -685,9 +699,39 @@ Many endpoints are protected and require a JWT token passed as a path parameter 
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `use_ocr` | `false` | Route PDFs to the Docling OCR pipeline |
+| `type` | `null` | Document type. Omit or pass `"auto"` to auto-detect. Values: `auto`, `url`, `pdf`, `docx`, `text`, `txt`, `md`, `xlsx`, `xls`, `csv`, `regex_custom`. |
+| `use_ocr` | `false` | Route PDFs/DOCX to the advanced OCR pipeline (Docling) |
 | `hybrid` | `false` | Enable hybrid (dense + sparse) indexing |
 | `situated_context` | `null` | Configuration for Contextual Retrieval (situated context). Prepends LLM-generated context to each chunk. |
+
+**Example — auto-detect from URL (PDF without OCR):**
+```bash
+curl -X POST http://localhost:8000/api/ingestion \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "manual-001",
+    "source": "https://example.com/manual.pdf",
+    "namespace": "docs",
+    "gptkey": "sk-...",
+    "embedding": "text-embedding-ada-002",
+    "engine": { "name": "qdrant", "url": "http://localhost:6333", "index_name": "tilellm" }
+  }'
+```
+
+**Example — direct text content (`type="text"`):**
+```bash
+curl -X POST http://localhost:8000/api/ingestion \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "note-42",
+    "type": "text",
+    "content": "# Release Notes\n\nVersion 3.2 introduces...",
+    "namespace": "notes",
+    "gptkey": "sk-...",
+    "embedding": "text-embedding-ada-002",
+    "engine": { "name": "qdrant", "url": "http://localhost:6333", "index_name": "tilellm" }
+  }'
+```
 
 **Example — OCR + situated context:**
 ```bash

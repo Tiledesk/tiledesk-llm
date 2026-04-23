@@ -53,6 +53,9 @@ class IndexingResult(BaseModel):
     status: int = Field(default=300)
     date: str = Field(default_factory=lambda: datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f"))
     error: Optional[str] | None = None
+    sc_input_tokens: int | None = None
+    sc_output_tokens: int | None = None
+    sc_total_tokens: int | None = None
 
 
 class RepositoryItemNamespaceResult(BaseModel):
