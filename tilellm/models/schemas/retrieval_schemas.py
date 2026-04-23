@@ -5,7 +5,12 @@ if TYPE_CHECKING:
     from tilellm.models.chat import ChatEntry
 
 
-class Citation(BaseModel):
+class _LLMCitation(BaseModel):
+    """Citation model used exclusively as LLM structured-output target.
+
+    Intentionally omits source_file_name so the LLM cannot hallucinate it.
+    The field is populated server-side from document metadata after retrieval.
+    """
     source_id: int = Field(
         ...,
         description="The integer ID of a SPECIFIC source which justifies the answer.",
@@ -14,13 +19,41 @@ class Citation(BaseModel):
         ...,
         description="The Article Source as URL (if available) of a SPECIFIC source which justifies the answer.",
     )
-    #quote: str = Field(
-    #    ...,
-    #    description="The VERBATIM quote from the specified source that justifies the answer.",
-    #)
+
+
+class Citation(BaseModel):
+    """Citation returned to API consumers — includes server-enriched source_file_name."""
+    source_id: int = Field(
+        ...,
+        description="The integer ID of a SPECIFIC source which justifies the answer.",
+    )
+    source_name: str = Field(
+        ...,
+        description="The Article Source as URL (if available) of a SPECIFIC source which justifies the answer.",
+    )
+    source_file_name: Optional[str] = Field(
+        default=None,
+        description="Human-readable file/page name from document metadata (e.g. 'price-list.pdf', 'Home – Acme Corp'). Use as link label in UX.",
+    )
+
+    @classmethod
+    def from_llm(cls, llm_cit: "_LLMCitation") -> "Citation":
+        return cls(source_id=llm_cit.source_id, source_name=llm_cit.source_name)
+
+
+class _QuotedAnswer(BaseModel):
+    """Structured-output schema sent to the LLM — uses _LLMCitation (no source_file_name)."""
+    answer: str = Field(
+        ...,
+        description="The answer to the user question, which is based only on the given sources.",
+    )
+    citations: List[_LLMCitation] = Field(
+        ..., description="Citations from the given sources that justify the answer."
+    )
+
 
 class QuotedAnswer(BaseModel):
-    """Answer the user question based only on the given sources, and cite the sources used."""
+    """Answer with citations as returned by the API."""
 
     answer: str = Field(
         ...,

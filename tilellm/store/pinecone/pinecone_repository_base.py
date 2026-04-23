@@ -154,8 +154,11 @@ class CachedVectorStore:
                 await idx.close()
         except Exception as e:
             logger.warning(f"Pinecone connection test failed for '{self.engine.index_name}': {e}")
-            # If host resolution is stale, reset it so the next call re-resolves.
-            if any(kw in str(e).lower() for kw in ("session", "closed", "not found", "404")):
+            # Reset cached host for any error that signals a stale or invalid host URL.
+            # "malformed domain" and "unauthorized" mean the cached host no longer matches
+            # the current API key (index recreated, key rotated, or plan change).
+            if any(kw in str(e).lower() for kw in ("session", "closed", "not found", "404",
+                                                     "malformed", "unauthorized", "401")):
                 async with self._lock:
                     self._host = None
             return False
