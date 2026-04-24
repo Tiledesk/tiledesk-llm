@@ -379,6 +379,12 @@ async def redis_consumer(app: FastAPI):
 
         logger.info("App startup complete - Redis & FalkorDB ready")
         await analytics.init()
+        from tilellm.analytics.config import config as _an_cfg
+        logger.info(
+            "analytics startup: enabled=%s ingest_url=%s",
+            _an_cfg.is_enabled,
+            _an_cfg.ingest_url or "<ANALYTICS_INGEST_URL not set>",
+        )
 
         yield
 

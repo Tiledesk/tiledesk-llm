@@ -103,6 +103,11 @@ async def _publish(event: Dict[str, Any]) -> None:
 
     assert _semaphore is not None  # mypy
     async with _semaphore:
+        logger.info(
+            "analytics: posting event_type=%s project=%s",
+            event.get("event_type"),
+            event.get("id_project"),
+        )
         try:
             resp = await _client.post("/events", json=event)
             if resp.status_code not in (200, 202):
@@ -113,7 +118,7 @@ async def _publish(event: Dict[str, Any]) -> None:
                     resp.text[:200],
                 )
             else:
-                logger.debug(
+                logger.info(
                     "analytics: published %s for project %s",
                     event.get("event_type"),
                     event.get("id_project"),
@@ -162,15 +167,15 @@ def publish_nowait(
         payload:    Event-specific payload dict.
     """
     if not config.is_enabled:
+        logger.warning("analytics: disabled (ANALYTICS_INGEST_URL not set) — dropping %s", event_type)
         return
 
     if not id_project:
-        logger.debug("analytics: id_project missing, skipping %s", event_type)
+        logger.info("analytics: id_project is None/empty — dropping event %s", event_type)
         return
 
     if _client is None:
-        # Client not initialised yet (called before lifespan startup).
-        logger.debug("analytics: client not ready, skipping %s", event_type)
+        logger.warning("analytics: client not initialized — dropping %s (was analytics.init() called?)", event_type)
         return
 
     event = _build_envelope(event_type, id_project, payload)
