@@ -5,6 +5,13 @@
     * Andrea Sponziello
 ### **Copyright**: Tiledesk SRL
 
+
+---
+## [2026-04-24]
+### 0.10.1-rc6
+Added: `table_chunker.py`
+
+
 ---
 ## [2026-04-23]
 ### 0.10.1-rc5 (feat: HTML page title as file_name + source_file_name in citations)
