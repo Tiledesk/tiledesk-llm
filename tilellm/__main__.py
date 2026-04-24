@@ -674,8 +674,17 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
                 embedding=query_embedding,
             )
             if cached is not None:
-                result = RetrievalResult(**{k: v for k, v in cached.items() if not k.startswith("_")})
-                logger.info(f"/api/qa cache hit (level={cached.get('_cache_level')}, cosine={cached.get('_cache_similarity', 1.0):.4f})")
+                # Ensure namespace is present in cached data to satisfy RetrievalResult validation
+                cache_data = {k: v for k, v in cached.items() if not k.startswith("_")}
+                if "namespace" not in cache_data or not cache_data["namespace"]:
+                    cache_data["namespace"] = question_answer.namespace
+                
+                # Map internal cache metadata to model fields
+                cache_data["cache_level"] = cached.get("_cache_level")
+                cache_data["cache_similarity"] = cached.get("_cache_similarity")
+                
+                result = RetrievalResult(**cache_data)
+                logger.info(f"/api/qa cache hit (level={cache_data['cache_level']}, cosine={cache_data['cache_similarity'] or 1.0:.4f})")
                 return result
         except Exception as e:
             logger.warning(f"/api/qa cache lookup failed ({e}), proceeding without cache")
@@ -685,11 +694,30 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
     else:
         result = await ask_with_memory(question_answer)
 
+    # Handle JSONResponse if the controller returned it instead of a Pydantic model
+    actual_result = result
+    if isinstance(result, JSONResponse):
+        import json
+        actual_result = json.loads(result.body.decode())
+
     # Store in cache only on successful results, reusing the embedding computed at lookup
-    if question_answer.use_cache and query_embedding is not None and getattr(result, "success", True):
+    # Robust check for success: must be explicitly True (or missing, but not explicitly False)
+    is_success = True
+    if hasattr(actual_result, "success"):
+        is_success = actual_result.success
+    elif isinstance(actual_result, dict):
+        is_success = actual_result.get("success", True)
+
+    if question_answer.use_cache and query_embedding is not None and is_success:
         from tilellm.shared.cache import SemanticCache
         try:
-            body = result.model_dump() if hasattr(result, "model_dump") else {}
+            from fastapi.encoders import jsonable_encoder
+            body = jsonable_encoder(actual_result)
+            
+            # Ensure namespace is stored in cache
+            if "namespace" not in body or not body["namespace"]:
+                body["namespace"] = question_answer.namespace
+                
             await SemanticCache.store(
                 namespace=question_answer.namespace,
                 question=question_answer.question,
@@ -699,7 +727,6 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
         except Exception as e:
             logger.warning(f"/api/qa cache store failed ({e})")
 
-    logger.debug(result)
     return result
 
 

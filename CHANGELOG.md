@@ -8,8 +8,17 @@
 
 ---
 ## [2026-04-24]
+### 0.10.1-rc11
+- Fixed: Semantic cache validation error in `POST /api/qa` where `RetrievalResult` failed due to missing required `namespace` field.
+- Improved: Robust result extraction for caching. The system now correctly handles `JSONResponse` objects from the controller, preventing empty or failed results from being stored in Redis.
+- Added: New fields `cache_level` and `cache_similarity` to `RetrievalResult` model.
+- Improved: Cache metadata mapping in both `/api/qa` and `/api/v2/qa` (LangGraph). Hits now return explicit cache level ('exact' or 'semantic') and similarity score in the JSON response.
+- Fixed: LangGraph `cache_lookup_node` and `cache_store_node` now correctly inject `namespace` and handle serialization using `jsonable_encoder`.
+
+---
 ### 0.10.1-rc10
-Added: `table_chunker.py`
+- Added: `table_chunker.py`
+
 
 
 ---

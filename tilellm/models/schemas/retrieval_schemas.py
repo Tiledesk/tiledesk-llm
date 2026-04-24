@@ -96,6 +96,8 @@ class RetrievalResult(BaseModel):
     duration: Optional[float]= Field(default=0)
     chat_history_dict: Optional[Dict[str, "ChatEntry"]] = None
     status: Optional[str] = Field(default=None)
+    cache_level: Optional[str] = Field(default=None, description="Cache hit level: 'exact' or 'semantic'")
+    cache_similarity: Optional[float] = Field(default=None, description="Similarity score for semantic cache hits")
 
 class RetrievalChunksResult(BaseModel):
     success: bool = Field(default=False)
