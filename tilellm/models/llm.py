@@ -30,6 +30,17 @@ class SituatedContextConfig(BaseModel):
     max_tokens: int = Field(default=256)
     profile: Optional[str] = Field(default=None, description="Name of a predefined situated context profile (YAML file in shared/profiles/situated_context/)")
     custom_prompt: Optional[str] = Field(default=None, description="Override the default situating prompt with a custom one. Use {doc_context} and {chunk_text} placeholders.")
+    metadata_extraction_prompt: Optional[str] = Field(
+        default=None,
+        description=(
+            "When set, the situated-context LLM call also extracts structured metadata. "
+            "The LLM must return a JSON object with two keys: "
+            "'context' (the situating sentence) and 'metadata' (a flat dict of extracted fields). "
+            "Available placeholders: {doc_context}, {chunk_text}, {col_names}, {source}, {element_type}. "
+            "Use a domain-specific prompt (e.g. 'pa_italiana' profile) or write your own. "
+            "The extracted metadata is merged directly into each chunk's doc.metadata."
+        ),
+    )
 
 
 class TableOptions(BaseModel):

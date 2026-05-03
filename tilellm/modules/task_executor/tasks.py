@@ -772,3 +772,38 @@ async def _process_pdf_document_task_inner(
         # Returning instead of raising makes the task appear successful to TaskIQ
         # and silently disables all retry logic.
         raise
+
+
+@broker.task(retry_on_error=True, max_retries=2, labels={"task_type": "digest_generate"})
+async def task_digest_generate(request_dict: dict) -> dict:
+    """
+    Task to generate temporal digests for one or more date windows.
+
+    Runs asynchronously so that large date ranges (monthly backfills, multi-ASL
+    batches) do not block HTTP workers. Results are sent to webhook_url on
+    completion or failure.
+    """
+    from tilellm.modules.temporal_digest.logic import generate_digest
+    from tilellm.modules.temporal_digest.models.schemas import DigestGenerationRequest
+
+    webhook_url = request_dict.get("webhook_url")
+    try:
+        request = DigestGenerationRequest(**request_dict)
+        logger.info(
+            f"[digest_generate] Starting for namespace={request.namespace} "
+            f"date_from={request.date_from} granularity={request.granularity}"
+        )
+        result = await generate_digest(request)
+        logger.info(
+            f"[digest_generate] Finished namespace={request.namespace}: "
+            f"{result.total_windows} windows, {result.total_chunks_processed} chunks"
+        )
+        payload = result.model_dump(mode="json")
+        if webhook_url:
+            await send_webhook(webhook_url, payload)
+        return payload
+    except Exception as e:
+        logger.error(f"[digest_generate] Failed for namespace={request_dict.get('namespace')}: {e}", exc_info=True)
+        if webhook_url:
+            await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
+        raise

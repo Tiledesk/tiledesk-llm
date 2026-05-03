@@ -219,7 +219,8 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                             chunks, 
                             situated_llm,
                             profile=item.situated_context.profile,
-                            custom_prompt=item.situated_context.custom_prompt
+                            custom_prompt=item.situated_context.custom_prompt,
+                            metadata_extraction_prompt=item.situated_context.metadata_extraction_prompt
                         )
                         chunks = sc_result.documents
                         sc_token_usage = sc_result.token_usage
@@ -366,6 +367,13 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
             filter_dict = None
             if question_answer.tags:
                 filter_dict = build_tags_filter(question_answer.tags, field="tags")
+
+            metadata_filter = getattr(question_answer, '_metadata_filter', None)
+            if metadata_filter:
+                if filter_dict:
+                    filter_dict = {"$and": [filter_dict, metadata_filter]}
+                else:
+                    filter_dict = metadata_filter
 
             if question_answer.search_type == 'hybrid':
                 raise HTTPException(

@@ -230,7 +230,8 @@ async def process_docx_with_images(
                         sc_llm, 
                         doc_context=doc_context,
                         profile=item.situated_context.profile,
-                        custom_prompt=item.situated_context.custom_prompt
+                        custom_prompt=item.situated_context.custom_prompt,
+                            metadata_extraction_prompt=item.situated_context.metadata_extraction_prompt
                     )
 
                     enriched_text_docs = sc_r.documents
@@ -245,7 +246,8 @@ async def process_docx_with_images(
                         sc_llm, 
                         doc_context=doc_context,
                         profile=item.situated_context.profile,
-                        custom_prompt=item.situated_context.custom_prompt
+                        custom_prompt=item.situated_context.custom_prompt,
+                            metadata_extraction_prompt=item.situated_context.metadata_extraction_prompt
                     )
 
                     image_caption_docs = sc_r.documents

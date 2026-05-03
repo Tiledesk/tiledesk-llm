@@ -294,39 +294,37 @@ class MilvusRepository(VectorStoreRepository):
         # Return the vector store
         return await cached_vs_wrapper.get_vector_store()
 
-    def build_filter(self, namespace: str, filter_dict: Optional[Dict] = None) -> str:
+    def build_filter(self, namespace: str, filter_dict: Optional[Dict] = None, metadata_filter: Optional[Dict] = None) -> str:
         """
-        Build Milvus filter expression from namespace and optional filter dict.
+        Build Milvus filter expression from namespace, optional tag filter dict, and optional metadata filter.
         """
-        # Start with namespace condition
         namespace_condition = f'metadata["namespace"] == "{namespace}"'
 
-        if not filter_dict:
+        if not filter_dict and not metadata_filter:
             return namespace_condition
 
-        def convert_to_expression(filter_dict: Dict) -> str:
+        def convert_to_expression(d: Dict) -> str:
             """Recursively convert filter dict to Milvus expression."""
             # Handle $and
-            if "$and" in filter_dict:
-                sub_exprs = [convert_to_expression(sub) for sub in filter_dict["$and"]]
+            if "$and" in d:
+                sub_exprs = [convert_to_expression(sub) for sub in d["$and"]]
                 return "(" + " and ".join(sub_exprs) + ")"
 
             # Handle $or
-            if "$or" in filter_dict:
-                sub_exprs = [convert_to_expression(sub) for sub in filter_dict["$or"]]
+            if "$or" in d:
+                sub_exprs = [convert_to_expression(sub) for sub in d["$or"]]
                 return "(" + " or ".join(sub_exprs) + ")"
 
             # Handle $not
-            if "$not" in filter_dict:
-                sub_expr = convert_to_expression(filter_dict["$not"])
+            if "$not" in d:
+                sub_expr = convert_to_expression(d["$not"])
                 return f"not ({sub_expr})"
 
-            # Handle tags field condition
-            if "tags" in filter_dict:
-                tag_cond = filter_dict["tags"]
+            # Handle tags field condition (array contains semantics)
+            if "tags" in d:
+                tag_cond = d["tags"]
                 if "$in" in tag_cond:
                     tags = tag_cond["$in"]
-                    # Milvus JSON contains check
                     if len(tags) == 1:
                         return f'metadata["tags"] contains "{tags[0]}"'
                     else:
@@ -343,17 +341,49 @@ class MilvusRepository(VectorStoreRepository):
                     logger.warning(f"Unsupported tag condition: {tag_cond}")
                     return "1 == 1"
 
-            # Unknown structure
-            logger.warning(f"Unsupported filter structure: {filter_dict}")
+            # Handle generic field conditions: {field: {$op: value, ...}}
+            field_conditions = []
+            for field, condition in d.items():
+                if field.startswith("$"):
+                    continue
+                if isinstance(condition, dict):
+                    parts = []
+                    for op, val in condition.items():
+                        quoted = f'"{val}"' if isinstance(val, str) else str(val)
+                        if op == "$eq":
+                            parts.append(f'metadata["{field}"] == {quoted}')
+                        elif op == "$ne":
+                            parts.append(f'metadata["{field}"] != {quoted}')
+                        elif op == "$gte":
+                            parts.append(f'metadata["{field}"] >= {quoted}')
+                        elif op == "$lte":
+                            parts.append(f'metadata["{field}"] <= {quoted}')
+                        elif op == "$in":
+                            vals = [f'metadata["{field}"] == "{v}"' if isinstance(v, str) else f'metadata["{field}"] == {v}' for v in val]
+                            parts.append("(" + " or ".join(vals) + ")")
+                        else:
+                            logger.warning(f"Unsupported operator {op} for field {field}")
+                    if parts:
+                        field_conditions.append("(" + " and ".join(parts) + ")")
+            if field_conditions:
+                return "(" + " and ".join(field_conditions) + ")"
+
+            logger.warning(f"Unsupported filter structure: {d}")
             return "1 == 1"
 
-        tag_expression = convert_to_expression(filter_dict)
+        conditions = [namespace_condition]
 
-        # Combine namespace with tag expression using AND
-        if tag_expression == "1 == 1":
-            return namespace_condition
+        if filter_dict:
+            tag_expression = convert_to_expression(filter_dict)
+            if tag_expression != "1 == 1":
+                conditions.append(tag_expression)
 
-        return f"{namespace_condition} and {tag_expression}"
+        if metadata_filter:
+            meta_expression = convert_to_expression(metadata_filter)
+            if meta_expression != "1 == 1":
+                conditions.append(meta_expression)
+
+        return " and ".join(conditions)
 
     async def delete_collection(self, engine: Engine) -> bool:
         """
@@ -490,7 +520,8 @@ class MilvusRepository(VectorStoreRepository):
                             chunks, 
                             situated_llm,
                             profile=item.situated_context.profile,
-                            custom_prompt=item.situated_context.custom_prompt
+                            custom_prompt=item.situated_context.custom_prompt,
+                            metadata_extraction_prompt=item.situated_context.metadata_extraction_prompt
                         )
                         chunks = sc_result.documents
                         sc_token_usage = sc_result.token_usage
@@ -652,7 +683,8 @@ class MilvusRepository(VectorStoreRepository):
                             chunks, 
                             situated_llm,
                             profile=item.situated_context.profile,
-                            custom_prompt=item.situated_context.custom_prompt
+                            custom_prompt=item.situated_context.custom_prompt,
+                            metadata_extraction_prompt=item.situated_context.metadata_extraction_prompt
                         )
                         chunks = sc_result.documents
                         sc_token_usage = sc_result.token_usage
@@ -722,7 +754,8 @@ class MilvusRepository(VectorStoreRepository):
             from tilellm.shared.tags_query_parser import build_tags_filter
             filter_expr = self.build_filter(
                 question_answer.namespace,
-                build_tags_filter(question_answer.tags) if question_answer.tags else None
+                build_tags_filter(question_answer.tags) if question_answer.tags else None,
+                metadata_filter=getattr(question_answer, '_metadata_filter', None)
             )
 
             import datetime

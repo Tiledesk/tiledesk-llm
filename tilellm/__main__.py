@@ -1134,7 +1134,8 @@ def register_feature_routers(_app: FastAPI, base_package_dir: str):
         "conversion": "conversion",
         "tools_registry": "tools_registry",
         "api_v2":"api_v2",
-        "ingestion": "ingestion"
+        "ingestion": "ingestion",
+        "temporal_digest": "temporal_digest",
     }
     
     # Se la configurazione non esiste o è vuota, abilita tutti i moduli (compatibilità all'indietro)

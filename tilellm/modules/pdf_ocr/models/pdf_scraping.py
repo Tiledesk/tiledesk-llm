@@ -38,6 +38,16 @@ class PDFScrapingRequest(ItemSingle):
     extract_entities: bool = Field(False, description="Whether to extract semantic entities using GraphRAG.")
     extract_structure: bool = Field(True, description="Whether to extract hierarchical document structure.")
     extract_md_simple: bool = Field(False, description="If True, extracts a single Markdown document from the entire PDF with enhanced image/table descriptions, then indexes it with MD-specific chunking.")
+    doc_date: Optional[str] = Field(None, description="Document adoption/emission date in ISO format (YYYY-MM-DD). Written as 'date' in chunk metadata and used by the temporal digest filter.")
+    additional_metadata: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Arbitrary key-value pairs merged into every chunk's metadata. "
+            "Example: {\"date\": \"14/05/2026\", \"ente\": \"ASL Brindisi\"}. "
+            "A 'date' value in DD/MM/YYYY format is auto-converted to ISO YYYY-MM-DD. "
+            "Keys here override the corresponding base metadata fields."
+        ),
+    )
 
     def is_url(self) -> bool:
         """Check if file_content is a URL."""
