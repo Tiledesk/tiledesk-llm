@@ -479,11 +479,7 @@ class QdrantRepository(VectorStoreRepository):
 
                 # Generate sparse embeddings only when a sparse encoder is configured
                 if sparse_encoder is not None:
-                    sparse_embeds = await loop.run_in_executor(
-                        None,
-                        sparse_encoder.encode_documents,
-                        batch_contents
-                    )
+                    sparse_embeds = await sparse_encoder.aencode_documents(batch_contents)
                 else:
                     sparse_embeds = None
 
@@ -961,7 +957,7 @@ class QdrantRepository(VectorStoreRepository):
 
             sparse_encoder = TiledeskSparseEncoders(item.sparse_encoder)
 
-            doc_sparse_vectors = sparse_encoder.encode_documents(contents, batch_size=item.hybrid_batch_size)
+            doc_sparse_vectors = await sparse_encoder.aencode_documents(contents, item.hybrid_batch_size)
 
 
             #async with vector_store.async_index as indice:
@@ -1016,7 +1012,7 @@ class QdrantRepository(VectorStoreRepository):
                 logger.debug(f"emb_dimension: {emb_dimension}")
                 sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
                 index = vector_store.client
-                sparse_vector = sparse_encoder.encode_queries(question_answer.question)
+                sparse_vector = await sparse_encoder.aencode_queries(question_answer.question)
                 dense_vector = await embedding_obj.aembed_query(question_answer.question)
                 if question_answer.alpha == 0.5:
                     dense = dense_vector

@@ -21,6 +21,7 @@ Complete REST API documentation for Tiledesk LLM server.
 - [Tools Registry APIs](#tools-registry-apis)
 - [Knowledge Graph APIs (Neo4j)](#knowledge-graph-apis)
 - [Knowledge Graph APIs (FalkorDB)](#knowledge-graph-apis-falkordb)
+- [Temporal Digest APIs](#temporal-digest-apis)
 - [Authentication](#authentication)
 - [Data Models](#data-models)
 
@@ -1146,6 +1147,198 @@ Snapshots are created automatically by `/optimize` (before and after the merge).
 ---
 
 For detailed request/response schemas and examples, refer to the [Knowledge Graph FalkorDB README](tilellm/modules/knowledge_graph_falkor/README.md).
+
+---
+
+## Temporal Digest APIs
+
+Time-based document aggregation with digest generation and intelligent temporal/semantic routing.
+
+Enable: `ENABLE_TEMPORAL_DIGEST=true` (default: enabled).
+
+---
+
+### POST `/api/digest/generate`
+
+Generate temporal digests for one or more date windows.
+
+**Request body:**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `namespace` | `string` | required | Vector store namespace |
+| `date_from` | `date` | required | Start date (ISO `YYYY-MM-DD`) |
+| `date_to` | `date` | `date_from` | End date (inclusive) |
+| `granularity` | `"daily"\|"weekly"\|"monthly"` | `"daily"` | Aggregation window size |
+| `engine` | `Engine` | required | Vector store configuration |
+| `gptkey` | `string` | required | LLM API key |
+| `model` | `string` | `"gpt-4o-mini"` | LLM model for digest synthesis |
+| `llm` | `string` | `"openai"` | LLM provider |
+| `embedding` | `string` | `"text-embedding-3-small"` | Embedding model |
+| `top_k` | `integer` | `1000` | Max chunks retrieved per window |
+| `force_regenerate` | `boolean` | `false` | Re-generate even if digest exists |
+| `domain` | `string\|null` | `null` | Domain prompt key (`pa_italiana`, `legal`, `generic`) |
+| `system_prompt` | `string\|null` | `null` | Custom system prompt (overrides domain) |
+| `date_metadata_field` | `string` | `"date"` | Payload field containing document date |
+| `tags` | `string[]\|null` | `null` | Filter source chunks by tags |
+| `webhook_url` | `string\|null` | `null` | URL notified on completion (TaskIQ async) |
+
+With `ENABLE_TASKIQ=true`, returns immediately:
+```json
+{ "task_id": "...", "namespace": "...", "status": "queued", "message": "..." }
+```
+
+**Response (synchronous):**
+```json
+{
+  "namespace": "asl-roma-1",
+  "digests": [
+    {
+      "namespace": "asl-roma-1",
+      "date_from": "2026-05-01",
+      "date_to": "2026-05-01",
+      "granularity": "daily",
+      "content": "## Attività del 01/05/2026...",
+      "chunk_count": 47,
+      "act_types": { "acquisto_farmaci": 5, "assunzione_personale": 3 },
+      "total_amount": 285000.0,
+      "digest_vector_id": "a3f2c1b0-...",
+      "already_existed": false
+    }
+  ],
+  "total_chunks_processed": 47,
+  "total_windows": 1,
+  "skipped_windows": 0
+}
+```
+
+---
+
+### POST `/api/digest/query`
+
+Query digests and/or raw chunks with explicit parameters.
+
+**Request body:**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `question` | `string` | required | Natural language question |
+| `namespace` | `string` | required | Vector store namespace |
+| `engine` | `Engine` | required | Vector store configuration |
+| `gptkey` | `string` | required | LLM API key |
+| `model` | `string` | `"gpt-4o-mini"` | LLM model |
+| `llm` | `string` | `"openai"` | LLM provider |
+| `embedding` | `string` | `"text-embedding-3-small"` | Embedding model |
+| `date_from` | `date\|null` | `null` | Restrict retrieval to date range start |
+| `date_to` | `date\|null` | `null` | Restrict retrieval to date range end |
+| `query_mode` | `"auto"\|"temporal"\|"semantic"` | `"auto"` | Routing mode |
+| `top_k` | `integer` | `5` | Number of results |
+| `search_type` | `"similarity"\|"hybrid"` | `"similarity"` | Dense-only or dense+sparse |
+| `sparse_encoder` | `string\|TEIConfig\|null` | `null` | Sparse encoder for hybrid search |
+| `reranking` | `bool\|TEIConfig\|PineconeRerankerConfig` | `false` | Reranking strategy |
+| `reranker_model` | `string` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Local CrossEncoder model name |
+| `reranking_multiplier` | `integer` | `3` | Candidate multiplier for reranking |
+| `chat_history_dict` | `object\|null` | `null` | Conversation history (see below) |
+| `max_history_messages` | `integer` | `10` | Max history turns to include in prompt |
+| `date_metadata_field` | `string` | `"date"` | Payload field containing document date |
+| `tags` | `string[]\|null` | `null` | Filter chunks by tags |
+
+**`query_mode` values:**
+- `auto`: Rule-based classifier detects temporal intent (IT+EN patterns). Logged as `[query_router] auto → 'temporal'|'semantic'`.
+- `temporal`: Forces digest vector retrieval (filters `digest_type == "digest"`).
+- `semantic`: Forces raw chunk search (filters `digest_type != "digest"`).
+
+**`chat_history_dict` format:**
+```json
+{
+  "0": { "question": "Cosa hanno fatto ad aprile?", "answer": "..." },
+  "1": { "question": "E a marzo?", "answer": "..." }
+}
+```
+
+**Response:**
+```json
+{
+  "answer": "...",
+  "query_mode": "temporal",
+  "sources": [{ "digest_date_from": "2026-05-01", "chunk_count": 47, ... }],
+  "digests_used": ["2026-05-01"],
+  "chunk_count": 1
+}
+```
+
+---
+
+### POST `/api/digest/qa`
+
+Agentic query — the LLM extracts date range and query mode from the free-form question and conversation history.
+
+**Request body**: Same retrieval fields as `/api/digest/query` **except** `date_from`, `date_to`, `query_mode` (extracted automatically). Additional field:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `today` | `date\|null` | server date | Reference date for relative expressions |
+| `chat_history_dict` | `object\|null` | `null` | Conversation history for multi-turn context |
+
+The agent:
+1. Calls the LLM with a structured extraction prompt (today's date + conversation history)
+2. Extracts `date_from`, `date_to`, `query_mode` as structured JSON
+3. Executes the appropriate retrieval path
+4. Returns the answer with extraction metadata
+
+**Response:**
+```json
+{
+  "answer": "La settimana scorsa l'ASL Roma 1 ha emesso...",
+  "query_mode": "temporal",
+  "sources": [...],
+  "digests_used": ["2026-04-28", "2026-04-29"],
+  "chunk_count": 2,
+  "extracted_date_from": "2026-04-27",
+  "extracted_date_to": "2026-05-02",
+  "extracted_query_mode": "temporal",
+  "agent_reasoning": "domanda aggregativa con riferimento temporale relativo 'la settimana scorsa'"
+}
+```
+
+**LLM calls per request**: 2 (parameter extraction + answer synthesis).
+
+---
+
+### GET `/api/digest/{namespace}/{digest_date}`
+
+Retrieve the pre-generated digest for a specific namespace and date.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `namespace` | `string` | Vector store namespace |
+| `digest_date` | `date` | Target date (`YYYY-MM-DD`) |
+
+**Query parameters:** `engine_json` (JSON-encoded Engine), `gptkey`, `embedding`, `model`, `llm`, `date_metadata_field`.
+
+Requires that a digest has already been generated for this date via `POST /api/digest/generate`.
+
+---
+
+### Temporal Digest — `additional_metadata` in PDF ingestion
+
+When ingesting via `POST /api/pdf/scrape`, use `additional_metadata` to attach arbitrary key-value pairs to every chunk's payload. This is the recommended way to set the document date for temporal filtering:
+
+```json
+{
+  "additional_metadata": {
+    "date": "14/05/2026",
+    "ente": "ASL Brindisi",
+    "numero_atto": "DG-2026-0512"
+  }
+}
+```
+
+- `date` in `DD/MM/YYYY` format is auto-converted to ISO `YYYY-MM-DD`.
+- All keys are merged into the payload of **every chunk** of the document.
+- Keys in `additional_metadata` override the corresponding base metadata fields.
 
 ---
 

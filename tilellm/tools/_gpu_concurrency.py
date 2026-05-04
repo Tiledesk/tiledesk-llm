@@ -20,8 +20,11 @@ Design principles:
 This module MUST NOT import heavy ML libraries (sentence-transformers,
 FlagEmbedding, ...). It only touches torch, and only lazily.
 """
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from threading import Lock
-from typing import List
+from typing import Any, List
 
 try:
     import torch
@@ -30,23 +33,49 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# Process-wide GPU lock
+# Dedicated single-thread GPU executor
+# ---------------------------------------------------------------------------
+
+_GPU_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-worker")
+"""
+Single-thread executor for all local GPU inference (sparse encoders + reranker).
+
+Guarantees that only ONE thread ever executes a GPU forward pass at any time,
+without requiring an explicit lock. Callers queue naturally via the executor's
+internal work queue — no thread pool growth, no lock contention, FIFO ordering.
+
+Replace asyncio.to_thread / run_in_executor(None, ...) with run_on_gpu() for
+any operation that runs on the GPU (SPLADE, BGE-M3, CrossEncoder).
+Do NOT use for remote I/O (TEI HTTP calls, Pinecone reranker API) — those
+should stay in the default thread pool so they don't block the GPU thread.
+"""
+
+
+async def run_on_gpu(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """
+    Run a synchronous GPU function in the dedicated single-thread GPU executor.
+
+    Ensures only one forward pass runs at a time without explicit locking.
+    Supports both positional and keyword arguments.
+
+    Usage:
+        result = await run_on_gpu(encoder.encode_documents, contents, batch_size)
+        score  = await run_on_gpu(model.predict, pairs, convert_to_numpy=True)
+    """
+    loop = asyncio.get_running_loop()
+    call = partial(fn, *args, **kwargs) if kwargs else partial(fn, *args)
+    return await loop.run_in_executor(_GPU_EXECUTOR, call)
+
+
+# ---------------------------------------------------------------------------
+# Process-wide GPU lock (kept for backward compatibility, no longer used internally)
 # ---------------------------------------------------------------------------
 
 GLOBAL_GPU_LOCK = Lock()
 """
-Serializes forward pass on GPU across all local inference modules.
+Deprecated: use run_on_gpu() instead.
 
-Usage:
-    from tilellm.tools._gpu_concurrency import GLOBAL_GPU_LOCK
-    with GLOBAL_GPU_LOCK:
-        output = model.predict(batch)
-
-Acquire per-batch, not for the whole call, so short calls can interleave
-between the batches of a longer call instead of waiting for it to finish.
-Python-level only (threading.Lock, not asyncio) — async code path works
-because arerank_documents/aencode_documents run in a thread pool via
-asyncio.to_thread, and threads naturally queue on this lock.
+Kept to avoid ImportError in code that still references it.
 """
 
 

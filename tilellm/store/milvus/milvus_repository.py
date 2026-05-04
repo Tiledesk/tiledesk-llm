@@ -697,9 +697,9 @@ class MilvusRepository(VectorStoreRepository):
 
             # Generate sparse vectors
             sparse_encoder = TiledeskSparseEncoders(item.sparse_encoder)
-            doc_sparse_vectors = sparse_encoder.encode_documents(
+            doc_sparse_vectors = await sparse_encoder.aencode_documents(
                 contents,
-                batch_size=item.hybrid_batch_size
+                item.hybrid_batch_size,
             )
 
             # Upsert with hybrid vectors
@@ -768,7 +768,7 @@ class MilvusRepository(VectorStoreRepository):
                 sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
                 
                 # Generate sparse and dense vectors for query
-                sparse_vector = sparse_encoder.encode_queries(question_answer.question)
+                sparse_vector = await sparse_encoder.aencode_queries(question_answer.question)
                 dense_vector = await embedding_obj.aembed_query(question_answer.question)
                 
                 # Use hybrid search

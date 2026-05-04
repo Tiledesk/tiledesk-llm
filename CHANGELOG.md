@@ -7,6 +7,110 @@
 
 
 ---
+## [2026-05-04]
+### 0.10.1-rc16 (perf: GPU load reduction for TaskIQ ingestion workers)
+
+Reduces performance degradation on GPU pods running `/api/pdf/scrape` with a local SPLADE sparse encoder under sustained ingestion load.
+
+#### `GpuCleanupMiddleware` — VRAM cache flush between tasks
+
+- New `TaskiqMiddleware` in `tilellm/modules/task_executor/broker.py` that calls `torch.cuda.empty_cache()` after every task with `task_type` in `{"pdf_ocr", "scraping", "raptor_build"}`.
+- PyTorch's caching allocator retains freed blocks for reuse across tasks; under sustained load with variable-length chunk inputs these accumulate and reduce the pool available for new allocations, eventually triggering OOM recovery (budget halving → slower batches → queue buildup). Flushing the cache at task boundaries — not per batch — resets the allocator to a clean state for the next task.
+- Logs a `[GPU] cache flushed after <task_type>: freed X MB | VRAM Y → Z MB / <total> MB` line at `INFO` level after every flush. `freed > 0` indicates fragmented blocks were recovered; `freed ≈ 0` means the previous task left no cached blocks (normal for light tasks).
+- `torch.cuda.empty_cache()` is a no-op when CUDA is not available — safe on CPU-only workers.
+- `PDF_MAX_CONCURRENT` (env var, default `2`) limits how many PDF tasks enter the Docling pipeline simultaneously per worker process. Set to `1` on single-GPU pods to prevent two Docling instances from competing for VRAM. Note: TaskIQ dispatches all received tasks as async coroutines immediately (the "Task started" log fires before the semaphore), so seeing N task starts in the log does not mean N Doclings are running — only `PDF_MAX_CONCURRENT` tasks actually enter processing at a time.
+
+#### Dedicated single-thread GPU executor — replaces `GLOBAL_GPU_LOCK`
+
+The previous design used a process-wide `threading.Lock` (`GLOBAL_GPU_LOCK`) acquired per batch inside `asyncio.to_thread` workers. Under concurrent ingestion this caused thread pool growth (blocked threads accumulate in the default `ThreadPoolExecutor`) and lock contention latency.
+
+The new design routes all local GPU inference through a single-thread `ThreadPoolExecutor`:
+
+- **`tilellm/tools/_gpu_concurrency.py`**: new `_GPU_EXECUTOR = ThreadPoolExecutor(max_workers=1)` and `async def run_on_gpu(fn, *args, **kwargs)` coroutine. `GLOBAL_GPU_LOCK` retained as a no-op for backward compatibility.
+- **`tilellm/tools/sparse_encoders.py`**: removed `GLOBAL_GPU_LOCK` from `_run_sparse_batched_with_oom_recovery`, `TiledeskSpladeEncoder.encode_queries`, `TiledeskBGEM3.encode_queries`, and `TiledeskBGEM3.encode_documents` (legacy path). Added `aencode_documents` and `aencode_queries` async methods to `TiledeskSparseEncoders`: local GPU encoders (SPLADE, BGE-M3) use `run_on_gpu`; TEI encoders use `asyncio.to_thread` (remote HTTP, must not block the GPU thread).
+- **`tilellm/tools/reranker.py`**: removed `_gpu_lock = GLOBAL_GPU_LOCK` class attribute and `with self._gpu_lock:` from `_predict_local_with_oom_recovery`. `TileReranker.arerank_documents` now uses `run_on_gpu`. `PineconeReranker.arerank_documents` unchanged (remote API call).
+- **All call sites** updated to `await encoder.aencode_documents(...)` / `await encoder.aencode_queries(...)`, eliminating the remaining sync calls that were blocking the event loop: `controller_utils.py` (`fetch_question_vectors`, `fetch_question_vectors_nopar`), `qdrant_repository_local.py` (×3), `pinecone_repository_serverless.py` (×3), `pinecone_repository_base.py` (×1), `milvus_repository.py` (×2).
+
+#### Files changed
+
+`tilellm/tools/_gpu_concurrency.py`,
+`tilellm/tools/sparse_encoders.py`,
+`tilellm/tools/reranker.py`,
+`tilellm/controller/controller_utils.py`,
+`tilellm/store/qdrant/qdrant_repository_local.py`,
+`tilellm/store/pinecone/pinecone_repository_serverless.py`,
+`tilellm/store/pinecone/pinecone_repository_base.py`,
+`tilellm/store/milvus/milvus_repository.py`,
+`tilellm/modules/task_executor/broker.py`
+
+---
+## [2026-05-03]
+### 0.10.1-rc15 (feat: Temporal Digest — agentic query, hybrid search, reranking, history, multi-backend metadata filter)
+
+Complete overhaul of the `temporal_digest` module with production-ready retrieval quality features and a new agentic query endpoint.
+
+#### New endpoint: `POST /api/digest/qa` (agentic query)
+
+- LLM extracts `date_from`, `date_to`, and `query_mode` from free-form natural language questions and conversation history (e.g. "cosa hanno fatto la settimana scorsa?" → `date_from: 2026-04-27`, `date_to: 2026-05-02`, `query_mode: temporal`).
+- Relative date expressions resolved against server date or optional `today` field.
+- Returns `extracted_date_from`, `extracted_date_to`, `extracted_query_mode`, `agent_reasoning` alongside the answer.
+- 2 LLM calls per request: parameter extraction + answer synthesis.
+
+#### Hybrid search + reranking in digest query
+
+- `DigestQueryRequest` and `DigestAgentRequest` now support `search_type: "hybrid"`, `sparse_encoder` (`string` or `TEIConfig`), `reranking` (`bool`, `TEIConfig`, `PineconeRerankerConfig`), `reranker_model`, `reranking_multiplier`.
+- When reranking is enabled, the semantic path fetches `top_k × reranking_multiplier` candidates and reranks via `TileReranker.arerank_documents()` before passing to the LLM.
+- Temporal path also reranks digest candidates when `reranking` is set.
+
+#### Conversation history
+
+- `DigestQueryRequest` and `DigestAgentRequest` accept `chat_history_dict` (same format as `/api/qa`) and `max_history_messages`.
+- History is prepended to the LLM prompt before the evidence block in both `_query_temporal` and `_query_semantic`.
+
+#### `additional_metadata` in `POST /api/pdf/scrape`
+
+- New `additional_metadata: Dict[str, Any]` field in `PDFScrapingRequest`.
+- Arbitrary key-value pairs merged into every chunk's payload at ingestion time.
+- `date` value in `DD/MM/YYYY` auto-converted to ISO `YYYY-MM-DD`.
+- Applied at all 4 indexing paths: text chunks, table chunks, image captions, markdown pipeline.
+
+#### `_metadata_filter` applied to all vector store backends
+
+- `get_chunks_from_repo` now reads `getattr(question_answer, '_metadata_filter', None)` and applies it as a filter on all backends:
+  - **Qdrant**: `FieldCondition` + `DatetimeRange` for ISO date strings (`_is_iso_date` guard).
+  - **Pinecone serverless/pod**: MongoDB-style filter dict, merged with tags filter via `$and`.
+  - **Milvus**: `build_filter` extended with `metadata_filter` parameter; `convert_to_expression` handles `{field: {$op: value}}` → Milvus string expressions.
+- Fixes false-positive `already_existed: true` on digest generation (digests were not being found due to ignored type/date filters).
+
+#### Query router observability
+
+- `classify_query_debug(question)` returns `(mode, matched_pattern)`.
+- `DigestService.query()` logs routing decisions: `[query_router] auto → 'temporal' | pattern=... | question=...`.
+
+#### Bug fixes
+
+- **`TiledeskSparseEncoders(None)` crash** in `aadd_documents`: `sparse_encoder` initialization and all sparse encoding steps are now conditional on `sparse_encoder is not None`.
+- **Qdrant `DatetimeRange`**: `models.Range` only accepts floats; ISO date strings now routed to `models.DatetimeRange`.
+- **`RetrievalChunksResult` missing `namespace`**: fallback objects in `_fetch_source_chunks` and `_fetch_digests` now include `namespace=qa.namespace`.
+- **Duplicate digest vectors**: removed `skip_delete=True` from `_index_digest` — `aadd_documents` now deletes by `metadata_id` before inserting.
+- **Evidence block date headers**: `_build_evidence_block` uses `digest_date_from`/`digest_date_to` as header for digest chunks (was showing empty `file_name`/`source`), giving the LLM explicit date context per digest.
+- **Double embedding (Qdrant non-hybrid)**: `langchain_qdrant._validate_collection_for_dense()` was calling `embed_documents(["dummy_text"])` on every search. Non-hybrid path now bypasses LangChain `asearch` and calls `index.query_points()` directly.
+
+#### Files changed
+
+`tilellm/modules/temporal_digest/models/schemas.py`,
+`tilellm/modules/temporal_digest/services/digest_service.py`,
+`tilellm/modules/temporal_digest/services/query_router.py`,
+`tilellm/modules/temporal_digest/logic.py`,
+`tilellm/modules/temporal_digest/controllers.py`,
+`tilellm/modules/pdf_ocr/models/pdf_scraping.py`,
+`tilellm/modules/pdf_ocr/logic.py`,
+`tilellm/store/qdrant/qdrant_repository_local.py`,
+`tilellm/store/pinecone/pinecone_repository_serverless.py`,
+`tilellm/store/pinecone/pinecone_repository_pod.py`,
+`tilellm/store/milvus/milvus_repository.py`
+
+---
 ## [2026-04-27]
 ### 0.10.1-rc14 (feat: RAPTOR performance optimizations)
 

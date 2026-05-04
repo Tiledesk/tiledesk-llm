@@ -1,12 +1,74 @@
 import os
 import logging
+from typing import Any
 
 from redis.asyncio import Redis, from_url
-from taskiq import TaskiqEvents, TaskiqState, SimpleRetryMiddleware
+from taskiq import TaskiqEvents, TaskiqState, SimpleRetryMiddleware, TaskiqMiddleware
+from taskiq.message import TaskiqMessage
+from taskiq.result import TaskiqResult
 from taskiq_redis import RedisStreamBroker, RedisAsyncResultBackend
 from tilellm.shared.utility import get_service_config
+from tilellm.tools._gpu_concurrency import cuda_empty_cache_safe
 
 logger = logging.getLogger(__name__)
+
+# Task types that perform local GPU inference (sparse encoder + reranker).
+# After each of these tasks, the allocator cache is flushed to reclaim
+# fragmented VRAM blocks that accumulate under sustained ingestion load.
+_GPU_TASK_TYPES = {"pdf_ocr", "scraping", "raptor_build"}
+
+
+class GpuCleanupMiddleware(TaskiqMiddleware):
+    """
+    Calls torch.cuda.empty_cache() after GPU-heavy tasks complete.
+
+    PyTorch's caching allocator retains freed blocks for reuse, which causes
+    VRAM fragmentation under sustained load with variable-length inputs
+    (chunk sizes differ per document). The allocator does not defragment
+    automatically; calling empty_cache() at task boundaries — not per-batch —
+    is the correct trade-off: 100-200ms cost once per task vs. degrading
+    OOM-recovery paths that slow every batch.
+    """
+
+    def post_execute(
+        self,
+        message: "TaskiqMessage",
+        result: "TaskiqResult[Any]",
+    ) -> None:
+        task_type = (message.labels or {}).get("task_type", "")
+        if task_type not in _GPU_TASK_TYPES:
+            return
+
+        free_before: int | None = None
+        total: int | None = None
+        try:
+            import torch
+            if torch.cuda.is_available():
+                free_before, total = torch.cuda.mem_get_info()
+        except Exception:
+            pass
+
+        cuda_empty_cache_safe()
+
+        if free_before is not None and total is not None:
+            try:
+                import torch
+                free_after, _ = torch.cuda.mem_get_info()
+                freed_mb = (free_after - free_before) / 1024 ** 2
+                used_before_mb = (total - free_before) / 1024 ** 2
+                used_after_mb = (total - free_after) / 1024 ** 2
+                total_mb = total / 1024 ** 2
+                logger.info(
+                    f"[GPU] cache flushed after {task_type}: "
+                    f"freed {freed_mb:.0f} MB | "
+                    f"VRAM {used_before_mb:.0f} → {used_after_mb:.0f} MB "
+                    f"/ {total_mb:.0f} MB"
+                )
+            except Exception:
+                logger.info(f"[GPU] cache flushed after {task_type}")
+        else:
+            logger.debug(f"[GPU] cache flush skipped after {task_type} (CUDA not available)")
+
 
 # 1. Get config from environment variables
 config = get_service_config()
@@ -54,7 +116,8 @@ broker.add_middlewares(
         default_retry_count=3,
         default_retry_label=True,      # CRITICO: abilita retry automatico per TUTTI i task
         no_result_on_retry=True,
-    )
+    ),
+    GpuCleanupMiddleware(),
 )
 
 broker.with_result_backend(result_backend)

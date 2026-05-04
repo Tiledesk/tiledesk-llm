@@ -215,7 +215,7 @@ async def fetch_question_vectors_nopar(question_answer, sparse_encoder, llm_embe
     if sparse_encoder is None:
         sparse_vector = None
     else:
-        sparse_vector = sparse_encoder.encode_queries(question_answer.question)
+        sparse_vector = await sparse_encoder.aencode_queries(question_answer.question)
     dense_vector = await llm_embeddings.aembed_query(question_answer.question)
     return dense_vector, sparse_vector
 
@@ -228,8 +228,7 @@ async def fetch_question_vectors(question_answer, sparse_encoder, llm_embeddings
         dense_task = llm_embeddings.aembed_query(question_answer.question)
 
     if sparse_encoder:
-        # encode_queries is CPU-bound; run off the event loop to avoid blocking
-        sparse_task = asyncio.to_thread(sparse_encoder.encode_queries, question_answer.question)
+        sparse_task = sparse_encoder.aencode_queries(question_answer.question)
     else:
         sparse_task = asyncio.sleep(0, result=None)
 

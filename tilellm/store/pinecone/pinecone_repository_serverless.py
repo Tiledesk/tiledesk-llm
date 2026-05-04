@@ -188,7 +188,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                 logger.debug(f"emb dimension {emb_dimension}")
                 sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
                 index = await vector_store.async_index
-                sparse_vector = sparse_encoder.encode_queries(question_answer.question)
+                sparse_vector = await sparse_encoder.aencode_queries(question_answer.question)
                 dense_vector = await embedding_obj.aembed_query(question_answer.question)
                 results = []
                 #async with index as index:
@@ -500,7 +500,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
             sparse_encoder = TiledeskSparseEncoders(item.sparse_encoder)
 
-            doc_sparse_vectors = sparse_encoder.encode_documents(contents, batch_size=item.hybrid_batch_size)
+            doc_sparse_vectors = await sparse_encoder.aencode_documents(contents, item.hybrid_batch_size)
 
             #indice = vector_store.async_index #index #get_pinecone_index(item.engine.index_name, pinecone_api_key=item.engine.apikey)
             idx = await vector_store.async_index
@@ -826,7 +826,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                 # Generate sparse embeddings if hybrid index and encoder available
                 sparse_embeds = None
                 if is_hybrid and sparse_encoder_obj is not None:
-                    sparse_embeds = sparse_encoder_obj.encode_documents(batch_contents)
+                    sparse_embeds = await sparse_encoder_obj.aencode_documents(batch_contents)
 
                 # 4. Upsert to Pinecone
                 vectors_to_upsert = []

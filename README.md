@@ -413,7 +413,8 @@ Tiledesk LLM now features a modular architecture that allows you to enable or di
 |--------|-------------|----------------------|----------------|
 | **Base** | Core RAG functionality (scraping, QA, namespace management) | None | `app-base` |
 | **Knowledge Graph (Neo4j)** | Graph-based retrieval and reasoning with Neo4j and MinIO | `graph` (neo4j, minio, langchain-aws) | `app-graph` |
-| **Knowledge Graph (FalkorDB)** | **[NEW]** Production-ready GraphRAG with FalkorDB (Redis-based graph), Leiden clustering, adaptive expansion | `graph` (falkordb, minio, langchain-aws) | `app-graph` (enable with `ENABLE_GRAPHRAG_FALKOR=true`) |
+| **Knowledge Graph (FalkorDB)** | Production-ready GraphRAG with FalkorDB (Redis-based graph), Leiden clustering, adaptive expansion | `graph` (falkordb, minio, langchain-aws) | `app-graph` (enable with `ENABLE_GRAPHRAG_FALKOR=true`) |
+| **Temporal Digest** | **[NEW]** Time-based document aggregation with digest generation and intelligent temporal/semantic query routing | Built-in | All profiles (enable with `ENABLE_TEMPORAL_DIGEST=true`) |
 | **PDF OCR** | Optical Character Recognition for PDF documents | `ocr` (pdf2image, paddleocr, unstructured) | `app-ocr` |
 | **Conversion** | File format conversion (XLSX↔CSV, PDF→text/images) | Built-in | All profiles |
 | **Tools Registry** | Tool management for LLM interactions | Built-in | All profiles |
@@ -1211,6 +1212,43 @@ On a cache hit, the entire vector store retrieval and LLM generation are bypasse
 | `CACHE_TTL_SEMANTIC` | `21600` | L2 TTL in seconds (6h) |
 
 **Infrastructure**: uses the existing Redis instance (no Redis Stack required). Available on both `/api/qa` and `/api/v2/qa`.
+
+---
+
+### Temporal Digest
+
+The **Temporal Digest** module aggregates document streams over time into compact vector summaries ("digests"), enabling fast temporal queries ("what happened last week?") without scanning thousands of raw chunks.
+
+**Core flow:**
+
+```
+Ingest documents  →  [daily/weekly batch]  →  Generate digest vectors
+                                                      │
+User query  →  Query Router (auto/temporal/semantic)  │
+                    │                                  │
+               temporal path ─── retrieves digests ───┘
+               semantic path ─── vector search on raw chunks
+```
+
+**Key features:**
+
+- **Digest generation** (`POST /api/digest/generate`): Aggregates all chunks for a date window, calls an LLM to produce a structured summary, and indexes the result as a new vector with `digest_type="digest"` metadata. Supports daily/weekly/monthly granularity.
+- **Query routing** (`POST /api/digest/query`): `query_mode=auto` uses a rule-based classifier (IT+EN patterns) to detect temporal/aggregative intent and route accordingly. Explicit `temporal` or `semantic` modes bypass classification.
+- **Agentic query** (`POST /api/digest/qa`): The LLM extracts date ranges and query mode from free-form natural language (including relative references like "la settimana scorsa"), then executes the optimal retrieval path. Returns `extracted_date_from`, `extracted_date_to`, `agent_reasoning`.
+- **Conversation history**: `chat_history_dict` carries multi-turn context into the LLM prompt on both `/api/digest/query` and `/api/digest/qa`.
+- **Hybrid search + reranking**: Full support for `search_type=hybrid` with `sparse_encoder` (string or TEIConfig), and `reranking` (local CrossEncoder, TEI remote, or Pinecone Inference). When reranking is enabled, `top_k × reranking_multiplier` candidates are fetched first.
+- **`additional_metadata`** in `/api/pdf/scrape`: Arbitrary key-value pairs merged into every chunk's payload at ingestion time. A `date` value in `DD/MM/YYYY` is auto-normalized to ISO `YYYY-MM-DD` — the primary key for temporal filtering.
+- **Domain prompts**: Pre-built prompts for `pa_italiana` (Italian public administration), `legal`, `generic`.
+- **All vector backends**: Temporal filters (`digest_type`, date range) work on Qdrant, Pinecone serverless/pod, and Milvus.
+
+**Enable:**
+```bash
+ENABLE_TEMPORAL_DIGEST=true   # enabled by default
+ENABLE_TASKIQ=true            # for async digest generation via Redis Stream
+```
+
+**Detailed documentation**: [`tilellm/modules/temporal_digest/docs/README.md`](tilellm/modules/temporal_digest/docs/README.md)
+**Examples**: [`tilellm/modules/temporal_digest/docs/EXAMPLES.md`](tilellm/modules/temporal_digest/docs/EXAMPLES.md)
 
 ---
 

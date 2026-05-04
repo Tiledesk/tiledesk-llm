@@ -221,7 +221,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
                 dense_embeds = await embedding_model.aembed_documents(batch_contents)
 
                 # Generate sparse embeddings
-                sparse_embeds = sparse_encoder.encode_documents(batch_contents)
+                sparse_embeds = await sparse_encoder.aencode_documents(batch_contents)
 
                 # 4. Upsert to Pinecone
                 vectors_to_upsert = []
