@@ -14,7 +14,7 @@ from tilellm.modules.pdf_ocr.models.pdf_scraping import PDFScrapingRequest
 from tilellm.tools.document_tools import _extract_file_name
 from tilellm.models.chunk_metadata import CommonChunkMetadata
 from tilellm.shared.situated_context import enrich_chunks_with_situated_context
-from .services.docling_processor import ProductionDocumentProcessor, DocumentType
+from .services.docling_processor import get_or_create_processor, DocumentType
 from .services.pdf_entity_extractor import PDFEntityExtractor
 from .services.context_aware_chunker import ContextAwareChunker
 from .services.table_semantic_linker import TableSemanticLinker
@@ -236,11 +236,9 @@ async def process_pdf_document_with_embeddings(
             **kwargs
         )
     
-    # Initialize processor off the event loop: the constructor loads Docling ONNX models,
-    # opens DuckDB/Neo4j/MinIO connections — all synchronous and CPU/IO heavy.
-    # Running it in a thread prevents blocking other concurrent async tasks.
-    processor = await asyncio.to_thread(ProductionDocumentProcessor, question.model_dump())
-    
+    # Retrieve the module-level singleton processor (Docling models loaded once at first call).
+    processor = await get_or_create_processor()
+
     try:
         # Process document from MinIO, file path, or direct content
         result = None
@@ -291,7 +289,14 @@ async def process_pdf_document_with_embeddings(
                 doc_id=question.id,
                 text_elements=result.get('text_elements')
             )
-        
+
+        # Release raw PIL image data regardless of include_images — bytes were already
+        # uploaded to MinIO and captions generated; keeping PIL objects wastes RAM
+        # (300 DPI A4 page ≈ 26 MB RGB each).
+        if result and 'images' in result:
+            for _img in result['images']:
+                _img['image_data'] = None
+
         # Generate descriptions for tables if include_tables is True
         if question.include_tables and result and 'tables' in result:
             await _generate_table_descriptions(
@@ -424,8 +429,6 @@ async def process_pdf_document_with_embeddings(
     except Exception as e:
         logger.error(f"Error processing PDF document: {e}", exc_info=True)
         raise
-    finally:
-        await processor.close()
 
 
 @inject_llm_chat_async
@@ -630,7 +633,9 @@ async def _generate_image_captions(images: List[Dict[str, Any]], llm, doc_id: st
             
             # Update image_data with generated caption
             image_data['caption'] = caption
-            
+            # PIL Image no longer needed — bytes were extracted above for LLM call
+            image_data['image_data'] = None
+
             # Update graph node if repository available
             if graph_repo:
                 graph_repo.update_node(

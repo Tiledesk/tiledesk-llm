@@ -27,6 +27,46 @@ from tilellm.modules.knowledge_graph.services.minio_storage import get_minio_sto
 
 logger = logging.getLogger(__name__)
 
+# Module-level singleton — Docling ONNX models are loaded once and reused across tasks.
+# Re-instantiating ProductionDocumentProcessor per task wastes 2-4 GB of RAM on model reload.
+_processor_instance: Optional["ProductionDocumentProcessor"] = None
+_processor_init_lock: Optional[asyncio.Lock] = None
+
+
+def _get_init_lock() -> asyncio.Lock:
+    global _processor_init_lock
+    if _processor_init_lock is None:
+        _processor_init_lock = asyncio.Lock()
+    return _processor_init_lock
+
+
+async def get_or_create_processor() -> "ProductionDocumentProcessor":
+    """Return the singleton ProductionDocumentProcessor, initializing it on first call.
+
+    Docling model loading is expensive (2-4 GB RAM, 20-60 s startup). The singleton
+    keeps models resident across tasks so each task pays only the conversion cost.
+    Thread-safety is guaranteed by PDF_MAX_CONCURRENT=1 on single-GPU pods.
+    """
+    global _processor_instance
+    if _processor_instance is None:
+        async with _get_init_lock():
+            if _processor_instance is None:
+                logger.info("[PDF] Initializing ProductionDocumentProcessor singleton (first call — Docling models loading)...")
+                instance = await asyncio.to_thread(ProductionDocumentProcessor, {})
+                # _init_docling() swallows exceptions and sets pdf_converter=None on failure.
+                # If Docling failed to load (e.g. OOM during model init), do NOT cache the
+                # broken instance — raise so the task fails, the worker survives, and the
+                # next task retries initialization from scratch.
+                if instance.pdf_converter is None:
+                    raise RuntimeError(
+                        "[PDF] ProductionDocumentProcessor initialized but Docling failed "
+                        "(pdf_converter is None). Check logs for _init_docling errors. "
+                        "Likely cause: OOM during ONNX model loading or Docling not installed."
+                    )
+                _processor_instance = instance
+                logger.info("[PDF] ProductionDocumentProcessor singleton ready.")
+    return _processor_instance
+
 
 def _silence_ocr_loggers() -> None:
     """Suppress RapidOCR empty-detection warnings.
@@ -458,10 +498,6 @@ class ProductionDocumentProcessor:
             except Exception as md_err:
                 logger.warning(f"Could not save table as markdown to MinIO: {md_err}")
 
-        # Register in DuckDB
-        safe_table_name = f"tbl_{table_id.replace('-', '_')}"
-        self.duckdb_conn.register(safe_table_name, df)
-        
         # Get surrounding context for description
         surrounding_text = await self._get_surrounding_text(
             doc_id,
@@ -473,7 +509,6 @@ class ProductionDocumentProcessor:
         table_data['surrounding_text'] = surrounding_text
         table_data['parquet_path'] = parquet_path
         table_data.setdefault('md_path', '')
-        table_data['duckdb_table'] = safe_table_name
         
         # Store Metadata
         description = f"Table from page {table_data['page']}. Columns: {', '.join(df.columns)}"

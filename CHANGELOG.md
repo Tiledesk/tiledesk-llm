@@ -8,6 +8,36 @@
 
 ---
 ## [2026-05-04]
+### 0.10.1-rc17 (perf: RAM reduction for /api/pdf/scrape ingestion)
+
+Reduces RAM consumption during PDF ingestion by eliminating per-task model reload, releasing PIL image data early, and forcing Python GC at task boundaries.
+
+#### Fix A — `ProductionDocumentProcessor` singleton
+
+- `tilellm/modules/pdf_ocr/services/docling_processor.py`: added module-level `_processor_instance` singleton and `get_or_create_processor()` async factory.
+- Previously, every `/api/pdf/scrape` task instantiated a new `ProductionDocumentProcessor`, which calls `DocumentConverter.__init__()` and loads all Docling ONNX models (layout EfficientDet, TableFormer, RapidOCR) — 2-4 GB RAM per instantiation. Under concurrent load (multiple tasks dispatched by TaskIQ) this caused model copies to accumulate until GC ran.
+- `get_or_create_processor()` uses double-checked locking (`asyncio.Lock`) to initialize once on first call and reuse across all subsequent tasks. Models stay resident; each task pays only the conversion cost.
+- Removed `finally: await processor.close()` from `process_pdf_document_with_embeddings` in `logic.py` — the singleton must not have its Redis client closed between tasks.
+- Removed `duckdb_conn.register(safe_table_name, df)` from `_process_single_table`: the registration kept Python DataFrame references alive inside the DuckDB connection for the process lifetime. The registered view was never queried in the current codebase; removed it and the `table_data['duckdb_table']` field.
+
+#### Fix B — Release PIL image data after captioning
+
+- `tilellm/modules/pdf_ocr/logic.py` (`_generate_image_captions`): sets `image_data['image_data'] = None` after converting the PIL Image to bytes and generating the caption. A 300 DPI A4 page as RGB numpy array ≈ 26 MB; a 50-page scanned PDF produces ≈ 1.3 GB of image data held unnecessarily for the rest of the task.
+- Additional bulk cleanup in `process_pdf_document_with_embeddings`: after the image captioning block (regardless of `include_images` flag) iterates `result['images']` and sets `image_data = None` for any remaining PIL objects, covering the case where images were extracted by Docling but captioning was skipped.
+
+#### Fix C — `gc.collect()` in `GpuCleanupMiddleware`
+
+- `tilellm/modules/task_executor/broker.py`: added `gc.collect()` call immediately after `cuda_empty_cache_safe()` in `GpuCleanupMiddleware.post_execute`.
+- Forces Python's cyclic garbage collector to run at task boundaries, releasing PIL objects, DataFrames, and LangChain document lists that may have cyclic references preventing prompt reference-count cleanup.
+
+#### Files changed
+
+`tilellm/modules/pdf_ocr/services/docling_processor.py`,
+`tilellm/modules/pdf_ocr/logic.py`,
+`tilellm/modules/task_executor/broker.py`
+
+---
+## [2026-05-04]
 ### 0.10.1-rc16 (perf: GPU load reduction for TaskIQ ingestion workers)
 
 Reduces performance degradation on GPU pods running `/api/pdf/scrape` with a local SPLADE sparse encoder under sustained ingestion load.

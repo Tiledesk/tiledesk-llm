@@ -1,3 +1,4 @@
+import gc
 import os
 import logging
 from typing import Any
@@ -49,6 +50,7 @@ class GpuCleanupMiddleware(TaskiqMiddleware):
             pass
 
         cuda_empty_cache_safe()
+        gc.collect()
 
         if free_before is not None and total is not None:
             try:
