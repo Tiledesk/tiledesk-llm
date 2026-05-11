@@ -736,7 +736,6 @@ async def _process_pdf_document_task_inner(
                     })
 
                 response.raise_for_status()
-                logger.info(f"Task finished: process_pdf_document_task for {doc_id}")
             except httpx.ConnectError:
                 logger.warning(f"Webhook unreachable, skipping: {webhook_url}")
             except httpx.TimeoutException:
@@ -746,8 +745,12 @@ async def _process_pdf_document_task_inner(
             except Exception as e:
                 logger.warning(f"Webhook failed unexpectedly, skipping: {e}")
 
+        # Logged here (not inside webhook block) so it always appears in logs
+        # regardless of whether a webhook_url was set.
+        # NOTE: at this point the task work is done but XACK has NOT yet happened —
+        # TaskIQ sends the XACK only after storing the result in the result_backend.
+        logger.info(f"Task finished: process_pdf_document_task for {doc_id}")
 
-        
         # Return lightweight result - Taskiq will save this to result_backend
         return light_result
 

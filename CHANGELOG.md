@@ -7,6 +7,20 @@
 
 
 ---
+## [2026-05-11]
+### 0.10.1-rc18 (fix: TaskIQ double-processing of same document after worker crash)
+
+Fixed a bug where a PDF document could be processed twice after a worker crash.
+
+**Root cause**: when a worker crashes (e.g. OOM from concurrent Docling runs) between `"Task finished"` log and the Redis `XACK`, the stream message stays in PEL. On restart, `_startup_reclaim` re-queued it as a fresh `attempt 1/3` even if the task had already completed.
+
+**`tilellm/modules/task_executor/broker.py`** — `_startup_reclaim`: before re-dispatching a PEL entry, checks if a result key already exists in Redis for that `task_id`. If found, only `XACK` is sent (no `XADD`). Logs `"già completato, solo ACK"` and tracks `total_skipped` in the startup summary.
+
+**`tilellm/modules/task_executor/tasks.py`** — moved `"Task finished"` log outside the webhook block so it always appears; added comment documenting that `XACK` happens after this point.
+
+**Recommendation**: set `PDF_MAX_CONCURRENT=1` on GPU pods to prevent the concurrent Docling OOM that triggers this condition.
+
+---
 ## [2026-05-04]
 ### 0.10.1-rc17 (perf: RAM reduction for /api/pdf/scrape ingestion)
 
