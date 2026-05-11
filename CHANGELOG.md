@@ -8,7 +8,7 @@
 
 ---
 ## [2026-05-11]
-### 0.10.1-rc18 (fix: TaskIQ double-processing of same document after worker crash)
+### 0.10.1-rc19 (fix: TaskIQ double-processing of same document after worker crash)
 
 Fixed a bug where a PDF document could be processed twice after a worker crash.
 
