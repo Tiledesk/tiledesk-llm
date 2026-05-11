@@ -389,7 +389,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                                                      filter=filter_dict
                                                      )
 
-            end_time = datetime.now() if question_answer.debug else 0
+            end_time = datetime.datetime.now() if question_answer.debug else 0
             duration = (end_time - start_time).total_seconds() if question_answer.debug else 0.0
 
             if not results:
