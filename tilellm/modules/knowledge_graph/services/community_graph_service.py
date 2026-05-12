@@ -38,6 +38,7 @@ from .services import GraphRAGService, GraphService
 from .clustering import ClusterService
 from .minio_storage import MinIOStorageService, get_minio_storage_service
 from tilellm.tools.reranker import TileReranker
+from tilellm.shared.llm_utils import extract_llm_text
 
 logger = logging.getLogger(__name__)
 
@@ -1085,11 +1086,11 @@ class CommunityGraphService:
         try:
             if hasattr(llm, 'ainvoke'):
                 response = await llm.ainvoke(prompt)
-                content = response.content if hasattr(response, 'content') else str(response)
+                content = extract_llm_text(response)
             else:
                 # Synchronous fallback (should be avoided in async loop but handled)
                 response = llm.invoke(prompt)
-                content = response.content if hasattr(response, 'content') else str(response)
+                content = extract_llm_text(response)
             
             return content
         except Exception as e:
@@ -1112,10 +1113,10 @@ class CommunityGraphService:
             try:
                 if hasattr(llm, 'ainvoke'):
                     response = await llm.ainvoke(not_found_prompt)
-                    return response.content if hasattr(response, 'content') else str(response)
+                    return extract_llm_text(response)
                 else:
                     response = llm.invoke(not_found_prompt)
-                    return response.content if hasattr(response, 'content') else str(response)
+                    return extract_llm_text(response)
             except Exception:
                 # Fallback in case of error
                 return "I couldn't find sufficient relevant information in the community reports to answer your question."
@@ -1146,10 +1147,10 @@ class CommunityGraphService:
         try:
             if hasattr(llm, 'ainvoke'):
                 response = await llm.ainvoke(prompt)
-                content = response.content if hasattr(response, 'content') else str(response)
+                content = extract_llm_text(response)
             else:
                 response = llm.invoke(prompt)
-                content = response.content if hasattr(response, 'content') else str(response)
+                content = extract_llm_text(response)
             return content
         except Exception as e:
             logger.error(f"Error in reduce phase: {e}")
@@ -1539,10 +1540,10 @@ class CommunityGraphService:
                 from langchain_core.messages import HumanMessage
                 messages = [HumanMessage(content=prompt)]
                 response = await llm.ainvoke(messages)
-                answer = response.content if hasattr(response, 'content') else str(response)
+                answer = extract_llm_text(response)
             else:
                 response = await llm.invoke(prompt)
-                answer = response.content if hasattr(response, 'content') else str(response)
+                answer = extract_llm_text(response)
         except Exception as e:
             logger.error(f"Synthesis failed: {e}")
             answer = "I'm sorry, I encountered an error generating the answer."
@@ -1610,7 +1611,7 @@ Based on the above community reports, please answer the question. If the reports
                 
                 # Use LLM (assuming it has invoke method)
                 response = llm.invoke(prompt)
-                answer = response.content if hasattr(response, 'content') else str(response)
+                answer = extract_llm_text(response)
                 logger.info("Generated answer using LLM")
                 return answer
             except Exception as e:

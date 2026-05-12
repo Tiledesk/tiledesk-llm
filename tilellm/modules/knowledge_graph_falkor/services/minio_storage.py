@@ -25,6 +25,9 @@ logger = logging.getLogger(__name__)
 ARTIFACTS_PREFIX = "artifacts/"
 RAW_DOCUMENTS_PREFIX = "raw-documents/"
 METADATA_PREFIX = "metadata/"
+CHECKPOINTS_PREFIX = "checkpoints/"
+COMMUNITY_REPORTS_PREFIX = "community_reports/"
+GRAPH_SNAPSHOTS_PREFIX = "graph_snapshots/"
 
 
 class MinIOStorageService:
@@ -664,6 +667,290 @@ class MinIOStorageService:
         except S3Error as e:
             logger.error(f"Failed to delete artifacts for {namespace}: {e}")
             raise
+
+
+    # ==================== CHECKPOINT OPERATIONS ====================
+
+    def save_checkpoint(
+        self,
+        graph_name: str,
+        window_idx: int,
+        entity_node_map_delta: Dict[str, str],
+        chunk_ids: List[str],
+    ) -> str:
+        """
+        Persist a per-window extraction checkpoint to MinIO.
+
+        Stores entity_name→falkor_node_id mapping and the IDs of all chunks
+        processed in this window so that a failed run can be resumed later.
+        Files are named window_{n:06d}.parquet and never overwrite previous
+        windows (window_idx is global, incremented across resume attempts).
+        """
+        import pandas as pd
+
+        rows = [{"record_type": "chunk",  "key": cid, "value": "",    "window_idx": window_idx} for cid in chunk_ids]
+        rows += [{"record_type": "entity", "key": k,   "value": v,    "window_idx": window_idx} for k, v in entity_node_map_delta.items()]
+
+        buf = io.BytesIO()
+        pd.DataFrame(rows, columns=["record_type", "key", "value", "window_idx"]).to_parquet(buf, index=False)
+        data = buf.getvalue()
+
+        object_key = f"{CHECKPOINTS_PREFIX}{graph_name}/window_{window_idx:06d}.parquet"
+        stream = io.BytesIO(data)
+        self.client.put_object(
+            bucket_name=self.bucket_name,
+            object_name=object_key,
+            data=stream,
+            length=len(data),
+            content_type="application/octet-stream",
+        )
+        logger.info(
+            f"Checkpoint saved: graph='{graph_name}' window={window_idx} "
+            f"({len(entity_node_map_delta)} entities, {len(chunk_ids)} chunks)"
+        )
+        return object_key
+
+    def load_checkpoints(
+        self,
+        graph_name: str,
+    ):
+        """
+        Load all checkpoints for a graph.
+
+        Returns a tuple (entity_node_map, processed_chunk_ids, last_window_idx):
+          - entity_node_map: Dict[str, str]  entity_name → falkor_node_id (cumulative)
+          - processed_chunk_ids: set[str]    chunk IDs already written to FalkorDB
+          - last_window_idx: int             highest window number found (-1 if none)
+        """
+        import pandas as pd
+
+        prefix = f"{CHECKPOINTS_PREFIX}{graph_name}/"
+        try:
+            objects = list(self.client.list_objects(self.bucket_name, prefix=prefix, recursive=True))
+        except S3Error as e:
+            logger.warning(f"Could not list checkpoints for '{graph_name}': {e}")
+            return {}, set(), -1
+
+        if not objects:
+            return {}, set(), -1
+
+        names = sorted(obj.object_name for obj in objects if obj.object_name)
+        entity_node_map: Dict[str, str] = {}
+        processed_chunk_ids = set()
+        last_window_idx = -1
+
+        for name in names:
+            try:
+                resp = self.client.get_object(self.bucket_name, name)
+                data = resp.read()
+                resp.close()
+                resp.release_conn()
+
+                df = pd.read_parquet(io.BytesIO(data))
+                for _, row in df.iterrows():
+                    if row["record_type"] == "entity" and row["key"]:
+                        entity_node_map[row["key"]] = row["value"]
+                    elif row["record_type"] == "chunk" and row["key"]:
+                        processed_chunk_ids.add(row["key"])
+                if not df.empty:
+                    last_window_idx = max(last_window_idx, int(df["window_idx"].iloc[0]))
+            except Exception as e:
+                logger.warning(f"Skipping corrupted checkpoint '{name}': {e}")
+
+        logger.info(
+            f"Loaded checkpoints for '{graph_name}': {len(names)} files, "
+            f"{len(entity_node_map)} entities, {len(processed_chunk_ids)} chunks, "
+            f"last_window={last_window_idx}"
+        )
+        return entity_node_map, processed_chunk_ids, last_window_idx
+
+    def delete_checkpoints(self, graph_name: str) -> int:
+        """Delete all checkpoint files for a graph (called on overwrite=True or after success)."""
+        prefix = f"{CHECKPOINTS_PREFIX}{graph_name}/"
+        try:
+            objects = list(self.client.list_objects(self.bucket_name, prefix=prefix, recursive=True))
+            count = 0
+            for obj in objects:
+                if obj.object_name:
+                    self.client.remove_object(self.bucket_name, obj.object_name)
+                    count += 1
+            if count:
+                logger.info(f"Deleted {count} checkpoint files for graph '{graph_name}'")
+            return count
+        except S3Error as e:
+            logger.warning(f"Failed to delete checkpoints for '{graph_name}': {e}")
+            return 0
+
+    # ==================== COMMUNITY REPORTS ====================
+
+    def save_community_reports(self, graph_name: str, level: int, reports: List[Dict[str, Any]]) -> str:
+        """
+        Persist community reports for a Leiden level to Parquet on MinIO.
+        Path: community_reports/{graph_name}/level_{level:02d}.parquet
+        Overwrites any previously saved reports for the same level.
+        """
+        import pandas as pd
+
+        df = pd.DataFrame(reports)
+        # Serialize list fields to JSON strings for Parquet compatibility
+        for col in ("findings", "entities"):
+            if col in df.columns:
+                import json
+                df[col] = df[col].apply(lambda x: json.dumps(x) if isinstance(x, list) else x)
+
+        buf = io.BytesIO()
+        df.to_parquet(buf, index=False)
+        data = buf.getvalue()
+
+        object_key = f"{COMMUNITY_REPORTS_PREFIX}{graph_name}/level_{level:02d}.parquet"
+        stream = io.BytesIO(data)
+        self.client.put_object(
+            bucket_name=self.bucket_name,
+            object_name=object_key,
+            data=stream,
+            length=len(data),
+            content_type="application/octet-stream",
+        )
+        logger.info(f"Saved {len(reports)} community reports (level={level}) to '{object_key}'")
+        return object_key
+
+    def load_community_reports(self, graph_name: str) -> List[Dict[str, Any]]:
+        """
+        Load all community reports for a graph across all levels.
+        Returns a flat list of report dicts with list fields deserialized.
+        """
+        import pandas as pd
+        import json
+
+        prefix = f"{COMMUNITY_REPORTS_PREFIX}{graph_name}/"
+        try:
+            objects = list(self.client.list_objects(self.bucket_name, prefix=prefix, recursive=True))
+        except S3Error as e:
+            logger.warning(f"Could not list community reports for '{graph_name}': {e}")
+            return []
+
+        all_reports: List[Dict[str, Any]] = []
+        for obj in sorted(objects, key=lambda o: o.object_name or ""):
+            if not obj.object_name:
+                continue
+            try:
+                resp = self.client.get_object(self.bucket_name, obj.object_name)
+                data = resp.read(); resp.close(); resp.release_conn()
+                df = pd.read_parquet(io.BytesIO(data))
+                for col in ("findings", "entities"):
+                    if col in df.columns:
+                        df[col] = df[col].apply(lambda x: json.loads(x) if isinstance(x, str) else x)
+                all_reports.extend(df.to_dict(orient="records"))
+            except Exception as e:
+                logger.warning(f"Skipping corrupted community report file '{obj.object_name}': {e}")
+
+        logger.info(f"Loaded {len(all_reports)} community reports for graph '{graph_name}'")
+        return all_reports
+
+    def delete_community_reports(self, graph_name: str) -> int:
+        """Delete all community report files for a graph."""
+        prefix = f"{COMMUNITY_REPORTS_PREFIX}{graph_name}/"
+        try:
+            objects = list(self.client.list_objects(self.bucket_name, prefix=prefix, recursive=True))
+            count = 0
+            for obj in objects:
+                if obj.object_name:
+                    self.client.remove_object(self.bucket_name, obj.object_name)
+                    count += 1
+            if count:
+                logger.info(f"Deleted {count} community report files for graph '{graph_name}'")
+            return count
+        except S3Error as e:
+            logger.warning(f"Failed to delete community reports for '{graph_name}': {e}")
+            return 0
+
+    # ==================== GRAPH SNAPSHOTS ====================
+
+    def save_graph_snapshot(
+        self,
+        graph_name: str,
+        nodes_data: bytes,
+        rels_data: bytes,
+        timestamp: Optional[str] = None,
+    ) -> Dict[str, str]:
+        """
+        Save a full graph snapshot (nodes + relationships as Parquet bytes) to MinIO.
+        Path: graph_snapshots/{graph_name}/{timestamp}/nodes.parquet
+              graph_snapshots/{graph_name}/{timestamp}/relationships.parquet
+        Returns dict with 'nodes_key' and 'rels_key'.
+        """
+        if timestamp is None:
+            timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+
+        keys = {}
+        for name, data in (("nodes.parquet", nodes_data), ("relationships.parquet", rels_data)):
+            key = f"{GRAPH_SNAPSHOTS_PREFIX}{graph_name}/{timestamp}/{name}"
+            stream = io.BytesIO(data)
+            self.client.put_object(
+                bucket_name=self.bucket_name,
+                object_name=key,
+                data=stream,
+                length=len(data),
+                content_type="application/octet-stream",
+            )
+            keys[name.replace(".parquet", "_key")] = key
+
+        logger.info(f"Graph snapshot saved for '{graph_name}' at timestamp={timestamp}")
+        return {**keys, "timestamp": timestamp}
+
+    def load_graph_snapshot(
+        self,
+        graph_name: str,
+        timestamp: Optional[str] = None,
+    ) -> Dict[str, bytes]:
+        """
+        Load nodes and relationships Parquet bytes from a graph snapshot.
+        If timestamp is None, loads the most recent snapshot.
+        Returns {'nodes': bytes, 'relationships': bytes, 'timestamp': str}.
+        """
+        if timestamp is None:
+            timestamp = self._get_latest_graph_snapshot_timestamp(graph_name)
+            if timestamp is None:
+                raise FileNotFoundError(f"No graph snapshot found for '{graph_name}'")
+
+        result: Dict[str, Any] = {"timestamp": timestamp}
+        for key_name, file_name in (("nodes", "nodes.parquet"), ("relationships", "relationships.parquet")):
+            object_key = f"{GRAPH_SNAPSHOTS_PREFIX}{graph_name}/{timestamp}/{file_name}"
+            resp = self.client.get_object(self.bucket_name, object_key)
+            data = resp.read(); resp.close(); resp.release_conn()
+            result[key_name] = data
+
+        logger.info(f"Graph snapshot loaded for '{graph_name}' (timestamp={timestamp})")
+        return result
+
+    def _get_latest_graph_snapshot_timestamp(self, graph_name: str) -> Optional[str]:
+        prefix = f"{GRAPH_SNAPSHOTS_PREFIX}{graph_name}/"
+        try:
+            objects = list(self.client.list_objects(self.bucket_name, prefix=prefix, recursive=False))
+            timestamps = []
+            for obj in objects:
+                if obj.object_name:
+                    parts = obj.object_name.replace(prefix, "").split("/")
+                    if parts[0]:
+                        timestamps.append(parts[0])
+            timestamps = sorted(set(timestamps), reverse=True)
+            return timestamps[0] if timestamps else None
+        except S3Error:
+            return None
+
+    def list_graph_snapshots(self, graph_name: str) -> List[str]:
+        """Return list of available snapshot timestamps for a graph, newest first."""
+        prefix = f"{GRAPH_SNAPSHOTS_PREFIX}{graph_name}/"
+        try:
+            objects = list(self.client.list_objects(self.bucket_name, prefix=prefix, recursive=False))
+            timestamps = sorted(
+                {obj.object_name.replace(prefix, "").split("/")[0]
+                 for obj in objects if obj.object_name},
+                reverse=True
+            )
+            return timestamps
+        except S3Error:
+            return []
 
 
 # Singleton instance

@@ -240,6 +240,7 @@ class GraphRAGExtractor:
         creation_prompt: Optional[str] = None,
         max_retries: int = 3,
         retry_base_delay: float = 5.0,
+        extraction_concurrency: int = 10,
     ):
         """
         Initialize extractor.
@@ -254,11 +255,14 @@ class GraphRAGExtractor:
             max_retries: Maximum number of retry attempts for transient LLM errors (default 3).
             retry_base_delay: Base delay in seconds for exponential backoff (default 5.0).
                               Actual delay: retry_base_delay * 2^attempt (5s, 10s, 20s, …)
+            extraction_concurrency: Max number of chunks processed concurrently.
+                              For vLLM (local) use 10-20; for cloud APIs use 5.
         """
         self.llm = llm_invoker
         self.language = language
         self.max_retries = max_retries
         self.retry_base_delay = retry_base_delay
+        self.extraction_concurrency = extraction_concurrency
 
         # Get extraction configuration based on creation_prompt
         self.config = get_extraction_config(creation_prompt)
@@ -283,20 +287,41 @@ class GraphRAGExtractor:
         last_exc: Optional[Exception] = None
         for attempt in range(self.max_retries + 1):
             try:
-                if hasattr(self.llm, 'invoke'):
+                if hasattr(self.llm, 'ainvoke'):
                     messages = [
                         SystemMessage(content="You are a helpful assistant that extracts entities and relationships from text."),
                         HumanMessage(content=prompt)
                     ]
                     response = await self.llm.ainvoke(messages)
-                    return response.content if hasattr(response, 'content') else str(response)
+                    
+                    # Extract content from response
+                    content = getattr(response, 'content', response)
+                    
+                    # Handle list-based content (e.g. reasoning + text parts)
+                    if isinstance(content, list):
+                        text_parts = []
+                        for part in content:
+                            if isinstance(part, dict):
+                                if part.get("type") == "text":
+                                    text_parts.append(part.get("text", ""))
+                                elif "text" in part:
+                                    text_parts.append(part["text"])
+                            elif isinstance(part, str):
+                                text_parts.append(part)
+                        return "\n".join(text_parts).strip()
+                    
+                    return str(content).strip()
                 elif hasattr(self.llm, 'chat'):
-                    return await self.llm.chat(
+                    # Legacy or custom chat interface
+                    resp = await self.llm.chat(
                         system="You are a helpful assistant that extracts entities and relationships from text.",
                         messages=[{"role": "user", "content": prompt}]
                     )
+                    return str(resp).strip()
                 else:
-                    return await self.llm(prompt)
+                    # Fallback to call
+                    resp = await self.llm(prompt)
+                    return str(resp).strip()
             except Exception as e:
                 if _is_retriable_error(e) and attempt < self.max_retries:
                     delay = self.retry_base_delay * (2 ** attempt)
@@ -401,32 +426,35 @@ class GraphRAGExtractor:
         total_tokens = 0
         failed_chunks: List[str] = []
 
-        # Process chunks sequentially (can be parallelized later)
-        for i, chunk in enumerate(chunks):
+        semaphore = asyncio.Semaphore(self.extraction_concurrency)
+        total = len(chunks)
+
+        async def _process(i: int, chunk: Dict[str, Any]):
             chunk_id = chunk.get("id", f"{doc_id}_{i}")
             chunk_text = chunk.get("text", "")
-
             if not chunk_text:
-                continue
+                return chunk_id, None, None, 0, False
+            logger.info(f"Processing chunk {i+1}/{total} (ID: {chunk_id})")
+            async with semaphore:
+                try:
+                    nodes, edges, tokens = await self.extract_chunk(chunk_id, chunk_text)
+                    return chunk_id, nodes, edges, tokens, True
+                except Exception as e:
+                    logger.error(
+                        f"Chunk {chunk_id} permanently failed after {self.max_retries} retries "
+                        f"({type(e).__name__}: {e}) – skipping"
+                    )
+                    return chunk_id, None, None, 0, False
 
-            logger.info(f"Processing chunk {i+1}/{len(chunks)} (ID: {chunk_id})")
+        results = await asyncio.gather(*[_process(i, chunk) for i, chunk in enumerate(chunks)])
 
-            try:
-                nodes, edges, tokens = await self.extract_chunk(chunk_id, chunk_text)
-            except Exception as e:
-                logger.error(
-                    f"Chunk {chunk_id} permanently failed after {self.max_retries} retries "
-                    f"({type(e).__name__}: {e}) – skipping"
-                )
+        for chunk_id, nodes, edges, tokens, success in results:
+            if not success:
                 failed_chunks.append(chunk_id)
                 continue
-
             total_tokens += tokens
-
-            # Merge results
             for entity_name, entity_list in nodes.items():
                 all_nodes[entity_name].extend(entity_list)
-
             for edge_key, edge_list in edges.items():
                 all_edges[edge_key].extend(edge_list)
 

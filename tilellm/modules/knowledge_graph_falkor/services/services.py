@@ -40,6 +40,7 @@ from ..utils.query_analysis import (
     detect_query_type_heuristic,
     apply_weight_adjustments
 )
+from tilellm.shared.llm_utils import extract_llm_text
 
 GRAPHRAG_AVAILABLE = False
 GraphRAGExtractor = None
@@ -642,7 +643,7 @@ class GraphRAGService:
         if not self.vector_store_repository:
             raise RuntimeError("Vector store repository not initialized. Call set_vector_store_repository first.")
 
-    async def import_from_vector_store(self, namespace: str, creation_prompt:str, vector_store_repo=None, engine: Optional[Engine] = None, limit: int = 100, llm=None, index_name: Optional[str] = None, overwrite: bool = True, engine_type: Optional[str] = None, graph_name: Optional[str] = None) -> Dict[str, Any]:
+    async def import_from_vector_store(self, namespace: str, creation_prompt:str, vector_store_repo=None, engine: Optional[Engine] = None, limit: int = 100, llm=None, index_name: Optional[str] = None, overwrite: bool = True, engine_type: Optional[str] = None, graph_name: Optional[str] = None, chunk_window_size: int = 500, batch_size: int = 100, extraction_concurrency: int = 10, minio_storage_service=None) -> Dict[str, Any]:
         """
         Import documents from a vector store namespace into the knowledge graph.
 
@@ -696,6 +697,11 @@ class GraphRAGService:
         # Clean up existing nodes if overwrite is True
         if overwrite:
             await graph_repo.delete_nodes_by_metadata(namespace=namespace, index_name=index_name, engine_name=engine_name, engine_type=engine_type, graph_name=graph_name_to_use)
+            if minio_storage_service:
+                try:
+                    minio_storage_service.delete_checkpoints(graph_name_to_use)
+                except Exception as _e:
+                    logger.warning(f"Could not delete checkpoints on overwrite: {_e}")
 
         # Ensure indexes for the graph using entity types from extraction config
         config = get_extraction_config(creation_prompt)
@@ -765,157 +771,161 @@ class GraphRAGService:
             
             nodes_created = 0
             relationships_created = 0
-            
-            # Extract entities and relationships using GraphRAG if LLM is available
-            logger.info(f"GraphRAG extraction check - llm_to_use: {llm_to_use}, GRAPHRAG_AVAILABLE: {GRAPHRAG_AVAILABLE}, llm_type: {type(llm_to_use) if llm_to_use else None}")
+            all_failed_chunks: List[str] = []
+
+            logger.info(f"GraphRAG extraction check - llm_to_use: {llm_to_use}, GRAPHRAG_AVAILABLE: {GRAPHRAG_AVAILABLE}")
             if llm_to_use is not None and GRAPHRAG_AVAILABLE:
                 try:
-                    logger.info("Starting GraphRAG extraction with LLM")
                     if GraphRAGExtractor is None:
-                        logger.warning("GraphRAG extractor not available despite flag")
                         raise ImportError("GraphRAG extractor not available")
-                    assert GraphRAGExtractor is not None
-                    extractor = GraphRAGExtractor(llm_invoker=llm_to_use, creation_prompt=creation_prompt)
 
-                    entities, relationships, failed_chunks = await extractor.extract(
-                        doc_id=namespace,
-                        chunks=chunks_data
+                    extractor = GraphRAGExtractor(
+                        llm_invoker=llm_to_use,
+                        creation_prompt=creation_prompt,
+                        extraction_concurrency=extraction_concurrency,
                     )
 
-                    if failed_chunks:
-                        logger.warning(
-                            f"import_from_vector_store: {len(failed_chunks)} chunk(s) skipped "
-                            f"due to permanent LLM errors: {failed_chunks}"
+                    # Accumulates normalized_name → node_id across all windows so
+                    # relationships from later windows can reference earlier nodes.
+                    entity_node_map: Dict[str, str] = {}
+
+                    # ---- Level 2: Pre-load existing nodes from graph ----
+                    # On overwrite=True the graph was just wiped, so this returns nothing.
+                    # On overwrite=False (resume / add-document) this catches nodes from
+                    # previous complete or partial runs that are not covered by checkpoints.
+                    if not overwrite:
+                        try:
+                            preloaded = await graph_repo.load_entity_name_map(
+                                namespace=namespace, graph_name=graph_name_to_use
+                            )
+                            entity_node_map.update(preloaded)
+                        except Exception as _pe:
+                            logger.warning(f"Failed to pre-load entity map from graph, continuing: {_pe}")
+                    # -----------------------------------------------------
+
+                    # ---- Checkpoint / resume logic ----
+                    resume_chunk_ids: set = set()
+                    next_checkpoint_window: int = 0  # global window counter (never resets across resume attempts)
+                    if not overwrite and minio_storage_service:
+                        try:
+                            ckpt_map, ckpt_chunks, last_win = minio_storage_service.load_checkpoints(graph_name_to_use)
+                            if ckpt_chunks:
+                                entity_node_map.update(ckpt_map)  # checkpoint overrides preload (more recent)
+                                resume_chunk_ids = ckpt_chunks
+                                next_checkpoint_window = last_win + 1
+                                before = len(chunks_data)
+                                chunks_data = [c for c in chunks_data if c.get("id") not in resume_chunk_ids]
+                                logger.info(
+                                    f"Resume: skipping {before - len(chunks_data)} already-processed chunks "
+                                    f"({len(chunks_data)} remaining), {len(entity_node_map)} entities in map, "
+                                    f"next checkpoint window={next_checkpoint_window}"
+                                )
+                        except Exception as _ce:
+                            logger.warning(f"Failed to load checkpoints, starting fresh: {_ce}")
+                    # -----------------------------------
+
+                    total_windows = max(1, (len(chunks_data) + chunk_window_size - 1) // chunk_window_size)
+                    logger.info(
+                        f"Starting windowed extraction: {len(chunks_data)} chunks, "
+                        f"window={chunk_window_size}, concurrency={extraction_concurrency}, "
+                        f"batch_size={batch_size}, windows={total_windows}"
+                    )
+
+                    for win_idx, win_start in enumerate(range(0, len(chunks_data), chunk_window_size)):
+                        window = chunks_data[win_start : win_start + chunk_window_size]
+                        logger.info(f"Window {win_idx + 1}/{total_windows}: extracting {len(window)} chunks")
+
+                        entities, relationships, failed = await extractor.extract(
+                            doc_id=namespace, chunks=window
+                        )
+                        all_failed_chunks.extend(failed)
+
+                        # Attach metadata_id to each entity before batch write
+                        for entity in entities:
+                            src_ids = entity.get("source_id", [])
+                            first_src = src_ids[0] if isinstance(src_ids, list) and src_ids else None
+                            entity["metadata_id"] = chunk_id_to_metadata_id.get(first_src, "unknown") if first_src else "unknown"
+
+                        new_node_map = await graph_repo.batch_create_nodes(
+                            entities=entities,
+                            namespace=namespace,
+                            index_name=index_name,
+                            engine_name=engine_name,
+                            engine_type=engine_type,
+                            graph_name=graph_name_to_use,
+                            batch_size=batch_size,
+                            existing_entity_node_map=entity_node_map,
+                        )
+                        # Only count truly new nodes (not reused ones already in entity_node_map)
+                        truly_new = {k: v for k, v in new_node_map.items() if k not in entity_node_map}
+                        entity_node_map.update(new_node_map)
+                        nodes_created += len(truly_new)
+
+                        # Attach metadata_id to each relationship
+                        for rel in relationships:
+                            src_ids = rel.get("source_id", [])
+                            first_src = src_ids[0] if isinstance(src_ids, list) and src_ids else None
+                            rel["metadata_id"] = chunk_id_to_metadata_id.get(first_src) if first_src else None
+
+                        win_rels = await graph_repo.batch_create_relationships(
+                            relationships=relationships,
+                            entity_node_map=entity_node_map,
+                            namespace=namespace,
+                            index_name=index_name,
+                            engine_name=engine_name,
+                            engine_type=engine_type,
+                            graph_name=graph_name_to_use,
+                            batch_size=batch_size,
+                        )
+                        relationships_created += win_rels
+
+                        logger.info(
+                            f"Window {win_idx + 1}/{total_windows} done: "
+                            f"+{len(new_node_map)} nodes, +{win_rels} relationships "
+                            f"(totals: {nodes_created} nodes, {relationships_created} rels)"
                         )
 
-                    logger.info(f"Extracted {len(entities)} entities and {len(relationships)} relationships")
-                    
-                    # Create nodes for extracted entities
-                    entity_node_map = {}  # entity_name -> node_id
-                    for entity in entities:
-                        try:
-                            entity_name = entity.get("entity_name", "").strip()
-                            entity_type = entity.get("entity_type", "ENTITY").strip()
-                            description = entity.get("description", "")
-                            source_ids = entity.get("source_id", [])
-                            
-                            if not entity_name:
-                                continue
-                            
-                            # Determine metadata_id for entity based on source chunks
-                            entity_metadata_id = None
-                            if source_ids and isinstance(source_ids, list) and len(source_ids) > 0:
-                                first_source_id = source_ids[0]
-                                entity_metadata_id = chunk_id_to_metadata_id.get(first_source_id)
-                            # If no metadata_id found, use 'unknown'
-                            if entity_metadata_id is None:
-                                entity_metadata_id = 'unknown'
-                            
-                            # Check if entity already exists (by name and type)
-                            # For simplicity, create new node each time (could be deduplicated later)
-                            node = Node(
-                                label=entity_type,
-                                properties={
-                                    "name": entity_name,
-                                    "description": description,
-                                    "source_ids": source_ids if source_ids else [],
-                                    "entity_type": entity_type,
-                                    "import_timestamp": datetime.now().isoformat(),
-                                    "engine_name": engine_name,
-                                    "engine_type": engine_type,
-                                    "metadata_id": entity_metadata_id  # Also store in properties for consistency
-                                }
-                            )
-                            created_node = await self.graph_service.create_node(node,
-                                                                           namespace=namespace,
-                                                                           index_name=index_name,
-                                                                           engine_name=engine_name,
-                                                                           engine_type=engine_type,
-                                                                           metadata_id=entity_metadata_id,
-                                                                           graph_name=graph_name_to_use)
-                            if created_node.id is None:
-                                logger.error("Created entity node has no ID, skipping")
-                                continue
-                            
-                            entity_node_map[entity_name] = created_node.id
-                            nodes_created += 1
-                            
-                        except Exception as ex:
-                            logger.error(f"Error creating entity node {entity.get('entity_name', 'unknown')}: {ex}")
-                            continue
-                    
-                    # Create relationships between entities
-                    for rel in relationships:
-                        try:
-                            source_name = rel.get("src_id", "").strip()
-                            target_name = rel.get("tgt_id", "").strip()
-                            # Use extracted relationship_type, fallback to RELATED_TO
-                            rel_type = rel.get("relationship_type", "RELATED_TO").upper()
-                            weight = rel.get("weight", 1.0)
-                            description = rel.get("description", "")
-                            source_ids = rel.get("source_id", [])
+                        # Save checkpoint for this window
+                        if minio_storage_service:
+                            try:
+                                global_win_idx = next_checkpoint_window + win_idx
+                                chunk_ids_in_window = [c.get("id", "") for c in window if c.get("id")]
+                                minio_storage_service.save_checkpoint(
+                                    graph_name=graph_name_to_use,
+                                    window_idx=global_win_idx,
+                                    entity_node_map_delta=new_node_map,
+                                    chunk_ids=chunk_ids_in_window,
+                                )
+                            except Exception as _ce:
+                                logger.warning(f"Failed to save checkpoint for window {win_idx}: {_ce}")
 
-                            # DEBUG: Log what type was extracted
-                            logger.info(f"Creating relationship: {source_name} -[{rel_type}]-> {target_name} (extracted from: {rel.get('relationship_type', 'NOT_FOUND')})")
+                    if all_failed_chunks:
+                        logger.warning(
+                            f"import_from_vector_store: {len(all_failed_chunks)} chunk(s) skipped: {all_failed_chunks}"
+                        )
 
-                            if not source_name or not target_name:
-                                continue
-                            
-                            source_node_id = entity_node_map.get(source_name)
-                            target_node_id = entity_node_map.get(target_name)
-                            
-                            if not source_node_id or not target_node_id:
-                                logger.debug(f"Missing source or target node for relationship {source_name} -> {target_name}")
-                                continue
-                            
-                            # Determine metadata_id for relationship based on source chunks
-                            rel_metadata_id = None
-                            if source_ids and isinstance(source_ids, list) and len(source_ids) > 0:
-                                first_source_id = source_ids[0]
-                                rel_metadata_id = chunk_id_to_metadata_id.get(first_source_id)
-                            # If no metadata_id found, use None (will not be added to properties)
-                            
-                            rel_properties = {
-                                "weight": weight,
-                                "description": description,
-                                "source_ids": source_ids if source_ids else [],
-                                "source_entity": source_name,
-                                "target_entity": target_name,
-                                "engine_name": engine_name,
-                                "engine_type": engine_type
-                            }
-                            if rel_metadata_id is not None:
-                                rel_properties["metadata_id"] = rel_metadata_id
-                            
-                            relationship = Relationship(
-                                source_id=source_node_id,
-                                target_id=target_node_id,
-                                type=rel_type,
-                                properties=rel_properties
-                            )
-                            await self.graph_service.create_relationship(relationship, namespace=namespace, index_name=index_name, engine_name=engine_name, engine_type=engine_type, metadata_id=rel_metadata_id, graph_name=graph_name_to_use)
-                            relationships_created += 1
-                            
-                        except Exception as ex:
-                            logger.error(f"Error creating relationship {rel.get('src_id', 'unknown')} -> {rel.get('tgt_id', 'unknown')}: {ex}")
-                            continue
-                    
                     logger.info(f"Created {nodes_created} entity nodes and {relationships_created} relationships")
-                    
+
+                    # All windows completed — remove checkpoints (no longer needed)
+                    if minio_storage_service:
+                        try:
+                            minio_storage_service.delete_checkpoints(graph_name_to_use)
+                            logger.info(f"Checkpoints deleted after successful extraction of '{graph_name_to_use}'")
+                        except Exception as _ce:
+                            logger.warning(f"Failed to delete checkpoints after completion: {_ce}")
+
                 except Exception as e:
                     logger.error(f"GraphRAG extraction failed: {e}")
-                    # Fall back to simple document nodes
                     logger.info("Falling back to simple document nodes")
                     return await self._create_simple_document_nodes(chunks_to_process, namespace, index_name=index_name, engine_name=engine_name, engine_type=engine_type, graph_name=graph_name_to_use)
             else:
-                # No LLM available, create simple document nodes
                 logger.info("LLM not available for GraphRAG, creating simple document nodes")
                 return await self._create_simple_document_nodes(chunks_to_process, namespace, index_name=index_name, engine_name=engine_name, engine_type=engine_type, graph_name=graph_name_to_use)
-            
+
             return {
                 "namespace": namespace,
                 "chunks_processed": len(chunks_to_process),
-                "chunks_failed": len(failed_chunks) if 'failed_chunks' in locals() else 0,
+                "chunks_failed": len(all_failed_chunks),
                 "nodes_created": nodes_created,
                 "relationships_created": relationships_created,
                 "status": "success" if nodes_created > 0 else "no_entities"
@@ -1392,7 +1402,7 @@ class GraphRAGService:
                         HumanMessage(content=prompt)
                     ]
                     response = await llm_to_use.ainvoke(messages)
-                    answer = response.content if hasattr(response, 'content') else str(response)
+                    answer = extract_llm_text(response)
                 elif hasattr(llm_to_use, 'chat'):
                     answer = await llm_to_use.chat(
                         system=GRAPH_QA_SYSTEM_PROMPT,
@@ -1859,7 +1869,7 @@ class GraphRAGService:
                             HumanMessage(content=prompt)
                         ]
                         response = await llm.ainvoke(messages)
-                        answer = response.content if hasattr(response, 'content') else str(response)
+                        answer = extract_llm_text(response)
                     elif hasattr(llm, 'chat'):
                         answer = await llm.chat(
                             system=ADVANCED_GRAPH_QA_SYSTEM_PROMPT,

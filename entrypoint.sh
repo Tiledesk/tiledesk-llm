@@ -57,7 +57,7 @@ TASKIQ_WORKER_COUNT=${TASKIQ_WORKERS:-1}       # Numero di worker taskiq (CPU co
 PREFETCH=${TASKIQ_PREFETCH:-1}                 # CRITICO: 1 task alla volta
 TASKIQ_LOG_LEVEL=${TASKIQ_LOG_LEVEL:-INFO}     # 'debug' solo per troubleshooting
 SHUTDOWN_TIMEOUT=${TASKIQ_SHUTDOWN_TIMEOUT:-30} # Tempo per shutdown graceful
-MAX_ASYNC_TASKS=${TASKIQ_MAX_ASYNC_TASKS:-10}   # Task concorrenti per worker
+MAX_ASYNC_TASKS=${TASKIQ_MAX_ASYNC_TASKS:-4}    # Task concorrenti per worker (PDF pesanti: usa PDF_MAX_CONCURRENT=2)
 TASKIQ_RESTART_DELAY=${TASKIQ_RESTART_DELAY:-5} # Secondi prima di riavviare il worker
 
 SUPERVISOR_PID=""

@@ -20,6 +20,26 @@ from ..utils.advanced_qa_prompt import INTENT_PROMPTS
 logger = logging.getLogger(__name__)
 
 
+def _extract_text_from_llm_response(response: Any) -> str:
+    """Robustly extract string content from LangChain LLM response (handling reasoning/lists)."""
+    content = getattr(response, 'content', response)
+    
+    # Handle list-based content (e.g. reasoning + text parts)
+    if isinstance(content, list):
+        text_parts = []
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") == "text":
+                    text_parts.append(part.get("text", ""))
+                elif "text" in part:
+                    text_parts.append(part["text"])
+            elif isinstance(part, str):
+                text_parts.append(part)
+        return "\n".join(text_parts).strip()
+    
+    return str(content).strip()
+
+
 class IntentClassifier:
     """Classifies user query intent for debt collection domain."""
 
@@ -91,10 +111,10 @@ Format: category|confidence"""
 
         if hasattr(self.llm, 'ainvoke'):
             response = await self.llm.ainvoke(prompt)
-            content = response.content if hasattr(response, 'content') else str(response)
+            content = _extract_text_from_llm_response(response)
         else:
             response = self.llm.invoke(prompt)
-            content = response.content if hasattr(response, 'content') else str(response)
+            content = _extract_text_from_llm_response(response)
 
         # Parse response
         parts = content.strip().split('|')
@@ -234,10 +254,10 @@ Example: {{"debtor_name": "Mario Rossi", "loan_id": "PR-2024-001", "is_full_requ
 
         if hasattr(self.llm, 'ainvoke'):
             response = await self.llm.ainvoke(prompt)
-            content = response.content if hasattr(response, 'content') else str(response)
+            content = _extract_text_from_llm_response(response)
         else:
             response = self.llm.invoke(prompt)
-            content = response.content if hasattr(response, 'content') else str(response)
+            content = _extract_text_from_llm_response(response)
 
         # Try to parse JSON
         try:
@@ -1050,10 +1070,10 @@ class AdvancedQAService:
         try:
             if hasattr(self.llm, 'ainvoke'):
                 response = await self.llm.ainvoke(prompt)
-                return response.content if hasattr(response, 'content') else str(response)
+                return _extract_text_from_llm_response(response)
             else:
                 response = self.llm.invoke(prompt)
-                return response.content if hasattr(response, 'content') else str(response)
+                return _extract_text_from_llm_response(response)
         except Exception as e:
             logger.error(f"LLM enrichment failed: {e}")
             return f"Based on the available information:\n\n{context}\n\n{formatted_events}"
@@ -1139,10 +1159,10 @@ class AdvancedQAService:
         try:
             if hasattr(self.llm, 'ainvoke'):
                 response = await self.llm.ainvoke(prompt)
-                content = response.content if hasattr(response, 'content') else str(response)
+                content = _extract_text_from_llm_response(response)
             else:
                 response = self.llm.invoke(prompt)
-                content = response.content if hasattr(response, 'content') else str(response)
+                content = _extract_text_from_llm_response(response)
                 
             # Append the interactive offer to show all results
             offer_text = self._get_summary_offer(intent, total_items)

@@ -833,7 +833,7 @@ class FalkorGraphRepository(BaseGraphRepository):
             return {"nodes_deleted": 0}
         
         where_clause = " AND ".join(where_clauses)
-        
+
         query = f"""
         MATCH (n)
         WHERE {where_clause}
@@ -841,13 +841,19 @@ class FalkorGraphRepository(BaseGraphRepository):
         DETACH DELETE n
         RETURN count(n) as deleted_count
         """
-        
-        result = self._execute_query(query, parameters, namespace=namespace, graph_name=graph_name)
-        deleted_count = result[0].get("deleted_count", 0) if result else 0
-        
-        logger.info(f"Deleted {deleted_count} nodes matching metadata")
-        
-        return {"nodes_deleted": deleted_count}
+
+        total_deleted = 0
+        while True:
+            result = self._execute_query(query, parameters, namespace=namespace, graph_name=graph_name)
+            batch = result[0].get("deleted_count", 0) if result else 0
+            total_deleted += batch
+            if batch == 0:
+                break
+            logger.info(f"Deleted batch of {batch} nodes (total so far: {total_deleted})")
+
+        logger.info(f"Deleted {total_deleted} nodes matching metadata")
+
+        return {"nodes_deleted": total_deleted}
 
     # ==================== UTILITY OPERATIONS ====================
 

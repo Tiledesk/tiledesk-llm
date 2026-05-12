@@ -14,6 +14,7 @@ except ImportError:
     IGRAPH_AVAILABLE = False
 
 from tilellm.store.graph import BaseGraphRepository
+from tilellm.shared.llm_utils import extract_llm_text
 
 # Supponiamo tu abbia un client Minio o un repository per i file
 # from ..utils.minio_client import minio_client
@@ -22,11 +23,14 @@ logger = logging.getLogger(__name__)
 
 
 class ClusterService:
-    def __init__(self, repository: BaseGraphRepository, llm=None, minio_client=None):
+    def __init__(self, repository: BaseGraphRepository, llm=None, minio_client=None, max_prompt_chars: int = 18000):
         self.repository = repository
         self.llm = llm
         self.minio_client = minio_client
         self.semaphore = asyncio.Semaphore(10)  # Limita le chiamate LLM contemporanee
+        # Budget in chars for entities+relationships in the prompt.
+        # At ~4 chars/token, 18000 chars ≈ 4500 tokens — safe for 32K-token models.
+        self.max_prompt_chars = max_prompt_chars
 
     async def perform_clustering(self, level: int = 0, namespace: str = "default", index_name: Optional[str] = None, engine_name: Optional[str] = None, engine_type: Optional[str] = None, graph_name: Optional[str] = None):
         logger.info("Fetching graph data from Neo4j...")
@@ -98,7 +102,7 @@ class ClusterService:
             "communities_detected": len(communities_list)
         }
 
-    async def perform_clustering_leiden(self, level: int = 0, namespace: str = "default", index_name: Optional[str] = None, engine_name: Optional[str] = None, engine_type: Optional[str] = None, resolution: float = 1.0, graph_name: Optional[str] = None):
+    async def perform_clustering_leiden(self, level: int = 0, namespace: str = "default", index_name: Optional[str] = None, engine_name: Optional[str] = None, engine_type: Optional[str] = None, resolution: float = 1.0, graph_name: Optional[str] = None, min_community_size: int = 8):
         """
         Esegue il clustering usando Leiden (via igraph) per una maggiore efficienza e modularità.
         Supporta 'resolution' per il clustering gerarchico (1.0 = fine/specifico, <1.0 = coarse/generale).
@@ -164,7 +168,7 @@ class ClusterService:
         tasks = []
         # partition è una lista di liste di indici [ [0,1,2], [3,4] ... ]
         for comm_idx, node_indices in enumerate(partition):
-            if len(node_indices) < 3: continue # Ignora comunità troppo piccole
+            if len(node_indices) < min_community_size: continue
             
             # Use a simpler ID for community to avoid massive IDs in high levels
             # But ensure uniqueness across levels if merging later: f"L{level}_C{comm_idx}"
@@ -245,7 +249,7 @@ class ClusterService:
         try:
             # Chiamata LLM (LangChain ainvoke)
             response = await self.llm.ainvoke(prompt)
-            content = response.content if hasattr(response, 'content') else str(response)
+            content = extract_llm_text(response)
             report_content = self._parse_json(content)
 
             # Aggiungiamo metadati strutturali per il file Parquet
@@ -272,31 +276,53 @@ class ClusterService:
         # Estrai sottografo per la comunità
         subgraph = g.subgraph(node_indices)
         
-        # Recupera attributi dai nodi del sottografo
-        # (igraph mantiene gli attributi nel sottografo)
         node_descriptions = []
         original_ids = []
-        
+        _MAX_DESC = 200
         for v in subgraph.vs:
             name = v["name"] if v["name"] else "Unnamed"
             desc = v["description"] if v["description"] else "N/A"
+            if len(desc) > _MAX_DESC:
+                desc = desc[:_MAX_DESC] + "..."
             node_descriptions.append(f"- {name}: {desc}")
             original_ids.append(v["original_id"])
-            
-        entities_str = "\n".join(node_descriptions)
-        
-        # Recupera relazioni nel sottografo
+
         rels_str_list = []
         for e in subgraph.es:
-            source_idx = e.source
-            target_idx = e.target
-            # Ottieni nomi dei nodi sorgente/destinazione nel sottografo
-            source_name = subgraph.vs[source_idx]["name"]
-            target_name = subgraph.vs[target_idx]["name"]
-            rel_type = e["type"]
-            rels_str_list.append(f"- {source_name} -> {target_name} [{rel_type}]")
-            
-        rels_str = "\n".join(rels_str_list)
+            source_name = subgraph.vs[e.source]["name"]
+            target_name = subgraph.vs[e.target]["name"]
+            rels_str_list.append(f"- {source_name} -> {target_name} [{e['type']}]")
+
+        # Truncate to stay within max_prompt_chars budget (2/3 entities, 1/3 rels)
+        entities_budget = self.max_prompt_chars * 2 // 3
+        rels_budget = self.max_prompt_chars // 3
+
+        entities_str_lines = node_descriptions
+        if sum(len(l) + 1 for l in node_descriptions) > entities_budget:
+            kept, total = [], 0
+            for line in node_descriptions:
+                if total + len(line) + 1 > entities_budget - 50:
+                    break
+                kept.append(line)
+                total += len(line) + 1
+            skipped = len(node_descriptions) - len(kept)
+            kept.append(f"[... {skipped} more entities not shown]")
+            entities_str_lines = kept
+
+        rels_str_lines = rels_str_list
+        if sum(len(l) + 1 for l in rels_str_list) > rels_budget:
+            kept, total = [], 0
+            for line in rels_str_list:
+                if total + len(line) + 1 > rels_budget - 50:
+                    break
+                kept.append(line)
+                total += len(line) + 1
+            skipped = len(rels_str_list) - len(kept)
+            kept.append(f"[... {skipped} more relationships not shown]")
+            rels_str_lines = kept
+
+        entities_str = "\n".join(entities_str_lines)
+        rels_str = "\n".join(rels_str_lines)
 
         prompt = f"""
             Sei un analista esperto di grafi. Analizza la seguente comunità di entità e relazioni.
@@ -323,7 +349,7 @@ class ClusterService:
         try:
             # Chiamata LLM (LangChain ainvoke)
             response = await self.llm.ainvoke(prompt)
-            content = response.content if hasattr(response, 'content') else str(response)
+            content = extract_llm_text(response)
             report_content = self._parse_json(content)
 
             # Aggiungiamo metadati strutturali
@@ -366,7 +392,23 @@ class ClusterService:
         logger.info(f"Report salvati in Parquet: {file_name}")
 
     def _parse_json(self, text):
-        # Logica di pulizia JSON (già presente nel tuo codice)
+        """Robustly parse JSON from LLM response string or part-list."""
         import json, re
+
+        # Handle list-based content (e.g. reasoning + text parts)
+        if isinstance(text, list):
+            text_parts = []
+            for part in text:
+                if isinstance(part, dict):
+                    if part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                    elif "text" in part:
+                        text_parts.append(part["text"])
+                elif isinstance(part, str):
+                    text_parts.append(part)
+            text = "\n".join(text_parts).strip()
+        elif not isinstance(text, str):
+            text = str(text)
+
         match = re.search(r"\{.*\}", text, re.DOTALL)
         return json.loads(match.group()) if match else {}

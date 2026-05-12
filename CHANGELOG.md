@@ -5,6 +5,286 @@
     * Andrea Sponziello
 ### **Copyright**: Tiledesk SRL
 
+
+---
+## [2026-05-11]
+### 0.10.1-rc19 (fix: TaskIQ double-processing of same document after worker crash)
+
+Fixed a bug where a PDF document could be processed twice after a worker crash.
+
+**Root cause**: when a worker crashes (e.g. OOM from concurrent Docling runs) between `"Task finished"` log and the Redis `XACK`, the stream message stays in PEL. On restart, `_startup_reclaim` re-queued it as a fresh `attempt 1/3` even if the task had already completed.
+
+**`tilellm/modules/task_executor/broker.py`** — `_startup_reclaim`: before re-dispatching a PEL entry, checks if a result key already exists in Redis for that `task_id`. If found, only `XACK` is sent (no `XADD`). Logs `"già completato, solo ACK"` and tracks `total_skipped` in the startup summary.
+
+**`tilellm/modules/task_executor/tasks.py`** — moved `"Task finished"` log outside the webhook block so it always appears; added comment documenting that `XACK` happens after this point.
+
+**Recommendation**: set `PDF_MAX_CONCURRENT=1` on GPU pods to prevent the concurrent Docling OOM that triggers this condition.
+
+---
+## [2026-05-04]
+### 0.10.1-rc17 (perf: RAM reduction for /api/pdf/scrape ingestion)
+
+Reduces RAM consumption during PDF ingestion by eliminating per-task model reload, releasing PIL image data early, and forcing Python GC at task boundaries.
+
+#### Fix A — `ProductionDocumentProcessor` singleton
+
+- `tilellm/modules/pdf_ocr/services/docling_processor.py`: added module-level `_processor_instance` singleton and `get_or_create_processor()` async factory.
+- Previously, every `/api/pdf/scrape` task instantiated a new `ProductionDocumentProcessor`, which calls `DocumentConverter.__init__()` and loads all Docling ONNX models (layout EfficientDet, TableFormer, RapidOCR) — 2-4 GB RAM per instantiation. Under concurrent load (multiple tasks dispatched by TaskIQ) this caused model copies to accumulate until GC ran.
+- `get_or_create_processor()` uses double-checked locking (`asyncio.Lock`) to initialize once on first call and reuse across all subsequent tasks. Models stay resident; each task pays only the conversion cost.
+- Removed `finally: await processor.close()` from `process_pdf_document_with_embeddings` in `logic.py` — the singleton must not have its Redis client closed between tasks.
+- Removed `duckdb_conn.register(safe_table_name, df)` from `_process_single_table`: the registration kept Python DataFrame references alive inside the DuckDB connection for the process lifetime. The registered view was never queried in the current codebase; removed it and the `table_data['duckdb_table']` field.
+
+#### Fix B — Release PIL image data after captioning
+
+- `tilellm/modules/pdf_ocr/logic.py` (`_generate_image_captions`): sets `image_data['image_data'] = None` after converting the PIL Image to bytes and generating the caption. A 300 DPI A4 page as RGB numpy array ≈ 26 MB; a 50-page scanned PDF produces ≈ 1.3 GB of image data held unnecessarily for the rest of the task.
+- Additional bulk cleanup in `process_pdf_document_with_embeddings`: after the image captioning block (regardless of `include_images` flag) iterates `result['images']` and sets `image_data = None` for any remaining PIL objects, covering the case where images were extracted by Docling but captioning was skipped.
+
+#### Fix C — `gc.collect()` in `GpuCleanupMiddleware`
+
+- `tilellm/modules/task_executor/broker.py`: added `gc.collect()` call immediately after `cuda_empty_cache_safe()` in `GpuCleanupMiddleware.post_execute`.
+- Forces Python's cyclic garbage collector to run at task boundaries, releasing PIL objects, DataFrames, and LangChain document lists that may have cyclic references preventing prompt reference-count cleanup.
+
+#### Files changed
+
+`tilellm/modules/pdf_ocr/services/docling_processor.py`,
+`tilellm/modules/pdf_ocr/logic.py`,
+`tilellm/modules/task_executor/broker.py`
+
+---
+## [2026-05-04]
+### 0.10.1-rc16 (perf: GPU load reduction for TaskIQ ingestion workers)
+
+Reduces performance degradation on GPU pods running `/api/pdf/scrape` with a local SPLADE sparse encoder under sustained ingestion load.
+
+#### `GpuCleanupMiddleware` — VRAM cache flush between tasks
+
+- New `TaskiqMiddleware` in `tilellm/modules/task_executor/broker.py` that calls `torch.cuda.empty_cache()` after every task with `task_type` in `{"pdf_ocr", "scraping", "raptor_build"}`.
+- PyTorch's caching allocator retains freed blocks for reuse across tasks; under sustained load with variable-length chunk inputs these accumulate and reduce the pool available for new allocations, eventually triggering OOM recovery (budget halving → slower batches → queue buildup). Flushing the cache at task boundaries — not per batch — resets the allocator to a clean state for the next task.
+- Logs a `[GPU] cache flushed after <task_type>: freed X MB | VRAM Y → Z MB / <total> MB` line at `INFO` level after every flush. `freed > 0` indicates fragmented blocks were recovered; `freed ≈ 0` means the previous task left no cached blocks (normal for light tasks).
+- `torch.cuda.empty_cache()` is a no-op when CUDA is not available — safe on CPU-only workers.
+- `PDF_MAX_CONCURRENT` (env var, default `2`) limits how many PDF tasks enter the Docling pipeline simultaneously per worker process. Set to `1` on single-GPU pods to prevent two Docling instances from competing for VRAM. Note: TaskIQ dispatches all received tasks as async coroutines immediately (the "Task started" log fires before the semaphore), so seeing N task starts in the log does not mean N Doclings are running — only `PDF_MAX_CONCURRENT` tasks actually enter processing at a time.
+
+#### Dedicated single-thread GPU executor — replaces `GLOBAL_GPU_LOCK`
+
+The previous design used a process-wide `threading.Lock` (`GLOBAL_GPU_LOCK`) acquired per batch inside `asyncio.to_thread` workers. Under concurrent ingestion this caused thread pool growth (blocked threads accumulate in the default `ThreadPoolExecutor`) and lock contention latency.
+
+The new design routes all local GPU inference through a single-thread `ThreadPoolExecutor`:
+
+- **`tilellm/tools/_gpu_concurrency.py`**: new `_GPU_EXECUTOR = ThreadPoolExecutor(max_workers=1)` and `async def run_on_gpu(fn, *args, **kwargs)` coroutine. `GLOBAL_GPU_LOCK` retained as a no-op for backward compatibility.
+- **`tilellm/tools/sparse_encoders.py`**: removed `GLOBAL_GPU_LOCK` from `_run_sparse_batched_with_oom_recovery`, `TiledeskSpladeEncoder.encode_queries`, `TiledeskBGEM3.encode_queries`, and `TiledeskBGEM3.encode_documents` (legacy path). Added `aencode_documents` and `aencode_queries` async methods to `TiledeskSparseEncoders`: local GPU encoders (SPLADE, BGE-M3) use `run_on_gpu`; TEI encoders use `asyncio.to_thread` (remote HTTP, must not block the GPU thread).
+- **`tilellm/tools/reranker.py`**: removed `_gpu_lock = GLOBAL_GPU_LOCK` class attribute and `with self._gpu_lock:` from `_predict_local_with_oom_recovery`. `TileReranker.arerank_documents` now uses `run_on_gpu`. `PineconeReranker.arerank_documents` unchanged (remote API call).
+- **All call sites** updated to `await encoder.aencode_documents(...)` / `await encoder.aencode_queries(...)`, eliminating the remaining sync calls that were blocking the event loop: `controller_utils.py` (`fetch_question_vectors`, `fetch_question_vectors_nopar`), `qdrant_repository_local.py` (×3), `pinecone_repository_serverless.py` (×3), `pinecone_repository_base.py` (×1), `milvus_repository.py` (×2).
+
+#### Files changed
+
+`tilellm/tools/_gpu_concurrency.py`,
+`tilellm/tools/sparse_encoders.py`,
+`tilellm/tools/reranker.py`,
+`tilellm/controller/controller_utils.py`,
+`tilellm/store/qdrant/qdrant_repository_local.py`,
+`tilellm/store/pinecone/pinecone_repository_serverless.py`,
+`tilellm/store/pinecone/pinecone_repository_base.py`,
+`tilellm/store/milvus/milvus_repository.py`,
+`tilellm/modules/task_executor/broker.py`
+
+---
+## [2026-05-03]
+### 0.10.1-rc15 (feat: Temporal Digest — agentic query, hybrid search, reranking, history, multi-backend metadata filter)
+
+Complete overhaul of the `temporal_digest` module with production-ready retrieval quality features and a new agentic query endpoint.
+
+#### New endpoint: `POST /api/digest/qa` (agentic query)
+
+- LLM extracts `date_from`, `date_to`, and `query_mode` from free-form natural language questions and conversation history (e.g. "cosa hanno fatto la settimana scorsa?" → `date_from: 2026-04-27`, `date_to: 2026-05-02`, `query_mode: temporal`).
+- Relative date expressions resolved against server date or optional `today` field.
+- Returns `extracted_date_from`, `extracted_date_to`, `extracted_query_mode`, `agent_reasoning` alongside the answer.
+- 2 LLM calls per request: parameter extraction + answer synthesis.
+
+#### Hybrid search + reranking in digest query
+
+- `DigestQueryRequest` and `DigestAgentRequest` now support `search_type: "hybrid"`, `sparse_encoder` (`string` or `TEIConfig`), `reranking` (`bool`, `TEIConfig`, `PineconeRerankerConfig`), `reranker_model`, `reranking_multiplier`.
+- When reranking is enabled, the semantic path fetches `top_k × reranking_multiplier` candidates and reranks via `TileReranker.arerank_documents()` before passing to the LLM.
+- Temporal path also reranks digest candidates when `reranking` is set.
+
+#### Conversation history
+
+- `DigestQueryRequest` and `DigestAgentRequest` accept `chat_history_dict` (same format as `/api/qa`) and `max_history_messages`.
+- History is prepended to the LLM prompt before the evidence block in both `_query_temporal` and `_query_semantic`.
+
+#### `additional_metadata` in `POST /api/pdf/scrape`
+
+- New `additional_metadata: Dict[str, Any]` field in `PDFScrapingRequest`.
+- Arbitrary key-value pairs merged into every chunk's payload at ingestion time.
+- `date` value in `DD/MM/YYYY` auto-converted to ISO `YYYY-MM-DD`.
+- Applied at all 4 indexing paths: text chunks, table chunks, image captions, markdown pipeline.
+
+#### `_metadata_filter` applied to all vector store backends
+
+- `get_chunks_from_repo` now reads `getattr(question_answer, '_metadata_filter', None)` and applies it as a filter on all backends:
+  - **Qdrant**: `FieldCondition` + `DatetimeRange` for ISO date strings (`_is_iso_date` guard).
+  - **Pinecone serverless/pod**: MongoDB-style filter dict, merged with tags filter via `$and`.
+  - **Milvus**: `build_filter` extended with `metadata_filter` parameter; `convert_to_expression` handles `{field: {$op: value}}` → Milvus string expressions.
+- Fixes false-positive `already_existed: true` on digest generation (digests were not being found due to ignored type/date filters).
+
+#### Query router observability
+
+- `classify_query_debug(question)` returns `(mode, matched_pattern)`.
+- `DigestService.query()` logs routing decisions: `[query_router] auto → 'temporal' | pattern=... | question=...`.
+
+#### Bug fixes
+
+- **`TiledeskSparseEncoders(None)` crash** in `aadd_documents`: `sparse_encoder` initialization and all sparse encoding steps are now conditional on `sparse_encoder is not None`.
+- **Qdrant `DatetimeRange`**: `models.Range` only accepts floats; ISO date strings now routed to `models.DatetimeRange`.
+- **`RetrievalChunksResult` missing `namespace`**: fallback objects in `_fetch_source_chunks` and `_fetch_digests` now include `namespace=qa.namespace`.
+- **Duplicate digest vectors**: removed `skip_delete=True` from `_index_digest` — `aadd_documents` now deletes by `metadata_id` before inserting.
+- **Evidence block date headers**: `_build_evidence_block` uses `digest_date_from`/`digest_date_to` as header for digest chunks (was showing empty `file_name`/`source`), giving the LLM explicit date context per digest.
+- **Double embedding (Qdrant non-hybrid)**: `langchain_qdrant._validate_collection_for_dense()` was calling `embed_documents(["dummy_text"])` on every search. Non-hybrid path now bypasses LangChain `asearch` and calls `index.query_points()` directly.
+
+#### Files changed
+
+`tilellm/modules/temporal_digest/models/schemas.py`,
+`tilellm/modules/temporal_digest/services/digest_service.py`,
+`tilellm/modules/temporal_digest/services/query_router.py`,
+`tilellm/modules/temporal_digest/logic.py`,
+`tilellm/modules/temporal_digest/controllers.py`,
+`tilellm/modules/pdf_ocr/models/pdf_scraping.py`,
+`tilellm/modules/pdf_ocr/logic.py`,
+`tilellm/store/qdrant/qdrant_repository_local.py`,
+`tilellm/store/pinecone/pinecone_repository_serverless.py`,
+`tilellm/store/pinecone/pinecone_repository_pod.py`,
+`tilellm/store/milvus/milvus_repository.py`
+
+---
+## [2026-04-27]
+### 0.10.1-rc14 (feat: RAPTOR performance optimizations)
+
+Performance improvements across the entire RAPTOR hierarchical summarization pipeline, addressing the main throughput bottlenecks.
+
+#### `tilellm/modules/raptor/services/raptor_service.py`
+- **Parallelized LLM summary generation.** The per-cluster summary loop now uses `asyncio.gather()`, running all LLM calls for a level concurrently instead of sequentially. This reduces wall-clock time roughly proportional to the number of clusters per level.
+- **Batched vector store writes.** Leaf-node indexing and summary-node indexing both previously issued one `aadd_documents([doc])` call per node. Each call now collects all documents first and issues a single `aadd_documents(all_docs)` call per phase, eliminating round-trip overhead.
+- **UMAP+GMM offloaded to thread pool.** `RAPTORClustering.perform_clustering` is now wrapped in `asyncio.to_thread()`, preventing the CPU-bound UMAP dimensionality reduction and GMM fitting from blocking the event loop.
+
+#### `tilellm/modules/raptor/utils/clustering.py`
+- **Eliminated O(n²) float comparison in `perform_clustering`.** The previous implementation used `np.allclose` in a nested loop (`find_matching_indices`) to map local-cluster embeddings back to their original indices. The rewritten code tracks array indices directly through UMAP slicing operations, reducing complexity from O(n²·d) to O(n).
+- **BIC early stopping in `get_optimal_clusters`.** GMM fitting previously tried all values from 1 to `max_clusters` (default: 50) unconditionally. The function now stops after 3 consecutive iterations without improvement, reducing the average number of fits from 50 to a fraction of that on typical RAPTOR inputs.
+
+#### `tilellm/modules/raptor/repository/raptor_repository.py`
+- **Added `batch_index_nodes`.** New method that builds all `Document` objects from a node list and delegates to a single `aadd_documents` call, used by `RaptorService` instead of looping `index_summary_embedding`.
+- **Pipeline Redis deletes in `delete_tree`.** Node key deletions now execute in a single pipelined round-trip instead of one `await redis.delete()` per node.
+- **MGET in `list_trees` and `get_tree_by_doc_id`.** Both methods previously fetched tree metadata with N individual `GET` calls after `scan_iter`. They now issue a single `MGET` for all scanned keys.
+
+#### `tilellm/modules/raptor/controllers.py`
+- **Parallelized `/summarize` endpoint.** The per-group LLM summarization loop in `_summarize_logic` now uses `asyncio.gather()`.
+
+---
+## [2026-04-26]
+### 0.10.1-rc13 (feat: FalkorDB graph robustness, clustering fixes, entity deduplication, graph optimization)
+
+A comprehensive set of fixes and improvements for the FalkorDB Knowledge Graph pipeline, addressing data loss during concurrent execution, incorrect clustering due to FalkorDB's internal result cap, LLM context-window saturation, and entity duplication across extraction runs.
+
+#### Graph creation robustness
+
+- **Fixed: node deletion during concurrent runs.**
+  Two TaskIQ workers picking up the same graph-creation task would delete each other's work via the `delete_nodes_by_metadata` call at the start of a new run. Three complementary fixes:
+  1. **Redis distributed lock** on `create_community_graph` prevents a second worker from entering the creation flow while one is already running. Lock key: `graph_lock:{graph_name}`, TTL controlled by `GRAPH_LOCK_TTL_SECONDS` (default: 86400 s / 24 h).
+  2. **`retry_on_error=False`** on `task_falkor_graph_create`: TaskIQ's retry-on-error mechanism re-submitted the task with `overwrite=True`, which caused the wipe+restart cycle on transient failures. Auto-retry is now disabled; failures must be re-submitted explicitly.
+  3. **Fixed `LIMIT 10000` bug** in `delete_nodes_by_metadata` (`async_falkor_repository.py` and `falkor_repository.py`): the deletion query ran only once, leaving nodes beyond the first 10 000 untouched. It now loops in batches until FalkorDB reports 0 deleted rows.
+
+- **Added: MinIO checkpoint / resume for graph extraction.**
+  If the TaskIQ worker is killed mid-extraction, the next run with `overwrite=False` resumes from the last completed window instead of restarting from scratch.
+  - `MinIOStorageService.save_checkpoint(graph_name, window_idx, entity_node_map_delta, chunk_ids)` — saves a per-window Parquet file to `checkpoints/{graph_name}/window_{n:06d}.parquet`.
+  - `MinIOStorageService.load_checkpoints(graph_name)` — aggregates all checkpoint files and returns `(entity_node_map, processed_chunk_ids, last_window_idx)`.
+  - `MinIOStorageService.delete_checkpoints(graph_name)` — cleans up checkpoint files after a successful run.
+  - `import_from_vector_store`: on `overwrite=False`, loads checkpoints to restore `entity_node_map` and skip already-processed chunks; saves a checkpoint after each window; deletes all checkpoints on completion.
+
+#### Clustering robustness
+
+- **Fixed: Redis lock on community report generation.**
+  `generate_hierarchical_reports` is now protected by the same Redis lock (`graph_lock:{graph_name}`) used for graph creation, preventing concurrent clustering workers from triggering redundant cleanup and report deletion.
+
+- **Fixed: `retry_on_error=False`** on all three FalkorDB clustering tasks: `task_falkor_louvain_cluster`, `task_falkor_leiden_cluster`, `task_falkor_hierarchical_cluster`. Prevents destructive re-runs on transient failures.
+
+- **Fixed: FalkorDB `Query timed out` during clustering on large graphs.**
+  The single `OPTIONAL MATCH` query for fetching the full graph caused a timeout on graphs with 30 000+ nodes (connection-level default: 1 s).
+  - `_execute_query` now accepts an optional `timeout` parameter (ms), passed directly to `graph.query(..., timeout=timeout)`.
+  - `get_all_nodes_and_relationships` rewritten as two separate queries (nodes then relationships, excluding `CommunityReport` nodes) with `query_timeout=300000` (5 minutes).
+
+- **Fixed: FalkorDB `resultset_size=10000` cap truncating clustering input.**
+  FalkorDB silently caps query results at 10 000 rows. On a 33 000-node graph both queries returned exactly 10 000 rows, causing Leiden to cluster a partial graph and produce 2 600+ spurious communities.
+  Both queries in `get_all_nodes_and_relationships` now paginate with `SKIP $skip LIMIT 5000`, looping until the last page is shorter than the page size.
+
+- **Added: configurable Leiden resolution and minimum community size.**
+  `GraphClusterRequest` now exposes:
+  - `resolutions: Optional[List[float]]` — per-level resolution `[L0, L1, L2]`. Defaults to `[0.05, 0.15, 0.35]` (lowered from the previous hardcoded `[1.2, 0.8, 0.5]`), producing fewer and larger communities on sparse graphs.
+  - `min_community_size: int` (default: 8) — communities below this threshold are discarded without generating a report.
+
+- **Fixed: LLM context-window saturation during community report generation.**
+  `_generate_community_report_igraph` now caps prompt content via `max_prompt_chars` (default: 18 000 chars ≈ 4 500 tokens). Entity descriptions are truncated to 200 characters each; entities get 2/3 of the budget and relationships 1/3; excess items are replaced by a `[... N more not shown]` marker.
+  `GraphClusterRequest` exposes `max_community_prompt_chars: int` (default: 18 000) so callers can tune it per-request for smaller-context models.
+
+#### Entity deduplication (Level 1 + Level 2)
+
+Root cause of graph sparsity: each extraction run created new nodes for every entity, even if an identical or near-identical node already existed in the graph, inflating node counts, breaking connectivity, and causing Leiden to detect thousands of isolated communities.
+
+- **Level 1 — Name normalization.**
+  Added `AsyncFalkorGraphRepository._normalize_name(name)` → `name.strip().lower()`. All `entity_node_map` keys are now normalized, so "ASL Bari", "asl bari", and " ASL Bari " resolve to the same node. Applied in `batch_create_nodes` (UNWIND path and individual-create fallback) and `batch_create_relationships` (source/target lookup).
+
+- **Level 2 — Pre-load existing nodes before extraction.**
+  Added `AsyncFalkorGraphRepository.load_entity_name_map(namespace, graph_name)` — paginates the graph in batches of 5 000, returning `normalized_name → node_id` for all existing non-`CommunityReport` nodes.
+  In `import_from_vector_store`, when `overwrite=False`, the entity map is pre-populated from the graph before the window loop. Checkpoint data (if present) is merged on top as the more recent source of truth.
+
+- **Deduplication during window loop.**
+  `batch_create_nodes` now accepts `existing_entity_node_map`. Entities whose normalized name already appears in it are skipped (no `CREATE` issued) and their existing `node_id` is returned directly. Callers pass the current `entity_node_map` on every window, so entities seen in window 1 are not re-created in window 400.
+
+#### Graph optimization and reimport
+
+- **Added: `POST /api/kg-falkor/optimize` — embedding-based entity deduplication.**
+  New `GraphOptimizer` service (`services/graph_optimizer.py`) runs the full pipeline as an async TaskIQ task:
+  1. Export the full graph from FalkorDB → Parquet bytes.
+  2. Batch-embed all entity `name: description` strings via the configured LLM embedder (optimised for TEI/vLLM).
+  3. Find near-duplicate pairs with **SimSIMD** `cdist` (cosine, chunked at 2 000 rows to cap peak memory) + Union-Find transitive grouping.
+  4. Build the merge plan with **DuckDB** (used as in-memory SQL engine via pandas bridge): canonical nodes get unioned `source_ids` (vector store references preserved), relationships are redirected and deduplicated.
+  5. Save the optimised snapshot to MinIO (`graph_snapshots/{graph_name}/{timestamp}/`).
+  6. Wipe FalkorDB and reimport from the optimised snapshot. Community reports are restored from MinIO as-is — no re-clustering required.
+  - `dry_run=true` returns the merge plan stats without touching FalkorDB.
+  - `similarity_threshold` (default 0.92) and `embedding_batch_size` (default 256) are API parameters.
+
+- **Added: `POST /api/kg-falkor/reimport` — restore graph from MinIO snapshot.**
+  Wipes FalkorDB and reimports nodes + relationships from any saved snapshot (latest by default, or a specific `snapshot_timestamp`). Community reports optionally restored from MinIO. Useful for rollback after a failed optimization, version management, or disaster recovery.
+
+- **Added: Community reports persisted to MinIO Parquet per Leiden level.**
+  After each Leiden level in `_generate_hierarchical_reports_locked`, community reports are saved to `community_reports/{graph_name}/level_{n:02d}.parquet` via `MinIOStorageService.save_community_reports`. This makes reports available for the reimport pipeline without re-clustering.
+
+- **Added: MinIO graph snapshot API** (`save_graph_snapshot`, `load_graph_snapshot`, `list_graph_snapshots`) in `MinIOStorageService`.
+  Path: `graph_snapshots/{graph_name}/{timestamp}/nodes.parquet` and `.../relationships.parquet`.
+
+- **New schemas**: `GraphOptimizeRequest`, `GraphOptimizeResponse`, `GraphReimportRequest`, `GraphReimportResponse`.
+- **New TaskIQ tasks**: `task_falkor_optimize_graph`, `task_falkor_reimport_graph` (both `retry_on_error=False`).
+
+---
+## [2026-04-25]
+### 0.10.1-rc12
+- Added: **Situated Context Profiles** support. Prompts for Contextual Retrieval can now be stored as YAML files in `tilellm/shared/profiles/situated_context/`.
+- Added: New `determina.yaml` profile optimized for administrative acts, helping Knowledge Graph extraction by anchoring facts to dates and document IDs.
+- Improved: Global support for `profile` and `custom_prompt` in `SituatedContextConfig` across all ingestion pipelines (PDF OCR, DOCX) and repositories (Qdrant, Pinecone, Milvus).
+- Fixed: Double description noise in PDF OCR. The system now intelligently skips redundant situated context LLM calls for tables and images that already have semantic descriptions.
+- Fixed: `TypeError` in `top_p_range` validator in `tilellm/models/llm.py` when `top_p` is None.
+
+## [2026-04-24]
+### 0.10.1-rc11
+- Fixed: Semantic cache validation error in `POST /api/qa` where `RetrievalResult` failed due to missing required `namespace` field.
+- Improved: Robust result extraction for caching. The system now correctly handles `JSONResponse` objects from the controller, preventing empty or failed results from being stored in Redis.
+- Added: New fields `cache_level` and `cache_similarity` to `RetrievalResult` model.
+- Improved: Cache metadata mapping in both `/api/qa` and `/api/v2/qa` (LangGraph). Hits now return explicit cache level ('exact' or 'semantic') and similarity score in the JSON response.
+- Fixed: LangGraph `cache_lookup_node` and `cache_store_node` now correctly inject `namespace` and handle serialization using `jsonable_encoder`.
+
+---
+### 0.10.1-rc10
+- Added: `table_chunker.py`
+
+
+
 ---
 ## [2026-04-23]
 ### 0.10.1-rc5 (feat: HTML page title as file_name + source_file_name in citations)

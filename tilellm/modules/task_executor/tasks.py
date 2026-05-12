@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import os
 from typing import Optional, Dict, Any
 from tilellm.modules.raptor.repository import RaptorRepository
 
@@ -6,13 +8,26 @@ from tilellm.modules.raptor.repository import RaptorRepository
 import httpx
 
 
-from taskiq import TaskiqDepends, TaskiqState
+from taskiq import TaskiqDepends, TaskiqState, Context
 from tilellm.modules.task_executor.broker import broker
 
 
-
-
 logger = logging.getLogger(__name__)
+
+# Semaphore per limitare la concorrenza dei task PDF (Docling è CPU/RAM heavy).
+# Ogni worker process ha il proprio semaforo — con N worker in totale la
+# concorrenza effettiva è N × PDF_MAX_CONCURRENT.
+# Creato lazily al primo uso per evitare problemi di event-loop a import time.
+_pdf_semaphore: Optional[asyncio.Semaphore] = None
+
+
+def _get_pdf_semaphore() -> asyncio.Semaphore:
+    global _pdf_semaphore
+    if _pdf_semaphore is None:
+        limit = int(os.environ.get("PDF_MAX_CONCURRENT", "2"))
+        _pdf_semaphore = asyncio.Semaphore(limit)
+        logger.info(f"PDF semaphore initialized: max_concurrent={limit}")
+    return _pdf_semaphore
 
 async def send_webhook(url: Optional[str], payload: dict):
     if not url:
@@ -175,7 +190,7 @@ async def task_community_analysis(request_dict: dict) -> dict:
 
 # ==================== FALKORDB TASKS ====================
 
-@broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "falkor_graph_create"})
+@broker.task(retry_on_error=False, labels={"task_type": "falkor_graph_create"})
 async def task_falkor_graph_create(request_dict: dict) -> dict:
     """
     Task to create/import a community graph using FalkorDB.
@@ -242,7 +257,7 @@ async def task_falkor_add_document(request_dict: dict) -> dict:
              await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
         raise e
 
-@broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "falkor_louvain_cluster"})
+@broker.task(retry_on_error=False, labels={"task_type": "falkor_louvain_cluster"})
 async def task_falkor_louvain_cluster(request_dict: dict) -> dict:
     """
     Task to perform Louvain clustering on FalkorDB graph.
@@ -273,7 +288,7 @@ async def task_falkor_louvain_cluster(request_dict: dict) -> dict:
              await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
         raise e
 
-@broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "falkor_leiden_cluster"})
+@broker.task(retry_on_error=False, labels={"task_type": "falkor_leiden_cluster"})
 async def task_falkor_leiden_cluster(request_dict: dict) -> dict:
     """
     Task to perform Leiden clustering on FalkorDB graph.
@@ -305,7 +320,7 @@ async def task_falkor_leiden_cluster(request_dict: dict) -> dict:
              await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
         raise e
 
-@broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "falkor_hierarchical_cluster"})
+@broker.task(retry_on_error=False, labels={"task_type": "falkor_hierarchical_cluster"})
 async def task_falkor_hierarchical_cluster(request_dict: dict) -> dict:
     """
     Task to perform Hierarchical clustering on FalkorDB graph.
@@ -336,6 +351,64 @@ async def task_falkor_hierarchical_cluster(request_dict: dict) -> dict:
         if webhook_url:
              await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
         raise e
+
+@broker.task(retry_on_error=False, labels={"task_type": "falkor_optimize_graph"})
+async def task_falkor_optimize_graph(request_dict: dict) -> dict:
+    """Task to deduplicate entities in a FalkorDB graph via embedding similarity."""
+    try:
+        from tilellm.modules.knowledge_graph_falkor import logic as falkor_logic
+        from tilellm.modules.knowledge_graph_falkor.models.schemas import GraphOptimizeRequest as Req
+        FALKORDB_AVAILABLE = True
+    except Exception:
+        FALKORDB_AVAILABLE = False
+        falkor_logic = None
+        Req = None
+
+    webhook_url = request_dict.get("webhook_url")
+    if not FALKORDB_AVAILABLE or falkor_logic is None:
+        raise RuntimeError("FalkorDB module not available.")
+    try:
+        request = Req(**request_dict)
+        logger.info(f"Starting falkor_optimize_graph for namespace: {request.namespace}")
+        result = await falkor_logic.optimize_graph(request)
+        logger.info(f"Finished falkor_optimize_graph for namespace: {request.namespace}")
+        await send_webhook(webhook_url, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error in falkor_optimize_graph task: {e}")
+        if webhook_url:
+            await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
+        raise e
+
+
+@broker.task(retry_on_error=False, labels={"task_type": "falkor_reimport_graph"})
+async def task_falkor_reimport_graph(request_dict: dict) -> dict:
+    """Task to reimport a FalkorDB graph from a MinIO Parquet snapshot."""
+    try:
+        from tilellm.modules.knowledge_graph_falkor import logic as falkor_logic
+        from tilellm.modules.knowledge_graph_falkor.models.schemas import GraphReimportRequest as Req
+        FALKORDB_AVAILABLE = True
+    except Exception:
+        FALKORDB_AVAILABLE = False
+        falkor_logic = None
+        Req = None
+
+    webhook_url = request_dict.get("webhook_url")
+    if not FALKORDB_AVAILABLE or falkor_logic is None:
+        raise RuntimeError("FalkorDB module not available.")
+    try:
+        request = Req(**request_dict)
+        logger.info(f"Starting falkor_reimport_graph for namespace: {request.namespace}")
+        result = await falkor_logic.reimport_graph(request)
+        logger.info(f"Finished falkor_reimport_graph for namespace: {request.namespace}")
+        await send_webhook(webhook_url, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error in falkor_reimport_graph task: {e}")
+        if webhook_url:
+            await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
+        raise e
+
 
 @broker.task(retry_on_error=True, max_retries=3, labels={"task_type": "falkor_community_analysis"})
 async def task_falkor_community_analysis(request_dict: dict) -> dict:
@@ -556,17 +629,49 @@ async def process_pdf_document_task(
         bucket_name: Optional[str] = None,
         object_name: Optional[str] = None,
         webhook_url: Optional[str] = None,
-        config: Optional[Dict[str, Any]] = None
+        config: Optional[Dict[str, Any]] = None,
+        ctx: Context = TaskiqDepends(),
 ) -> Dict[str, Any]:
     """
     Taskiq task to process a PDF document using the advanced logic layer.
     Can process from local path OR MinIO bucket/object.
-    
-    Returns a lightweight result for Taskiq result_backend (no large mark down content).
-    Full result is sent to webhook if configured.
-    """
-    logger.info(f"Task started: process_pdf_document_task for {doc_id}")
 
+    Returns a lightweight result for Taskiq result_backend (no large markdown content).
+    Full result is sent to webhook if configured.
+
+    Concurrency is bounded by _get_pdf_semaphore() (PDF_MAX_CONCURRENT env, default 2)
+    to prevent event-loop starvation and OOM from simultaneous Docling initializations.
+
+    On failure, re-raises so SimpleRetryMiddleware can retry up to max_retries=3 times.
+    The error webhook is sent only on the final attempt.
+    """
+    attempt = int(ctx.message.labels.get("_retries", 0)) + 1
+    max_retries = int(ctx.message.labels.get("max_retries", 3))
+    logger.info(f"Task started: process_pdf_document_task for {doc_id} (attempt {attempt}/{max_retries})")
+
+    async with _get_pdf_semaphore():
+        logger.debug(f"PDF semaphore acquired for {doc_id}")
+        return await _process_pdf_document_task_inner(
+            doc_id=doc_id,
+            file_path=file_path,
+            bucket_name=bucket_name,
+            object_name=object_name,
+            webhook_url=webhook_url,
+            config=config,
+            is_final_attempt=(attempt >= max_retries),
+        )
+
+
+async def _process_pdf_document_task_inner(
+        doc_id: str,
+        file_path: Optional[str],
+        bucket_name: Optional[str],
+        object_name: Optional[str],
+        webhook_url: Optional[str],
+        config: Optional[Dict[str, Any]],
+        is_final_attempt: bool = True,
+) -> Dict[str, Any]:
+    """Inner implementation — runs under the PDF semaphore."""
     try:
         # Convert config dict to PDFScrapingRequest
         if config is None:
@@ -631,7 +736,6 @@ async def process_pdf_document_task(
                     })
 
                 response.raise_for_status()
-                logger.info(f"Task finished: process_pdf_document_task for {doc_id}")
             except httpx.ConnectError:
                 logger.warning(f"Webhook unreachable, skipping: {webhook_url}")
             except httpx.TimeoutException:
@@ -641,45 +745,68 @@ async def process_pdf_document_task(
             except Exception as e:
                 logger.warning(f"Webhook failed unexpectedly, skipping: {e}")
 
+        # Logged here (not inside webhook block) so it always appears in logs
+        # regardless of whether a webhook_url was set.
+        # NOTE: at this point the task work is done but XACK has NOT yet happened —
+        # TaskIQ sends the XACK only after storing the result in the result_backend.
+        logger.info(f"Task finished: process_pdf_document_task for {doc_id}")
 
-        
         # Return lightweight result - Taskiq will save this to result_backend
         return light_result
 
     except Exception as e:
-        logger.error(f"Task failed: {e}", exc_info=True)
-        
-        # Build lightweight error result for Taskiq
-        light_result = {
-            "job_id": doc_id,
-            "status": "failed",
-            "progress": 100,
-            "message": "Job failed",
-            "result": None,
-            "error_message": str(e)
-        }
-        
-        # Notify webhook with error
-        if webhook_url:
+        logger.error(f"Task failed for {doc_id} (final={is_final_attempt}): {e}", exc_info=True)
+
+        # Send error webhook only on the final attempt — intermediate failures are
+        # retried silently so the client doesn't receive a premature "failed" event.
+        if is_final_attempt and webhook_url:
             import httpx
             try:
                 async with httpx.AsyncClient() as client:
-                    response = await client.post(webhook_url, json={
+                    await client.post(webhook_url, json={
                         "status": "failed",
                         "doc_id": doc_id,
-                        "error": str(e)
-                    })
-                response.raise_for_status()
-                logger.error(f"Task finished with error: process_pdf_document_task for {doc_id}")
-            except httpx.ConnectError:
-                logger.warning(f"Webhook unreachable, skipping: {webhook_url}")
-            except httpx.TimeoutException:
-                logger.warning(f"Webhook timed out, skipping: {webhook_url}")
-            except httpx.HTTPStatusError as e:
-                logger.warning(f"Webhook returned error {e.response.status_code}, skipping")
-            except Exception as e:
-                logger.warning(f"Webhook failed unexpectedly, skipping: {e}")
+                        "error": str(e),
+                    }, timeout=10)
+            except Exception as we:
+                logger.warning(f"Error webhook failed for {doc_id}: {we}")
 
-        
-        # Return error result - Taskiq will save this to result_backend
-        return light_result
+        # Re-raise so SimpleRetryMiddleware schedules a retry.
+        # Returning instead of raising makes the task appear successful to TaskIQ
+        # and silently disables all retry logic.
+        raise
+
+
+@broker.task(retry_on_error=True, max_retries=2, labels={"task_type": "digest_generate"})
+async def task_digest_generate(request_dict: dict) -> dict:
+    """
+    Task to generate temporal digests for one or more date windows.
+
+    Runs asynchronously so that large date ranges (monthly backfills, multi-ASL
+    batches) do not block HTTP workers. Results are sent to webhook_url on
+    completion or failure.
+    """
+    from tilellm.modules.temporal_digest.logic import generate_digest
+    from tilellm.modules.temporal_digest.models.schemas import DigestGenerationRequest
+
+    webhook_url = request_dict.get("webhook_url")
+    try:
+        request = DigestGenerationRequest(**request_dict)
+        logger.info(
+            f"[digest_generate] Starting for namespace={request.namespace} "
+            f"date_from={request.date_from} granularity={request.granularity}"
+        )
+        result = await generate_digest(request)
+        logger.info(
+            f"[digest_generate] Finished namespace={request.namespace}: "
+            f"{result.total_windows} windows, {result.total_chunks_processed} chunks"
+        )
+        payload = result.model_dump(mode="json")
+        if webhook_url:
+            await send_webhook(webhook_url, payload)
+        return payload
+    except Exception as e:
+        logger.error(f"[digest_generate] Failed for namespace={request_dict.get('namespace')}: {e}", exc_info=True)
+        if webhook_url:
+            await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
+        raise

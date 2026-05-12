@@ -8,6 +8,7 @@ improving semantic retrieval by creating additional indexable content.
 import logging
 import re
 from typing import List, Dict, Any, Optional
+from tilellm.shared.llm_utils import extract_llm_text
 
 logger = logging.getLogger(__name__)
 
@@ -72,10 +73,10 @@ async def generate_synthetic_questions(
         # Generate questions
         if hasattr(llm, 'ainvoke'):
             response = await llm.ainvoke(prompt)
-            content_response = response.content if hasattr(response, 'content') else str(response)
+            content_response = extract_llm_text(response)
         elif hasattr(llm, 'invoke'):
             response = llm.invoke(prompt)
-            content_response = response.content if hasattr(response, 'content') else str(response)
+            content_response = extract_llm_text(response)
         else:
             raise AttributeError("LLM does not have ainvoke or invoke method")
 

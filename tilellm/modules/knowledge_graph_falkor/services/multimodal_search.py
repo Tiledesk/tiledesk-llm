@@ -13,6 +13,24 @@ from tilellm.modules.knowledge_graph_falkor.services.table_qa_service import Tab
 
 logger = logging.getLogger(__name__)
 
+
+def _extract_text_from_llm_response(response: Any) -> str:
+    """Robustly extract string content from LangChain LLM response (handling reasoning/lists)."""
+    content = getattr(response, 'content', response)
+    if isinstance(content, list):
+        text_parts = []
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") == "text":
+                    text_parts.append(part.get("text", ""))
+                elif "text" in part:
+                    text_parts.append(part["text"])
+            elif isinstance(part, str):
+                text_parts.append(part)
+        return "\n".join(text_parts).strip()
+    return str(content).strip()
+
+
 class MultimodalPDFSearch:
     """
     Multimodal search service that fuses results from text, tables, and images.
@@ -151,7 +169,7 @@ Provide a unified, comprehensive answer.
 """
             try:
                 response = await llm.ainvoke(prompt)
-                final_answer = response.content if hasattr(response, 'content') else str(response)
+                final_answer = _extract_text_from_llm_response(response)
             except Exception as e:
                 logger.error(f"Fusion failed: {e}")
                 final_answer = f"{text_answer}\n\nAdditionally, from table analysis: {table_result['answer']}"

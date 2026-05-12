@@ -7,6 +7,7 @@ Provides REST endpoints for:
 - Managing summary trees
 """
 
+import asyncio
 import logging
 import os
 import time
@@ -215,18 +216,20 @@ async def _summarize_logic(
 
     from tilellm.modules.raptor.prompts import RAPTOR_SUMMARY_PROMPT
 
-    summaries = []
-    for group_idx, group in enumerate(groups):
+    async def _summarize_group(group_idx: int, group: list) -> dict:
         context = "\n\n".join([c.page_content for c in group])
         prompt = RAPTOR_SUMMARY_PROMPT.format(context=context)
         response = await llm.ainvoke(prompt)
-        summary_text = response.content.strip()
-        summaries.append({
+        return {
             "group_id": group_idx,
             "chunk_ids": [c.metadata.get("id") for c in group],
-            "summary": summary_text,
+            "summary": response.content.strip(),
             "num_chunks": len(group),
-        })
+        }
+
+    summaries = list(await asyncio.gather(*[
+        _summarize_group(i, g) for i, g in enumerate(groups)
+    ]))
 
     return RaptorSummaryResponse(
         success=True,

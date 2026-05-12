@@ -442,7 +442,16 @@ async def cache_lookup_node(state: GraphState) -> dict:
 
     # Reconstruct RetrievalResult from cached body
     try:
-        result = RetrievalResult(**{k: v for k, v in cached.items() if not k.startswith("_")})
+        cache_data = {k: v for k, v in cached.items() if not k.startswith("_")}
+        # Ensure namespace is present
+        if "namespace" not in cache_data or not cache_data["namespace"]:
+            cache_data["namespace"] = qa.namespace
+        
+        # Map cache metadata
+        cache_data["cache_level"] = cached.get("_cache_level")
+        cache_data["cache_similarity"] = cached.get("_cache_similarity")
+        
+        result = RetrievalResult(**cache_data)
     except Exception as e:
         logger.warning(f"cache_lookup_node: failed to deserialize cached entry ({e}), skipping")
         return {"cache_hit": False}
@@ -490,9 +499,33 @@ async def cache_store_node(state: GraphState) -> dict:
     if retrieval is None:
         return {}
 
+    # Handle both objects and dictionaries (including JSONResponse extraction if needed)
+    actual_result = retrieval
+    from fastapi.responses import JSONResponse
+    if isinstance(retrieval, JSONResponse):
+        import json
+        actual_result = json.loads(retrieval.body.decode())
+
+    # Ensure success (must not be explicitly False)
+    is_success = True
+    if hasattr(actual_result, "success"):
+        is_success = actual_result.success
+    elif isinstance(actual_result, dict):
+        is_success = actual_result.get("success", True)
+
+    if not is_success:
+        return {}
+
     try:
-        body = retrieval.model_dump() if hasattr(retrieval, "model_dump") else {}
-    except Exception:
+        from fastapi.encoders import jsonable_encoder
+        body = jsonable_encoder(actual_result)
+        
+        # Ensure namespace is stored in cache
+        if "namespace" not in body or not body["namespace"]:
+            body["namespace"] = qa.namespace
+            
+    except Exception as e:
+        logger.warning(f"cache_store_node: serialization failed ({e}), skipping store")
         return {}
 
     try:

@@ -16,7 +16,9 @@ from .models.schemas import (
     GraphQAAdvancedRequest, GraphQAAdvancedResponse,
     GraphClusterRequest, GraphClusterResponse, CommunityQAResponse,
     AddDocumentRequest, AddDocumentResponse,
-    GraphNetworkResponse, AsyncTaskResponse, TaskPollResponse, MultimodalSearchResponse
+    GraphNetworkResponse, AsyncTaskResponse, TaskPollResponse, MultimodalSearchResponse,
+    GraphOptimizeRequest, GraphOptimizeResponse,
+    GraphReimportRequest, GraphReimportResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -38,7 +40,9 @@ try:
         task_falkor_leiden_cluster,
         task_falkor_community_analysis,
         task_falkor_graph_create,
-        task_falkor_hierarchical_cluster
+        task_falkor_hierarchical_cluster,
+        task_falkor_optimize_graph,
+        task_falkor_reimport_graph,
     )
     from tilellm.modules.task_executor.broker import broker
     TASKIQ_AVAILABLE = True
@@ -52,6 +56,8 @@ except ImportError as  e:
     task_falkor_community_analysis=None
     task_falkor_graph_create=None
     task_falkor_hierarchical_cluster=None
+    task_falkor_optimize_graph=None
+    task_falkor_reimport_graph=None
 
 
 ENABLE_TASKIQ = os.environ.get("ENABLE_TASKIQ", "false").lower() == "true"
@@ -679,3 +685,62 @@ async def agentic_qa_search(request: GraphQAAdvancedRequest):
     except Exception as e:
         logger.error(f"Agentic QA search failed: {e}")
         raise HTTPException(status_code=500, detail=f"Agentic QA search failed: {str(e)}")
+
+
+@router.post("/optimize", response_model=Union[AsyncTaskResponse, GraphOptimizeResponse])
+async def optimize_graph(request: GraphOptimizeRequest):
+    """
+    **Graph Optimization: Embedding-based entity deduplication**
+
+    Finds near-duplicate entity nodes (cosine similarity >= `similarity_threshold`),
+    merges them in a DuckDB plan (union of source_ids, redirected relationships),
+    saves an optimised snapshot to MinIO, then reimports the cleaned graph into FalkorDB.
+    Community reports are preserved without re-clustering.
+
+    Use `dry_run=true` to preview the merge plan without modifying the graph.
+    """
+    try:
+        if ENABLE_TASKIQ and TASKIQ_AVAILABLE:
+            payload = serialize_with_secrets(request.model_dump(mode='python'))
+            task = await task_falkor_optimize_graph.kiq(payload)
+            return AsyncTaskResponse(task_id=task.task_id)
+
+        result = await kg_logic.optimize_graph(request)
+        return GraphOptimizeResponse(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        logger.error(f"Graph optimization failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Graph optimization failed: {str(e)}")
+
+
+@router.post("/reimport", response_model=Union[AsyncTaskResponse, GraphReimportResponse])
+async def reimport_graph(request: GraphReimportRequest):
+    """
+    **Graph Reimport: Restore FalkorDB from MinIO Parquet snapshot**
+
+    Wipes the current FalkorDB graph and reimports nodes + relationships from
+    a previously saved snapshot. Useful after an optimize pass or for disaster recovery.
+    Community reports can be preserved from MinIO (default: true).
+
+    Specify `snapshot_timestamp` to restore a specific version, or omit to use the latest.
+    """
+    try:
+        if ENABLE_TASKIQ and TASKIQ_AVAILABLE:
+            payload = serialize_with_secrets(request.model_dump(mode='python'))
+            task = await task_falkor_reimport_graph.kiq(payload)
+            return AsyncTaskResponse(task_id=task.task_id)
+
+        result = await kg_logic.reimport_graph(request)
+        return GraphReimportResponse(**result)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        logger.error(f"Graph reimport failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Graph reimport failed: {str(e)}")

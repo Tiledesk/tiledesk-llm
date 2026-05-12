@@ -14,7 +14,8 @@ from tilellm.models.schemas.multimodal_content import TextContent
 from tilellm.shared.utility import inject_repo_async, inject_llm_chat_async, inject_llm_async, get_service_config
 from tilellm.modules.knowledge_graph.models import Node, NodeUpdate, Relationship, RelationshipUpdate
 from .models.schemas import (
-    GraphQARequest, GraphCreateRequest, GraphQAAdvancedRequest, GraphClusterRequest, AddDocumentRequest
+    GraphQARequest, GraphCreateRequest, GraphQAAdvancedRequest, GraphClusterRequest,
+    AddDocumentRequest, GraphOptimizeRequest, GraphReimportRequest,
 )
 from .services import GraphService, GraphRAGService
 from .repository import AsyncFalkorGraphRepository  # Use ASYNC repository
@@ -337,7 +338,10 @@ async def create_graph(
         index_name=request.engine.index_name,
         overwrite=request.overwrite or False,
         import_to_graph=True,
-        graph_name=graph_name
+        graph_name=graph_name,
+        chunk_window_size=request.chunk_window_size,
+        batch_size=request.batch_size,
+        extraction_concurrency=request.extraction_concurrency,
     )
 
 @inject_llm_async
@@ -455,7 +459,10 @@ async def cluster_graph_hierarchical(
         vector_store_repo=repo,
         llm_embeddings=llm_embeddings,
         engine=request.engine,
-        overwrite=request.overwrite if request.overwrite is not None else True
+        overwrite=request.overwrite if request.overwrite is not None else True,
+        resolutions=request.resolutions,
+        min_community_size=request.min_community_size,
+        max_community_prompt_chars=request.max_community_prompt_chars,
     )
 
 @inject_llm_chat_async
@@ -616,6 +623,82 @@ async def multimodal_search(
         llm_embeddings=llm_embeddings,
         search_types=search_types
     )
+
+@inject_llm_chat_async
+@inject_repo_async
+async def optimize_graph(
+    request: GraphOptimizeRequest,
+    repo=None,
+    llm=None,
+    llm_embeddings=None,
+    **kwargs,
+) -> Dict[str, Any]:
+    """
+    Deduplicate entities in a FalkorDB graph using embedding similarity (SimSIMD + DuckDB).
+    Saves an optimised snapshot to MinIO and reimports the cleaned graph.
+    """
+    await ensure_initialized()
+    from .services.graph_optimizer import GraphOptimizer
+    from .services.minio_storage import get_minio_storage_service
+
+    graph_repo = graph_service._get_repository() if graph_service else repo
+    if graph_repo is None:
+        raise RuntimeError("Graph repository not available")
+
+    minio = get_minio_storage_service()
+    optimizer = GraphOptimizer(
+        repository=graph_repo,
+        minio_storage_service=minio,
+        llm_embeddings=llm_embeddings,
+    )
+    return await optimizer.run(
+        namespace=request.namespace,
+        graph_name=request.graph_db_name,
+        similarity_threshold=request.similarity_threshold,
+        embedding_batch_size=request.embedding_batch_size,
+        dry_run=request.dry_run,
+    )
+
+
+@inject_repo_async
+async def reimport_graph(
+    request: GraphReimportRequest,
+    repo=None,
+    **kwargs,
+) -> Dict[str, Any]:
+    """
+    Reimport a FalkorDB graph from a previously saved MinIO snapshot.
+    """
+    await ensure_initialized()
+    from .services.graph_optimizer import GraphOptimizer
+    from .services.minio_storage import get_minio_storage_service
+
+    graph_repo = graph_service._get_repository() if graph_service else repo
+    if graph_repo is None:
+        raise RuntimeError("Graph repository not available")
+
+    minio = get_minio_storage_service()
+    optimizer = GraphOptimizer(repository=graph_repo, minio_storage_service=minio)
+
+    snapshot = minio.load_graph_snapshot(
+        graph_name=request.graph_db_name,
+        timestamp=request.snapshot_timestamp,
+    )
+    community_reports = minio.load_community_reports(request.graph_db_name) if request.preserve_community_reports else []
+
+    await optimizer._reimport(
+        namespace=request.namespace,
+        graph_name=request.graph_db_name,
+        nodes_bytes=snapshot["nodes"],
+        rels_bytes=snapshot["relationships"],
+        community_reports=community_reports,
+    )
+    return {
+        "status": "success",
+        "snapshot_timestamp": snapshot["timestamp"],
+        "community_reports_restored": len(community_reports),
+    }
+
 
 @inject_repo_async
 async def analyze_community(

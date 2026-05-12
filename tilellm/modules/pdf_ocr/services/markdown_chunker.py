@@ -451,19 +451,39 @@ class MarkdownChunker:
                     current_chunk_elements.append(heading_element)
                     current_chunk_size += len(heading_element.content)
             
+            # Large table: split into row batches before adding to avoid Pinecone 40KB limit
+            _MAX_TABLE_CHARS = 30_000  # ~30KB — leaves room for metadata overhead
+            if (element.element_type == MarkdownElementType.TABLE
+                    and element_size > _MAX_TABLE_CHARS):
+                sub_elements = self._split_large_table(element, _MAX_TABLE_CHARS)
+                for sub_el in sub_elements:
+                    if current_chunk_elements:
+                        chunk = self._create_chunk(current_chunk_elements, chunk_index, current_headings)
+                        chunks.append(chunk)
+                        chunk_index += 1
+                        current_chunk_elements = []
+                        current_chunk_size = 0
+                    current_chunk_elements.append(sub_el)
+                    current_chunk_size = len(sub_el.content)
+                    chunk = self._create_chunk(current_chunk_elements, chunk_index, current_headings)
+                    chunks.append(chunk)
+                    chunk_index += 1
+                    current_chunk_elements = []
+                    current_chunk_size = 0
+                continue
+
             # Add element to current chunk
             current_chunk_elements.append(element)
             current_chunk_size += element_size
-            
-            # If element is very large (table, code block), consider finalizing chunk
+
+            # If element is very large (table, code block), finalize chunk immediately
             if element_size > self.chunk_size and element.element_type in [
-                MarkdownElementType.TABLE, 
+                MarkdownElementType.TABLE,
                 MarkdownElementType.CODE_BLOCK
             ]:
-                # Finalize this chunk
                 chunk = self._create_chunk(
-                    current_chunk_elements, 
-                    chunk_index, 
+                    current_chunk_elements,
+                    chunk_index,
                     current_headings
                 )
                 chunks.append(chunk)
@@ -510,6 +530,63 @@ class MarkdownChunker:
             headings_context=headings_context
         )
     
+    def _split_large_table(
+        self,
+        element: MarkdownElement,
+        max_chars: int,
+    ) -> List[MarkdownElement]:
+        """Split an oversized Markdown table into row-batch sub-elements.
+
+        Each sub-element contains the header row + separator + a slice of data rows
+        so that its content stays under max_chars.  If splitting is not possible
+        (malformed table with no separator line) the original element is returned as-is.
+        """
+        lines = element.content.split('\n')
+        # Find the separator line (---|---) — it's always the second line of a valid table
+        sep_idx = next(
+            (i for i, ln in enumerate(lines) if re.match(r'^\s*\|?\s*[-:]+\s*\|', ln)),
+            None
+        )
+        if sep_idx is None or sep_idx < 1:
+            return [element]
+
+        header_lines = lines[:sep_idx + 1]  # header row + separator
+        data_lines = lines[sep_idx + 1:]
+        header_text = '\n'.join(header_lines)
+
+        if not data_lines:
+            return [element]
+
+        sub_elements: List[MarkdownElement] = []
+        current_rows: List[str] = []
+        current_size = len(header_text) + 1  # +1 for joining newline
+
+        for row in data_lines:
+            row_size = len(row) + 1
+            if current_rows and current_size + row_size > max_chars:
+                content = header_text + '\n' + '\n'.join(current_rows)
+                sub_elements.append(MarkdownElement(
+                    element_type=MarkdownElementType.TABLE,
+                    content=content,
+                    start_line=element.start_line,
+                    end_line=element.end_line,
+                ))
+                current_rows = []
+                current_size = len(header_text) + 1
+            current_rows.append(row)
+            current_size += row_size
+
+        if current_rows:
+            content = header_text + '\n' + '\n'.join(current_rows)
+            sub_elements.append(MarkdownElement(
+                element_type=MarkdownElementType.TABLE,
+                content=content,
+                start_line=element.start_line,
+                end_line=element.end_line,
+            ))
+
+        return sub_elements if sub_elements else [element]
+
     def _merge_tiny_chunks(self, chunks: List[MarkdownChunk]) -> List[MarkdownChunk]:
         """Merge chunks that are too small with their neighbors."""
         if len(chunks) <= 1:

@@ -30,7 +30,7 @@ except ImportError:
 
 # Shared GPU concurrency primitives (single source of truth)
 from tilellm.tools._gpu_concurrency import (
-    GLOBAL_GPU_LOCK,
+    run_on_gpu,
     is_cuda_oom,
     cuda_empty_cache_safe,
     build_token_budget_batches,  # re-exported below for backward compat
@@ -704,8 +704,6 @@ class TileReranker:
     _max_cache_size = 2
     _logger = logging.getLogger(__name__)
     _cache_lock = Lock()        # protegge la struttura LRU cache (local)
-    _gpu_lock = GLOBAL_GPU_LOCK  # serializza forward pass GPU tra TUTTI i modelli locali
-                                 # (reranker + sparse encoders) — single process-wide lock
 
     # Comportamento al caricamento del modello (class-level per coerenza con la cache LRU)
     _use_fp16 = True          # converte il modello in fp16 su CUDA al caricamento (~2× speedup)
@@ -894,8 +892,8 @@ class TileReranker:
         Flusso:
           1. Costruisce batch con build_token_budget_batches (ordine per lunghezza,
              greedy packing entro il budget).
-          2. Per ogni batch acquisisce _gpu_lock (serializza forward pass concorrenti)
-             e chiama model.predict con convert_to_numpy=True.
+          2. Per ogni batch chiama model.predict — nessun lock necessario perché
+             questa funzione gira sempre nel thread del _GPU_EXECUTOR (singolo).
           3. Su torch.cuda.OutOfMemoryError: svuota la cache GPU, dimezza il budget,
              ricostruisce i batch solo per le pair NON ancora processate e riprova.
              Dopo max_oom_retries fallimenti consecutivi, rilancia l'eccezione.
@@ -932,18 +930,14 @@ class TileReranker:
             try:
                 for batch_idx, batch in enumerate(batches):
                     batch_pairs = [pairs[i] for i in batch]
-                    # _gpu_lock serializza forward pass GPU tra thread concorrenti.
-                    # Acquisito per-batch (non per l'intera call) per non bloccare
-                    # lookup cache durante un forward pass lungo.
-                    with self._gpu_lock:
-                        # predict() usa torch.no_grad internamente.
-                        # convert_to_numpy=True: evita conversione tensore→numpy manuale.
-                        batch_scores = self.model.predict(
-                            batch_pairs,
-                            batch_size=len(batch_pairs),
-                            convert_to_numpy=True,
-                            show_progress_bar=False,
-                        )
+                    # No explicit lock: _predict_local_with_oom_recovery always
+                    # runs inside _GPU_EXECUTOR (single thread via run_on_gpu).
+                    batch_scores = self.model.predict(
+                        batch_pairs,
+                        batch_size=len(batch_pairs),
+                        convert_to_numpy=True,
+                        show_progress_bar=False,
+                    )
 
                     for j, orig_idx in enumerate(batch):
                         scores[orig_idx] = float(batch_scores[j])
@@ -1019,13 +1013,13 @@ class TileReranker:
                 batch_size=batch_size
             )
 
-        # For CrossEncoder (CPU/GPU), run in thread pool
-        return await asyncio.to_thread(
+        # CrossEncoder is GPU-bound: route through the single-thread GPU executor
+        return await run_on_gpu(
             self.rerank_documents,
             query=query,
             documents=documents,
             top_k=top_k,
-            batch_size=batch_size
+            batch_size=batch_size,
         )
 
     @classmethod

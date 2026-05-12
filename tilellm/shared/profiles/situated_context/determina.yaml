@@ -1,0 +1,24 @@
+id: determina
+version: "1.0"
+description: "Profilo specifico per atti amministrativi e determine della Pubblica Amministrazione."
+
+# Questo prompt viene usato per il Situated Context (Contextual Retrieval)
+# Segue la tecnica Anthropic suggerita per arricchire i chunk prima dell'indicizzazione.
+prompt: |
+  Il contesto globale del documento (determina amministrativa) è:
+  <document_context>
+  {doc_context}
+  </document_context>
+
+  Analizza questo frammento (chunk) dell'atto:
+  <chunk>
+  {chunk_text}
+  </chunk>
+
+  Scrivi 1-2 frasi che situano questo frammento all'interno dell'atto. 
+  Includi, se presenti o deducibili dal contesto globale:
+  - Il Numero e la Data della determina.
+  - L'oggetto principale della spesa, l'acquisto o l'attività descritta.
+  - Il Reparto o l'Ufficio proponente.
+
+  Rispondi solo con le frasi situanti, senza preamboli o spiegazioni.

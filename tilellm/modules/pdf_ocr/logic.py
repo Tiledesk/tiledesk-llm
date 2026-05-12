@@ -9,11 +9,12 @@ from typing import Dict, Any, Optional, List, Union
 import asyncio
 
 from tilellm.shared.utility import inject_llm_chat_async, inject_repo_async, inject_llm_async
+from tilellm.shared.llm_utils import extract_llm_text
 from tilellm.modules.pdf_ocr.models.pdf_scraping import PDFScrapingRequest
 from tilellm.tools.document_tools import _extract_file_name
 from tilellm.models.chunk_metadata import CommonChunkMetadata
 from tilellm.shared.situated_context import enrich_chunks_with_situated_context
-from .services.docling_processor import ProductionDocumentProcessor, DocumentType
+from .services.docling_processor import get_or_create_processor, DocumentType
 from .services.pdf_entity_extractor import PDFEntityExtractor
 from .services.context_aware_chunker import ContextAwareChunker
 from .services.table_semantic_linker import TableSemanticLinker
@@ -33,6 +34,49 @@ except ImportError:
     Relationship = None
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_date_str(val: str) -> str:
+    """Convert DD/MM/YYYY to ISO YYYY-MM-DD; return unchanged for other formats."""
+    import re as _re
+    if isinstance(val, str) and _re.match(r'^\d{2}/\d{2}/\d{4}$', val):
+        d, m, y = val.split('/')
+        return f"{y}-{m}-{d}"
+    return val
+
+
+def _apply_additional_metadata(base: dict, additional) -> dict:
+    """Merge additional_metadata dict into base, normalizing the 'date' key if present."""
+    if not additional:
+        return base
+    for k, v in additional.items():
+        if k == 'date' and isinstance(v, str):
+            v = _normalize_date_str(v)
+        base[k] = v
+    return base
+
+
+def _sc_needs_metadata_extraction(sc_config) -> bool:
+    """Return True if the situated context config will extract structured metadata.
+
+    This happens when either:
+    - metadata_extraction_prompt is set explicitly, OR
+    - the YAML profile has json_mode: true (e.g. pa_italiana)
+
+    When metadata extraction is active, SC must run on ALL chunks — including
+    tables with semantic descriptions and images with rich captions — because
+    the metadata fields (act_type, topics, amount…) are not produced by
+    TableSemanticLinker or image captioning.
+    """
+    if not sc_config or not sc_config.enable:
+        return False
+    if sc_config.metadata_extraction_prompt:
+        return True
+    if sc_config.profile:
+        from tilellm.shared.situated_context import _load_profile_data
+        data = _load_profile_data(sc_config.profile)
+        return bool(data and data.get("json_mode", False))
+    return False
 
 
 def _bbox_center(bbox):
@@ -133,7 +177,7 @@ async def _invoke_llm_chat(
     
     try:
         response = await llm.ainvoke(messages)
-        return response.content if hasattr(response, 'content') else str(response)
+        return extract_llm_text(response)
     except Exception as e:
         logger.error(f"Error invoking LLM: {e}", exc_info=True)
         raise
@@ -192,9 +236,9 @@ async def process_pdf_document_with_embeddings(
             **kwargs
         )
     
-    # Initialize processor with the request config
-    processor = ProductionDocumentProcessor(question.model_dump())
-    
+    # Retrieve the module-level singleton processor (Docling models loaded once at first call).
+    processor = await get_or_create_processor()
+
     try:
         # Process document from MinIO, file path, or direct content
         result = None
@@ -245,7 +289,14 @@ async def process_pdf_document_with_embeddings(
                 doc_id=question.id,
                 text_elements=result.get('text_elements')
             )
-        
+
+        # Release raw PIL image data regardless of include_images — bytes were already
+        # uploaded to MinIO and captions generated; keeping PIL objects wastes RAM
+        # (300 DPI A4 page ≈ 26 MB RGB each).
+        if result and 'images' in result:
+            for _img in result['images']:
+                _img['image_data'] = None
+
         # Generate descriptions for tables if include_tables is True
         if question.include_tables and result and 'tables' in result:
             await _generate_table_descriptions(
@@ -378,8 +429,6 @@ async def process_pdf_document_with_embeddings(
     except Exception as e:
         logger.error(f"Error processing PDF document: {e}", exc_info=True)
         raise
-    finally:
-        await processor.close()
 
 
 @inject_llm_chat_async
@@ -457,7 +506,7 @@ Keep your description under 100 words. Be factual and objective."""
     
     try:
         response = await llm.ainvoke(messages)
-        caption = response.content if hasattr(response, 'content') else str(response)
+        caption = extract_llm_text(response)
         logger.info(f"Generated image caption: {caption[:100]}...")
         return caption.strip()
     except Exception as e:
@@ -584,7 +633,9 @@ async def _generate_image_captions(images: List[Dict[str, Any]], llm, doc_id: st
             
             # Update image_data with generated caption
             image_data['caption'] = caption
-            
+            # PIL Image no longer needed — bytes were extracted above for LLM call
+            image_data['image_data'] = None
+
             # Update graph node if repository available
             if graph_repo:
                 graph_repo.update_node(
@@ -713,8 +764,10 @@ async def _index_text_chunks(
                 chunk_type='text',
                 ref_tables=str(element.get('ref_tables', [])),
                 ref_images=str(element.get('ref_images', [])),
+                date=question.doc_date or "",
                 tags=tags if tags else None,
             ).to_metadata_dict()
+            meta = _apply_additional_metadata(meta, getattr(question, 'additional_metadata', None))
             doc = Document(
                 page_content=text,
                 metadata=meta
@@ -737,7 +790,12 @@ async def _index_text_chunks(
             sc_llm = await build_llm_from_config(sc_config) or llm
             if sc_llm:
                 sc_result = await enrich_chunks_with_situated_context(
-                    documents, sc_llm, doc_context=doc_context
+                    documents, 
+                    sc_llm, 
+                    doc_context=doc_context,
+                    profile=sc_config.profile,
+                    custom_prompt=sc_config.custom_prompt,
+                            metadata_extraction_prompt=sc_config.metadata_extraction_prompt
                 )
                 documents = sc_result.documents
                 sc_token_usage = sc_result.token_usage
@@ -805,15 +863,19 @@ async def _index_tables_to_vector_store(
             file_content=question.file_content,
             page=table_data.get('page', 1),
             type='table',
+            element_type='table',
             chunk_type='table_description',
             table_id=table_id or '',
             answerable_questions=str(table_data.get('answerable_questions', [])),
             columns=str(table_data.get('columns', [])),
+            col_names=", ".join(table_data.get('columns', [])),
             surrounding_text=table_data.get('surrounding_text', ''),
             parquet_path=table_data.get('parquet_path', ''),
             md_path=table_data.get('md_path', ''),
+            date=question.doc_date or "",
             tags=tags if tags else None,
         ).to_metadata_dict()
+        meta = _apply_additional_metadata(meta, getattr(question, 'additional_metadata', None))
         doc = Document(
             page_content=semantic_desc,
             metadata=meta
@@ -827,22 +889,43 @@ async def _index_tables_to_vector_store(
     logger.info(f"Indexing {len(documents)} table descriptions to vector store for doc {doc_id}")
 
     sc_token_usage = {}
-    # Situated context enrichment (Contextual Retrieval, optional)
     sc_config = getattr(question, 'situated_context', None)
     if sc_config and sc_config.enable:
-        try:
-            from tilellm.shared.situated_context import build_llm_from_config
-            # Use dedicated LLM for situated context if configured, otherwise fall back to DI LLM
-            sc_llm = await build_llm_from_config(sc_config) or llm
-            if sc_llm:
-                sc_result = await enrich_chunks_with_situated_context(
-                    documents, sc_llm, doc_context=doc_context
-                )
-                documents = sc_result.documents
-                sc_token_usage = sc_result.token_usage
-                logger.info(f"Situated context applied to {len(documents)} table descriptions. Tokens: {sc_token_usage}")
-        except Exception as sc_err:
-            logger.warning(f"Situated context enrichment for tables failed, continuing without: {sc_err}")
+        needs_meta = _sc_needs_metadata_extraction(sc_config)
+        if needs_meta:
+            # Profile uses json_mode (e.g. pa_italiana): metadata extraction (act_type,
+            # topics, amount…) must run on ALL table chunks, including those that already
+            # have a semantic description from TableSemanticLinker.
+            docs_to_enrich = documents
+        else:
+            # Generic SC profile: only adds a contextual sentence. Skip tables that
+            # already have a rich semantic description to avoid redundant noise.
+            docs_to_enrich = []
+            for i, doc in enumerate(documents):
+                if not tables[i].get('semantic_description'):
+                    docs_to_enrich.append(doc)
+                else:
+                    doc.metadata["has_situated_context"] = True
+
+        if docs_to_enrich:
+            try:
+                from tilellm.shared.situated_context import build_llm_from_config
+                sc_llm = await build_llm_from_config(sc_config) or llm
+                if sc_llm:
+                    sc_result = await enrich_chunks_with_situated_context(
+                        docs_to_enrich,
+                        sc_llm,
+                        doc_context=doc_context,
+                        profile=sc_config.profile,
+                        custom_prompt=sc_config.custom_prompt,
+                        metadata_extraction_prompt=sc_config.metadata_extraction_prompt,
+                    )
+                    sc_token_usage = sc_result.token_usage
+                    logger.info(f"Situated context applied to {len(docs_to_enrich)} table chunks. Tokens: {sc_token_usage}")
+            except Exception as sc_err:
+                logger.warning(f"Situated context enrichment for tables failed, continuing without: {sc_err}")
+        else:
+            logger.info(f"Skipped situated context for {len(documents)} semantic table descriptions (no metadata extraction needed)")
 
     # Index to vector store
     await repo.aadd_documents(
@@ -902,12 +985,15 @@ async def _index_images_to_vector_store(
             file_content=question.file_content,
             page=image_data.get('page', 1),
             type='image',
+            element_type='image',
             chunk_type='image_caption',
             image_id=image_id or '',
             surrounding_text=image_data.get('surrounding_text', ''),
             path=image_data.get('path', ''),
+            date=question.doc_date or "",
             tags=tags if tags else None,
         ).to_metadata_dict()
+        meta = _apply_additional_metadata(meta, getattr(question, 'additional_metadata', None))
         doc = Document(
             page_content=caption,
             metadata=meta
@@ -921,22 +1007,41 @@ async def _index_images_to_vector_store(
     logger.info(f"Indexing {len(documents)} image captions to vector store for doc {doc_id}")
 
     sc_token_usage = {}
-    # Situated context enrichment (Contextual Retrieval, optional)
     sc_config = getattr(question, 'situated_context', None)
     if sc_config and sc_config.enable:
-        try:
-            from tilellm.shared.situated_context import build_llm_from_config
-            # Use dedicated LLM for situated context if configured, otherwise fall back to DI LLM
-            sc_llm = await build_llm_from_config(sc_config) or llm
-            if sc_llm:
-                sc_result = await enrich_chunks_with_situated_context(
-                    documents, sc_llm, doc_context=doc_context
-                )
-                documents = sc_result.documents
-                sc_token_usage = sc_result.token_usage
-                logger.info(f"Situated context applied to {len(documents)} image captions. Tokens: {sc_token_usage}")
-        except Exception as sc_err:
-            logger.warning(f"Situated context enrichment for images failed, continuing without: {sc_err}")
+        needs_meta = _sc_needs_metadata_extraction(sc_config)
+        if needs_meta:
+            # Metadata extraction must run on all image chunks regardless of caption quality.
+            docs_to_enrich = documents
+        else:
+            # Generic SC profile: skip images that already have a rich LLM-generated caption.
+            docs_to_enrich = []
+            for i, doc in enumerate(documents):
+                caption_text = images[i].get('caption', '')
+                if "Image extracted from page" in caption_text:
+                    docs_to_enrich.append(doc)
+                else:
+                    doc.metadata["has_situated_context"] = True
+
+        if docs_to_enrich:
+            try:
+                from tilellm.shared.situated_context import build_llm_from_config
+                sc_llm = await build_llm_from_config(sc_config) or llm
+                if sc_llm:
+                    sc_result = await enrich_chunks_with_situated_context(
+                        docs_to_enrich,
+                        sc_llm,
+                        doc_context=doc_context,
+                        profile=sc_config.profile,
+                        custom_prompt=sc_config.custom_prompt,
+                        metadata_extraction_prompt=sc_config.metadata_extraction_prompt,
+                    )
+                    sc_token_usage = sc_result.token_usage
+                    logger.info(f"Situated context applied to {len(docs_to_enrich)} image chunks. Tokens: {sc_token_usage}")
+            except Exception as sc_err:
+                logger.warning(f"Situated context enrichment for images failed, continuing without: {sc_err}")
+        else:
+            logger.info(f"Skipped situated context for {len(documents)} rich image captions (no metadata extraction needed)")
     
     # Index to vector store
     await repo.aadd_documents(
@@ -1079,10 +1184,12 @@ async def process_pdf_markdown_extraction(
             'has_images': len(images) > 0,
             'has_tables': len(tables) > 0,
             'num_pages': metadata.get('num_pages', 0),
-            'namespace': namespace
+            'namespace': namespace,
+            'date': question.doc_date or "",
         }
         if question.tags:
             source_metadata['tags'] = question.tags
+        _apply_additional_metadata(source_metadata, getattr(question, 'additional_metadata', None))
 
         # Build page_line_map from "## Page N" markers inserted by MarkdownExtractionAgent.
         # Maps each line index → page number so each chunk gets an accurate 'page' field.
@@ -1125,7 +1232,12 @@ async def process_pdf_markdown_extraction(
                     # Global doc context for Markdown
                     doc_context = markdown_content[:1500]
                     sc_result = await enrich_chunks_with_situated_context(
-                        documents, sc_llm, doc_context=doc_context
+                        documents,
+                        sc_llm,
+                        doc_context=doc_context,
+                        profile=sc_config.profile,
+                        custom_prompt=sc_config.custom_prompt,
+                        metadata_extraction_prompt=sc_config.metadata_extraction_prompt,
                     )
                     documents = sc_result.documents
                     sc_token_usage = sc_result.token_usage

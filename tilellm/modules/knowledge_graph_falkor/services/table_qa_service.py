@@ -9,6 +9,7 @@ import duckdb
 import pandas as pd
 from typing import List, Dict, Any, Optional
 from tilellm.shared.utility import get_service_config
+from tilellm.shared.llm_utils import extract_llm_text
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +130,7 @@ Rules:
         
         try:
             response = await self.llm.ainvoke(prompt)
-            sql = response.content if hasattr(response, 'content') else str(response)
+            sql = extract_llm_text(response)
             sql = sql.strip().replace("```sql", "").replace("```", "")
             if "IMPOSSIBLE" in sql:
                 return None
@@ -155,6 +156,6 @@ Please interpret this result and provide a concise answer to the user's question
 """
         try:
             response = await self.llm.ainvoke(prompt)
-            return response.content if hasattr(response, 'content') else str(response)
+            return extract_llm_text(response)
         except Exception as e:
             return f"Result: {data_str}"

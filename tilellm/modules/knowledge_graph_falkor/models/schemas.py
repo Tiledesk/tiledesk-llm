@@ -56,6 +56,11 @@ class GraphCreateRequest(QuestionAnswer):
     question: Optional[Union[str, List[MultimodalContent]]] = Field(default="", description="Optional prompt for extraction guidance")
     graph_db_name: Optional[str] = Field(default=None, description="Graph name")
 
+    # Batch/parallelism tuning (vLLM-optimized defaults)
+    extraction_concurrency: int = Field(default=10, description="Max concurrent LLM extraction calls (raise for vLLM, lower for cloud APIs)")
+    chunk_window_size: int = Field(default=500, description="Number of chunks processed per window before writing to graph")
+    batch_size: int = Field(default=100, description="Number of nodes/relationships per UNWIND batch write")
+
     @model_validator(mode='after')
     def set_graph_db_name(self) -> 'GraphCreateRequest':
         if not self.graph_db_name:
@@ -109,6 +114,21 @@ class GraphClusterRequest(QuestionAnswer):
         description="If True, removes existing community reports before regeneration (default: True)"
     )
     webhook_url: Optional[str] = Field(default=None, description="URL to call when task is finished")
+    resolutions: Optional[List[float]] = Field(
+        default=None,
+        description="Leiden resolution per level [L0, L1, L2]. Lower = fewer, larger communities. "
+                    "Defaults to [0.05, 0.15, 0.35] (recommended for sparse graphs)."
+    )
+    min_community_size: int = Field(
+        default=8,
+        description="Minimum number of nodes for a community to generate a report. "
+                    "Communities smaller than this are discarded."
+    )
+    max_community_prompt_chars: int = Field(
+        default=18000,
+        description="Maximum characters for entities+relationships in each community report prompt. "
+                    "~4 chars/token → 18000 ≈ 4500 tokens. Lower this for small-context models."
+    )
 
     @model_validator(mode='after')
     def set_graph_db_name_cluster(self) -> 'GraphClusterRequest':
@@ -214,6 +234,97 @@ class GraphNetworkResponse(BaseModel):
     nodes: List[Dict[str, Any]] = Field(description="List of nodes with id, label, properties")
     relationships: List[Dict[str, Any]] = Field(description="List of relationships with source_id, target_id, type")
     stats: Dict[str, Any] = Field(description="Network statistics and filter info")
+
+
+class GraphOptimizeRequest(QuestionAnswer):
+    """
+    Request model for graph optimization via embedding-based entity deduplication.
+    Finds near-duplicate entity nodes (cosine similarity >= threshold), merges them
+    in a DuckDB merge plan, and reimports the cleaned graph into FalkorDB.
+    Community reports are preserved as-is.
+    """
+    namespace: str = Field(..., description="Namespace of the graph to optimize")
+    engine: Engine = Field(..., description="Engine configuration (for vector store references)")
+    graph_db_name: Optional[str] = Field(default=None, description="FalkorDB graph name (computed if not provided)")
+    creation_prompt: str = Field(default="generic", description="Must match the creation_prompt used in /create")
+    similarity_threshold: float = Field(
+        default=0.92, ge=0.5, le=1.0,
+        description="Cosine similarity threshold above which two entities are considered duplicates. "
+                    "Higher = more conservative (fewer merges). Recommended: 0.90–0.95."
+    )
+    embedding_batch_size: int = Field(
+        default=256,
+        description="Number of entities to embed per LLM call. Raise for TEI/vLLM, lower for cloud APIs."
+    )
+    dry_run: bool = Field(
+        default=False,
+        description="If True, compute and return the merge plan without modifying FalkorDB."
+    )
+    webhook_url: Optional[str] = Field(default=None, description="URL to call when task is finished")
+    question: Optional[Union[str, List[MultimodalContent]]] = Field(default="", description="Not used")
+
+    @model_validator(mode='after')
+    def set_graph_db_name(self) -> 'GraphOptimizeRequest':
+        if not self.graph_db_name:
+            parts = [self.namespace]
+            if self.creation_prompt:
+                parts.append(self.creation_prompt)
+            self.graph_db_name = "-".join(parts)
+        return self
+
+
+class GraphOptimizeResponse(BaseModel):
+    """Response model for graph optimization endpoint"""
+    status: str
+    nodes_before: int
+    nodes_after: int
+    nodes_merged: int
+    relationships_before: int
+    relationships_after: int
+    merge_pairs: int
+    dry_run: bool
+    snapshot_timestamp: Optional[str] = None
+
+
+class GraphReimportRequest(QuestionAnswer):
+    """
+    Request model for reimporting a graph from a previously saved MinIO snapshot.
+    Useful after external Parquet manipulation or as disaster recovery.
+    """
+    namespace: str = Field(..., description="Namespace of the graph to reimport")
+    engine: Engine = Field(..., description="Engine configuration")
+    graph_db_name: Optional[str] = Field(default=None, description="FalkorDB graph name (computed if not provided)")
+    creation_prompt: str = Field(default="generic", description="Must match the original creation_prompt")
+    snapshot_timestamp: Optional[str] = Field(
+        default=None,
+        description="Snapshot timestamp to reimport (e.g. '20260426_143000'). If None, uses the latest snapshot."
+    )
+    preserve_community_reports: bool = Field(
+        default=True,
+        description="If True, community reports saved in MinIO are re-imported into FalkorDB."
+    )
+    webhook_url: Optional[str] = Field(default=None, description="URL to call when task is finished")
+    question: Optional[Union[str, List[MultimodalContent]]] = Field(default="", description="Not used")
+
+    @model_validator(mode='after')
+    def set_graph_db_name(self) -> 'GraphReimportRequest':
+        if not self.graph_db_name:
+            parts = [self.namespace]
+            if self.creation_prompt:
+                parts.append(self.creation_prompt)
+            self.graph_db_name = "-".join(parts)
+        return self
+
+
+class GraphReimportResponse(BaseModel):
+    """Response model for graph reimport endpoint"""
+    status: str
+    nodes_imported: int
+    relationships_imported: int
+    community_reports_restored: int
+    snapshot_timestamp: str
+
+
 class MultimodalSearchResponse(BaseModel):
     """Response model for Multimodal Search"""
     answer: str
@@ -227,6 +338,8 @@ def rebuild_graph_schemas():
     from tilellm.models.chat import ChatEntry
     from tilellm.models.llm import TEIConfig, PineconeRerankerConfig
     GraphQARequest.model_rebuild()
+    GraphOptimizeRequest.model_rebuild()
+    GraphReimportRequest.model_rebuild()
     GraphQAAdvancedRequest.model_rebuild()
     GraphCreateRequest.model_rebuild()
     GraphClusterRequest.model_rebuild()

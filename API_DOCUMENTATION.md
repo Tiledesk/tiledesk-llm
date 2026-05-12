@@ -21,6 +21,7 @@ Complete REST API documentation for Tiledesk LLM server.
 - [Tools Registry APIs](#tools-registry-apis)
 - [Knowledge Graph APIs (Neo4j)](#knowledge-graph-apis)
 - [Knowledge Graph APIs (FalkorDB)](#knowledge-graph-apis-falkordb)
+- [Temporal Digest APIs](#temporal-digest-apis)
 - [Authentication](#authentication)
 - [Data Models](#data-models)
 
@@ -990,6 +991,8 @@ The Knowledge Graph module provides advanced graph-based retrieval using FalkorD
 - `POST /api/kg-falkor/leiden-cluster` - Perform Leiden clustering (async)
 - `POST /api/kg-falkor/hierarchical` - Perform Hierarchical Clustering (async)
 - `POST /api/kg-falkor/community-analysis` - Perform community analysis (async)
+- `POST /api/kg-falkor/optimize` - Deduplicate entity nodes via embedding similarity + DuckDB merge (async)
+- `POST /api/kg-falkor/reimport` - Reimport graph from a MinIO Parquet snapshot (async)
 
 ### Search & QA
 - `POST /api/kg-falkor/qa` - Community/Global search on community reports
@@ -999,7 +1002,343 @@ The Knowledge Graph module provides advanced graph-based retrieval using FalkorD
 - `GET /api/kg-falkor/network` - Get network visualization data (nodes and relationships)
 - `POST /api/kg-falkor/multimodal-search` - Multimodal search combining text and image embeddings
 
+---
+
+### `POST /api/kg-falkor/optimize`
+
+Deduplicates entity nodes in a FalkorDB graph using embedding-based cosine similarity (SimSIMD) and a DuckDB merge plan. Near-duplicate entities are merged into a single canonical node; their `source_ids` (vector store references) are unioned, and all relationships are redirected. The optimised graph is saved as a Parquet snapshot on MinIO and then reimported into FalkorDB. Community reports are preserved without re-clustering.
+
+> Runs as an async TaskIQ task when `ENABLE_TASKIQ=true`. Use `GET /api/kg-falkor/tasks/{task_id}` to poll status.
+
+**Request body**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `namespace` | string | required | Graph namespace |
+| `engine` | Engine | required | Vector store configuration |
+| `graph_db_name` | string | auto | FalkorDB graph name (computed from namespace + creation_prompt if not provided) |
+| `creation_prompt` | string | `"generic"` | Must match the value used in `/create` |
+| `similarity_threshold` | float | `0.92` | Cosine similarity above which two entities are merged. Range: 0.5–1.0. Recommended: 0.90–0.95. |
+| `embedding_batch_size` | int | `256` | Entities embedded per LLM call. Raise for TEI/vLLM, lower for cloud APIs. |
+| `dry_run` | bool | `false` | If `true`, computes and returns the merge plan without touching FalkorDB. |
+| `webhook_url` | string | null | Called on task completion with the result payload. |
+| `llm_key`, `llm`, `model` | string | — | LLM credentials and model (inherited from `QuestionAnswer`). |
+
+**Example request**
+
+```json
+{
+  "namespace": "asl-bari",
+  "creation_prompt": "medical",
+  "engine": {
+    "name": "qdrant",
+    "deployment": "local",
+    "index_name": "asl-bari-index",
+    "vector_size": 768
+  },
+  "similarity_threshold": 0.92,
+  "embedding_batch_size": 256,
+  "dry_run": false,
+  "llm": "openai",
+  "model": "text-embedding-3-small"
+}
+```
+
+**Response (synchronous)**
+
+```json
+{
+  "status": "success",
+  "nodes_before": 33427,
+  "nodes_after": 21083,
+  "nodes_merged": 12344,
+  "relationships_before": 41210,
+  "relationships_after": 38965,
+  "merge_pairs": 12344,
+  "dry_run": false,
+  "snapshot_timestamp": "20260426_152300"
+}
+```
+
+**Response (dry_run=true)**
+
+```json
+{
+  "status": "dry_run",
+  "nodes_before": 33427,
+  "nodes_after": 21083,
+  "nodes_merged": 12344,
+  "relationships_before": 41210,
+  "relationships_after": 41210,
+  "merge_pairs": 12344,
+  "dry_run": true
+}
+```
+
+---
+
+### `POST /api/kg-falkor/reimport`
+
+Wipes the current FalkorDB graph and reimports nodes + relationships from a previously saved MinIO Parquet snapshot. Useful for restoring after an optimize pass, reverting to an earlier version, or disaster recovery. Community reports stored in MinIO are optionally re-imported into FalkorDB.
+
+> Runs as an async TaskIQ task when `ENABLE_TASKIQ=true`.
+
+**Request body**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `namespace` | string | required | Graph namespace |
+| `engine` | Engine | required | Vector store configuration |
+| `graph_db_name` | string | auto | FalkorDB graph name |
+| `creation_prompt` | string | `"generic"` | Must match the original creation_prompt |
+| `snapshot_timestamp` | string | null | Timestamp of the snapshot to restore (e.g. `"20260426_143000"`). If null, uses the most recent snapshot. |
+| `preserve_community_reports` | bool | `true` | If `true`, community reports saved in MinIO are re-imported into FalkorDB. |
+| `webhook_url` | string | null | Called on completion. |
+
+**Example request**
+
+```json
+{
+  "namespace": "asl-bari",
+  "creation_prompt": "medical",
+  "engine": {
+    "name": "qdrant",
+    "deployment": "local",
+    "index_name": "asl-bari-index",
+    "vector_size": 768
+  },
+  "snapshot_timestamp": "20260426_143000",
+  "preserve_community_reports": true
+}
+```
+
+**Response**
+
+```json
+{
+  "status": "success",
+  "nodes_imported": 21083,
+  "relationships_imported": 38965,
+  "community_reports_restored": 148,
+  "snapshot_timestamp": "20260426_143000"
+}
+```
+
+---
+
+### MinIO Snapshot Storage Layout
+
+The graph optimization pipeline uses the following MinIO bucket structure (bucket: `graphrag`):
+
+```
+graphrag/
+├── checkpoints/{graph_name}/
+│   └── window_{n:06d}.parquet      # Per-window extraction checkpoints (deleted on success)
+├── community_reports/{graph_name}/
+│   └── level_{n:02d}.parquet       # Community reports per Leiden level (saved after each clustering run)
+└── graph_snapshots/{graph_name}/
+    └── {timestamp}/
+        ├── nodes.parquet            # All entity nodes (before or after optimization)
+        └── relationships.parquet    # All relationships (before or after optimization)
+```
+
+Snapshots are created automatically by `/optimize` (before and after the merge). They can also be created manually or used as the source for `/reimport`.
+
+---
+
 For detailed request/response schemas and examples, refer to the [Knowledge Graph FalkorDB README](tilellm/modules/knowledge_graph_falkor/README.md).
+
+---
+
+## Temporal Digest APIs
+
+Time-based document aggregation with digest generation and intelligent temporal/semantic routing.
+
+Enable: `ENABLE_TEMPORAL_DIGEST=true` (default: enabled).
+
+---
+
+### POST `/api/digest/generate`
+
+Generate temporal digests for one or more date windows.
+
+**Request body:**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `namespace` | `string` | required | Vector store namespace |
+| `date_from` | `date` | required | Start date (ISO `YYYY-MM-DD`) |
+| `date_to` | `date` | `date_from` | End date (inclusive) |
+| `granularity` | `"daily"\|"weekly"\|"monthly"` | `"daily"` | Aggregation window size |
+| `engine` | `Engine` | required | Vector store configuration |
+| `gptkey` | `string` | required | LLM API key |
+| `model` | `string` | `"gpt-4o-mini"` | LLM model for digest synthesis |
+| `llm` | `string` | `"openai"` | LLM provider |
+| `embedding` | `string` | `"text-embedding-3-small"` | Embedding model |
+| `top_k` | `integer` | `1000` | Max chunks retrieved per window |
+| `force_regenerate` | `boolean` | `false` | Re-generate even if digest exists |
+| `domain` | `string\|null` | `null` | Domain prompt key (`pa_italiana`, `legal`, `generic`) |
+| `system_prompt` | `string\|null` | `null` | Custom system prompt (overrides domain) |
+| `date_metadata_field` | `string` | `"date"` | Payload field containing document date |
+| `tags` | `string[]\|null` | `null` | Filter source chunks by tags |
+| `webhook_url` | `string\|null` | `null` | URL notified on completion (TaskIQ async) |
+
+With `ENABLE_TASKIQ=true`, returns immediately:
+```json
+{ "task_id": "...", "namespace": "...", "status": "queued", "message": "..." }
+```
+
+**Response (synchronous):**
+```json
+{
+  "namespace": "asl-roma-1",
+  "digests": [
+    {
+      "namespace": "asl-roma-1",
+      "date_from": "2026-05-01",
+      "date_to": "2026-05-01",
+      "granularity": "daily",
+      "content": "## Attività del 01/05/2026...",
+      "chunk_count": 47,
+      "act_types": { "acquisto_farmaci": 5, "assunzione_personale": 3 },
+      "total_amount": 285000.0,
+      "digest_vector_id": "a3f2c1b0-...",
+      "already_existed": false
+    }
+  ],
+  "total_chunks_processed": 47,
+  "total_windows": 1,
+  "skipped_windows": 0
+}
+```
+
+---
+
+### POST `/api/digest/query`
+
+Query digests and/or raw chunks with explicit parameters.
+
+**Request body:**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `question` | `string` | required | Natural language question |
+| `namespace` | `string` | required | Vector store namespace |
+| `engine` | `Engine` | required | Vector store configuration |
+| `gptkey` | `string` | required | LLM API key |
+| `model` | `string` | `"gpt-4o-mini"` | LLM model |
+| `llm` | `string` | `"openai"` | LLM provider |
+| `embedding` | `string` | `"text-embedding-3-small"` | Embedding model |
+| `date_from` | `date\|null` | `null` | Restrict retrieval to date range start |
+| `date_to` | `date\|null` | `null` | Restrict retrieval to date range end |
+| `query_mode` | `"auto"\|"temporal"\|"semantic"` | `"auto"` | Routing mode |
+| `top_k` | `integer` | `5` | Number of results |
+| `search_type` | `"similarity"\|"hybrid"` | `"similarity"` | Dense-only or dense+sparse |
+| `sparse_encoder` | `string\|TEIConfig\|null` | `null` | Sparse encoder for hybrid search |
+| `reranking` | `bool\|TEIConfig\|PineconeRerankerConfig` | `false` | Reranking strategy |
+| `reranker_model` | `string` | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Local CrossEncoder model name |
+| `reranking_multiplier` | `integer` | `3` | Candidate multiplier for reranking |
+| `chat_history_dict` | `object\|null` | `null` | Conversation history (see below) |
+| `max_history_messages` | `integer` | `10` | Max history turns to include in prompt |
+| `date_metadata_field` | `string` | `"date"` | Payload field containing document date |
+| `tags` | `string[]\|null` | `null` | Filter chunks by tags |
+
+**`query_mode` values:**
+- `auto`: Rule-based classifier detects temporal intent (IT+EN patterns). Logged as `[query_router] auto → 'temporal'|'semantic'`.
+- `temporal`: Forces digest vector retrieval (filters `digest_type == "digest"`).
+- `semantic`: Forces raw chunk search (filters `digest_type != "digest"`).
+
+**`chat_history_dict` format:**
+```json
+{
+  "0": { "question": "Cosa hanno fatto ad aprile?", "answer": "..." },
+  "1": { "question": "E a marzo?", "answer": "..." }
+}
+```
+
+**Response:**
+```json
+{
+  "answer": "...",
+  "query_mode": "temporal",
+  "sources": [{ "digest_date_from": "2026-05-01", "chunk_count": 47, ... }],
+  "digests_used": ["2026-05-01"],
+  "chunk_count": 1
+}
+```
+
+---
+
+### POST `/api/digest/qa`
+
+Agentic query — the LLM extracts date range and query mode from the free-form question and conversation history.
+
+**Request body**: Same retrieval fields as `/api/digest/query` **except** `date_from`, `date_to`, `query_mode` (extracted automatically). Additional field:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `today` | `date\|null` | server date | Reference date for relative expressions |
+| `chat_history_dict` | `object\|null` | `null` | Conversation history for multi-turn context |
+
+The agent:
+1. Calls the LLM with a structured extraction prompt (today's date + conversation history)
+2. Extracts `date_from`, `date_to`, `query_mode` as structured JSON
+3. Executes the appropriate retrieval path
+4. Returns the answer with extraction metadata
+
+**Response:**
+```json
+{
+  "answer": "La settimana scorsa l'ASL Roma 1 ha emesso...",
+  "query_mode": "temporal",
+  "sources": [...],
+  "digests_used": ["2026-04-28", "2026-04-29"],
+  "chunk_count": 2,
+  "extracted_date_from": "2026-04-27",
+  "extracted_date_to": "2026-05-02",
+  "extracted_query_mode": "temporal",
+  "agent_reasoning": "domanda aggregativa con riferimento temporale relativo 'la settimana scorsa'"
+}
+```
+
+**LLM calls per request**: 2 (parameter extraction + answer synthesis).
+
+---
+
+### GET `/api/digest/{namespace}/{digest_date}`
+
+Retrieve the pre-generated digest for a specific namespace and date.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `namespace` | `string` | Vector store namespace |
+| `digest_date` | `date` | Target date (`YYYY-MM-DD`) |
+
+**Query parameters:** `engine_json` (JSON-encoded Engine), `gptkey`, `embedding`, `model`, `llm`, `date_metadata_field`.
+
+Requires that a digest has already been generated for this date via `POST /api/digest/generate`.
+
+---
+
+### Temporal Digest — `additional_metadata` in PDF ingestion
+
+When ingesting via `POST /api/pdf/scrape`, use `additional_metadata` to attach arbitrary key-value pairs to every chunk's payload. This is the recommended way to set the document date for temporal filtering:
+
+```json
+{
+  "additional_metadata": {
+    "date": "14/05/2026",
+    "ente": "ASL Brindisi",
+    "numero_atto": "DG-2026-0512"
+  }
+}
+```
+
+- `date` in `DD/MM/YYYY` format is auto-converted to ISO `YYYY-MM-DD`.
+- All keys are merged into the payload of **every chunk** of the document.
+- Keys in `additional_metadata` override the corresponding base metadata fields.
 
 ---
 

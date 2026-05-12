@@ -24,6 +24,7 @@ except ImportError:
 
 import pandas as pd
 from langchain_core.documents import Document
+from tilellm.shared.llm_utils import extract_llm_text
 
 logger = logging.getLogger(__name__)
 
@@ -351,7 +352,7 @@ Format your response as a well-structured paragraph suitable for embedding in a 
             ]
             
             response = await llm.ainvoke(messages)
-            description = response.content if hasattr(response, 'content') else str(response)
+            description = extract_llm_text(response)
             
             return description.strip()
             
@@ -467,7 +468,7 @@ Focus on understanding what the data represents, not just technical details. Exp
             ]
             
             response = await llm.ainvoke(messages)
-            description = response.content if hasattr(response, 'content') else str(response)
+            description = extract_llm_text(response)
             
             return description.strip()
             

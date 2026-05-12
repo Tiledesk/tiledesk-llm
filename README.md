@@ -392,12 +392,14 @@ This starts:
 
 #### GraphRAG Workflow with FalkorDB
 
-1. **Ingestion**: Documents → Vector Store → GraphRAG extraction
-2. **Graph Construction**: Entities & relationships → FalkorDB graph
-3. **Community Detection**: Leiden clustering (3 hierarchical levels)
-4. **Report Generation**: LLM-based community reports with synthetic QA
+1. **Ingestion**: Documents → Vector Store → GraphRAG extraction (windowed, resumable via MinIO checkpoints)
+2. **Graph Construction**: Entities & relationships → FalkorDB (normalized deduplication across windows and runs)
+3. **Community Detection**: Leiden clustering (3 hierarchical levels, configurable resolution and min size)
+4. **Report Generation**: LLM-based community reports with synthetic QA, saved to MinIO Parquet per level
 5. **Vector Indexing**: Reports embedded and indexed for semantic search
 6. **Query Time**: Context fusion (global + local + graph expansion)
+7. **Optimization** *(optional)*: Embedding-based entity deduplication via SimSIMD + DuckDB merge plan
+8. **Reimport** *(optional)*: Restore graph from any MinIO snapshot for rollback or disaster recovery
 
 See [FalkorDB GraphRAG Documentation](tilellm/modules/knowledge_graph_falkor/README.md) for detailed API usage and examples.
 
@@ -411,7 +413,8 @@ Tiledesk LLM now features a modular architecture that allows you to enable or di
 |--------|-------------|----------------------|----------------|
 | **Base** | Core RAG functionality (scraping, QA, namespace management) | None | `app-base` |
 | **Knowledge Graph (Neo4j)** | Graph-based retrieval and reasoning with Neo4j and MinIO | `graph` (neo4j, minio, langchain-aws) | `app-graph` |
-| **Knowledge Graph (FalkorDB)** | **[NEW]** Production-ready GraphRAG with FalkorDB (Redis-based graph), Leiden clustering, adaptive expansion | `graph` (falkordb, minio, langchain-aws) | `app-graph` (enable with `ENABLE_GRAPHRAG_FALKOR=true`) |
+| **Knowledge Graph (FalkorDB)** | Production-ready GraphRAG with FalkorDB (Redis-based graph), Leiden clustering, adaptive expansion | `graph` (falkordb, minio, langchain-aws) | `app-graph` (enable with `ENABLE_GRAPHRAG_FALKOR=true`) |
+| **Temporal Digest** | **[NEW]** Time-based document aggregation with digest generation and intelligent temporal/semantic query routing | Built-in | All profiles (enable with `ENABLE_TEMPORAL_DIGEST=true`) |
 | **PDF OCR** | Optical Character Recognition for PDF documents | `ocr` (pdf2image, paddleocr, unstructured) | `app-ocr` |
 | **Conversion** | File format conversion (XLSX↔CSV, PDF→text/images) | Built-in | All profiles |
 | **Tools Registry** | Tool management for LLM interactions | Built-in | All profiles |
@@ -421,17 +424,22 @@ Tiledesk LLM now features a modular architecture that allows you to enable or di
 - **Automatic community report updates**: Community reports are automatically regenerated after document addition
 - **Sparse encoder support**: Full support for hybrid search with SPLADE and BGE-M3 sparse encoders
 
-**FalkorDB Implementation (NEW - Production Ready):**
+**FalkorDB Implementation (Production Ready):**
 - **FalkorDB Integration**: Redis-based graph database with native graph operations, async/await implementation
-- **Hierarchical Leiden Clustering**: Multi-level community detection (3 levels: fine/medium/coarse) with configurable resolution
+- **Hierarchical Leiden Clustering**: Multi-level community detection (3 levels: fine/medium/coarse) with configurable `resolutions` and `min_community_size`
+- **Resumable Extraction**: MinIO checkpoint/resume — interrupted runs restart from the last completed window (`overwrite=false`)
+- **Entity Deduplication**: Name normalization (Level 1) + pre-load existing nodes before each run (Level 2) prevent duplicate nodes across windows and runs
+- **Graph Optimization**: `POST /api/kg-falkor/optimize` — embedding-based deduplication via SimSIMD cosine similarity and DuckDB merge plan, with `dry_run` support
+- **Graph Reimport**: `POST /api/kg-falkor/reimport` — restore any snapshot from MinIO for rollback or disaster recovery
+- **MinIO Parquet Persistence**: Nodes, relationships, and community reports (per Leiden level) all persisted to MinIO for audit, recovery, and optimization
 - **Adaptive Graph Expansion**: Query-type aware expansion (technical: 1-hop, exploratory: 2-hop, relational: 3-hop)
 - **Synthetic QA Generation**: Automatic question generation for community reports with context enhancement
 - **Cross-Encoder Reranking**: Advanced relevance scoring with TEI and Pinecone Inference API support
 - **Context Fusion Search**: Ultimate hybrid method combining global (community), local (vector+keyword), and graph expansion
 - **RRF (Reciprocal Rank Fusion)**: Intelligent fusion of dense and sparse retrieval results
-- **Cleanup Management**: Automatic cleanup of stale community reports before regeneration (prevents duplicates)
 - **Multi-Tenancy**: Namespace-per-graph isolation for secure multi-user environments
 - **Query Type Detection**: LLM-based detection (exploratory/technical/relational) with adaptive weight adjustment
+- **Concurrency Safety**: Redis distributed lock (`graph_lock:{graph_name}`) prevents concurrent workers from corrupting graph creation or clustering
 
 **Architecture Features:**
 - **Async-first**: Fully async/await implementation with connection pooling
@@ -1204,6 +1212,43 @@ On a cache hit, the entire vector store retrieval and LLM generation are bypasse
 | `CACHE_TTL_SEMANTIC` | `21600` | L2 TTL in seconds (6h) |
 
 **Infrastructure**: uses the existing Redis instance (no Redis Stack required). Available on both `/api/qa` and `/api/v2/qa`.
+
+---
+
+### Temporal Digest
+
+The **Temporal Digest** module aggregates document streams over time into compact vector summaries ("digests"), enabling fast temporal queries ("what happened last week?") without scanning thousands of raw chunks.
+
+**Core flow:**
+
+```
+Ingest documents  →  [daily/weekly batch]  →  Generate digest vectors
+                                                      │
+User query  →  Query Router (auto/temporal/semantic)  │
+                    │                                  │
+               temporal path ─── retrieves digests ───┘
+               semantic path ─── vector search on raw chunks
+```
+
+**Key features:**
+
+- **Digest generation** (`POST /api/digest/generate`): Aggregates all chunks for a date window, calls an LLM to produce a structured summary, and indexes the result as a new vector with `digest_type="digest"` metadata. Supports daily/weekly/monthly granularity.
+- **Query routing** (`POST /api/digest/query`): `query_mode=auto` uses a rule-based classifier (IT+EN patterns) to detect temporal/aggregative intent and route accordingly. Explicit `temporal` or `semantic` modes bypass classification.
+- **Agentic query** (`POST /api/digest/qa`): The LLM extracts date ranges and query mode from free-form natural language (including relative references like "la settimana scorsa"), then executes the optimal retrieval path. Returns `extracted_date_from`, `extracted_date_to`, `agent_reasoning`.
+- **Conversation history**: `chat_history_dict` carries multi-turn context into the LLM prompt on both `/api/digest/query` and `/api/digest/qa`.
+- **Hybrid search + reranking**: Full support for `search_type=hybrid` with `sparse_encoder` (string or TEIConfig), and `reranking` (local CrossEncoder, TEI remote, or Pinecone Inference). When reranking is enabled, `top_k × reranking_multiplier` candidates are fetched first.
+- **`additional_metadata`** in `/api/pdf/scrape`: Arbitrary key-value pairs merged into every chunk's payload at ingestion time. A `date` value in `DD/MM/YYYY` is auto-normalized to ISO `YYYY-MM-DD` — the primary key for temporal filtering.
+- **Domain prompts**: Pre-built prompts for `pa_italiana` (Italian public administration), `legal`, `generic`.
+- **All vector backends**: Temporal filters (`digest_type`, date range) work on Qdrant, Pinecone serverless/pod, and Milvus.
+
+**Enable:**
+```bash
+ENABLE_TEMPORAL_DIGEST=true   # enabled by default
+ENABLE_TASKIQ=true            # for async digest generation via Redis Stream
+```
+
+**Detailed documentation**: [`tilellm/modules/temporal_digest/docs/README.md`](tilellm/modules/temporal_digest/docs/README.md)
+**Examples**: [`tilellm/modules/temporal_digest/docs/EXAMPLES.md`](tilellm/modules/temporal_digest/docs/EXAMPLES.md)
 
 ---
 

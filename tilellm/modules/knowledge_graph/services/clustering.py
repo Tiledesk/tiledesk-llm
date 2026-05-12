@@ -14,6 +14,7 @@ except ImportError:
     IGRAPH_AVAILABLE = False
 
 from tilellm.modules.knowledge_graph.repository.repository import GraphRepository
+from tilellm.shared.llm_utils import extract_llm_text
 
 # Supponiamo tu abbia un client Minio o un repository per i file
 # from ..utils.minio_client import minio_client
@@ -242,7 +243,7 @@ class ClusterService:
         try:
             # Chiamata LLM (LangChain ainvoke)
             response = await self.llm.ainvoke(prompt)
-            content = response.content if hasattr(response, 'content') else str(response)
+            content = extract_llm_text(response)
             report_content = self._parse_json(content)
 
             # Aggiungiamo metadati strutturali per il file Parquet
@@ -320,7 +321,7 @@ class ClusterService:
         try:
             # Chiamata LLM (LangChain ainvoke)
             response = await self.llm.ainvoke(prompt)
-            content = response.content if hasattr(response, 'content') else str(response)
+            content = extract_llm_text(response)
             report_content = self._parse_json(content)
 
             # Aggiungiamo metadati strutturali

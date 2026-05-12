@@ -39,6 +39,7 @@ from ..utils.query_analysis import (
     detect_query_type_heuristic,
     apply_weight_adjustments
 )
+from tilellm.shared.llm_utils import extract_llm_text
 
 GRAPHRAG_AVAILABLE = False
 GraphRAGExtractor = None
@@ -1316,7 +1317,7 @@ class GraphRAGService:
                         HumanMessage(content=prompt)
                     ]
                     response = await llm_to_use.ainvoke(messages)
-                    answer = response.content if hasattr(response, 'content') else str(response)
+                    answer = extract_llm_text(response)
                 elif hasattr(llm_to_use, 'chat'):
                     answer = await llm_to_use.chat(
                         system=GRAPH_QA_SYSTEM_PROMPT,
@@ -1783,7 +1784,7 @@ class GraphRAGService:
                             HumanMessage(content=prompt)
                         ]
                         response = await llm.ainvoke(messages)
-                        answer = response.content if hasattr(response, 'content') else str(response)
+                        answer = extract_llm_text(response)
                     elif hasattr(llm, 'chat'):
                         answer = await llm.chat(
                             system=ADVANCED_GRAPH_QA_SYSTEM_PROMPT,

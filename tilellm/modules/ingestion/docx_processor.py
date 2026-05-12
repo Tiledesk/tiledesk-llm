@@ -226,8 +226,14 @@ async def process_docx_with_images(
 
                 if enriched_text_docs:
                     sc_r = await enrich_chunks_with_situated_context(
-                        enriched_text_docs, sc_llm, doc_context=doc_context
+                        chunks, 
+                        sc_llm, 
+                        doc_context=doc_context,
+                        profile=item.situated_context.profile,
+                        custom_prompt=item.situated_context.custom_prompt,
+                            metadata_extraction_prompt=item.situated_context.metadata_extraction_prompt
                     )
+
                     enriched_text_docs = sc_r.documents
                     sc_input += sc_r.token_usage.get("input_tokens", 0)
                     sc_output += sc_r.token_usage.get("output_tokens", 0)
@@ -236,8 +242,14 @@ async def process_docx_with_images(
 
                 if image_caption_docs:
                     sc_r = await enrich_chunks_with_situated_context(
-                        image_caption_docs, sc_llm, doc_context=doc_context
+                        chunks, 
+                        sc_llm, 
+                        doc_context=doc_context,
+                        profile=item.situated_context.profile,
+                        custom_prompt=item.situated_context.custom_prompt,
+                            metadata_extraction_prompt=item.situated_context.metadata_extraction_prompt
                     )
+
                     image_caption_docs = sc_r.documents
                     sc_input += sc_r.token_usage.get("input_tokens", 0)
                     sc_output += sc_r.token_usage.get("output_tokens", 0)

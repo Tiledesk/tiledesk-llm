@@ -14,6 +14,7 @@ from langchain_core.tools import tool
 
 from typing import Optional, List, Dict
 from pydantic import BaseModel, Field
+from tilellm.shared.llm_utils import extract_llm_text
 
 logger = logging.getLogger(__name__)
 
@@ -287,7 +288,7 @@ def create_multimodal_llm_tool(llm_instance: Any, base64_storage: Optional[Dict[
             response = await llm_with_params.ainvoke(messages)
 
             # Estrai il contenuto della risposta
-            result_text = response.content if hasattr(response, 'content') else str(response)
+            result_text = extract_llm_text(response)
 
             logger.info(f"LLM response received: {len(result_text)} characters")
             return result_text

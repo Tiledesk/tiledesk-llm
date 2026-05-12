@@ -68,6 +68,11 @@ class CachedVectorStore:
         sull'event loop corretto e che la collection esista.
         """
         cur_loop = asyncio.get_running_loop()
+        # Fast path: skip lock acquisition when already fully initialised on the
+        # current event loop.  Safe in asyncio (single-threaded) because there
+        # are no await points between the read and the return.
+        if self._collection_ready and self._qdrant_client is not None and self._loop is cur_loop:
+            return
         async with self._lock:
             # Se il client non esiste o l'event loop è cambiato, lo ricreiamo
             if self._qdrant_client is None or self._loop is not cur_loop:
@@ -256,76 +261,125 @@ class QdrantRepository(VectorStoreRepository):
         )
         return await cached_vs_wrapper.get_vector_store()
 
-    def build_filter(self, namespace: str, filter_dict: Optional[Dict] = None) -> models.Filter:
+    def build_filter(
+        self,
+        namespace: str,
+        filter_dict: Optional[Dict] = None,
+        metadata_filter: Optional[Dict] = None,
+    ) -> models.Filter:
         """
-        Build Qdrant Filter from namespace and optional Pinecone-style filter dict.
-        The filter dict is produced by build_tags_filter in tags_query_parser.
+        Build Qdrant Filter from namespace, optional tag filter, and optional
+        arbitrary payload field filter.
+
+        ``metadata_filter`` accepts a flat dict of ``{field: {operator: value}}``
+        conditions where operators are ``$eq``, ``$ne``, ``$gte``, ``$lte``, ``$in``.
+        Example::
+
+            {
+                "digest_type": {"$ne": "digest"},
+                "date": {"$gte": "2026-04-14", "$lte": "2026-04-14"},
+            }
+
+        Fields are mapped to ``metadata.<field>`` in the Qdrant payload.
         """
         from qdrant_client import models
-        
-        # Start with namespace condition
-        namespace_condition = models.FieldCondition(
-            key="metadata.namespace",
-            match=models.MatchValue(value=namespace)
-        )
-        
-        if not filter_dict:
-            return models.Filter(must=[namespace_condition])
-        
-        def convert_to_condition(filter_dict: Dict) -> models.Condition:
-            """Recursively convert Pinecone filter dict to Qdrant Condition."""
-            # Handle $and
-            if "$and" in filter_dict:
-                sub_conditions = [convert_to_condition(sub) for sub in filter_dict["$and"]]
-                return models.Filter(must=sub_conditions)
-            
-            # Handle $or
-            if "$or" in filter_dict:
-                sub_conditions = [convert_to_condition(sub) for sub in filter_dict["$or"]]
-                return models.Filter(should=sub_conditions)
-            
-            # Handle $not
-            if "$not" in filter_dict:
-                sub_condition = convert_to_condition(filter_dict["$not"])
-                return models.Filter(must_not=[sub_condition])
-            
-            # Handle tags field condition
-            if "tags" in filter_dict:
-                tag_cond = filter_dict["tags"]
-                if "$in" in tag_cond:
-                    tags = tag_cond["$in"]
-                    return models.FieldCondition(
-                        key="metadata.tags",
-                        match=models.MatchAny(any=tags)
+
+        # Namespace is always required
+        must_conditions = [
+            models.FieldCondition(
+                key="metadata.namespace",
+                match=models.MatchValue(value=namespace),
+            )
+        ]
+        must_not_conditions = []
+
+        # --- Tags filter (legacy, from build_tags_filter) ---
+        if filter_dict:
+            def convert_tags_condition(fd: Dict):
+                if "$and" in fd:
+                    return models.Filter(must=[convert_tags_condition(s) for s in fd["$and"]])
+                if "$or" in fd:
+                    return models.Filter(should=[convert_tags_condition(s) for s in fd["$or"]])
+                if "$not" in fd:
+                    return models.Filter(must_not=[convert_tags_condition(fd["$not"])])
+                if "tags" in fd:
+                    tag_cond = fd["tags"]
+                    if "$in" in tag_cond:
+                        return models.FieldCondition(key="metadata.tags", match=models.MatchAny(any=tag_cond["$in"]))
+                    if "$nin" in tag_cond:
+                        return models.FieldCondition(key="metadata.tags", match=models.MatchExcept(except_=tag_cond["$nin"]))
+                logger.warning(f"Unsupported tag filter structure: {fd}")
+                return models.Filter()
+
+            tag_cond = convert_tags_condition(filter_dict)
+            dump = tag_cond.model_dump() if isinstance(tag_cond, models.Filter) else {}
+            if not isinstance(tag_cond, models.Filter) or any(dump.get(k) for k in ("must", "should", "must_not")):
+                must_conditions.append(tag_cond)
+
+        # --- Arbitrary payload field filter ---
+        if metadata_filter:
+            for field, condition in metadata_filter.items():
+                key = f"metadata.{field}"
+                if not isinstance(condition, dict):
+                    # Plain equality shorthand
+                    must_conditions.append(
+                        models.FieldCondition(key=key, match=models.MatchValue(value=condition))
                     )
-                elif "$nin" in tag_cond:
-                    tags = tag_cond["$nin"]
-                    return models.FieldCondition(
-                        key="metadata.tags",
-                        match=models.MatchExcept(except_=tags)
+                    continue
+
+                if "$eq" in condition:
+                    must_conditions.append(
+                        models.FieldCondition(key=key, match=models.MatchValue(value=condition["$eq"]))
+                    )
+                elif "$ne" in condition:
+                    must_not_conditions.append(
+                        models.FieldCondition(key=key, match=models.MatchValue(value=condition["$ne"]))
                     )
                 else:
-                    logger.warning(f"Unsupported tag condition: {tag_cond}")
-                    # Fallback: treat as empty filter (no tag constraint)
-                    return models.Filter()
-            
-            # Unknown structure - log warning and return empty filter
-            logger.warning(f"Unsupported filter structure: {filter_dict}")
-            return models.Filter()
-        
-        tag_condition = convert_to_condition(filter_dict)
-        
-        # Combine namespace with tag condition using AND
-        # If tag_condition is empty Filter (no constraints), just return namespace filter
-        if isinstance(tag_condition, models.Filter) and not tag_condition.model_dump().get("must") and not tag_condition.model_dump().get("should") and not tag_condition.model_dump().get("must_not"):
-            return models.Filter(must=[namespace_condition])
-        
-        return models.Filter(must=[namespace_condition, tag_condition])
+                    # Range: $gte / $lte (may appear together)
+                    gte = condition.get("$gte")
+                    lte = condition.get("$lte")
+                    if gte is not None or lte is not None:
+                        def _is_iso_date(val) -> bool:
+                            if not isinstance(val, str):
+                                return False
+                            try:
+                                datetime.datetime.fromisoformat(val)
+                                return True
+                            except ValueError:
+                                return False
+
+                        if _is_iso_date(gte) or _is_iso_date(lte):
+                            must_conditions.append(
+                                models.FieldCondition(
+                                    key=key,
+                                    range=models.DatetimeRange(
+                                        gte=datetime.datetime.fromisoformat(gte) if gte else None,
+                                        lte=datetime.datetime.fromisoformat(lte) if lte else None,
+                                    ),
+                                )
+                            )
+                        else:
+                            must_conditions.append(
+                                models.FieldCondition(
+                                    key=key,
+                                    range=models.Range(gte=gte, lte=lte),
+                                )
+                            )
+                    if "$in" in condition:
+                        must_conditions.append(
+                            models.FieldCondition(key=key, match=models.MatchAny(any=condition["$in"]))
+                        )
+
+        return models.Filter(
+            must=must_conditions or None,
+            must_not=must_not_conditions or None,
+        )
 
     async def aadd_documents(self, engine: Engine, documents: List[Document], namespace: str, embedding_model: any, sparse_encoder: Union[str, TEIConfig, None] = None, **kwargs):
         logger.info(f"Adding {len(documents)} documents to namespace '{namespace}' with hybrid embeddings.")
 
-        sparse_encoder = TiledeskSparseEncoders(sparse_encoder) # Initialize with a default sparse encoder
+        sparse_encoder = TiledeskSparseEncoders(sparse_encoder) if sparse_encoder is not None else None
         # 1. Get Qdrant Client
         cached_vs_wrapper = await self.create_index_cache_wrapper(engine, embedding_model, await self.get_embeddings_dimension(embedding_model))
         qdrant_client = await cached_vs_wrapper.get_client()
@@ -423,12 +477,11 @@ class QdrantRepository(VectorStoreRepository):
                 # Generate dense embeddings
                 dense_embeds = await embedding_model.aembed_documents(batch_contents)
 
-                # Generate sparse embeddings (run in executor to avoid blocking event loop)
-                sparse_embeds = await loop.run_in_executor(
-                    None,
-                    sparse_encoder.encode_documents,
-                    batch_contents
-                )
+                # Generate sparse embeddings only when a sparse encoder is configured
+                if sparse_encoder is not None:
+                    sparse_embeds = await sparse_encoder.aencode_documents(batch_contents)
+                else:
+                    sparse_embeds = None
 
                 # 4. Upsert to Qdrant (run in executor as client is synchronous)
                 points_to_upsert = []
@@ -439,20 +492,21 @@ class QdrantRepository(VectorStoreRepository):
                         "namespace": namespace, # Ensure namespace is in metadata
                     }
 
+                    vectors: dict = {"text-dense": dense_embeds[j]}
+                    if sparse_embeds is not None:
+                        vectors["text-sparse"] = models.SparseVector(
+                            indices=sparse_embeds[j]['indices'],
+                            values=sparse_embeds[j]['values']
+                        )
+
                     points_to_upsert.append(
                         models.PointStruct(
                             id=batch_ids[j],
-                            vector={
-                                "text-dense": dense_embeds[j],
-                                "text-sparse": models.SparseVector(
-                                    indices=sparse_embeds[j]['indices'],
-                                    values=sparse_embeds[j]['values']
-                                )
-                            },
+                            vector=vectors,
                             payload={
                                 "metadata": combined_metadata,
                                 "page_content": content # Store page_content at root for retrieval
-                            } 
+                            }
                         )
                     )
                 
@@ -716,7 +770,13 @@ class QdrantRepository(VectorStoreRepository):
                     from tilellm.shared.situated_context import enrich_chunks_with_situated_context, build_llm_from_item
                     situated_llm = await build_llm_from_item(item)
                     if situated_llm:
-                        sc_result = await enrich_chunks_with_situated_context(chunks, situated_llm)
+                        sc_result = await enrich_chunks_with_situated_context(
+                            chunks, 
+                            situated_llm,
+                            profile=item.situated_context.profile,
+                            custom_prompt=item.situated_context.custom_prompt,
+                            metadata_extraction_prompt=item.situated_context.metadata_extraction_prompt
+                        )
                         chunks = sc_result.documents
                         sc_token_usage = sc_result.token_usage
                         logger.info(f"Situated context applied to {len(chunks)} chunks. Tokens: {sc_token_usage}")
@@ -879,7 +939,13 @@ class QdrantRepository(VectorStoreRepository):
                     from tilellm.shared.situated_context import enrich_chunks_with_situated_context, build_llm_from_item
                     situated_llm = await build_llm_from_item(item)
                     if situated_llm:
-                        sc_result = await enrich_chunks_with_situated_context(chunks, situated_llm)
+                        sc_result = await enrich_chunks_with_situated_context(
+                            chunks, 
+                            situated_llm,
+                            profile=item.situated_context.profile,
+                            custom_prompt=item.situated_context.custom_prompt,
+                            metadata_extraction_prompt=item.situated_context.metadata_extraction_prompt
+                        )
                         chunks = sc_result.documents
                         sc_token_usage = sc_result.token_usage
                         logger.info(f"Situated context applied to {len(chunks)} chunks. Tokens: {sc_token_usage}")
@@ -891,7 +957,7 @@ class QdrantRepository(VectorStoreRepository):
 
             sparse_encoder = TiledeskSparseEncoders(item.sparse_encoder)
 
-            doc_sparse_vectors = sparse_encoder.encode_documents(contents, batch_size=item.hybrid_batch_size)
+            doc_sparse_vectors = await sparse_encoder.aencode_documents(contents, item.hybrid_batch_size)
 
 
             #async with vector_store.async_index as indice:
@@ -936,7 +1002,8 @@ class QdrantRepository(VectorStoreRepository):
 
             from tilellm.shared.tags_query_parser import build_tags_filter
             pinecone_filter = build_tags_filter(question_answer.tags) if question_answer.tags else None
-            filter_qdrant = self.build_filter(question_answer.namespace, pinecone_filter)
+            metadata_filter = getattr(question_answer, '_metadata_filter', None)
+            filter_qdrant = self.build_filter(question_answer.namespace, pinecone_filter, metadata_filter)
 
             start_time = datetime.datetime.now() if question_answer.debug else 0
 
@@ -945,7 +1012,7 @@ class QdrantRepository(VectorStoreRepository):
                 logger.debug(f"emb_dimension: {emb_dimension}")
                 sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
                 index = vector_store.client
-                sparse_vector = sparse_encoder.encode_queries(question_answer.question)
+                sparse_vector = await sparse_encoder.aencode_queries(question_answer.question)
                 dense_vector = await embedding_obj.aembed_query(question_answer.question)
                 if question_answer.alpha == 0.5:
                     dense = dense_vector
@@ -986,10 +1053,28 @@ class QdrantRepository(VectorStoreRepository):
                         results.append(document)
 
             else:
-                results = await vector_store.asearch(query=question_answer.question,
-                                                     k=question_answer.top_k,
-                                                     search_type=question_answer.search_type,
-                                                     filter=filter_qdrant)
+                # Direct Qdrant client query — bypasses langchain_qdrant's
+                # _validate_collection_for_dense() which embeds "dummy_text" on every
+                # call to check vector dimensions, causing an extra unnecessary TEI round-trip.
+                index = vector_store.client
+                dense_vector = await embedding_obj.aembed_query(question_answer.question)
+                search_result = index.query_points(
+                    collection_name=question_answer.engine.index_name,
+                    query=dense_vector,
+                    using="text-dense",
+                    query_filter=filter_qdrant,
+                    limit=question_answer.top_k,
+                    with_payload=True,
+                    with_vectors=False,
+                ).points
+                results = []
+                for point in search_result:
+                    if point.payload and "page_content" in point.payload:
+                        results.append(Document(
+                            id=point.id,
+                            metadata=point.payload.get('metadata', ''),
+                            page_content=point.payload.pop('page_content')
+                        ))
 
             end_time = datetime.datetime.now() if question_answer.debug else 0
             duration = (end_time - start_time).total_seconds() if question_answer.debug else 0.0

@@ -180,32 +180,33 @@ class RaptorRepository:
     async def get_tree_by_doc_id(self, doc_id: str, namespace: str) -> Optional[RaptorTree]:
         """
         Find RAPTOR tree for a specific document.
-        
+
         Args:
             doc_id: Document ID
             namespace: Namespace
-            
+
         Returns:
             RaptorTree or None
         """
         try:
-            # Search for tree with matching doc_id and namespace
-            tree_key_pattern = f"{self._tree_prefix}*"
+            if not self.redis_client:
+                return None
 
-            if self.redis_client:
-                # Use scan_iter instead of keys() to avoid blocking Redis
-                keys = [k async for k in self.redis_client.scan_iter(tree_key_pattern)]
-                for key in keys:
-                    tree_data = await self.redis_client.get(key)
-                    if tree_data:
-                        import json
-                        tree_dict = json.loads(tree_data)
-                        if (tree_dict.get("doc_id") == doc_id and 
+            keys = [k async for k in self.redis_client.scan_iter(f"{self._tree_prefix}*")]
+            if not keys:
+                return None
+
+            # Fetch all tree metadata in one round-trip
+            all_data = await self.redis_client.mget(keys)
+            for tree_data in all_data:
+                if tree_data:
+                    tree_dict = json.loads(tree_data)
+                    if (tree_dict.get("doc_id") == doc_id and
                             tree_dict.get("namespace") == namespace):
-                            return RaptorTree(**tree_dict)
-            
+                        return RaptorTree(**tree_dict)
+
             return None
-            
+
         except Exception as e:
             logger.error(f"Error finding tree for document: {e}", exc_info=True)
             return None
@@ -213,32 +214,34 @@ class RaptorRepository:
     async def delete_tree(self, tree_id: str) -> bool:
         """
         Delete RAPTOR tree and all associated nodes.
-        
+
         Args:
             tree_id: Tree identifier
-            
+
         Returns:
             True if successful
         """
         try:
-            # Get tree first to know which nodes to delete
             tree = await self.get_tree(tree_id)
             if not tree:
                 logger.warning(f"Tree {tree_id} not found for deletion")
                 return False
-            
-            # Delete all nodes
-            for node_id in tree.nodes.keys():
-                await self.delete_node(node_id)
-            
-            # Delete tree structure
+
+            if tree.nodes and self.redis_client:
+                # Pipeline all deletes in a single round-trip
+                node_keys = [self._get_node_key(nid) for nid in tree.nodes.keys()]
+                async with self.redis_client.pipeline(transaction=False) as pipe:
+                    for key in node_keys:
+                        pipe.delete(key)
+                    await pipe.execute()
+
             tree_key = self._get_tree_key(tree_id)
             if self.redis_client:
                 await self.redis_client.delete(tree_key)
-            
+
             logger.info(f"Deleted RAPTOR tree {tree_id} with {len(tree.nodes)} nodes")
             return True
-            
+
         except Exception as e:
             logger.error(f"Error deleting RAPTOR tree: {e}", exc_info=True)
             return False
@@ -266,30 +269,32 @@ class RaptorRepository:
     async def list_trees(self, namespace: str) -> List[str]:
         """
         List all RAPTOR trees in a namespace.
-        
+
         Args:
             namespace: Namespace to search
-            
+
         Returns:
             List of tree IDs
         """
         try:
             tree_ids = []
-            tree_key_pattern = f"{self._tree_prefix}*"
+            if not self.redis_client:
+                return tree_ids
 
-            if self.redis_client:
-                # Use scan_iter instead of keys() to avoid blocking Redis
-                keys = [k async for k in self.redis_client.scan_iter(tree_key_pattern)]
-                for key in keys:
-                    tree_data = await self.redis_client.get(key)
-                    if tree_data:
-                        import json
-                        tree_dict = json.loads(tree_data)
-                        if tree_dict.get("namespace") == namespace:
-                            tree_ids.append(tree_dict.get("tree_id"))
-            
+            keys = [k async for k in self.redis_client.scan_iter(f"{self._tree_prefix}*")]
+            if not keys:
+                return tree_ids
+
+            # Fetch all tree metadata in one round-trip
+            all_data = await self.redis_client.mget(keys)
+            for tree_data in all_data:
+                if tree_data:
+                    tree_dict = json.loads(tree_data)
+                    if tree_dict.get("namespace") == namespace:
+                        tree_ids.append(tree_dict.get("tree_id"))
+
             return tree_ids
-            
+
         except Exception as e:
             logger.error(f"Error listing trees: {e}", exc_info=True)
             return []
@@ -378,6 +383,68 @@ class RaptorRepository:
             logger.error(f"Error indexing RAPTOR node embedding: {e}", exc_info=True)
             return False
     
+    async def batch_index_nodes(
+        self,
+        nodes: List[RaptorNode],
+        namespace: str,
+        repo: Any,
+        engine: Any,
+        llm_embeddings: Any,
+        sparse_encoder: Any = None,
+    ) -> bool:
+        """
+        Index multiple RAPTOR nodes in the vector store with a single aadd_documents call.
+
+        Args:
+            nodes: RaptorNode list to index
+            namespace: Original document namespace (RAPTOR namespace derived automatically)
+            repo: Vector store repository
+            engine: Engine configuration object
+            llm_embeddings: Embeddings model
+            sparse_encoder: Optional sparse encoder for hybrid search
+
+        Returns:
+            True if successful
+        """
+        if not nodes:
+            return True
+        try:
+            from langchain_core.documents import Document
+
+            raptor_namespace = self.get_raptor_namespace(namespace)
+            docs = []
+            for node in nodes:
+                child_ids_str = ",".join(node.child_ids) if node.child_ids else ""
+                doc = Document(
+                    page_content=node.summary or node.content,
+                    metadata={
+                        **node.metadata,
+                        "node_id": node.node_id,
+                        "level": node.level.value,
+                        "is_summary": node.level.value > 0,
+                        "is_raptor_node": True,
+                        "child_ids": child_ids_str,
+                        "parent_id": node.parent_id or "",
+                        "doc_id": node.metadata.get("doc_id", ""),
+                        "raptor_tree_id": node.metadata.get("raptor_tree_id", ""),
+                    },
+                )
+                docs.append(doc)
+
+            logger.info(f"Batch indexing {len(docs)} RAPTOR nodes in {raptor_namespace}")
+            await repo.aadd_documents(
+                engine=engine,
+                documents=docs,
+                namespace=raptor_namespace,
+                embedding_model=llm_embeddings,
+                sparse_encoder=sparse_encoder,
+                skip_delete=True,
+            )
+            return True
+        except Exception as e:
+            logger.error(f"Error batch indexing RAPTOR nodes: {e}", exc_info=True)
+            return False
+
     async def get_summaries_for_level(
         self,
         namespace: str,

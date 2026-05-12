@@ -8,6 +8,7 @@ to optimize retrieval strategies.
 import logging
 from typing import Optional, Dict, Any
 from enum import Enum
+from tilellm.shared.llm_utils import extract_llm_text
 
 logger = logging.getLogger(__name__)
 
@@ -61,11 +62,11 @@ async def detect_query_type_with_llm(
         # Try async invocation
         if hasattr(llm, 'ainvoke'):
             response = await llm.ainvoke(prompt)
-            content = response.content if hasattr(response, 'content') else str(response)
+            content = extract_llm_text(response)
         elif hasattr(llm, 'invoke'):
             # Fallback to sync
             response = llm.invoke(prompt)
-            content = response.content if hasattr(response, 'content') else str(response)
+            content = extract_llm_text(response)
         else:
             raise AttributeError("LLM does not have ainvoke or invoke method")
 

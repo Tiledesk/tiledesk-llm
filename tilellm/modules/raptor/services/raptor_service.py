@@ -6,6 +6,7 @@ Implements:
 - Phase 4: Collapsed tree indexing
 """
 
+import asyncio
 import logging
 import time
 import uuid
@@ -116,17 +117,16 @@ class RaptorService:
             for node in leaf_nodes:
                 tree.nodes[node.node_id] = node
 
-            # Index leaf node embeddings in RAPTOR namespace
+            # Index leaf node embeddings in RAPTOR namespace (batch)
             logger.info(f"Indexing {len(leaf_nodes)} leaf chunks in RAPTOR namespace")
-            for node in leaf_nodes:
-                await self.repo.index_summary_embedding(
-                    node=node,
-                    namespace=namespace,
-                    repo=vector_repo,
-                    engine=engine,
-                    llm_embeddings=embeddings,
-                    sparse_encoder=sparse_encoder,
-                )
+            await self.repo.batch_index_nodes(
+                nodes=leaf_nodes,
+                namespace=namespace,
+                repo=vector_repo,
+                engine=engine,
+                llm_embeddings=embeddings,
+                sparse_encoder=sparse_encoder,
+            )
             
             # Level 1+: Recursive summarization
             current_level_nodes = leaf_nodes
@@ -144,10 +144,9 @@ class RaptorService:
                     embeddings
                 )
                 
-                # Generate summaries for each cluster
-                summary_nodes = []
-                for cluster_idx, cluster in enumerate(clusters):
-                    summary_node = await self._generate_summary_for_cluster(
+                # Generate summaries for all clusters in parallel
+                summary_nodes = list(await asyncio.gather(*[
+                    self._generate_summary_for_cluster(
                         cluster=cluster,
                         level=next_level,
                         llm=llm,
@@ -156,18 +155,20 @@ class RaptorService:
                         namespace=namespace,
                         tree_id=tree_id,
                     )
-                    summary_nodes.append(summary_node)
+                    for cluster in clusters
+                ]))
 
-                    # Index summary embedding
-                    if summary_node.summary:
-                        await self.repo.index_summary_embedding(
-                            node=summary_node,
-                            namespace=namespace,
-                            repo=vector_repo,
-                            engine=engine,
-                            llm_embeddings=embeddings,
-                            sparse_encoder=sparse_encoder,
-                        )
+                # Batch-index all summary embeddings in one vector store call
+                nodes_to_index = [n for n in summary_nodes if n.summary]
+                if nodes_to_index:
+                    await self.repo.batch_index_nodes(
+                        nodes=nodes_to_index,
+                        namespace=namespace,
+                        repo=vector_repo,
+                        engine=engine,
+                        llm_embeddings=embeddings,
+                        sparse_encoder=sparse_encoder,
+                    )
                 
                 # Add summary nodes to tree
                 tree.levels[next_level.value] = [
@@ -298,19 +299,20 @@ class RaptorService:
 
                 # Store embeddings in node metadata for clustering
                 texts = [node.content for node in nodes]
-                # Use async embeddings to avoid blocking the event loop
                 node_embeddings = await embeddings.aembed_documents(texts)
 
                 for node, emb in zip(nodes, node_embeddings):
                     node.metadata["embedding_default"] = emb
 
-                # Perform RAPTOR clustering
+                # Run CPU-bound UMAP+GMM in thread pool to avoid blocking event loop
                 clustering = RAPTORClustering()
-                clusters = clustering.perform_clustering(
-                    nodes=nodes,
-                    embedding_model_name="default",
-                    max_length_in_cluster=cluster_size * 500,  # Approx tokens
-                    verbose=True,
+                clusters = await asyncio.to_thread(
+                    lambda: clustering.perform_clustering(
+                        nodes=nodes,
+                        embedding_model_name="default",
+                        max_length_in_cluster=cluster_size * 500,
+                        verbose=True,
+                    )
                 )
 
                 # Validate clustering result is not empty

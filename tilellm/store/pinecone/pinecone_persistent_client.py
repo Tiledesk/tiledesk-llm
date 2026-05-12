@@ -21,6 +21,10 @@ class PersistentPineconeClient:
         self._index_cache: Dict[str, Any] = {}
         self._index_locks: Dict[str, asyncio.Lock] = {}
 
+        # Throttle health-checks: avoid describe_index_stats on every request
+        self._last_test_time: Dict[str, float] = {}
+        self._test_every_sec: float = 60.0
+
     async def get_client(self):
         """Ottieni il client, creandolo se necessario"""
         self.last_used = time.time()
@@ -37,15 +41,19 @@ class PersistentPineconeClient:
         """Ottieni l'indice dalla cache o crealo se non esiste"""
         cache_key = engine.index_name
 
-        # Controlla cache
+        # Controlla cache — health-check throttled a _test_every_sec per evitare
+        # un describe_index_stats() network round-trip su ogni richiesta.
         if cache_key in self._index_cache:
             index = self._index_cache[cache_key]
-            # Testa la connessione
+            now = time.time()
+            if now - self._last_test_time.get(cache_key, 0) < self._test_every_sec:
+                return index  # still within TTL, skip health-check
             if await self._test_index(index):
+                self._last_test_time[cache_key] = now
                 return index
             else:
-                # Rimuovi dalla cache se non funziona
                 self._index_cache.pop(cache_key, None)
+                self._last_test_time.pop(cache_key, None)
 
         # Ottieni lock per questo indice
         lock = self._index_locks.setdefault(cache_key, asyncio.Lock())
@@ -53,10 +61,15 @@ class PersistentPineconeClient:
             # Double-check dopo aver ottenuto il lock
             if cache_key in self._index_cache:
                 index = self._index_cache[cache_key]
+                now = time.time()
+                if now - self._last_test_time.get(cache_key, 0) < self._test_every_sec:
+                    return index
                 if await self._test_index(index):
+                    self._last_test_time[cache_key] = now
                     return index
                 else:
                     self._index_cache.pop(cache_key, None)
+                    self._last_test_time.pop(cache_key, None)
 
             # Crea/assicurati l'esistenza dell'indice
             client = await self.get_client()
@@ -68,6 +81,7 @@ class PersistentPineconeClient:
 
             # Salva in cache
             self._index_cache[cache_key] = index
+            self._last_test_time[cache_key] = time.time()
             return index
 
     async def _ensure_index_exists(self, pc, engine, emb_dimension: int) -> Optional[str]:

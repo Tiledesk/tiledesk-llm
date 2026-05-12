@@ -9,6 +9,7 @@ import logging
 import tempfile
 import shutil
 import os
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Union
@@ -41,6 +42,38 @@ from .minio_storage import MinIOStorageService, get_minio_storage_service
 from tilellm.tools.reranker import TileReranker
 
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _graph_create_lock(graph_name: str, ttl: int = 10800):
+    """
+    Distributed Redis lock that prevents two workers from running
+    graph creation concurrently for the same graph_name.
+    TTL defaults to 3 hours; raise immediately if lock is already held.
+    """
+    import redis.asyncio as aioredis
+    redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
+    client = aioredis.from_url(redis_url)
+    lock_key = f"graph_lock:{graph_name}"
+    lock = client.lock(lock_key, timeout=ttl, blocking=False)
+    acquired = await lock.acquire()
+    if not acquired:
+        await client.aclose()
+        raise RuntimeError(
+            f"Graph creation for '{graph_name}' is already running on another worker. "
+            "Wait for the current task to complete before submitting a new one."
+        )
+    logger.info(f"Acquired graph creation lock for '{graph_name}' (ttl={ttl}s)")
+    try:
+        yield
+    finally:
+        try:
+            await lock.release()
+            logger.info(f"Released graph creation lock for '{graph_name}'")
+        except Exception as e:
+            logger.warning(f"Could not release graph lock for '{graph_name}': {e}")
+        await client.aclose()
+
 
 # Optional DuckDB for efficient Parquet querying
 DUCKDB_AVAILABLE = None
@@ -159,7 +192,10 @@ class CommunityGraphService:
         save_to_minio: bool = True,
         timestamp: Optional[str] = None,
         cleanup_before: bool = True,
-        graph_name: Optional[str] = None
+        graph_name: Optional[str] = None,
+        chunk_window_size: int = 500,
+        batch_size: int = 100,
+        extraction_concurrency: int = 10,
     ) -> Dict[str, Any]:
         """
         Create a knowledge graph with community reports from vector store chunks.
@@ -199,76 +235,83 @@ class CommunityGraphService:
         
         if timestamp is None:
             timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        
-        try:
-            # 2. Import documents from vector store using GraphRAG service
-            if self.graph_rag_service is None:
-                raise RuntimeError("GraphRAGService not initialized")
-            
-            # Set vector store repository if needed
-            if self.graph_rag_service.vector_store_repository is None:
-                self.graph_rag_service.set_vector_store_repository(vector_store_repo)
-            
-            # Import documents (extracts entities/relationships and imports to Neo4j)
-            import_stats = {}
-            if import_to_graph:
-                # Determine engine_type for metadata filtering
-                engine_type = None
-                if hasattr(engine, 'type') and engine.type is not None:
-                    engine_type = engine.type
-                elif hasattr(engine, 'deployment'):
-                    engine_type = engine.deployment
-                import_stats = await self.graph_rag_service.import_from_vector_store(
+
+        _lock_graph_name = graph_name if graph_name else namespace
+        _lock_ttl = int(os.environ.get("GRAPH_LOCK_TTL_SECONDS", 86400))
+        async with _graph_create_lock(_lock_graph_name, ttl=_lock_ttl):
+            try:
+                # 2. Import documents from vector store using GraphRAG service
+                if self.graph_rag_service is None:
+                    raise RuntimeError("GraphRAGService not initialized")
+
+                # Set vector store repository if needed
+                if self.graph_rag_service.vector_store_repository is None:
+                    self.graph_rag_service.set_vector_store_repository(vector_store_repo)
+
+                # Import documents (extracts entities/relationships and imports to Neo4j)
+                import_stats = {}
+                if import_to_graph:
+                    # Determine engine_type for metadata filtering
+                    engine_type = None
+                    if hasattr(engine, 'type') and engine.type is not None:
+                        engine_type = engine.type
+                    elif hasattr(engine, 'deployment'):
+                        engine_type = engine.deployment
+                    import_stats = await self.graph_rag_service.import_from_vector_store(
+                        namespace=namespace,
+                        creation_prompt=creation_prompt,
+                        vector_store_repo=vector_store_repo,
+                        engine=engine,
+                        limit=limit,
+                        llm=llm,
+                        index_name=index_name,
+                        overwrite=overwrite,
+                        engine_type=engine_type,
+                        graph_name=graph_name,
+                        chunk_window_size=chunk_window_size,
+                        batch_size=batch_size,
+                        extraction_concurrency=extraction_concurrency,
+                        minio_storage_service=self.minio_storage_service,
+                    )
+                    logger.info(f"Imported {import_stats.get('nodes_created', 0)} nodes and "
+                               f"{import_stats.get('relationships_created', 0)} relationships")
+                else:
+                    logger.info("Skipping FalkorDB import (import_to_graph=False)")
+
+                # 3-7. Generate community reports and export (Hierarchical 0-2)
+                cluster_stats = await self.generate_hierarchical_reports(
                     namespace=namespace,
-                    creation_prompt=creation_prompt,
-                    vector_store_repo=vector_store_repo,
-                    engine=engine,
-                    limit=limit,
-                    llm=llm,
                     index_name=index_name,
-                    overwrite=overwrite,
-                    engine_type=engine_type,
-                    graph_name=graph_name
+                    graph_name=graph_name,
+                    sparse_encoder=sparse_encoder,
+                    output_dir=output_dir,
+                    save_to_minio=save_to_minio,
+                    timestamp=timestamp,
+                    llm=llm,
+                    vector_store_repo=vector_store_repo,
+                    llm_embeddings=llm_embeddings,
+                    engine=engine,
+                    cleanup_before=cleanup_before
                 )
-                logger.info(f"Imported {import_stats.get('nodes_created', 0)} nodes and "
-                           f"{import_stats.get('relationships_created', 0)} relationships")
-            else:
-                logger.info("Skipping FalkorDB import (import_to_graph=False)")
-            
-            # 3-7. Generate community reports and export (Hierarchical 0-2)
-            cluster_stats = await self.generate_hierarchical_reports(
-                namespace=namespace,
-                index_name=index_name,
-                graph_name=graph_name,
-                sparse_encoder=sparse_encoder,
-                output_dir=output_dir,
-                save_to_minio=save_to_minio,
-                timestamp=timestamp,
-                llm=llm,
-                vector_store_repo=vector_store_repo,
-                llm_embeddings=llm_embeddings,
-                engine=engine,
-                cleanup_before=cleanup_before
-            )
-            
-            # Combine stats
-            result = {
-                "namespace": namespace,
-                "chunks_processed": limit,
-                "nodes_created": import_stats.get("nodes_created", 0),
-                "relationships_created": import_stats.get("relationships_created", 0),
-                **cluster_stats,
-                "status": "success",
-                "cleanup_temp": cleanup_temp
-            }
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Failed to create community graph: {e}")
-            if cleanup_temp:
-                shutil.rmtree(output_dir, ignore_errors=True)
-            raise
+
+                # Combine stats
+                result = {
+                    "namespace": namespace,
+                    "chunks_processed": limit,
+                    "nodes_created": import_stats.get("nodes_created", 0),
+                    "relationships_created": import_stats.get("relationships_created", 0),
+                    **cluster_stats,
+                    "status": "success",
+                    "cleanup_temp": cleanup_temp
+                }
+
+                return result
+
+            except Exception as e:
+                logger.error(f"Failed to create community graph: {e}")
+                if cleanup_temp:
+                    shutil.rmtree(output_dir, ignore_errors=True)
+                raise
 
     async def generate_hierarchical_reports(
         self,
@@ -284,7 +327,10 @@ class CommunityGraphService:
         llm_embeddings=None,
         engine: Optional[Engine] = None,
         overwrite: bool = True,
-        cleanup_before: bool = True
+        cleanup_before: bool = True,
+        resolutions: Optional[List[float]] = None,
+        min_community_size: int = 8,
+        max_community_prompt_chars: int = 18000,
     ) -> Dict[str, Any]:
         """
         Generate hierarchical community reports (Level 0, 1, 2) using Leiden clustering with varying resolution.
@@ -316,6 +362,25 @@ class CommunityGraphService:
         # Resolve graph name once, before cleanup and clustering
         graph_name_to_use = graph_name if graph_name is not None else namespace
 
+        _lock_key = graph_name_to_use
+        _lock_ttl = int(os.environ.get("GRAPH_LOCK_TTL_SECONDS", 86400))
+        async with _graph_create_lock(_lock_key, ttl=_lock_ttl):
+            return await self._generate_hierarchical_reports_locked(
+                namespace=namespace, index_name=index_name, graph_name=graph_name_to_use,
+                sparse_encoder=sparse_encoder, output_dir=output_dir, save_to_minio=save_to_minio,
+                timestamp=timestamp, llm=llm, vector_store_repo=vector_store_repo,
+                llm_embeddings=llm_embeddings, engine=engine, overwrite=overwrite,
+                cleanup_before=cleanup_before, resolutions=resolutions,
+                min_community_size=min_community_size, max_community_prompt_chars=max_community_prompt_chars,
+            )
+
+    async def _generate_hierarchical_reports_locked(
+        self, namespace, index_name, graph_name_to_use, sparse_encoder, output_dir,
+        save_to_minio, timestamp, llm, vector_store_repo, llm_embeddings, engine,
+        overwrite, cleanup_before, resolutions, min_community_size, max_community_prompt_chars,
+    ):
+        graph_name = graph_name_to_use
+
         # Perform cleanup before clustering if enabled
         if cleanup_before and vector_store_repo and engine:
             cleanup_stats = await self.cleanup_before_clustering(
@@ -339,12 +404,14 @@ class CommunityGraphService:
         if llm_to_use is None:
              raise RuntimeError("LLM not provided")
 
-        cluster_service = ClusterService(repository=repo, llm=llm_to_use)
+        cluster_service = ClusterService(repository=repo, llm=llm_to_use, max_prompt_chars=max_community_prompt_chars)
 
         # Engine is guaranteed non‑None after validation
         assert engine is not None
 
-        levels_config = { 0: 1.2, 1: 0.8, 2: 0.5 }
+        _default_resolutions = [0.05, 0.15, 0.35]
+        _res = resolutions if resolutions and len(resolutions) == 3 else _default_resolutions
+        levels_config = {0: _res[0], 1: _res[1], 2: _res[2]}
 
         all_reports = []
         total_communities = 0
@@ -356,13 +423,25 @@ class CommunityGraphService:
                 namespace=namespace,
                 index_name=index_name,
                 engine_name=engine.name,
-                engine_type=engine.type, #if engine.name=="pinecone" else engine.deployment,
+                engine_type=engine.type,
                 resolution=resolution,
-                graph_name=graph_name_to_use
+                graph_name=graph_name_to_use,
+                min_community_size=min_community_size,
             )
             if stats.get("reports"):
-                all_reports.extend(stats["reports"])
+                level_reports = stats["reports"]
+                all_reports.extend(level_reports)
                 total_communities += stats.get("communities_detected", 0)
+                # Persist level reports to MinIO Parquet for snapshot/reimport support
+                if self.minio_storage_service:
+                    try:
+                        self.minio_storage_service.save_community_reports(
+                            graph_name=graph_name_to_use,
+                            level=level,
+                            reports=level_reports,
+                        )
+                    except Exception as _me:
+                        logger.warning(f"Failed to save community reports (level={level}) to MinIO: {_me}")
 
         # Index reports in vector store for semantic search with Synthetic QA
         print(f"all report: {len(all_reports)}, vector {vector_store_repo} embedding: {llm_embeddings}, engine: {engine}")
@@ -1418,6 +1497,25 @@ class CommunityGraphService:
             logger.error(f"Enhanced global search error: {e}", exc_info=True)
             return {"answer": f"An error occurred during enhanced global search: {str(e)}", "status": "error"}
 
+    def _extract_text_from_llm_response(self, response: Any) -> str:
+        """Robustly extract string content from LangChain LLM response (handling reasoning/lists)."""
+        content = getattr(response, 'content', response)
+        
+        # Handle list-based content (e.g. reasoning + text parts)
+        if isinstance(content, list):
+            text_parts = []
+            for part in content:
+                if isinstance(part, dict):
+                    if part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                    elif "text" in part:
+                        text_parts.append(part["text"])
+                elif isinstance(part, str):
+                    text_parts.append(part)
+            return "\n".join(text_parts).strip()
+        
+        return str(content).strip()
+
     async def _map_report_to_answer(self, question, report, lang, llm):
         """Analyze a single report to extract relevant info."""
         title, summary, full_text, level, rating = report
@@ -1441,11 +1539,11 @@ class CommunityGraphService:
         try:
             if hasattr(llm, 'ainvoke'):
                 response = await llm.ainvoke(prompt)
-                content = response.content if hasattr(response, 'content') else str(response)
+                content = self._extract_text_from_llm_response(response)
             else:
                 # Synchronous fallback (should be avoided in async loop but handled)
                 response = llm.invoke(prompt)
-                content = response.content if hasattr(response, 'content') else str(response)
+                content = self._extract_text_from_llm_response(response)
             
             return content
         except Exception as e:
@@ -1468,10 +1566,10 @@ class CommunityGraphService:
             try:
                 if hasattr(llm, 'ainvoke'):
                     response = await llm.ainvoke(not_found_prompt)
-                    return response.content if hasattr(response, 'content') else str(response)
+                    return self._extract_text_from_llm_response(response)
                 else:
                     response = llm.invoke(not_found_prompt)
-                    return response.content if hasattr(response, 'content') else str(response)
+                    return self._extract_text_from_llm_response(response)
             except Exception:
                 # Fallback in case of error
                 return "I couldn't find sufficient relevant information in the community reports to answer your question."
@@ -1509,10 +1607,10 @@ class CommunityGraphService:
         try:
             if hasattr(llm, 'ainvoke'):
                 response = await llm.ainvoke(prompt)
-                content = response.content if hasattr(response, 'content') else str(response)
+                content = self._extract_text_from_llm_response(response)
             else:
                 response = llm.invoke(prompt)
-                content = response.content if hasattr(response, 'content') else str(response)
+                content = self._extract_text_from_llm_response(response)
             return content
         except Exception as e:
             logger.error(f"Error in reduce phase: {e}")
@@ -1953,7 +2051,7 @@ class CommunityGraphService:
         try:
             from langchain_core.messages import HumanMessage
             response = await llm.ainvoke([HumanMessage(content=prompt)])
-            answer = response.content if hasattr(response, 'content') else str(response)
+            answer = self._extract_text_from_llm_response(response)
         except Exception as e:
             logger.error(f"Synthesis failed: {e}")
             answer = "I'm sorry, I encountered an error generating the answer."
@@ -2022,7 +2120,7 @@ Based on the above community reports, please answer the question. If the reports
                 
                 # Use LLM (assuming it has invoke method)
                 response = llm.invoke(prompt)
-                answer = response.content if hasattr(response, 'content') else str(response)
+                answer = self._extract_text_from_llm_response(response)
                 logger.info("Generated answer using LLM")
                 return answer
             except Exception as e:

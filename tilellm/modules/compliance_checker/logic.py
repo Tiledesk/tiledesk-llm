@@ -214,7 +214,21 @@ async def _judge_requirement(
             SystemMessage(content=config.system_prompt),
             HumanMessage(content=user_msg),
         ])
-        raw = response.content.strip()
+        content = response.content
+        # Reasoning models (gpt-5.x, o-series) return content as a list of blocks
+        if isinstance(content, list):
+            text_parts = []
+            for part in content:
+                if isinstance(part, dict):
+                    if part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                    elif "text" in part:
+                        text_parts.append(part["text"])
+                elif isinstance(part, str):
+                    text_parts.append(part)
+            raw = "\n".join(text_parts).strip()
+        else:
+            raw = str(content).strip()
         # Strip markdown code fences if the model added them
         if raw.startswith("```"):
             raw = raw.split("```")[1]

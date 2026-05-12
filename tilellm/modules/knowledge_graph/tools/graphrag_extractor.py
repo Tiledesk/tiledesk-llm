@@ -192,23 +192,42 @@ class GraphRAGExtractor:
         
         try:
             # Call LLM - assume it has invoke method (LangChain style)
-            if hasattr(self.llm, 'invoke'):
+            if hasattr(self.llm, 'ainvoke'):
                 from langchain_core.messages import HumanMessage, SystemMessage
                 messages = [
                     SystemMessage(content="You are a helpful assistant that extracts entities and relationships from text."),
                     HumanMessage(content=prompt)
                 ]
                 response = await self.llm.ainvoke(messages)
-                response_text = response.content if hasattr(response, 'content') else str(response)
+                
+                # Extract content from response
+                content = getattr(response, 'content', response)
+                
+                # Handle list-based content (e.g. reasoning + text parts)
+                if isinstance(content, list):
+                    text_parts = []
+                    for part in content:
+                        if isinstance(part, dict):
+                            if part.get("type") == "text":
+                                text_parts.append(part.get("text", ""))
+                            elif "text" in part:
+                                text_parts.append(part["text"])
+                        elif isinstance(part, str):
+                            text_parts.append(part)
+                    response_text = "\n".join(text_parts).strip()
+                else:
+                    response_text = str(content).strip()
             elif hasattr(self.llm, 'chat'):
                 # Assume chat method takes system and messages
-                response_text = await self.llm.chat(
+                resp = await self.llm.chat(
                     system="You are a helpful assistant that extracts entities and relationships from text.",
                     messages=[{"role": "user", "content": prompt}]
                 )
+                response_text = str(resp).strip()
             else:
                 # Assume it's a callable that returns text
-                response_text = await self.llm(prompt)
+                resp = await self.llm(prompt)
+                response_text = str(resp).strip()
             
             # Parse response
             lines = response_text.strip().split('\n')

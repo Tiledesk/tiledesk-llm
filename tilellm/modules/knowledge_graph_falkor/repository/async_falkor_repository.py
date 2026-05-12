@@ -200,8 +200,14 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
         except Exception as e:
             logger.error(f"Error ensuring indexes on graph '{graph_name}': {e}")
 
+    @staticmethod
+    def _normalize_name(name: str) -> str:
+        """Normalize an entity name for deduplication: strip whitespace and lowercase."""
+        return name.strip().lower()
+
     async def _execute_query(self, query: str, parameters: Optional[Dict[str, Any]] = None,
-                            namespace: Optional[str] = None, graph_name: Optional[str] = None) -> List[Dict[str, Any]]:
+                            namespace: Optional[str] = None, graph_name: Optional[str] = None,
+                            timeout: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         Execute a FalkorDB query (openCypher) asynchronously.
 
@@ -210,6 +216,7 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
             parameters: Optional query parameters
             namespace: Optional namespace to select graph
             graph_name: Optional explicit graph name (overrides namespace)
+            timeout: Optional per-query timeout in ms (overrides connection-level timeout)
 
         Returns:
             List of result records as dictionaries
@@ -218,7 +225,7 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
         logger.debug(f"Executing async query on graph '{graph.name}': {query}, params: {parameters}")
 
         try:
-            result = await graph.query(query, params=parameters if parameters else None)
+            result = await graph.query(query, params=parameters if parameters else None, timeout=timeout)
 
             # Convert result to list of dicts
             records = []
@@ -698,6 +705,290 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
             )
         raise RuntimeError("Failed to create relationship")
 
+    async def batch_create_nodes(
+        self,
+        entities: List[Dict[str, Any]],
+        namespace: str,
+        index_name: Optional[str] = None,
+        engine_name: Optional[str] = None,
+        engine_type: Optional[str] = None,
+        graph_name: Optional[str] = None,
+        batch_size: int = 100,
+        existing_entity_node_map: Optional[Dict[str, str]] = None,
+    ) -> Dict[str, str]:
+        """
+        Bulk-create entity nodes grouped by label using UNWIND.
+
+        If existing_entity_node_map is provided (normalized_name → node_id),
+        entities whose normalized name already appears in it are skipped and their
+        existing node_id is returned directly — preventing duplicates across windows
+        and across runs (Level 1+2 deduplication).
+
+        Returns a dict mapping normalized_name → node_id for every node
+        (newly created or reused).  Falls back to individual creates if UNWIND fails.
+        """
+        from collections import defaultdict
+        from datetime import datetime
+
+        entity_node_map: Dict[str, str] = {}
+        timestamp = datetime.now().isoformat()
+        existing = existing_entity_node_map or {}
+
+        by_label: Dict[str, list] = defaultdict(list)
+        reused = 0
+        for entity in entities:
+            norm = self._normalize_name(entity.get("entity_name", ""))
+            if norm and norm in existing:
+                entity_node_map[norm] = existing[norm]
+                reused += 1
+                continue
+            label = (entity.get("entity_type") or "ENTITY").strip().upper() or "ENTITY"
+            by_label[label].append(entity)
+        if reused:
+            logger.info(f"batch_create_nodes: {reused} entities reused from existing map")
+
+        for label, label_entities in by_label.items():
+            for offset in range(0, len(label_entities), batch_size):
+                batch = label_entities[offset : offset + batch_size]
+
+                nodes_params = []
+                for entity in batch:
+                    source_ids = entity.get("source_id", [])
+                    if not isinstance(source_ids, list):
+                        source_ids = [source_ids] if source_ids else []
+                    nodes_params.append({
+                        "name": entity.get("entity_name", ""),
+                        "description": entity.get("description", ""),
+                        "source_ids": source_ids,
+                        "entity_type": label,
+                        "import_timestamp": timestamp,
+                        "engine_name": engine_name or "",
+                        "engine_type": engine_type or "",
+                        "namespace": namespace,
+                        "index_name": index_name or "",
+                        "metadata_id": entity.get("metadata_id", "unknown"),
+                    })
+
+                query = f"""
+                UNWIND $nodes AS nd
+                CREATE (n:{label} {{
+                    name: nd.name,
+                    description: nd.description,
+                    source_ids: nd.source_ids,
+                    entity_type: nd.entity_type,
+                    import_timestamp: nd.import_timestamp,
+                    engine_name: nd.engine_name,
+                    engine_type: nd.engine_type,
+                    namespace: nd.namespace,
+                    index_name: nd.index_name,
+                    metadata_id: nd.metadata_id
+                }})
+                RETURN id(n) AS id, n.name AS name
+                """
+
+                try:
+                    results = await self._execute_query(query, {"nodes": nodes_params}, graph_name=graph_name)
+                    for record in results:
+                        name = record.get("name", "")
+                        if name:
+                            entity_node_map[self._normalize_name(name)] = str(record.get("id", ""))
+                    logger.info(f"Batch created {len(results)} {label} nodes")
+                except Exception as e:
+                    logger.warning(f"UNWIND node creation failed for label {label} (batch {offset}): {e} — falling back to individual creates")
+                    for entity in batch:
+                        try:
+                            node = Node(
+                                label=label,
+                                properties={
+                                    "name": entity.get("entity_name", ""),
+                                    "description": entity.get("description", ""),
+                                    "source_ids": entity.get("source_id", []),
+                                    "entity_type": label,
+                                    "import_timestamp": timestamp,
+                                    "engine_name": engine_name,
+                                    "engine_type": engine_type,
+                                    "metadata_id": entity.get("metadata_id", "unknown"),
+                                },
+                            )
+                            created = await self.create_node(
+                                node,
+                                namespace=namespace,
+                                index_name=index_name,
+                                engine_name=engine_name,
+                                engine_type=engine_type,
+                                metadata_id=entity.get("metadata_id", "unknown"),
+                                graph_name=graph_name,
+                            )
+                            if created.id:
+                                entity_node_map[self._normalize_name(entity.get("entity_name", ""))] = created.id
+                        except Exception as ex:
+                            logger.error(f"Individual node creation failed for {entity.get('entity_name')}: {ex}")
+
+        return entity_node_map
+
+    async def batch_create_relationships(
+        self,
+        relationships: List[Dict[str, Any]],
+        entity_node_map: Dict[str, str],
+        namespace: str,
+        index_name: Optional[str] = None,
+        engine_name: Optional[str] = None,
+        engine_type: Optional[str] = None,
+        graph_name: Optional[str] = None,
+        batch_size: int = 100,
+    ) -> int:
+        """
+        Bulk-create relationships grouped by type using UNWIND.
+
+        Relationships whose source or target entity is not found in
+        entity_node_map are skipped (can happen with cross-window references).
+        Falls back to individual creates if the UNWIND query fails.
+        Returns the total count of created relationships.
+        """
+        from collections import defaultdict
+
+        created_count = 0
+        skipped = 0
+
+        by_type: Dict[str, list] = defaultdict(list)
+        for rel in relationships:
+            rel_type = (rel.get("relationship_type") or "RELATED_TO").upper().strip() or "RELATED_TO"
+            source_name = rel.get("src_id", "").strip()
+            target_name = rel.get("tgt_id", "").strip()
+            source_id = entity_node_map.get(self._normalize_name(source_name))
+            target_id = entity_node_map.get(self._normalize_name(target_name))
+
+            if not source_id or not target_id:
+                skipped += 1
+                continue
+
+            source_ids = rel.get("source_id", [])
+            if not isinstance(source_ids, list):
+                source_ids = [source_ids] if source_ids else []
+
+            by_type[rel_type].append({
+                "source_id": int(source_id),
+                "target_id": int(target_id),
+                "weight": rel.get("weight", 1.0),
+                "description": rel.get("description", ""),
+                "source_ids": source_ids,
+                "source_entity": source_name,
+                "target_entity": target_name,
+                "engine_name": engine_name or "",
+                "engine_type": engine_type or "",
+                "namespace": namespace,
+                "metadata_id": rel.get("metadata_id") or "",
+            })
+
+        if skipped:
+            logger.warning(f"Skipped {skipped} relationships: source/target not in entity_node_map")
+
+        for rel_type, type_rels in by_type.items():
+            for offset in range(0, len(type_rels), batch_size):
+                batch = type_rels[offset : offset + batch_size]
+
+                query = f"""
+                UNWIND $rels AS rd
+                MATCH (source), (target)
+                WHERE id(source) = rd.source_id AND id(target) = rd.target_id
+                CREATE (source)-[r:{rel_type} {{
+                    weight: rd.weight,
+                    description: rd.description,
+                    source_ids: rd.source_ids,
+                    source_entity: rd.source_entity,
+                    target_entity: rd.target_entity,
+                    engine_name: rd.engine_name,
+                    engine_type: rd.engine_type,
+                    namespace: rd.namespace,
+                    metadata_id: rd.metadata_id
+                }}]->(target)
+                RETURN count(r) AS created
+                """
+
+                try:
+                    results = await self._execute_query(query, {"rels": batch}, graph_name=graph_name)
+                    batch_created = results[0].get("created", 0) if results else 0
+                    created_count += batch_created
+                    logger.info(f"Batch created {batch_created} {rel_type} relationships")
+                except Exception as e:
+                    logger.warning(f"UNWIND relationship creation failed for type {rel_type} (batch {offset}): {e} — falling back to individual creates")
+                    for rd in batch:
+                        try:
+                            rel_obj = Relationship(
+                                source_id=str(rd["source_id"]),
+                                target_id=str(rd["target_id"]),
+                                type=rel_type,
+                                properties={
+                                    "weight": rd["weight"],
+                                    "description": rd["description"],
+                                    "source_ids": rd["source_ids"],
+                                    "source_entity": rd["source_entity"],
+                                    "target_entity": rd["target_entity"],
+                                    "engine_name": rd["engine_name"],
+                                    "engine_type": rd["engine_type"],
+                                },
+                            )
+                            await self.create_relationship(
+                                rel_obj,
+                                namespace=namespace,
+                                index_name=index_name,
+                                engine_name=engine_name,
+                                engine_type=engine_type,
+                                graph_name=graph_name,
+                            )
+                            created_count += 1
+                        except Exception as ex:
+                            logger.error(f"Individual relationship creation failed: {ex}")
+
+        return created_count
+
+    async def load_entity_name_map(
+        self,
+        namespace: Optional[str] = None,
+        graph_name: Optional[str] = None,
+        query_timeout: int = 300000,
+    ) -> Dict[str, str]:
+        """
+        Load all existing entity nodes as normalized_name → node_id.
+        Used to pre-populate entity_node_map before extraction so that
+        subsequent runs do not create duplicate nodes.
+        Paginates in batches of 5000 to bypass FalkorDB's resultset_size cap.
+        """
+        PAGE_SIZE = 5000
+        where_parts = ["NOT 'CommunityReport' IN labels(n)"]
+        params: Dict[str, Any] = {}
+        if namespace is not None:
+            where_parts.append("n.namespace = $namespace")
+            params["namespace"] = namespace
+
+        where_clause = "WHERE " + " AND ".join(where_parts)
+        query_tpl = f"""
+        MATCH (n)
+        {where_clause}
+        RETURN id(n) AS id, n.name AS name
+        ORDER BY id(n)
+        SKIP $skip LIMIT $page_size
+        """
+
+        result: Dict[str, str] = {}
+        skip = 0
+        while True:
+            page_params = {**params, "skip": skip, "page_size": PAGE_SIZE}
+            page = await self._execute_query(
+                query_tpl, page_params, namespace=namespace, graph_name=graph_name, timeout=query_timeout
+            )
+            for record in page:
+                name = record.get("name") or ""
+                node_id = str(record.get("id", ""))
+                if name and node_id:
+                    result[self._normalize_name(name)] = node_id
+            if len(page) < PAGE_SIZE:
+                break
+            skip += PAGE_SIZE
+
+        logger.info(f"load_entity_name_map: {len(result)} existing entities loaded (graph='{graph_name or namespace}')")
+        return result
+
     async def find_relationship_by_id(self, relationship_id: str, namespace: Optional[str] = None, graph_name: Optional[str] = None) -> Optional[Relationship]:
         """
         Find a relationship by its internal FalkorDB ID (async).
@@ -852,12 +1143,18 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
         RETURN count(n) as deleted_count
         """
 
-        result = await self._execute_query(query, parameters, namespace=namespace, graph_name=graph_name)
-        deleted_count = result[0].get("deleted_count", 0) if result else 0
+        total_deleted = 0
+        while True:
+            result = await self._execute_query(query, parameters, namespace=namespace, graph_name=graph_name)
+            batch = result[0].get("deleted_count", 0) if result else 0
+            total_deleted += batch
+            if batch == 0:
+                break
+            logger.info(f"Deleted batch of {batch} nodes (total so far: {total_deleted})")
 
-        logger.info(f"Deleted {deleted_count} nodes matching metadata")
+        logger.info(f"Deleted {total_deleted} nodes matching metadata")
 
-        return {"nodes_deleted": deleted_count}
+        return {"nodes_deleted": total_deleted}
 
     # ==================== UTILITY OPERATIONS ====================
 
@@ -1041,9 +1338,14 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
                                              index_name: Optional[str] = None,
                                              engine_name: Optional[str] = None,
                                              engine_type: Optional[str] = None,
-                                             graph_name: Optional[str] = None) -> Dict[str, Any]:
+                                             graph_name: Optional[str] = None,
+                                             query_timeout: int = 300000) -> Dict[str, Any]:
         """
         Fetch the entire graph with optional filters (async).
+
+        Uses two separate queries (nodes then relationships) instead of a single
+        OPTIONAL MATCH to avoid the cartesian-explosion that caused timeouts on
+        large graphs (>30k nodes).  query_timeout defaults to 5 minutes (300 000 ms).
         """
         where_clauses = []
         params = {}
@@ -1062,61 +1364,110 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
 
         where_clause = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
-        query = f"""
+        # FalkorDB enforces a server-side resultset_size cap (default 10 000).
+        # Paginate with SKIP/LIMIT so we fetch the full graph regardless of that cap.
+        PAGE_SIZE = 5000
+
+        # --- Query 1: entity nodes only (skip CommunityReport), paginated ---
+        if where_clause:
+            node_query_tpl = f"""
         MATCH (n)
         {where_clause}
-        OPTIONAL MATCH (n)-[r]->(m)
-        RETURN n, r, m
+        AND NOT 'CommunityReport' IN labels(n)
+        RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
+        ORDER BY id(n)
+        SKIP $skip LIMIT $page_size
+        """
+        else:
+            node_query_tpl = """
+        MATCH (n)
+        WHERE NOT 'CommunityReport' IN labels(n)
+        RETURN id(n) AS id, labels(n) AS labels, properties(n) AS properties
+        ORDER BY id(n)
+        SKIP $skip LIMIT $page_size
         """
 
-        result = await self._execute_query(query, params, namespace=namespace, graph_name=graph_name)
-
         nodes = {}
-        relationships = []
-        seen_nodes = set()
-        seen_rels = set()
-
-        for record in result:
-            n = record.get("n")
-            if n:
-                n_labels = n.get("labels", ["Unknown"])
-                if "CommunityReport" in n_labels:
-                    continue  # Skip: community reports must not be clustered
-                n_id = str(n.get("id"))
-                if n_id not in seen_nodes:
-                    seen_nodes.add(n_id)
+        skip = 0
+        while True:
+            page_params = {**params, "skip": skip, "page_size": PAGE_SIZE}
+            page = await self._execute_query(
+                node_query_tpl, page_params, namespace=namespace, graph_name=graph_name, timeout=query_timeout
+            )
+            for record in page:
+                n_id = str(record.get("id", ""))
+                n_labels = record.get("labels") or ["Unknown"]
+                if n_id:
                     nodes[n_id] = {
                         "id": n_id,
-                        "label": n_labels[0],
-                        "properties": n.get("properties", {})
+                        "label": n_labels[0] if n_labels else "Unknown",
+                        "properties": record.get("properties") or {}
                     }
+            if len(page) < PAGE_SIZE:
+                break
+            skip += PAGE_SIZE
 
-            m = record.get("m")
-            if m:
-                m_labels = m.get("labels", ["Unknown"])
-                if "CommunityReport" not in m_labels:
-                    m_id = str(m.get("id"))
-                    if m_id not in seen_nodes:
-                        seen_nodes.add(m_id)
-                        nodes[m_id] = {
-                            "id": m_id,
-                            "label": m_labels[0],
-                            "properties": m.get("properties", {})
-                        }
+        # --- Query 2: relationships between entity nodes only, paginated ---
+        rel_where_parts = []
+        rel_params = {}
+        if namespace is not None:
+            rel_where_parts.append("n.namespace = $namespace")
+            rel_params["namespace"] = namespace
+        if index_name is not None:
+            rel_where_parts.append("n.index_name = $index_name")
+            rel_params["index_name"] = index_name
 
-            r = record.get("r")
-            if r:
-                r_id = str(r.get("id"))
-                if r_id not in seen_rels:
+        rel_where = ("WHERE " + " AND ".join(rel_where_parts)) if rel_where_parts else ""
+
+        if rel_where:
+            rel_query_tpl = f"""
+        MATCH (n)-[r]->(m)
+        {rel_where}
+        AND NOT 'CommunityReport' IN labels(n)
+        AND NOT 'CommunityReport' IN labels(m)
+        RETURN id(r) AS id, type(r) AS type, properties(r) AS properties,
+               id(n) AS source_id, id(m) AS target_id
+        ORDER BY id(r)
+        SKIP $skip LIMIT $page_size
+        """
+        else:
+            rel_query_tpl = """
+        MATCH (n)-[r]->(m)
+        WHERE NOT 'CommunityReport' IN labels(n)
+        AND NOT 'CommunityReport' IN labels(m)
+        RETURN id(r) AS id, type(r) AS type, properties(r) AS properties,
+               id(n) AS source_id, id(m) AS target_id
+        ORDER BY id(r)
+        SKIP $skip LIMIT $page_size
+        """
+
+        relationships = []
+        seen_rels: set = set()
+        skip = 0
+        while True:
+            page_params = {**rel_params, "skip": skip, "page_size": PAGE_SIZE}
+            page = await self._execute_query(
+                rel_query_tpl, page_params, namespace=namespace, graph_name=graph_name, timeout=query_timeout
+            )
+            for record in page:
+                r_id = str(record.get("id", ""))
+                if r_id and r_id not in seen_rels:
                     seen_rels.add(r_id)
                     relationships.append({
                         "id": r_id,
-                        "type": r.get("type", ""),
-                        "properties": r.get("properties", {}),
-                        "source_id": str(r.get("source_id", "")),
-                        "target_id": str(r.get("target_id", ""))
+                        "type": record.get("type", ""),
+                        "properties": record.get("properties") or {},
+                        "source_id": str(record.get("source_id", "")),
+                        "target_id": str(record.get("target_id", "")),
                     })
+            if len(page) < PAGE_SIZE:
+                break
+            skip += PAGE_SIZE
 
+        logger.info(
+            f"get_all_nodes_and_relationships: {len(nodes)} nodes, {len(relationships)} relationships "
+            f"(graph='{graph_name or namespace}')"
+        )
         return {
             "nodes": list(nodes.values()),
             "relationships": relationships

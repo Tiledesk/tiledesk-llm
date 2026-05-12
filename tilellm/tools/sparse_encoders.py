@@ -21,10 +21,9 @@ try:
 except ImportError:
     BGEM3FlagModel = None
 
-# Shared GPU concurrency primitives (same lock used by reranker → one lock
-# serializes forward pass across ALL local GPU models in the process).
+# Shared GPU concurrency primitives.
 from tilellm.tools._gpu_concurrency import (
-    GLOBAL_GPU_LOCK,
+    run_on_gpu,
     is_cuda_oom,
     cuda_empty_cache_safe,
     build_token_budget_batches,
@@ -110,8 +109,8 @@ def _run_sparse_batched_with_oom_recovery(
         contents: Texts to encode, in original order.
         text_lengths: Token-length estimate for each text (same order).
         encode_batch_fn: Callable that takes a list of texts and returns a
-                         list of sparse vectors (same length). Called INSIDE
-                         the GLOBAL_GPU_LOCK by this helper.
+                         list of sparse vectors (same length). Called inside
+                         the single GPU thread (_GPU_EXECUTOR).
         token_budget: Initial token budget per batch.
         max_items_per_batch: Hard cap on items per batch.
         max_oom_retries: Number of OOM recovery retries (halving budget each).
@@ -154,10 +153,9 @@ def _run_sparse_batched_with_oom_recovery(
         try:
             for batch in batches:
                 batch_texts = [contents[i] for i in batch]
-                # GLOBAL_GPU_LOCK serializes forward pass across all local models.
-                # Acquired per-batch (not per-call) so other threads don't starve.
-                with GLOBAL_GPU_LOCK:
-                    batch_results = encode_batch_fn(batch_texts)
+                # No explicit lock: this function always runs inside _GPU_EXECUTOR
+                # (single thread), so no concurrent GPU access is possible.
+                batch_results = encode_batch_fn(batch_texts)
 
                 if len(batch_results) != len(batch):
                     raise RuntimeError(
@@ -209,7 +207,7 @@ class TiledeskSpladeEncoder:
     Optimizations (vs baseline):
       - fp16 on CUDA at load time (~2x speedup on Ampere+ GPUs)
       - warmup on load (triggers cuDNN autotune off the hot path)
-      - GLOBAL_GPU_LOCK serializes forward pass across threads
+      - Runs on dedicated single-thread GPU executor via aencode_* async wrappers
       - Token-budget batching replaces fixed-size batching (conservative memory)
       - OOM recovery with halving budget
       - No torch.cuda.empty_cache() in happy path
@@ -329,8 +327,7 @@ class TiledeskSpladeEncoder:
 
     def encode_queries(self, query: str) -> Dict[str, List]:
         self.logger.debug(f"Encoding query: '{query}'")
-        with GLOBAL_GPU_LOCK:
-            return self.splade.encode_queries(query)
+        return self.splade.encode_queries(query)
 
 
 # =============================================================================
@@ -347,7 +344,7 @@ class TiledeskBGEM3:
 
     Optimizations (vs baseline):
       - warmup on load
-      - GLOBAL_GPU_LOCK serializes forward pass across threads
+      - Runs on dedicated single-thread GPU executor via aencode_* async wrappers
       - Token-budget batching + OOM recovery
       - No torch.cuda.empty_cache() in happy path
       - Chunking uses 1500 words (~2000 tokens) given 8192-token context
@@ -398,11 +395,10 @@ class TiledeskBGEM3:
         # Legacy path: single call, no batching wrapper
         if not batch_size:
             self.logger.debug(f"Encoding {len(contents)} documents with BGEM3FlagModel")
-            with GLOBAL_GPU_LOCK:
-                output = self.model.encode(
-                    contents,
-                    return_dense=True, return_sparse=True, return_colbert_vecs=False,
-                )
+            output = self.model.encode(
+                contents,
+                return_dense=True, return_sparse=True, return_colbert_vecs=False,
+            )
             return self._convert_sparse_vectors(output['lexical_weights'])
 
         max_items = min(batch_size, self.max_items_per_batch)
@@ -437,11 +433,10 @@ class TiledeskBGEM3:
 
     def encode_queries(self, query: str) -> Dict[str, List]:
         self.logger.debug(f"Encoding query: '{query}'")
-        with GLOBAL_GPU_LOCK:
-            output = self.model.encode(
-                [query],
-                return_dense=False, return_sparse=True, return_colbert_vecs=False,
-            )
+        output = self.model.encode(
+            [query],
+            return_dense=False, return_sparse=True, return_colbert_vecs=False,
+        )
         return self._convert_sparse_vectors(output['lexical_weights'])[0]
 
 
@@ -645,6 +640,31 @@ class TiledeskSparseEncoders:
         if not self.encoder:
             raise ValueError("Encoder not initialized")
         return self.encoder.encode_queries(query)
+
+    async def aencode_documents(
+        self, contents: List[str], batch_size: Optional[int] = 10
+    ) -> List[Dict[str, List]]:
+        """Async version of encode_documents.
+
+        Local GPU encoders (SPLADE, BGE-M3) run on the dedicated single-thread
+        GPU executor so they never block the event loop and never compete with
+        other GPU callers. TEI encoders use asyncio.to_thread (remote HTTP).
+        """
+        import asyncio
+        if not self.encoder:
+            raise ValueError("Encoder not initialized")
+        if isinstance(self.encoder, TEISparseEncoder):
+            return await asyncio.to_thread(self.encoder.encode_documents, contents, batch_size)
+        return await run_on_gpu(self.encoder.encode_documents, contents, batch_size)
+
+    async def aencode_queries(self, query: str) -> Dict[str, List]:
+        """Async version of encode_queries. See aencode_documents for routing logic."""
+        import asyncio
+        if not self.encoder:
+            raise ValueError("Encoder not initialized")
+        if isinstance(self.encoder, TEISparseEncoder):
+            return await asyncio.to_thread(self.encoder.encode_queries, query)
+        return await run_on_gpu(self.encoder.encode_queries, query)
 
     @classmethod
     def clear_cache(cls):

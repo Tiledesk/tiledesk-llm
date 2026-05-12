@@ -10,6 +10,7 @@ from typing import Dict, Any, List, Optional, Union
 from tilellm.models import Engine
 from tilellm.modules.knowledge_graph.services.community_graph_service import CommunityGraphService
 from tilellm.modules.knowledge_graph.services.table_qa_service import TableQAService
+from tilellm.shared.llm_utils import extract_llm_text
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +152,7 @@ Provide a unified, comprehensive answer.
 """
             try:
                 response = await llm.ainvoke(prompt)
-                final_answer = response.content if hasattr(response, 'content') else str(response)
+                final_answer = extract_llm_text(response)
             except Exception as e:
                 logger.error(f"Fusion failed: {e}")
                 final_answer = f"{text_answer}\n\nAdditionally, from table analysis: {table_result['answer']}"

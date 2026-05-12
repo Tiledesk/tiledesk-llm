@@ -218,25 +218,25 @@ async def fetch_question_vectors_nopar(question_answer, sparse_encoder, llm_embe
     if sparse_encoder is None:
         sparse_vector = None
     else:
-        sparse_vector = sparse_encoder.encode_queries(question_answer.question)
+        sparse_vector = await sparse_encoder.aencode_queries(question_answer.question)
     dense_vector = await llm_embeddings.aembed_query(question_answer.question)
     return dense_vector, sparse_vector
 
 async def fetch_question_vectors(question_answer, sparse_encoder, llm_embeddings):
-     """Generate dense and sparse vectors in parallel"""
-     tasks = [llm_embeddings.aembed_query(question_answer.question)]
-     # Dense vector task
+    """Generate dense and sparse vectors, reusing precomputed embedding when available."""
+    precomputed = getattr(question_answer, "precomputed_query_embedding", None)
+    if precomputed is not None:
+        dense_task = asyncio.sleep(0, result=precomputed)
+    else:
+        dense_task = llm_embeddings.aembed_query(question_answer.question)
 
-     # Sparse vector task (wrapped in async)
-     if sparse_encoder:
-         async def get_sparse():
-             return sparse_encoder.encode_queries(question_answer.question)
-         tasks.append(get_sparse())
-     else:
-         tasks.append(asyncio.sleep(0, result=None))
+    if sparse_encoder:
+        sparse_task = sparse_encoder.aencode_queries(question_answer.question)
+    else:
+        sparse_task = asyncio.sleep(0, result=None)
 
-     dense_vector, sparse_vector = await asyncio.gather(*tasks)
-     return dense_vector, sparse_vector
+    dense_vector, sparse_vector = await asyncio.gather(dense_task, sparse_task)
+    return dense_vector, sparse_vector
 
 #
 # Function to retrieve documents based on search results

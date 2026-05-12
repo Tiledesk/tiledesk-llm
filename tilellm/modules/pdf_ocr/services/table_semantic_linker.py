@@ -7,6 +7,7 @@ import logging
 import json
 from typing import List, Dict, Any, Optional
 import pandas as pd
+from tilellm.shared.llm_utils import extract_llm_text
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +133,7 @@ Return only a JSON list of strings."""
 
         try:
             response = await llm.ainvoke(messages)
-            content = response.content if hasattr(response, 'content') else str(response)
+            content = extract_llm_text(response)
             
             # Try to parse JSON from response
             import re

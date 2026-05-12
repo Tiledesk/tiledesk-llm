@@ -45,6 +45,9 @@ class CommonChunkMetadata(BaseModel):
     md_path: str = ""
     path: str = ""
 
+    # --- Temporal ---
+    date: str = ""
+
     # --- Quality flags ---
     has_situated_context: bool = False
 

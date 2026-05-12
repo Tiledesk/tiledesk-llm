@@ -90,8 +90,6 @@ class GraphSpecialistAgent:
             elif status == "max_retries":
                 return "fail_safe"
             else:  # "syntax_error" or "empty_results"
-                # Increment retry counter before retry
-                state["retry_count"] = state.get("retry_count", 0) + 1
                 return "retry"
 
         workflow.add_conditional_edges(

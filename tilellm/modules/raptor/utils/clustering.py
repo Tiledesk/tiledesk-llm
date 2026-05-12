@@ -130,30 +130,32 @@ def get_optimal_clusters(
 ) -> int:
     """
     Determine optimal number of clusters using BIC (Bayesian Information Criterion).
-    
-    Args:
-        embeddings: Input embeddings
-        max_clusters: Maximum number of clusters to try
-        random_state: Random seed
-        
-    Returns:
-        Optimal number of clusters
+    Uses early stopping when BIC stops improving for 3 consecutive steps.
     """
     max_clusters = min(max_clusters, len(embeddings))
-    n_clusters = np.arange(1, max_clusters + 1)
     bics = []
-    
-    for n in n_clusters:
+    best_bic = float('inf')
+    no_improve = 0
+    _PATIENCE = 3
+
+    for n in range(1, max_clusters + 1):
         try:
             gm = GaussianMixture(n_components=n, random_state=random_state)
             gm.fit(embeddings)
-            bics.append(gm.bic(embeddings))
+            bic = gm.bic(embeddings)
+            bics.append(bic)
+            if bic < best_bic:
+                best_bic = bic
+                no_improve = 0
+            else:
+                no_improve += 1
+                if no_improve >= _PATIENCE:
+                    break
         except Exception as e:
             logger.warning(f"GMM failed for n_clusters={n}: {e}")
             bics.append(float('inf'))
-    
-    optimal_clusters = n_clusters[np.argmin(bics)]
-    return optimal_clusters
+
+    return int(np.argmin(bics)) + 1
 
 
 def GMM_cluster(
@@ -226,63 +228,58 @@ def perform_clustering(
         embeddings,
         min(dim, len(embeddings) - 2)
     )
-    
+
     global_clusters, n_global_clusters = GMM_cluster(
         reduced_embeddings_global, threshold
     )
-    
+
     if verbose:
         logger.info(f"Global Clusters: {n_global_clusters}")
-    
+
     # Local clustering within each global cluster
+    # Track indices directly through slicing to avoid O(n²) float comparison
     all_local_clusters = [np.array([]) for _ in range(len(embeddings))]
     total_clusters = 0
-    
+
     for i in range(n_global_clusters):
-        # Get embeddings in this global cluster
         global_cluster_mask = np.array([i in gc for gc in global_clusters])
+        global_member_idx = np.where(global_cluster_mask)[0]  # original indices
         global_cluster_embeddings_ = embeddings[global_cluster_mask]
-        
+
         if verbose:
             logger.info(f"Nodes in Global Cluster {i}: {len(global_cluster_embeddings_)}")
-        
+
         if len(global_cluster_embeddings_) == 0:
             continue
-        
-        # If too few points, don't recluster
+
         if len(global_cluster_embeddings_) <= dim + 1:
             local_clusters = [np.array([0]) for _ in global_cluster_embeddings_]
             n_local_clusters = 1
         else:
-            # Local UMAP + GMM
             reduced_embeddings_local = local_cluster_embeddings(
                 global_cluster_embeddings_, dim
             )
             local_clusters, n_local_clusters = GMM_cluster(
                 reduced_embeddings_local, threshold
             )
-        
+
         if verbose:
             logger.info(f"Local Clusters in Global Cluster {i}: {n_local_clusters}")
-        
-        # Map local clusters to global indices
+
         for j in range(n_local_clusters):
             local_cluster_mask = np.array([j in lc for lc in local_clusters])
-            local_cluster_embeddings_ = global_cluster_embeddings_[local_cluster_mask]
-            
-            # Find indices in original embeddings
-            indices = find_matching_indices(embeddings, local_cluster_embeddings_)
-            
-            for idx in indices:
+            # Map local indices back to original embedding indices — O(n), no float compare
+            original_indices = global_member_idx[local_cluster_mask]
+            for idx in original_indices:
                 all_local_clusters[idx] = np.append(
                     all_local_clusters[idx], j + total_clusters
                 )
-        
+
         total_clusters += n_local_clusters
-    
+
     if verbose:
         logger.info(f"Total Clusters: {total_clusters}")
-    
+
     return all_local_clusters
 
 

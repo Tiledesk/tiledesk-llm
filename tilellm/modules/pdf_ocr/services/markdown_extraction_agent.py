@@ -34,6 +34,7 @@ except ImportError:
 import pandas as pd
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage
+from tilellm.shared.llm_utils import extract_llm_text
 
 # LangGraph imports
 try:
@@ -661,7 +662,7 @@ Be specific and detailed. Format your response as a well-structured paragraph.""
             ]
             
             response = await llm.ainvoke(messages)
-            description = response.content if hasattr(response, 'content') else str(response)
+            description = extract_llm_text(response)
             
             return description.strip()
             
@@ -678,10 +679,22 @@ Be specific and detailed. Format your response as a well-structured paragraph.""
             
             stats = {
                 'shape': df.shape,
-                'columns': df.columns.tolist(),
+                'columns': [str(c) for c in df.columns.tolist()],
                 'dtypes': df.dtypes.astype(str).to_dict()
             }
             
+            if df.columns.duplicated().any():
+                seen = {}
+                new_cols = []
+                for col in df.columns:
+                    if col in seen:
+                        seen[col] += 1
+                        new_cols.append(f"{col}_{seen[col]}")
+                    else:
+                        seen[col] = 0
+                        new_cols.append(col)
+                df = df.copy()
+                df.columns = new_cols
             sample_rows = df.head(3).to_dict('records')
             caption = table.get('caption', '')
             
@@ -716,7 +729,7 @@ Focus on understanding what the data represents, not just technical details. Exp
             ]
             
             response = await llm.ainvoke(messages)
-            description = response.content if hasattr(response, 'content') else str(response)
+            description = extract_llm_text(response)
             
             return description.strip()
             

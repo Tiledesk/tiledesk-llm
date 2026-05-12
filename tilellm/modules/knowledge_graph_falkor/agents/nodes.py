@@ -16,6 +16,7 @@ from tilellm.modules.knowledge_graph_falkor.agents.prompts import (
     RESPONDER_SYSTEM_PROMPT,
     SUMMARIZER_MAP_PROMPT,
 )
+from tilellm.shared.llm_utils import extract_llm_text
 
 logger = logging.getLogger(__name__)
 
@@ -264,10 +265,14 @@ def create_nodes(repository, llm):
             }
         )
 
-        return {
+        updates: Dict[str, Any] = {
             "validation_status": status,
             "metadata": {**state.get("metadata", {}), "trace": trace},
         }
+        # Increment retry_count here — routing functions cannot update state in LangGraph
+        if status in ("syntax_error", "empty_results"):
+            updates["retry_count"] = retry_count + 1
+        return updates
 
     # --- Node 4: Responder ---
 
@@ -333,7 +338,7 @@ def create_nodes(repository, llm):
 
         try:
             response = await llm.ainvoke(messages)
-            answer = response.content if hasattr(response, "content") else str(response)
+            answer = extract_llm_text(response)
 
             logger.info(f"Generated answer (length: {len(answer)})")
 
@@ -441,7 +446,7 @@ async def _apply_map_reduce(llm, results: List[Dict], question: str) -> str:
 
         try:
             response = await llm.ainvoke(map_prompt)
-            content = response.content if hasattr(response, "content") else str(response)
+            content = extract_llm_text(response)
             summaries.append(content)
             logger.debug(f"Processed chunk {i+1}/{len(chunks)}")
         except Exception as e:

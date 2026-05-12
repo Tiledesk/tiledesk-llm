@@ -50,7 +50,8 @@ def get_service_config():
             "raptor": False,
             "pdf_ocr": False,
             "conversion": True,
-            "tools_registry": True
+            "tools_registry": True,
+            "temporal_digest": True,
         },
         "app-graph": {
             "task_executor": True,
@@ -59,7 +60,8 @@ def get_service_config():
             "raptor": False,
             "pdf_ocr": False,
             "conversion": True,
-            "tools_registry": True
+            "tools_registry": True,
+            "temporal_digest": True,
         },
         "app-ocr": {
             "task_executor": True,
@@ -68,7 +70,8 @@ def get_service_config():
             "raptor": False,
             "pdf_ocr": True,
             "conversion": True,
-            "tools_registry": True
+            "tools_registry": True,
+            "temporal_digest": True,
         },
         "app-all": {
             "task_executor": True,
@@ -77,7 +80,8 @@ def get_service_config():
             "raptor": True,
             "pdf_ocr": True,
             "conversion": True,
-            "tools_registry": True
+            "tools_registry": True,
+            "temporal_digest": True,
         }
     }
 
@@ -94,7 +98,8 @@ def get_service_config():
             "pdf_ocr": _str_to_bool(os.environ.get("ENABLE_PDF_OCR", "false")),
             "conversion": _str_to_bool(os.environ.get("ENABLE_CONVERSION", "true")),
             "tools_registry": _str_to_bool(os.environ.get("ENABLE_TOOLS_REGISTRY", "true")),
-            "api_v2": _str_to_bool(os.environ.get("ENABLE_API_V2", "true"))
+            "api_v2": _str_to_bool(os.environ.get("ENABLE_API_V2", "true")),
+            "temporal_digest": _str_to_bool(os.environ.get("ENABLE_TEMPORAL_DIGEST", "true")),
         }
 
     # TEI Configuration
@@ -1548,4 +1553,5 @@ def decode_jwt(token:str):
     if not jwt_secret_key:
         raise ValueError("JWT_SECRET_KEY not configured")
     return jwt.decode(jwt=token, key=jwt_secret_key, algorithms=['HS256'])
+
 

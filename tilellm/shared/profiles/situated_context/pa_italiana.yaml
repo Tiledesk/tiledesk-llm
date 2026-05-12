@@ -1,0 +1,51 @@
+id: pa_italiana
+version: "1.0"
+description: >
+  Profilo per atti amministrativi della Pubblica Amministrazione italiana
+  (determine, delibere, decreti, ordinanze).
+  Modalità JSON dual-output: restituisce sia la frase situante (context)
+  sia metadati strutturati (metadata) in un'unica chiamata LLM,
+  ottimizzando il costo rispetto a chiamate separate.
+
+# json_mode: true → _generate_situated_context tratta questo profilo come
+# metadata_extraction_prompt e attende un JSON {"context": "...", "metadata": {...}}
+json_mode: true
+
+prompt: |
+  Il seguente è un frammento (chunk) estratto da un atto amministrativo della
+  Pubblica Amministrazione italiana.
+
+  Contesto globale del documento:
+  <document_context>
+  {doc_context}
+  </document_context>
+
+  Frammento da analizzare:
+  <chunk>
+  {chunk_text}
+  </chunk>
+
+  Restituisci un oggetto JSON valido con esattamente due chiavi:
+
+  1. "context": stringa con 1-2 frasi che situano il frammento nell'atto.
+     Includi, se desumibili: numero e data dell'atto, oggetto principale
+     (acquisto, assunzione, appalto, ecc.), ufficio/reparto proponente.
+
+  2. "metadata": oggetto JSON flat con i seguenti campi (usa null se non determinabile):
+     - "act_type": una delle categorie seguenti (scegli la più pertinente):
+         "acquisto_beni", "acquisto_farmaci", "acquisto_dispositivi_medici",
+         "acquisto_servizi", "appalto", "concessione",
+         "assunzione_personale", "incarico_professionale",
+         "liquidazione", "rimborso", "autorizzazione", "altro"
+     - "topics": lista di stringhe con i principali argomenti del frammento
+         (es. ["antibiotici", "gara d'appalto", "reparto oncologia"])
+     - "amount": importo in euro come numero (float) se presente, altrimenti null
+     - "personnel_role": ruolo del personale se l'atto riguarda risorse umane
+         (es. "medico", "infermiere", "dirigente amministrativo"), altrimenti null
+     - "temporal_scope": periodo di riferimento dell'atto se indicato
+         (es. "2026", "gennaio-giugno 2026"), altrimenti null
+
+  Rispondi SOLO con il JSON, senza markdown fence, senza testo aggiuntivo.
+
+  Esempio di risposta attesa:
+  {"context": "Questa determina n. 453 del 01/05/2026 riguarda l'acquisto di farmaci chemioterapici per il reparto di oncologia dell'ASL Roma 1.", "metadata": {"act_type": "acquisto_farmaci", "topics": ["chemioterapia", "farmaci oncologici"], "amount": 45000.00, "personnel_role": null, "temporal_scope": "2026"}}
