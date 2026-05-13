@@ -869,7 +869,8 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
                 cache_data["cache_level"] = cached.get("_cache_level")
                 cache_data["cache_similarity"] = cached.get("_cache_similarity")
 
-                result = RetrievalResult(**cache_data)logger.info(
+                result = RetrievalResult(**cache_data)
+                logger.info(
                     f"/api/qa cache hit (level={cache_data['cache_level']}, cosine={cache_data['cache_similarity'] or 1.0:.4f})"
                 )
                 # Analytics: emit kb.query_executed for cache hit (fire-and-forget)
@@ -888,6 +889,7 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
                     reranker_model=_reranker_model,
                     latency_ms=0,
                     request_id=question_answer.request_id,
+                    success=result.success,
                 )
                 analytics.publish_nowait(_et, question_answer.id_project, _pl)
                 return result
@@ -909,6 +911,12 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
     if isinstance(result, JSONResponse):
         import json
         actual_result = json.loads(result.body.decode())
+
+    result_success = None
+    if hasattr(actual_result, "success"):
+        result_success = actual_result.success
+    elif isinstance(actual_result, dict):
+        result_success = actual_result.get("success")
 
     # Store in cache only on successful results, reusing the embedding computed at lookup
     # Robust check for success: must be explicitly True (or missing, but not explicitly False)
@@ -956,6 +964,7 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
         reranker_model=_reranker_model,
         latency_ms=_qa_latency_ms,
         request_id=question_answer.request_id,
+        success=result_success,
     )
     analytics.publish_nowait(_et, question_answer.id_project, _pl)
     return result

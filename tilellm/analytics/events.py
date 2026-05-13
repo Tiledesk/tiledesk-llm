@@ -103,6 +103,7 @@ def kb_query(
     reranker_model: Optional[str] = None,
     reranker_latency_ms: Optional[int] = None,
     request_id: Optional[str] = None,
+    success: Optional[bool] = None,
 ) -> Tuple[str, dict]:
     """
     Build a kb.query_executed event payload.
@@ -117,6 +118,8 @@ def kb_query(
         reranker_model:      Reranker model name (null when not applied).
         reranker_latency_ms: Reranker-only latency (omitted when not applied).
         request_id:          Tiledesk conversation/request ID.
+        success:             Whether the LLM produced an answer from retrieved chunks.
+                             Use None when no LLM answer exists (e.g. chunks_only).
     """
     payload: dict = {
         "kb_id":             kb_id,
@@ -130,6 +133,8 @@ def kb_query(
     }
     if reranker_latency_ms is not None:
         payload["reranker_latency_ms"] = reranker_latency_ms
+    if success is not None:
+        payload["success"] = success
     return "kb.query_executed", payload
 
 
