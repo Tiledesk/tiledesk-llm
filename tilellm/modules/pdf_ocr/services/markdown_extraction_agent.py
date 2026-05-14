@@ -46,6 +46,63 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# Singleton DocumentConverter — Docling loads TableTransformer + layout models
+# onto GPU/CPU once at startup and keeps them resident.  Creating a new
+# DocumentConverter per task causes a GPU VRAM leak: each instance loads the
+# models, then Python's GC/torch allocator retains them until empty_cache().
+# Under sustained load this exhausts VRAM before the cleanup can run.
+# ---------------------------------------------------------------------------
+_converter_instance: Optional["DocumentConverter"] = None
+_converter_lock: Optional[asyncio.Lock] = None
+
+
+def _get_converter_lock() -> asyncio.Lock:
+    global _converter_lock
+    if _converter_lock is None:
+        _converter_lock = asyncio.Lock()
+    return _converter_lock
+
+
+def _build_converter(device: str = "auto") -> "DocumentConverter":
+    from docling.datamodel.accelerator_options import AcceleratorOptions
+    opts = PdfPipelineOptions()
+    opts.do_ocr = True
+    opts.do_table_structure = True
+    opts.table_structure_options.do_cell_matching = True
+    opts.accelerator_options = AcceleratorOptions(device=device)
+    return DocumentConverter(
+        format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}
+    )
+
+
+async def get_or_create_converter() -> "DocumentConverter":
+    """Return the process-wide singleton DocumentConverter, creating it on first call."""
+    global _converter_instance
+    if _converter_instance is not None:
+        return _converter_instance
+    async with _get_converter_lock():
+        if _converter_instance is not None:
+            return _converter_instance
+        loop = asyncio.get_event_loop()
+        try:
+            _converter_instance = await loop.run_in_executor(
+                None, _build_converter, "auto"
+            )
+            logger.info("MarkdownExtractionAgent: DocumentConverter (auto device) initialized.")
+        except RuntimeError as e:
+            if "meta tensor" in str(e):
+                logger.warning(
+                    f"GPU meta-tensor error, initializing DocumentConverter on CPU: {e}"
+                )
+                _converter_instance = await loop.run_in_executor(
+                    None, _build_converter, "cpu"
+                )
+                logger.info("MarkdownExtractionAgent: DocumentConverter (CPU fallback) initialized.")
+            else:
+                raise
+        return _converter_instance
+
 
 class ExtractionPhase(str, Enum):
     """Phases of the extraction workflow."""
@@ -90,10 +147,10 @@ class MarkdownExtractionState(TypedDict):
     
     # Extracted data - populated by extract_structure node
     docling_result: Annotated[Optional[Any], _keep_last]
-    text_elements: Annotated[List[Dict[str, Any]], _concat_lists]
-    images: Annotated[List[Dict[str, Any]], _concat_lists]
-    tables: Annotated[List[Dict[str, Any]], _concat_lists]
-    formulas: Annotated[List[Dict[str, Any]], _concat_lists]
+    text_elements: Annotated[List[Dict[str, Any]], _keep_last]
+    images: Annotated[List[Dict[str, Any]], _keep_last]
+    tables: Annotated[List[Dict[str, Any]], _keep_last]
+    formulas: Annotated[List[Dict[str, Any]], _keep_last]
     
     # Processed data - populated by parallel analysis nodes
     image_descriptions: Annotated[Dict[str, str], _merge_dicts]  # image_id -> description
@@ -147,15 +204,11 @@ class MarkdownExtractionAgent:
         workflow.add_node("assemble_markdown", self._assemble_markdown_node)
         workflow.add_node("handle_error", self._handle_error_node)
         
-        # Define edges
+        # Define edges — sequential to keep state consistent.
+        # Image and table analysis each already parallelize internally via asyncio.gather.
         workflow.add_edge(START, "extract_structure")
-        
-        # After structure extraction, analyze images and tables in parallel
         workflow.add_edge("extract_structure", "analyze_images")
-        workflow.add_edge("extract_structure", "analyze_tables")
-        
-        # After both analyses are complete, assemble markdown
-        workflow.add_edge("analyze_images", "assemble_markdown")
+        workflow.add_edge("analyze_images", "analyze_tables")
         workflow.add_edge("analyze_tables", "assemble_markdown")
         
         # Complete
@@ -235,34 +288,18 @@ class MarkdownExtractionAgent:
     async def _extract_structure_node(self, state: MarkdownExtractionState) -> MarkdownExtractionState:
         """Node: Extract document structure using Docling."""
         logger.info(f"[Node: extract_structure] Processing {state['doc_id']}")
-        
+
         try:
-            # Initialize Docling
-            pipeline_options = PdfPipelineOptions()
-            pipeline_options.do_ocr = True
-            pipeline_options.do_table_structure = True
-            pipeline_options.table_structure_options.do_cell_matching = True
-            
-            converter = DocumentConverter(
-                format_options={
-                    InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
-                }
-            )
-            
-            # Convert document
+            converter = await get_or_create_converter()
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None, 
-                converter.convert, 
-                state["file_path"]
-            )
-            
+            result = await loop.run_in_executor(None, converter.convert, state["file_path"])
+
             # Extract elements
             text_elements, images, tables, formulas = self._parse_docling_result(
-                result, 
+                result,
                 state["doc_id"]
             )
-            
+
             # Update state
             state["docling_result"] = result
             state["text_elements"] = text_elements
@@ -271,15 +308,15 @@ class MarkdownExtractionAgent:
             state["formulas"] = formulas
             state["phase"] = ExtractionPhase.EXTRACT_STRUCTURE
             state["metadata"] = self._extract_metadata(result, state["doc_id"])
-            
+
             logger.info(f"[Node: extract_structure] Extracted {len(text_elements)} texts, "
-                       f"{len(images)} images, {len(tables)} tables")
-            
+                        f"{len(images)} images, {len(tables)} tables")
+
         except Exception as e:
             logger.error(f"[Node: extract_structure] Error: {e}")
             state["error_message"] = f"Structure extraction failed: {str(e)}"
             state["phase"] = ExtractionPhase.ERROR
-        
+
         return state
     
     async def _analyze_images_node(self, state: MarkdownExtractionState) -> MarkdownExtractionState:

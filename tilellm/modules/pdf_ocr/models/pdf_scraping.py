@@ -35,6 +35,7 @@ class PDFScrapingRequest(ItemSingle):
     callback_token: Optional[str] = Field(None, description="Token for webhook authentication.")
     unstructured_config: Optional[Dict[str, Any]] = Field(None, description="Unstructured configuration overrides.")
     use_docling: bool = Field(False, description="Use new Docling-based advanced pipeline.")
+    strategy: Optional[str] = Field(None, description="Processing strategy: 'auto' or 'fast' (new Docling pipeline, requires URL), 'quality' (legacy MinIO pipeline).")
     extract_entities: bool = Field(False, description="Whether to extract semantic entities using GraphRAG.")
     extract_structure: bool = Field(True, description="Whether to extract hierarchical document structure.")
     extract_md_simple: bool = Field(False, description="If True, extracts a single Markdown document from the entire PDF with enhanced image/table descriptions, then indexes it with MD-specific chunking.")

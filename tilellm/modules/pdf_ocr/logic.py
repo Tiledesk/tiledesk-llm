@@ -15,6 +15,8 @@ from tilellm.tools.document_tools import _extract_file_name
 from tilellm.models.chunk_metadata import CommonChunkMetadata
 from tilellm.shared.situated_context import enrich_chunks_with_situated_context
 from .services.docling_processor import get_or_create_processor, DocumentType
+from .services.pdf_native_processor import process_pdf_native
+from .services.pdf_classifier import classify_pdf
 from .services.pdf_entity_extractor import PDFEntityExtractor
 from .services.context_aware_chunker import ContextAwareChunker
 from .services.table_semantic_linker import TableSemanticLinker
@@ -239,43 +241,61 @@ async def process_pdf_document_with_embeddings(
     # Retrieve the module-level singleton processor (Docling models loaded once at first call).
     processor = await get_or_create_processor()
 
+    strategy = getattr(question, 'strategy', None)
+
     try:
         # Process document from MinIO, file path, or direct content
         result = None
         temp_file_path = None
-        
+
         if bucket_name and object_name:
+            # MinIO path: always Docling (fast path not applicable without local file)
             result = await processor.process_from_minio(
                 bucket_name=bucket_name,
                 object_name=object_name,
                 doc_id=question.id,
                 doc_type=DocumentType.PDF
             )
-        elif file_path:
-            result = await processor.process_document(
-                file_path=file_path,
-                doc_id=question.id,
-                doc_type=DocumentType.PDF
-            )
-        elif question.is_url():
-            # Download from URL to temp file
-            import tempfile
-            import httpx
-            logger.info(f"Downloading PDF from URL: {question.file_content}")
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                async with httpx.AsyncClient() as client:
-                    response = await client.get(question.file_content, follow_redirects=True, timeout=60)
-                    response.raise_for_status()
-                    tmp_file.write(response.content)
-                temp_file_path = tmp_file.name
-            
-            result = await processor.process_document(
-                file_path=temp_file_path,
-                doc_id=question.id,
-                doc_type=DocumentType.PDF
-            )
         else:
-            raise ValueError("Either bucket_name/object_name, file_path or a URL in file_content must be provided")
+            # Resolve local path: either provided directly or downloaded from URL
+            if file_path:
+                actual_path = file_path
+            elif question.is_url():
+                import tempfile
+                import httpx
+                logger.info(f"Downloading PDF from URL: {question.file_content}")
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                    async with httpx.AsyncClient() as client:
+                        response = await client.get(question.file_content, follow_redirects=True, timeout=60)
+                        response.raise_for_status()
+                        tmp_file.write(response.content)
+                    temp_file_path = tmp_file.name
+                actual_path = temp_file_path
+            else:
+                raise ValueError("Either bucket_name/object_name, file_path or a URL in file_content must be provided")
+
+            # Route based on strategy
+            if strategy == 'fast':
+                logger.info(f"[strategy=fast] Using PyMuPDF native path for {question.id}")
+                result = await process_pdf_native(actual_path, question.id)
+            elif strategy == 'auto':
+                classification = await asyncio.to_thread(classify_pdf, actual_path)
+                doc_type = classification['doc_type']
+                logger.info(f"[strategy=auto] PDF classified as '{doc_type}' (scan_ratio={classification['scan_ratio']:.2f})")
+                if doc_type == 'native':
+                    result = await process_pdf_native(actual_path, question.id)
+                else:
+                    result = await processor.process_document(
+                        file_path=actual_path,
+                        doc_id=question.id,
+                        doc_type=DocumentType.PDF
+                    )
+            else:
+                result = await processor.process_document(
+                    file_path=actual_path,
+                    doc_id=question.id,
+                    doc_type=DocumentType.PDF
+                )
         
         # Cleanup temp file if created
         if temp_file_path and os.path.exists(temp_file_path):
@@ -602,7 +622,7 @@ async def _generate_image_captions(images: List[Dict[str, Any]], llm, doc_id: st
             logger.warning(f"Failed to initialize GraphRepository: {e}")
             graph_repo = None
             
-    linker = ImageSemanticLinker(graph_repository=graph_repo)
+    linker = ImageSemanticLinker(graph_repository=None)
     
     for image_data in images:
         image_id = image_data.get('id')
@@ -651,51 +671,29 @@ async def _generate_image_captions(images: List[Dict[str, Any]], llm, doc_id: st
 
 
 async def _generate_table_descriptions(tables: List[Dict[str, Any]], llm, doc_id: str, text_elements: Optional[List[Dict[str, Any]]] = None):
-    """
-    Generate descriptions for tables and update graph nodes.
-    Uses TableSemanticLinker for better context and question generation.
-    """
+    """Generate LLM descriptions for tables. Uses TableSemanticLinker when text context is available."""
     if not tables:
         return
-    
-    # Initialize graph repository if available
-    graph_repo = None
-    if KNOWLEDGE_GRAPH_AVAILABLE and GraphRepository is not None:
-        try:
-            graph_repo = GraphRepository()
-        except Exception as e:
-            logger.warning(f"Failed to initialize GraphRepository: {e}")
-            graph_repo = None
-            
-    linker = TableSemanticLinker(graph_repository=graph_repo)
-    
+
+    linker = TableSemanticLinker(graph_repository=None)
+
     for table_data in tables:
         table_id = table_data.get('id')
         if not table_id:
             continue
-        
+
         try:
             if text_elements:
-                # Use advanced linker with context
                 await linker.link_table_to_context(
                     table_data=table_data,
                     text_elements=text_elements,
                     llm=llm,
                     doc_id=doc_id
                 )
-                description = table_data.get('semantic_description')
             else:
-                # Fallback to basic description
                 description = await generate_table_description(table_data, llm=llm)
                 table_data['description'] = description
-                
-                # Update graph node if repository available
-                if graph_repo:
-                    graph_repo.update_node(
-                        node_id=table_id,
-                        properties={'description': description}
-                    )
-            
+
             logger.debug(f"Updated table {table_id} with description")
                 
         except Exception as e:
@@ -1107,28 +1105,12 @@ async def process_pdf_markdown_extraction(
     logger.info(f"Starting LangGraph Markdown extraction for document {doc_id}")
     
     try:
-        # Determine file path
+        # extract_md_simple does not use MinIO, Neo4j, or FalkorDB.
+        # Input must be a local file path or a public URL.
         temp_file_path = None
-        if bucket_name and object_name:
-            # Download from MinIO to temp file
-            import tempfile
-            from tilellm.modules.knowledge_graph.services.minio_storage import get_minio_storage_service
-            
-            minio_service = get_minio_storage_service()
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                response = minio_service.get_object(bucket_name, object_name)
-                try:
-                    for d in response.stream(32*1024):
-                        tmp_file.write(d)
-                finally:
-                    response.close()
-                    response.release_conn()
-                temp_file_path = tmp_file.name
-            file_path_to_use = temp_file_path
-        elif file_path:
+        if file_path:
             file_path_to_use = file_path
         elif question.is_url():
-            # Download from URL to temp file
             import tempfile
             import httpx
             logger.info(f"Downloading PDF from URL for Markdown extraction: {question.file_content}")
@@ -1140,7 +1122,7 @@ async def process_pdf_markdown_extraction(
                 temp_file_path = tmp_file.name
             file_path_to_use = temp_file_path
         else:
-            raise ValueError("Either bucket_name/object_name, file_path or a URL in file_content must be provided")
+            raise ValueError("extract_md_simple requires file_path or a public URL in file_content")
         
         # Initialize LangGraph agent
         agent = MarkdownExtractionAgent()

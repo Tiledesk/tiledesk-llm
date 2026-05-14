@@ -61,18 +61,27 @@ class MarkdownExtractor:
             logger.warning("Docling not available. Markdown extraction will be limited.")
             self.pdf_converter = None
             return
-            
-        try:
-            pipeline_options = PdfPipelineOptions()
-            pipeline_options.do_ocr = True
-            pipeline_options.do_table_structure = True
-            pipeline_options.table_structure_options.do_cell_matching = True
-            
-            self.pdf_converter = DocumentConverter(
-                format_options={
-                    InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
-                }
+
+        def _make_converter(device: str = "auto") -> "DocumentConverter":
+            from docling.datamodel.accelerator_options import AcceleratorOptions
+            opts = PdfPipelineOptions()
+            opts.do_ocr = True
+            opts.do_table_structure = True
+            opts.table_structure_options.do_cell_matching = True
+            opts.accelerator_options = AcceleratorOptions(device=device)
+            return DocumentConverter(
+                format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}
             )
+
+        try:
+            try:
+                self.pdf_converter = _make_converter("auto")
+            except RuntimeError as gpu_err:
+                if "meta tensor" in str(gpu_err):
+                    logger.warning(f"GPU meta-tensor error during Docling init, falling back to CPU: {gpu_err}")
+                    self.pdf_converter = _make_converter("cpu")
+                else:
+                    raise
             logger.info("MarkdownExtractor: Docling initialized successfully.")
         except Exception as e:
             logger.error(f"Failed to initialize Docling: {e}")

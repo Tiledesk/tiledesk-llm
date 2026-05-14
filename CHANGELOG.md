@@ -7,6 +7,20 @@
 
 
 ---
+## [2026-05-15]
+### 0.10.1-rc23 (perf: /api/qa parallel init + retrieval_query propagation; fix: Docling GPU meta-tensor fallback + async linker)
+
+**`tilellm/controller/controller.py`** — `ask_hybrid_with_memory`: `initialize_embeddings_and_index` and `create_contextualize_query` now run in parallel via `asyncio.gather`, saving one sequential LLM round-trip per request. Contextualized query is propagated as `retrieval_query` **before** `fetch_question_vectors` so the dense/sparse embedding is computed on the reformulated text (improves recall in chat-history sessions). When the query changes, `precomputed_query_embedding` is invalidated to prevent a stale semantic-cache hit. Removed stale Italian inline comments.
+
+**`tilellm/controller/controller_utils.py`** — `fetch_question_vectors` and `fetch_question_vectors_nopar`: use `retrieval_query or question` as the text for both dense and sparse encoding.
+
+**`tilellm/modules/pdf_ocr/services/docling_processor.py`** — `_init_docling`: added CPU fallback via `AcceleratorOptions(device="cpu")` when a `RuntimeError: meta tensor` is raised during GPU init. Prevents hard crashes on pods where the GPU memory state is stale after a prior OOM.
+
+**`tilellm/modules/pdf_ocr/services/markdown_extractor.py`** — same CPU fallback pattern in `_init_docling`.
+
+**`tilellm/modules/pdf_ocr/logic.py`** — `_generate_image_semantic_links` and `_generate_table_descriptions`: pass `graph_repository=None` to `ImageSemanticLinker`/`TableSemanticLinker` (both are sync-only; passing an `AsyncFalkorGraphRepository` caused `RuntimeWarning: coroutine 'update_node' was never awaited`).
+
+---
 ## [2026-05-11]
 ### 0.10.1-rc19 (fix: TaskIQ double-processing of same document after worker crash)
 

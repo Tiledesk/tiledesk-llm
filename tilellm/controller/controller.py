@@ -190,20 +190,24 @@ async def ask_hybrid_with_memory(
         chat_history_list, question_answer_list = preprocess_chat_history(
             question_answer
         )
-        # Initialize embeddings and encoders
-        (
-            emb_dimension,
-            sparse_encoder,
-            index,
-        ) = await repo.initialize_embeddings_and_index(
-            question_answer, llm_embeddings, emb_dimension, embedding_config_key
+        # Run index init and query contextualization in parallel — contextualization must
+        # happen BEFORE vector embedding so the retrieval uses the reformulated query.
+        (emb_dimension, sparse_encoder, index), contextualized_retrieval_query = await asyncio.gather(
+            repo.initialize_embeddings_and_index(question_answer, llm_embeddings, emb_dimension, embedding_config_key),
+            create_contextualize_query(llm, question_answer),
         )
-        # Fetch vectors for the given question
+
+        # Propagate contextualized query so fetch_question_vectors embeds the right text.
+        # If the query changed, invalidate any precomputed embedding from the semantic cache.
+        if contextualized_retrieval_query and contextualized_retrieval_query != question_answer.question:
+            question_answer.retrieval_query = contextualized_retrieval_query
+            question_answer.precomputed_query_embedding = None
+
+        # Fetch vectors for the (possibly contextualized) retrieval query
         dense_vector, sparse_vector = await fetch_question_vectors(
             question_answer, sparse_encoder, llm_embeddings
         )
-        ### Modifiche
-        # Perform hybrid search - modifica per recuperare più documenti se necessario
+
         search_top_k = (
             question_answer.top_k * question_answer.reranking_multiplier
             if question_answer.reranking
@@ -215,23 +219,14 @@ async def ask_hybrid_with_memory(
         if question_answer.tags:
             filter_dict = build_tags_filter(question_answer.tags, field="tags")
 
-        # Temporaneamente modifica top_k per la ricerca
         original_top_k = question_answer.top_k
         question_answer.top_k = search_top_k
 
-        # Perform hybrid search with filter
         results = await repo.perform_hybrid_search(
             question_answer, index, dense_vector, sparse_vector, filter=filter_dict
         )
 
-        # Ripristina il valore originale
         question_answer.top_k = original_top_k
-
-        # Retrieve documents based on search results
-        # Always create contextualized query if enabled, regardless of reranking
-        contextualized_retrieval_query = await create_contextualize_query(
-            llm, question_answer
-        )
 
         retriever = await aretrieve_documents(
             question_answer, results, contextualized_retrieval_query

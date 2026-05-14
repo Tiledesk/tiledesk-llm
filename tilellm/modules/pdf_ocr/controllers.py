@@ -50,40 +50,45 @@ async def scrape_pdf(request: PDFScrapingRequest):
 
         job_service = get_job_service()
 
-        if request.use_docling:
-            # New Advanced Pipeline (Docling-based)
-            # This pipeline does NOT require MinIO
+        # Route to the new pipeline when:
+        #   - use_docling=True  (explicit legacy flag, backward compatible), OR
+        #   - strategy is "auto" or "fast" (smart routing requested explicitly)
+        # Both require file_content to be a public URL.
+        use_new_pipeline = request.use_docling or request.strategy in ("auto", "fast")
 
-            # Validate that file_content is a URL (not Base64)
+        if use_new_pipeline:
+            # New pipeline: smart routing inside process_pdf_document_with_embeddings
+            # (PyMuPDF fast path for native PDFs, Docling for scanned/mixed ones)
             if not request.is_url():
                 raise HTTPException(
                     status_code=400,
                     detail=(
-                        "For Docling pipeline (use_docling=true), file_content must be a public URL (http/https). "
-                        "Base64 content is not supported. Please upload the PDF to a publicly accessible location "
-                        "and provide the URL, or use the legacy pipeline (use_docling=false) with MinIO."
+                        "The new pipeline (use_docling=true or strategy='auto'/'fast') requires "
+                        "file_content to be a public URL (http/https). "
+                        "For Base64 content use strategy='quality' with the legacy MinIO pipeline."
                     )
                 )
 
-            logger.info(f"PDF content is a URL: {request.file_content}")
+            logger.info(
+                f"PDF new pipeline: strategy='{request.strategy}' use_docling={request.use_docling} "
+                f"url={request.file_content}"
+            )
 
             taskiq_service = get_taskiq_service()
 
             if taskiq_service.is_available():
-                # Submit to Taskiq; task_id is the Taskiq-generated key for status polling.
                 result = await taskiq_service.submit(doc_id=doc_id, request=request)
                 job_id = result["task_id"]
-                message = result.get("message", "PDF processing job (Advanced Docling) has been successfully queued.")
+                message = result.get("message", "PDF processing job has been successfully queued.")
                 job_service.register_task(task_id=job_id, doc_id=doc_id, file_name=request.file_name)
             else:
-                # Fallback: Process synchronously – use doc_id directly as job_id.
                 logger.info(f"Taskiq disabled or unavailable, processing PDF doc_id={doc_id} synchronously")
                 result = await taskiq_service.process_synchronously(request=request)
                 job_id = doc_id
                 message = result.get("message", "PDF processing completed synchronously (Taskiq disabled).")
 
         else:
-            # Legacy Pipeline (requires MinIO)
+            # Legacy Pipeline (requires MinIO) — used when strategy='quality' and use_docling=False
             queue_service = get_redis_queue_service()
 
             if not queue_service.is_minio_available():
@@ -91,7 +96,7 @@ async def scrape_pdf(request: PDFScrapingRequest):
                     status_code=503,
                     detail=(
                         f"Legacy PDF pipeline requires MinIO. Error: {queue_service.get_minio_error()}. "
-                        "Consider using use_docling=true with a public URL for the new pipeline that works without MinIO."
+                        "Use strategy='auto' or strategy='fast' with a public URL to bypass MinIO."
                     )
                 )
 
