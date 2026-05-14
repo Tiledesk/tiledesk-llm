@@ -1,4 +1,5 @@
 import gc
+import json
 import os
 import logging
 from typing import Any
@@ -167,6 +168,7 @@ async def _startup_reclaim(redis_client) -> None:
         consumer_name = broker.consumer_name     # UUID of this new worker
 
         total_requeued = 0
+        total_skipped = 0
         start_id = "0-0"
 
         while True:
@@ -187,6 +189,27 @@ async def _startup_reclaim(redis_client) -> None:
                     # unknown format — just ack to avoid permanent PEL pollution
                     await redis_client.xack(stream_name, group_name, msg_id)
                     continue
+
+                # Guard: if a result already exists in the result_backend the task
+                # completed its work but the worker crashed before XACK (the window
+                # between "Task finished" log and the actual Redis XACK).
+                # Re-dispatching it would process the same document a second time.
+                # Result key format: task_id (no prefix — matches RedisAsyncResultBackend default)
+                task_id_for_check = None
+                try:
+                    msg_obj = json.loads(payload)
+                    task_id_for_check = msg_obj.get("task_id")
+                    if task_id_for_check and await redis_client.exists(task_id_for_check):
+                        await redis_client.xack(stream_name, group_name, msg_id)
+                        total_skipped += 1
+                        logger.info(
+                            f"♻️ Reclaim: task {task_id_for_check} già completato "
+                            f"(risultato in Redis), solo ACK — nessun re-dispatch"
+                        )
+                        continue
+                except Exception:
+                    pass  # parsing failed — fall through to normal re-dispatch
+
                 # Re-publish as new undelivered message; broker '>' loop picks it up
                 await redis_client.xadd(stream_name, {b"data": payload})
                 # Clean up the old PEL entry
@@ -198,8 +221,11 @@ async def _startup_reclaim(redis_client) -> None:
                 break
             start_id = next_id
 
-        if total_requeued:
-            logger.info(f"♻️ Startup reclaim: {total_requeued} messaggi re-pubblicati nello stream (pronti per il consumer)")
+        if total_requeued or total_skipped:
+            logger.info(
+                f"♻️ Startup reclaim: {total_requeued} messaggi re-pubblicati, "
+                f"{total_skipped} già completati (solo ACK)"
+            )
         else:
             logger.info("✅ Nessun messaggio PEL da reclamare all'avvio")
 
