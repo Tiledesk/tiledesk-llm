@@ -63,6 +63,18 @@ class DigestGenerationRequest(BaseModel):
         description="URL notified on completion (or failure) when the task runs asynchronously via TaskIQ.",
     )
     tags: Optional[List[str]] = Field(default=None)
+    # lgraph integration — augment chunk retrieval with DATE_IT entities from FalkorDB
+    use_lgraph: bool = Field(
+        default=False,
+        description=(
+            "When True, also retrieves chunks linked to DATE_IT entities in the lgraph "
+            "that match the date window. Requires a built lgraph for this namespace+index."
+        ),
+    )
+    lgraph_spacy_model: str = Field(
+        default="it_core_news_lg",
+        description="spaCy model used when building the lgraph (must match build phase).",
+    )
 
 
 class DigestGenerationResult(BaseModel):

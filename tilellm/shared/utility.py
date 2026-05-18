@@ -100,6 +100,7 @@ def get_service_config():
             "tools_registry": _str_to_bool(os.environ.get("ENABLE_TOOLS_REGISTRY", "true")),
             "api_v2": _str_to_bool(os.environ.get("ENABLE_API_V2", "true")),
             "temporal_digest": _str_to_bool(os.environ.get("ENABLE_TEMPORAL_DIGEST", "true")),
+            "lgraph": _str_to_bool(os.environ.get("ENABLE_LGRAPH", "false"))
         }
 
     # TEI Configuration

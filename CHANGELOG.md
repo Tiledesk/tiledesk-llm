@@ -7,6 +7,20 @@
 
 
 ---
+## [2026-05-18]
+### 0.10.1-rc24 (feat: /api/v2/qa simplified agentic endpoint with optional guard/grader; fix: rag_node StreamingResponse in graph; fix: lgraph date filter findall tuple)
+
+**`tilellm/modules/api_v2/controllers.py`** — rinominato l'endpoint agentico completo da `/qa` a `/query`; aggiunto `/qa` semplificato che usa `QASimpleRequest` e il nuovo `simple_app`. Helper `_build_response()` condiviso tra i due endpoint.
+
+**`tilellm/modules/api_v2/models.py`** — `QASimpleRequest` (già presente): estende `QuestionAnswer` con `use_guard: bool = True` e `use_hallucination_grader: bool = True`.
+
+**`tilellm/agents/workflow.py`** — aggiunto `simple_app`: workflow LangGraph ridotto per `/api/v2/qa`. Pipeline: `_start → [guardia] → intent_router → compliance_node | rag_core → [validatore] → fail_safe_node`. Routing dinamico tramite `_simple_guard_router` (salta `guardia` se `use_guard=False`) e `_simple_after_rag_router` (salta `validatore` se `use_hallucination_grader=False`). Il workflow completo `app` (con HyDE, cache, RAPTOR) rimane invariato per `/api/v2/query`.
+
+**`tilellm/agents/nodes.py`** — `rag_node`: forza `stream=False` prima di chiamare `ask_with_memory`/`ask_hybrid_with_memory` quando `question_answer.stream=True`; il grafo richiede un `RetrievalResult` ispezionabile, non una `StreamingResponse`. `fail_safe_node`: gestione esplicita di `RetrievalResult` (`.model_dump()`), `JSONResponse` (`.body` bytes) e fallback a `{}` per qualsiasi altro tipo, evitando `AttributeError` su oggetti `StreamingResponse`.
+
+**`tilellm/modules/lgraph/logic.py`** — `_filter_chunks_by_date`: corretto `date_re.findall(chunk.text)` → `date_re.finditer(chunk.text)` con `.group(0)`. `findall` con regex a gruppi catturanti restituisce tuple invece di stringhe, causando `TypeError: expected string or bytes-like object, got 'tuple'` in `_parse_it_date`.
+
+---
 ## [2026-05-15]
 ### 0.10.1-rc23 (perf: /api/qa parallel init + retrieval_query propagation; fix: Docling GPU meta-tensor fallback + async linker)
 

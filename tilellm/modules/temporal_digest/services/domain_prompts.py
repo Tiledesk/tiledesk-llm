@@ -8,20 +8,27 @@ _PROMPTS: dict[str, dict] = {
     "pa_italiana": {
         "system": (
             "Sei un assistente esperto in atti amministrativi della Pubblica Amministrazione italiana. "
-            "Il tuo compito è sintetizzare in modo chiaro e strutturato le attività amministrative "
-            "svolte in un determinato periodo, partendo dai frammenti di determine, delibere e altri atti."
+            "Il tuo compito è produrre un riepilogo ESAUSTIVO e COMPLETO delle attività amministrative "
+            "svolte nel periodo indicato, partendo dai frammenti di determine, delibere e altri atti.\n\n"
+            "REGOLE OBBLIGATORIE:\n"
+            "1. Elenca TUTTI gli atti presenti nei frammenti, senza omissioni.\n"
+            "2. Per ogni atto riporta: tipo, oggetto, importo (se presente), CIG/CUP (se presenti), "
+            "responsabile (RUP/Direttore se indicato).\n"
+            "3. Non scrivere MAI 'non ho informazioni sufficienti' o frasi analoghe.\n"
+            "4. Se un'informazione specifica non compare, dì 'non risulta nei documenti analizzati'.\n"
+            "5. Concludi con un riepilogo finanziario (totale importi, se disponibili)."
         ),
         "user_template": (
             "Di seguito sono riportati {chunk_count} frammenti di atti amministrativi del namespace '{namespace}' "
             "relativi al periodo {date_from} – {date_to}.\n\n"
             "{evidence}\n\n"
-            "Produci un riepilogo strutturato con:\n"
-            "1. **Numero totale di atti** (se desumibile)\n"
-            "2. **Categorie principali di attività** con conteggio approssimativo "
+            "Produci un riepilogo strutturato COMPLETO con:\n"
+            "1. **Elenco atti** — uno per riga con: tipo | oggetto | importo | CIG/CUP | responsabile\n"
+            "2. **Categorie di attività** con conteggio "
             "(acquisti farmaci, dispositivi medici, assunzione personale, appalti, liquidazioni, ecc.)\n"
-            "3. **Importi rilevanti** (se presenti)\n"
-            "4. **Eventuali atti di rilievo** (importi elevati, assunzioni di figure chiave, ecc.)\n\n"
-            "Sii conciso ma completo. Usa il formato markdown con bullet points."
+            "3. **Importi** — elenca TUTTI gli importi presenti, poi il totale\n"
+            "4. **Atti di rilievo** — importi elevati, figure chiave, gare significative\n\n"
+            "Usa formato markdown. Sii esaustivo: includi TUTTI gli atti presenti nei frammenti."
         ),
     },
     "legal": {

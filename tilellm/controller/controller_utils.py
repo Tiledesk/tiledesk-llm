@@ -52,6 +52,36 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+def _extract_content_text(content) -> str:
+    """Extract plain text from an AIMessage content that may be a str or a list of content blocks.
+
+    Handles multiple OpenAI API formats:
+    - str: Chat Completions API (standard streaming)
+    - list[{"type":"text","text":"..."}]: Chat Completions structured content
+    - list[{"type":"output_text","text":"..."}]: Responses API streaming
+    - list[{"type":"output_text","output_text":"..."}]: Responses API alt format
+    - list[{"delta":"..."}]: Responses API delta events
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = (
+                    item.get("text")
+                    or item.get("output_text")
+                    or item.get("delta")
+                    or ""
+                )
+                parts.append(text)
+        return "".join(parts)
+    return str(content)
+
+
 # Function to trim chat history
 def trim_history(chat_history_dict: Optional[Dict[str, ChatEntry]], max_messages: int) -> Dict[str, ChatEntry]:
     if not chat_history_dict or max_messages <= 0:
@@ -506,7 +536,7 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                         if isinstance(chunk["answer"], str):
                             content_to_stream = chunk["answer"]
                         elif hasattr(chunk["answer"], "content"):
-                            content_to_stream = chunk["answer"].content
+                            content_to_stream = _extract_content_text(chunk["answer"].content)
 
                     if content_to_stream:
                         full_response += content_to_stream
@@ -520,6 +550,8 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
 
                 # Final processing after stream ends
                 citations = extract_citations(full_response) if question_answer.citations else []
+                if question_answer.citations:
+                    full_response = _strip_citation_markers(full_response)
                 end_time = datetime.now()
                 full_response, success = verify_answer(full_response)
 
@@ -671,31 +703,125 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
         # However, create_retrieval_chain hides the internal stuff chain.
         pass
 
-    # CODICE ORIGINALE: usa RunnableWithMessageHistory (quando contextualize_prompt=True)
-    # citation_rag_chain = None
     if question_answer.stream:
         if question_answer.citations:
+            # RunnableWithMessageHistory buffers streaming chunks and breaks streaming.
+            # Use text-injected history (like contextualize_prompt=False) instead of
+            # MessagesPlaceholder to avoid "Reply to previous question" confusion with
+            # stream_citations_tail when there are prior conversation turns.
+            if question_answer.system_context:
+                system_stream = question_answer.system_context
+                if "{context}" not in system_stream:
+                    system_stream += "\n\nRetrieved context:\n{context}"
+            else:
+                system_stream = const.qa_system_prompt_with_history_injected
+
+            qa_prompt_stream = ChatPromptTemplate.from_messages([
+                ("system", system_stream),
+                ("human", "{input}"),
+            ])
+
             retrieve_docs = (lambda x: x["input"]) | retriever
-
-            rag_chain_from_docs = (
-                    RunnablePassthrough.assign(context=(lambda x: format_docs_with_id(x["context"])))
-                    | qa_prompt
-                    | llm
+            rag_chain_from_docs_stream = (
+                RunnablePassthrough.assign(context=(lambda x: format_docs_with_id(x["context"])))
+                | qa_prompt_stream
+                | llm
             )
-
-            chain_w_citations = (
+            chain_w_citations_stream = (
                 RunnablePassthrough.assign(context=retrieve_docs)
-                .assign(answer=rag_chain_from_docs)
-                .assign(only_answer=RunnableLambda(extract_content)#lambda text: text["answer"].answer)
-                )
+                .assign(answer=rag_chain_from_docs_stream)
             )
+            _chain_input_ctx = {
+                "input": question_answer.question + "\n" + const.stream_citations_tail,
+                "chat_history_text": chat_history_text,
+            }
 
-            conversational_rag_chain = RunnableWithMessageHistory(
-                chain_w_citations,
-                get_session_history,
-                input_messages_key="input",
-                history_messages_key="chat_history",
-                output_messages_key="answer",
+            async def get_stream_llm_citations_ctx():
+                full_response = ""
+                message_id = str(uuid.uuid4())
+                start_time = datetime.now()
+                result_context = None
+                _llm_t0 = time.monotonic()
+
+                yield _create_event("metadata", {"message_id": message_id, "status": "started", "timestamp": start_time.isoformat()})
+
+                async for chunk in chain_w_citations_stream.astream(_chain_input_ctx):
+                    content_to_stream = None
+                    if "answer" in chunk:
+                        if isinstance(chunk["answer"], str):
+                            content_to_stream = chunk["answer"]
+                        elif hasattr(chunk["answer"], "content"):
+                            content_to_stream = _extract_content_text(chunk["answer"].content)
+                    if content_to_stream:
+                        full_response += content_to_stream
+                        yield _create_event("chunk", {"content": content_to_stream, "message_id": message_id})
+                        await asyncio.sleep(0.02)
+                    if "context" in chunk and result_context is None:
+                        result_context = chunk["context"]
+
+                _llm_latency_ms = int((time.monotonic() - _llm_t0) * 1000)
+
+                citations = extract_citations(full_response)
+                full_response = _strip_citation_markers(full_response)
+                end_time = datetime.now()
+                full_response, success = verify_answer(full_response)
+
+                final_result_dict = {
+                    "input": question_answer.question,
+                    "answer": full_response,
+                    "context": result_context if result_context else [],
+                    "chat_history": [],
+                }
+                question_answer_list.append((question_answer.question, full_response))
+
+                result_to_return = format_result(
+                    result=final_result_dict,
+                    citations=citations,
+                    question_answer=question_answer,
+                    callback_handler=callback_handler,
+                    question_answer_list=question_answer_list,
+                    success=success,
+                    duration=(end_time - start_time).total_seconds()
+                )
+
+                _cb = callback_handler
+                _model_str = getattr(question_answer, "model", None) or ""
+                if not isinstance(_model_str, str):
+                    _model_str = getattr(_model_str, "name", str(_model_str))
+                _et, _pl = analytics.events.token_usage(
+                    model=_model_str,
+                    prompt_tokens=getattr(_cb, "prompt_tokens", 0),
+                    completion_tokens=getattr(_cb, "completion_tokens", 0),
+                    total_tokens=getattr(_cb, "total_tokens", 0),
+                    operation="ask",
+                    source="rag",
+                    request_id=getattr(question_answer, "request_id", None),
+                    agent_id=getattr(question_answer, "agent_id", None),
+                )
+                analytics.publish_nowait(_et, question_answer.id_project, _pl)
+                _et, _pl = analytics.events.model_call(
+                    model=_model_str,
+                    provider=getattr(question_answer, "llm", None),
+                    operation="ask",
+                    latency_ms=_llm_latency_ms,
+                    success=True,
+                    request_id=getattr(question_answer, "request_id", None),
+                )
+                analytics.publish_nowait(_et, question_answer.id_project, _pl)
+
+                yield _create_event("metadata", {
+                    "message_id": message_id,
+                    "status": "completed",
+                    "timestamp": end_time.isoformat(),
+                    "duration": (end_time - start_time).total_seconds(),
+                    "full_response": full_response,
+                    "model_used": result_to_return.model_dump()
+                })
+
+            return StreamingResponse(
+                get_stream_llm_citations_ctx(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache"}
             )
         else:
             conversational_rag_chain = RunnableWithMessageHistory(
@@ -705,7 +831,7 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                 history_messages_key="chat_history",
                 output_messages_key="answer",
             )
-        return await get_streaming_response(conversational_rag_chain, question_answer, callback_handler, question_answer_list )
+            return await get_streaming_response(conversational_rag_chain, question_answer, callback_handler, question_answer_list)
     else:
 
         if question_answer.citations:
@@ -948,18 +1074,52 @@ async def get_streaming_response(runnable_with_history, question, callback_handl
                                                          config={
                                                              "configurable": {"session_id": uuid.uuid4().hex}}):
 
-            #no citations
-            if "answer" in chunk and isinstance(chunk["answer"], str):
-                full_response += chunk["answer"]
-                yield _create_event("chunk", {"content": chunk["answer"], "message_id": message_id})
-                await asyncio.sleep(0.02)  # Per un flusso più regolare
-            # with citations
-            elif 'answer' in chunk and hasattr(chunk['answer'], "content"):
-                full_response += chunk['answer'].content
-                yield _create_event("chunk", {"content": chunk['answer'].content, "message_id": message_id})
-                await asyncio.sleep(0.02)  # Per un flusso più regolare
+            if not isinstance(chunk, dict):
+                # Non-dict chunk: try direct content extraction (fallback for some LangChain versions)
+                if hasattr(chunk, "content"):
+                    _text = _extract_content_text(chunk.content)
+                    if _text:
+                        full_response += _text
+                        yield _create_event("chunk", {"content": _text, "message_id": message_id})
+                        await asyncio.sleep(0.02)
+                continue
+
+            if "answer" in chunk:
+                _answer = chunk["answer"]
+                if isinstance(_answer, str):
+                    if _answer:
+                        full_response += _answer
+                        yield _create_event("chunk", {"content": _answer, "message_id": message_id})
+                        await asyncio.sleep(0.02)
+                elif hasattr(_answer, "content"):
+                    _text = _extract_content_text(_answer.content)
+                    if _text:
+                        full_response += _text
+                        yield _create_event("chunk", {"content": _text, "message_id": message_id})
+                        await asyncio.sleep(0.02)
+                    else:
+                        logger.debug(
+                            f"[stream] answer chunk empty — "
+                            f"content={_answer.content!r:.200} "
+                            f"add_kwargs={getattr(_answer, 'additional_kwargs', {})!r:.100}"
+                        )
+
+            elif 'only_answer' in chunk and not full_response:
+                # Fallback: RunnableWithMessageHistory may buffer "answer" chunks;
+                # the final accumulated answer surfaces here when streaming is
+                # not granular (e.g. Responses API models).
+                _oa = chunk['only_answer']
+                _answer_val = _oa.get("answer") if isinstance(_oa, dict) else None
+                if _answer_val is not None:
+                    _text = _extract_content_text(
+                        _answer_val.content if hasattr(_answer_val, "content") else str(_answer_val)
+                    )
+                    if _text:
+                        full_response += _text
+                        yield _create_event("chunk", {"content": _text, "message_id": message_id})
+
             elif 'context' in chunk:
-                result["context"]=chunk["context"]
+                result["context"] = chunk["context"]
             elif 'input' in chunk:
                 result['input'] = chunk['input']
                 result['chat_history'] = chunk['chat_history']
@@ -967,8 +1127,8 @@ async def get_streaming_response(runnable_with_history, question, callback_handl
         _llm_latency_ms = int((time.monotonic() - _llm_t0) * 1000)
 
         citations = extract_citations(full_response) if question.citations else []
-        # q_answer = QuotedAnswer(answer = full_response, citations=citations)
-        # print(f"======={q_answer}")
+        if question.citations:
+            full_response = _strip_citation_markers(full_response)
         end_time = datetime.now()
         full_response, success = verify_answer(full_response)
 
@@ -1028,24 +1188,23 @@ async def get_streaming_response(runnable_with_history, question, callback_handl
     )
 
 
+_CITATION_RE = r"[Cc][Ii][Tt]:\s*id:\s*(?:\[)?(\d+)(?:\])?\s*(?:,\s*[Ss][Oo][Uu][Rr][Cc][Ee]:\s*(?:\[)?(.*?)(?:\]?\s*(?:\(.*?\))?))?;"
+
+
 def extract_citations(testo: str) -> List[Citation]:
     import re
 
-    # regex_citazione =r'(?i)cit:\s*id:\[?(\d+)\]?,\s*source:\[?([^;\]]+?)\]?;'
-    # regex_citazione = r"Cit: id:(.+), source:(.+)"
-    # regex_citazione = r"[Cc][Ii][Tt]:\s*id:\s*(?:\[)?(\d+)(?:\])?\s*(?:,\s*source:\s*(?:\[)?(.+))(?:\])?\s*"
-    # regex_citazione = r"[Cc][Ii][Tt]:\s*id:\s*(?:\[)?(\d+)(?:\])?\s*(?:,\s*[Ss][Oo][Uu][Rr][Cc][Ee]:\s*(?:\[)?([^\]]+)?(?:\])?)?"
-    # regex_citazione = r"[Cc][Ii][Tt]:\s*id:\s*(?:\[)?(\d+)(?:\])?\s*(?:,\s*[Ss][Oo][Uu][Rr][Cc][Ee]:\s*(?:\[)?([^\]]+?)(?:\])?)?"
-    regex_citazione = r"[Cc][Ii][Tt]:\s*id:\s*(?:\[)?(\d+)(?:\])?\s*(?:,\s*[Ss][Oo][Uu][Rr][Cc][Ee]:\s*(?:\[)?(.*?)(?:\]?\s*(?:\(.*?\))?))?;"
-
     citations = []
-    for match in re.finditer(regex_citazione, testo):
-        # print(match)
+    for match in re.finditer(_CITATION_RE, testo):
         id_cit = int(match.group(1))
         source_cit = match.group(2).strip()
-
         citations.append(Citation(source_id=id_cit, source_name=source_cit))
     return citations
+
+
+def _strip_citation_markers(text: str) -> str:
+    import re
+    return re.sub(_CITATION_RE, "", text).strip()
 
 def _create_event(event_type: str, data: dict) -> str:
     import json

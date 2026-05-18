@@ -292,15 +292,20 @@ async def rag_node(state: GraphState):
     search_func = SEARCH_STRATEGIES.get(search_type, ask_with_memory)
 
     original_qa = state["question_answer"]
+    # The graph must inspect the result — force non-streaming so we get a RetrievalResult
+    force_no_stream = {"stream": False} if getattr(original_qa, "stream", False) else {}
+
     if iteration > 0 and state.get("error_message"):
         feedback = state["error_message"]
         correction_instruction = (
             f"\n\n[SYSTEM: Il tentativo precedente è fallito: {feedback}. "
             f"Riprova usando meglio il grafo di conoscenza e i documenti.]"
         )
-        qa_for_llm = original_qa.model_copy(update={"question": original_qa.question + correction_instruction})
+        qa_for_llm = original_qa.model_copy(
+            update={"question": original_qa.question + correction_instruction, **force_no_stream}
+        )
     else:
-        qa_for_llm = original_qa
+        qa_for_llm = original_qa.model_copy(update=force_no_stream) if force_no_stream else original_qa
 
     trace.append({
         "step": f"rag_attempt_{iteration}",
@@ -389,7 +394,12 @@ async def fail_safe_node(state: GraphState):
 
     try:
         raw = state["retrieval_result"]
-        body = json.loads(raw.body) if hasattr(raw, "body") else raw.model_dump()
+        if isinstance(raw, RetrievalResult):
+            body = raw.model_dump()
+        elif hasattr(raw, "body") and isinstance(getattr(raw, "body", None), (bytes, str)):
+            body = json.loads(raw.body)
+        else:
+            body = {}
         safe_result: RetrievalResult = RetrievalResult(**body)
         safe_result.answer = (
             "Mi dispiace, ma non riesco a trovare una risposta totalmente verificata "

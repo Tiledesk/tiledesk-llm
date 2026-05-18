@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 _DIGEST_TYPE_FIELD = "digest_type"   # "digest" marks a pre-generated summary vector
 _DIGEST_TYPE_VALUE = "digest"
 _MAX_CHUNK_CHARS = 800               # chars per chunk in evidence block
-_MAX_EVIDENCE_CHARS = 60_000         # total evidence block budget
+_MAX_EVIDENCE_CHARS = 120_000        # total evidence block budget (increased for lgraph augmentation)
 
 
 def _format_chat_history(chat_history_dict: dict, max_messages: int = 10) -> str:
@@ -204,6 +204,85 @@ class DigestService:
             skipped_windows=skipped,
         )
 
+    async def _fetch_chunks_from_lgraph(
+        self,
+        request: DigestGenerationRequest,
+        date_from_str: str,
+        date_to_str: str,
+    ) -> Tuple[List[str], List[dict]]:
+        """
+        Query FalkorDB for DATE_IT entities matching [date_from_str, date_to_str]
+        and return the text + metadata of the associated LChunk nodes.
+
+        Dates in FalkorDB are stored as strings in DD/MM/YYYY format (Italian PA style).
+        We match entities whose name (normalised date) falls within the requested range.
+        """
+        try:
+            from tilellm.modules.lgraph.logic import _get_falkor_repo
+            from tilellm.modules.lgraph.services.graph_builder import make_graph_name as _mgn
+            import re
+            from datetime import date as _date
+
+            graph_name = _mgn(request.namespace, request.engine.index_name)
+            falkor = _get_falkor_repo()
+
+            # Parse requested range
+            df = _date.fromisoformat(date_from_str)
+            dt = _date.fromisoformat(date_to_str)
+
+            date_re = re.compile(r'^(\d{1,2})[/\-\.](\d{2})[/\-\.](\d{4})$')
+
+            def _parse_it(s: str):
+                m = date_re.match(s.strip())
+                if not m:
+                    return None
+                try:
+                    return _date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+                except ValueError:
+                    return None
+
+            # Fetch all DATE_IT entities + their connected LChunks
+            rows = await falkor._execute_query(
+                "MATCH (e:LEntity {entity_type: 'DATE_IT'})-[:HAS_ENTITY]-(c:LChunk) "
+                "WHERE e.namespace=$ns AND e.index_name=$idx "
+                "RETURN e.name AS date_str, c.chunk_id AS chunk_id, "
+                "c.text AS text, c.source AS source, c.metadata_id AS metadata_id",
+                {"ns": request.namespace, "idx": request.engine.index_name},
+                graph_name=graph_name,
+            )
+
+            seen_ids: set = set()
+            chunks_text: List[str] = []
+            chunks_meta: List[dict] = []
+
+            for row in rows:
+                d = _parse_it(row.get("date_str", ""))
+                if d is None:
+                    continue
+                if d < df or d > dt:
+                    continue
+                cid = row.get("chunk_id", "")
+                if cid in seen_ids:
+                    continue
+                seen_ids.add(cid)
+                chunks_text.append(row.get("text") or "")
+                chunks_meta.append({
+                    "chunk_id": cid,
+                    "source": row.get("source", ""),
+                    "metadata_id": row.get("metadata_id", ""),
+                    "lgraph_date": row.get("date_str", ""),
+                })
+
+            logger.info(
+                f"[lgraph augment] namespace={request.namespace} "
+                f"{date_from_str}–{date_to_str}: {len(chunks_text)} extra chunks from FalkorDB"
+            )
+            return chunks_text, chunks_meta
+
+        except Exception as e:
+            logger.warning(f"[lgraph augment] failed, skipping: {e}")
+            return [], []
+
     async def _generate_window(
         self,
         request: DigestGenerationRequest,
@@ -237,15 +316,31 @@ class DigestService:
                     already_existed=True,
                 )
 
-        # Retrieve source chunks
+        # Retrieve source chunks from vector store
         retrieval = await self._fetch_source_chunks(
             repo=repo,
             request=request,
             date_from_str=ds,
             date_to_str=de,
         )
-        chunks = retrieval.chunks
-        metadatas = retrieval.metadata
+        chunks = list(retrieval.chunks)
+        metadatas = list(retrieval.metadata)
+
+        # Augment with lgraph DATE_IT chunks if requested
+        if getattr(request, "use_lgraph", False):
+            lgraph_texts, lgraph_metas = await self._fetch_chunks_from_lgraph(
+                request=request,
+                date_from_str=ds,
+                date_to_str=de,
+            )
+            # Dedup: avoid adding chunks already retrieved from vector store
+            existing_ids = {m.get("chunk_id", m.get("metadata_id", "")) for m in metadatas}
+            for text, meta in zip(lgraph_texts, lgraph_metas):
+                cid = meta.get("chunk_id", "")
+                if cid not in existing_ids:
+                    chunks.append(text)
+                    metadatas.append(meta)
+                    existing_ids.add(cid)
 
         if not chunks:
             logger.info(f"No chunks found for {ds}–{de} in '{request.namespace}'.")
@@ -460,10 +555,15 @@ class DigestService:
         evidence = _build_evidence_block(chunks, metadatas)
         prompt = (
             f"{history_section}"
-            f"Di seguito sono riportati i digest degli atti amministrativi "
-            f"relativi al periodo richiesto.\n\n{evidence}\n\n"
-            f"Rispondi in italiano alla seguente domanda basandoti SOLO sui digest forniti:\n"
-            f"{request.question}"
+            f"Di seguito sono riportati TUTTI i digest degli atti amministrativi "
+            f"relativi al periodo richiesto ({len(chunks)} digest).\n\n{evidence}\n\n"
+            f"ISTRUZIONI:\n"
+            f"- Rispondi in modo ESAUSTIVO e COMPLETO basandoti su tutti i digest forniti.\n"
+            f"- Non scrivere mai 'non ho informazioni sufficienti' o 'le informazioni sono parziali'.\n"
+            f"- Se un'informazione specifica non compare nei digest, dì esplicitamente "
+            f"'Nei digest analizzati non risulta alcun riferimento a [X]'.\n"
+            f"- Riporta TUTTI gli importi, CIG, CUP, nomi di persone/enti che compaiono.\n\n"
+            f"Domanda: {request.question}"
         )
 
         try:
@@ -532,10 +632,15 @@ class DigestService:
         evidence = _build_evidence_block(chunks, metadatas)
         prompt = (
             f"{history_section}"
-            f"Di seguito sono riportati i frammenti di documenti più rilevanti.\n\n"
+            f"Di seguito sono riportati i frammenti di documenti più rilevanti ({len(chunks)} frammenti).\n\n"
             f"{evidence}\n\n"
-            f"Rispondi in italiano alla seguente domanda basandoti SOLO sui frammenti forniti:\n"
-            f"{request.question}"
+            f"ISTRUZIONI:\n"
+            f"- Rispondi in modo ESAUSTIVO e COMPLETO basandoti su tutti i frammenti forniti.\n"
+            f"- Non scrivere mai 'non ho informazioni sufficienti' o 'le informazioni sono parziali'.\n"
+            f"- Se un'informazione specifica non compare nei frammenti, dì esplicitamente "
+            f"'Nei documenti analizzati non risulta alcun riferimento a [X]'.\n"
+            f"- Riporta TUTTI gli importi, CIG, CUP, nomi di persone/enti che compaiono.\n\n"
+            f"Domanda: {request.question}"
         )
 
         try:

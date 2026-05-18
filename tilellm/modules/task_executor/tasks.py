@@ -777,6 +777,51 @@ async def _process_pdf_document_task_inner(
         raise
 
 
+@broker.task(retry_on_error=False, labels={"task_type": "lgraph_leiden"})
+async def task_lgraph_leiden(request_dict: dict) -> dict:
+    """Run Leiden community detection on the LEntity CO_OCCURS graph."""
+    from tilellm.modules.lgraph.models.schemas import LGraphLeidenRequest
+    from tilellm.modules.lgraph.logic import leiden_lgraph
+
+    webhook_url = request_dict.get("webhook_url")
+    try:
+        request = LGraphLeidenRequest(**request_dict)
+        logger.info(f"[lgraph_leiden] Starting namespace={request.namespace} index={request.engine.index_name}")
+        result = await leiden_lgraph(request)
+        payload = result.model_dump(mode="json")
+        logger.info(f"[lgraph_leiden] Done: {payload}")
+        if webhook_url:
+            await send_webhook(webhook_url, payload)
+        return payload
+    except Exception as e:
+        logger.error(f"[lgraph_leiden] Failed namespace={request_dict.get('namespace')}: {e}", exc_info=True)
+        if webhook_url:
+            await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
+        raise
+
+
+@broker.task(retry_on_error=False, labels={"task_type": "lgraph_build"})
+async def task_lgraph_build(request_dict: dict) -> dict:
+    """Build the Light GraphRAG graph (spaCy + NPMI + FalkorDB) for a namespace."""
+    from tilellm.modules.lgraph.models.schemas import LGraphBuildRequest
+    from tilellm.modules.lgraph.logic import build_lgraph
+
+    webhook_url = request_dict.get("webhook_url")
+    try:
+        request = LGraphBuildRequest(**request_dict)
+        logger.info(f"[lgraph_build] Starting namespace={request.namespace} index={request.engine.index_name}")
+        result = await build_lgraph(request)
+        logger.info(f"[lgraph_build] Done: {result}")
+        if webhook_url:
+            await send_webhook(webhook_url, result)
+        return result
+    except Exception as e:
+        logger.error(f"[lgraph_build] Failed namespace={request_dict.get('namespace')}: {e}", exc_info=True)
+        if webhook_url:
+            await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
+        raise
+
+
 @broker.task(retry_on_error=True, max_retries=2, labels={"task_type": "digest_generate"})
 async def task_digest_generate(request_dict: dict) -> dict:
     """
