@@ -49,6 +49,13 @@ class PDFScrapingRequest(ItemSingle):
             "Keys here override the corresponding base metadata fields."
         ),
     )
+    force_reprocess: bool = Field(
+        False,
+        description=(
+            "If True, bypass the idempotency guard and reprocess the document even if it "
+            "was already successfully indexed. Use this to re-ingest after content corrections."
+        ),
+    )
 
     def is_url(self) -> bool:
         """Check if file_content is a URL."""
@@ -133,6 +140,14 @@ class PDFScrapingAcceptResponse(BaseModel):
     status: str = Field("accepted", description="Job acceptance status.")
     message: str = Field(..., description="Acceptance message.")
     estimated_time: Optional[int] = Field(None, description="Estimated processing time in seconds.")
+    already_processed: Optional[bool] = Field(
+        None,
+        description="True when the document was already successfully indexed and no new task was dispatched.",
+    )
+    already_queued: Optional[bool] = Field(
+        None,
+        description="True when the document is currently queued or being processed by a worker.",
+    )
 
 
 class PDFScrapingStatusResponse(BaseModel):

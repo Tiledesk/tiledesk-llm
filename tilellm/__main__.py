@@ -814,7 +814,11 @@ async def create_scrape_item_hybrid(
 async def post_ask_with_memory_main(question_answer: QuestionAnswer):
     """
     Query and Answer with chat history.
-    Pass use_cache=true to enable semantic cache (L1 exact + L2 cosine similarity).
+
+    ``use_cache`` accepts either a bool shortcut (true = enable all layers,
+    false = disable all) or an explicit object like
+    ``{"L1": true, "L2": true, "L4": false}`` to toggle each cache layer
+    independently. L1 = exact response, L2 = semantic response, L4 = embedding.
     """
     logger.debug(question_answer)
 
@@ -842,21 +846,27 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
         analytics.publish_nowait(_et, question_answer.id_project, _pl)
         return _chunks_result
 
-    # Semantic cache lookup (only when use_cache=True)
+    # Response cache lookup (driven by use_cache.L1 / use_cache.L2)
+    cache_cfg = question_answer.use_cache
     query_embedding = None
-    if question_answer.use_cache:
+    if cache_cfg.any_response_level:
         from tilellm.shared.cache import SemanticCache
         from tilellm.shared.embedding_factory import create_embedding_instance
 
         try:
-            embedding_model, _ = await create_embedding_instance(question_answer)
-            query_text = question_answer.retrieval_query or question_answer.question
-            query_embedding = await embedding_model.aembed_query(query_text)
-            question_answer.precomputed_query_embedding = query_embedding
+            # Embedding only needed when L2 is on (or precompute desired)
+            if cache_cfg.L2:
+                embedding_model, _ = await create_embedding_instance(question_answer)
+                query_text = question_answer.retrieval_query or question_answer.question
+                query_embedding = await embedding_model.aembed_query(query_text)
+                question_answer.precomputed_query_embedding = query_embedding
+
             cached = await SemanticCache.lookup(
                 namespace=question_answer.namespace,
                 question=question_answer.question,
                 embedding=query_embedding,
+                check_l1=cache_cfg.L1,
+                check_l2=cache_cfg.L2,
             )
             if cached is not None:
                 # Ensure namespace is present in cached data to satisfy RetrievalResult validation
@@ -926,24 +936,29 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
     elif isinstance(actual_result, dict):
         is_success = actual_result.get("success", True)
 
-    if question_answer.use_cache and query_embedding is not None and is_success:
-        from tilellm.shared.cache import SemanticCache
-        try:
-            from fastapi.encoders import jsonable_encoder
-            body = jsonable_encoder(actual_result)
+    if cache_cfg.any_response_level and is_success:
+        # L2 store requires an embedding; if we didn't compute one earlier (e.g. L1-only
+        # lookup), skip L2 silently to avoid an extra embedding call here.
+        store_l2_now = cache_cfg.L2 and query_embedding is not None
+        if cache_cfg.L1 or store_l2_now:
+            from tilellm.shared.cache import SemanticCache
+            try:
+                from fastapi.encoders import jsonable_encoder
+                body = jsonable_encoder(actual_result)
 
-            # Ensure namespace is stored in cache
-            if "namespace" not in body or not body["namespace"]:
-                body["namespace"] = question_answer.namespace
+                if "namespace" not in body or not body["namespace"]:
+                    body["namespace"] = question_answer.namespace
 
-            await SemanticCache.store(
-                namespace=question_answer.namespace,
-                question=question_answer.question,
-                embedding=query_embedding,
-                body=body,
-            )
-        except Exception as e:
-            logger.warning(f"/api/qa cache store failed ({e})")
+                await SemanticCache.store(
+                    namespace=question_answer.namespace,
+                    question=question_answer.question,
+                    embedding=query_embedding,
+                    body=body,
+                    store_l1=cache_cfg.L1,
+                    store_l2=store_l2_now,
+                )
+            except Exception as e:
+                logger.warning(f"/api/qa cache store failed ({e})")
 
     logger.debug(result)
 
@@ -1097,7 +1112,11 @@ async def delete_item_id_namespace_post(item_to_delete: RepositoryItem):
 
         logger.info(f"delete of id {metadata_id} dal namespace {namespace}")
         await delete_id_from_namespace(item_to_delete, metadata_id, namespace)
-
+        try:
+            from tilellm.modules.pdf_ocr.services.pdf_dedup_service import force_reset
+            await force_reset(namespace, metadata_id)
+        except Exception as _de:
+            logger.warning(f"pdf_dedup force_reset skipped: {_de}")
         return JSONResponse(
             content={
                 "success": True,
@@ -1123,6 +1142,11 @@ async def delete_namespace_main_post(namespace_to_delete: RepositoryNamespace):
     """
     try:
         await delete_namespace(namespace_to_delete)
+        try:
+            from tilellm.modules.pdf_ocr.services.pdf_dedup_service import clear_namespace
+            await clear_namespace(namespace_to_delete.namespace)
+        except Exception as _de:
+            logger.warning(f"pdf_dedup clear_namespace skipped: {_de}")
         return JSONResponse(
             content={
                 "success": "true",
@@ -1302,10 +1326,15 @@ async def delete_namespace_main(token: str, namespace: str):
         namespace_to_delete = RepositoryNamespace(namespace=namespace, engine=engine)
 
         await delete_namespace(namespace_to_delete)
-        # Invalidate cache for this namespace (strategy B: full namespace invalidation)
+        # Invalidate semantic cache for this namespace
         from tilellm.shared.cache import SemanticCache
-
         await SemanticCache.invalidate_namespace(namespace)
+        # Clear pdf_ocr dedup keys so documents can be re-ingested after namespace reset
+        try:
+            from tilellm.modules.pdf_ocr.services.pdf_dedup_service import clear_namespace
+            await clear_namespace(namespace)
+        except Exception as _de:
+            logger.warning(f"pdf_dedup clear_namespace skipped: {_de}")
         return JSONResponse(content={"message": f"Namespace {namespace} deleted"})
     except Exception as ex:
         return JSONResponse(
@@ -1362,7 +1391,11 @@ async def delete_item_id_namespace_main(token: str, metadata_id: str, namespace:
         )
         # repository_engine = RepositoryEngine(**engine_dec)
         await delete_id_from_namespace(item_to_delete, metadata_id, namespace)
-
+        try:
+            from tilellm.modules.pdf_ocr.services.pdf_dedup_service import force_reset
+            await force_reset(namespace, metadata_id)
+        except Exception as _de:
+            logger.warning(f"pdf_dedup force_reset skipped: {_de}")
         return JSONResponse(
             content={"message": f"ids {metadata_id} in Namespace {namespace} deleted"}
         )

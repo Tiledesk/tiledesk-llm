@@ -325,3 +325,113 @@ async def ppr_search(
 
     results.sort(key=lambda x: x["ppr_score"], reverse=True)
     return results[:top_k]
+
+
+async def ppr_community_aware_search(
+    repo,
+    namespace: str,
+    index_name: str,
+    seed_chunk_ids: List[str],
+    seed_entity_names: List[str],
+    top_k: int,
+    alpha: float,
+    max_iter: int,
+    community_boost: float = 0.15,
+    graph_name: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """PPR retrieval with community-aware score boosting.
+
+    Runs standard PPR, then boosts chunks that belong to the same Leiden
+    communities as the top-scored PPR entities. This pulls in thematically
+    related content that pure random walk may under-rank.
+
+    Parameters
+    ----------
+    community_boost : additive fraction of the chunk's own PPR score to add
+        for each community membership match (capped at 0.5 total boost).
+    """
+    from .graph_builder import make_graph_name as _make_name
+
+    gname = graph_name or _make_name(namespace, index_name)
+    G, chunk_data, effective_seed_node_ids = await _load_subgraph(
+        repo, gname, namespace, index_name, seed_entity_names, seed_chunk_ids
+    )
+
+    if G.number_of_nodes() == 0:
+        logger.warning(f"PPR subgraph empty for namespace='{namespace}'")
+        return []
+
+    personalization: Dict[str, float] = {}
+    for node in G.nodes():
+        personalization[node] = 1.0 if node in effective_seed_node_ids else 0.0
+
+    total_weight = sum(personalization.values())
+    if total_weight == 0:
+        personalization = None  # type: ignore
+    else:
+        personalization = {k: v / total_weight for k, v in personalization.items()}
+
+    try:
+        scores = nx.pagerank(G, alpha=alpha, personalization=personalization,
+                             max_iter=max_iter, weight="weight")
+    except Exception as e:
+        logger.warning(f"PPR convergence issue: {e} — using uniform scores")
+        n = G.number_of_nodes()
+        scores = {node: 1.0 / n for node in G.nodes()}
+
+    # Identify top entity communities from the subgraph
+    top_community_ids: set = set()
+    entity_scores = [
+        (node, score) for node, score in scores.items()
+        if not node.startswith("chunk::")
+    ]
+    entity_scores.sort(key=lambda x: x[1], reverse=True)
+    for node, _ in entity_scores[:20]:
+        ndata = G.nodes.get(node, {})
+        comm_id = ndata.get("community_id")
+        if comm_id is not None:
+            top_community_ids.add(comm_id)
+
+    # Fetch community memberships for chunk nodes' connected entities
+    chunk_community_map: Dict[str, set] = {}
+    if top_community_ids:
+        try:
+            comm_rows = await repo._execute_query(
+                "MATCH (c:LChunk)-[:HAS_ENTITY]-(e:LEntity) "
+                "WHERE c.namespace=$ns AND c.index_name=$idx "
+                "AND e.community_id IN $comm_ids "
+                "RETURN c.chunk_id AS chunk_id, collect(e.community_id) AS comm_ids",
+                {"ns": namespace, "idx": index_name, "comm_ids": list(top_community_ids)},
+                graph_name=gname,
+            )
+            for row in comm_rows:
+                cid = row.get("chunk_id", "")
+                if cid:
+                    chunk_community_map[cid] = set(row.get("comm_ids") or [])
+        except Exception as e:
+            logger.debug(f"[ppr] community boost query failed: {e}")
+
+    # Build results with community boost
+    results: List[Dict[str, Any]] = []
+    for node, score in scores.items():
+        if not node.startswith("chunk::"):
+            continue
+        ndata = G.nodes[node]
+        chunk_id = ndata.get("chunk_id", "")
+
+        # Additive boost for community membership
+        shared_communities = chunk_community_map.get(chunk_id, set()) & top_community_ids
+        boost = min(community_boost * len(shared_communities), 0.5) * score
+        final_score = score + boost
+
+        results.append({
+            "chunk_id": chunk_id,
+            "text": ndata.get("text", ""),
+            "metadata_id": ndata.get("metadata_id", ""),
+            "source": ndata.get("source", ""),
+            "ppr_score": final_score,
+            "community_boost": boost,
+        })
+
+    results.sort(key=lambda x: x["ppr_score"], reverse=True)
+    return results[:top_k]

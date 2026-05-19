@@ -7,6 +7,80 @@
 
 
 ---
+## [2026-05-19]
+### 0.10.1-rc25 (feat: CacheConfig L1/L2/L4 granular control; feat: temporal_digest PA-ASL taxonomy + anomaly detection + LLM classifier + hierarchical rollup + community context; feat: lgraph community summaries dual storage FalkorDB + vector store)
+
+#### TASK 1 — Cache granular control
+
+**`tilellm/models/llm.py`** — Added `CacheConfig` Pydantic model with three independently toggleable levels:
+- `L1: bool` — exact-match response cache (SHA256 key → Redis GET/SET, TTL 24h)
+- `L2: bool` — semantic response cache (cosine similarity on stored embeddings, TTL 6h)
+- `L4: bool` — embedding cache (transparent text→vector wrapper via `CachedEmbeddings`)
+- `any_response_level` property: `L1 or L2`, used for early-exit in cache graph nodes.
+
+`QuestionAnswer.use_cache` changed from `bool` to `Union[bool, CacheConfig]` with a `@field_validator("use_cache", mode="before")` that normalizes `True`/`False` shortcut → `CacheConfig(L1=v, L2=v, L4=v)` and plain dicts → `CacheConfig(**v)`. Fully backward-compatible at the API level.
+
+**`tilellm/shared/cache/semantic_cache.py`** — `lookup()` and `store()` accept `check_l1/check_l2` and `store_l1/store_l2` boolean flags respectively. Early-return when no active level. L1 and L2 blocks individually gated.
+
+**`tilellm/shared/embedding_factory.py`** — `CachedEmbeddings` wrapper now gated on `use_cache.L4`; wrapping skipped when `L4=False`.
+
+**`tilellm/__main__.py`** — `/api/qa` endpoint uses `cache_cfg = question_answer.use_cache` (always `CacheConfig` post-validator). Embedding computed only when `cache_cfg.L2`. `lookup`/`store` called with per-level flags.
+
+**`tilellm/agents/nodes.py`** — `cache_lookup_node` and `cache_store_node` use `cache_cfg.any_response_level` for early-exit; L2 embedding computed only when needed; `lookup`/`store` forwarded with per-level flags.
+
+---
+
+#### TASK 2-A — temporal_digest: PA-ASL domain prompt rewrite
+
+**`tilellm/modules/temporal_digest/services/domain_prompts.py`** — Full rewrite of `pa_italiana` domain:
+- `_PA_TAXONOMY` constant: 15-category taxonomy (LIQUIDAZIONE, DELIBERA_GARA, GARA_DESERTA, BANDO, PROCEDURA_NEGOZIATA, AFFIDAMENTO_DIRETTO, COMPENSO, ASSUNZIONE, INCARICO_PROFESSIONALE, ACQUISTO_FARMACI, ACQUISTO_DISPOSITIVI_MEDICI, RINNOVO_CONTRATTO, DELIBERA_PROGRAMMATICA, VARIAZIONE_BILANCIO, ALTRO).
+- `_PA_SYSTEM` — mandatory **PUNTI DI ATTENZIONE** section with anomaly checklist: importi elevati, stesso fornitore più volte, gare deserte ripetute, CIG/CUP assenti su importi > €5000, liquidazioni in ritardo.
+- `_PA_USER_TEMPLATE` — 5-section structured output (Quadro Generale, Acquisti e Forniture, Personale, Finanza e Bilancio, Punti di Attenzione).
+- `_PA_QUERY_SYSTEM` — business-facing query prompt: zero "digest" terminology; refers to "rapporti sull'attività amministrativa".
+- All domain dicts now expose `"query_system"` key used by `_query_temporal()` and `_query_semantic()`.
+
+---
+
+#### TASK 2-B — temporal_digest: digest_service major rewrite
+
+**`tilellm/modules/temporal_digest/services/digest_service.py`**:
+
+- **LLM act_type classifier** — `_classify_act_types()`: batches of 20 chunks sent to LLM; assigns PA taxonomy category to chunks missing `act_type` metadata. Controlled by `classify_act_types: bool` field in `DigestGenerationRequest` (default `True`; disable to reduce cost on high-volume batches).
+
+- **Hierarchical rollup** — `_try_rollup()`: for weekly windows, synthesizes from existing daily digests; for monthly, from weekly (daily fallback if weekly coverage < 50%). Returns `None` if coverage below threshold, falling back to raw chunk aggregation.
+
+- **lgraph community broadening** — `_fetch_chunks_from_lgraph()` extended: after DATE_IT entity match, also fetches community-sibling chunks (matched communities → `community_rows` query in FalkorDB) to broaden recall.
+
+- **Community context injection** — `_fetch_community_context()`: queries `{namespace}__lgraph_communities` namespace in the vector store; prepends retrieved community summaries as additional LLM context when `use_lgraph=True`.
+
+- **Evidence block** — `_build_evidence_block()`: headers use business vocabulary ("Atto", "Tipo", "Importo €"); amounts formatted as `€{float:,.2f}`.
+
+- **Terminology cleanup** — `_query_temporal()` and `_query_semantic()` use `domain_prompts["query_system"]`; `_build_qa()` question prefixed with "atti amministrativi" instead of "digest".
+
+**`tilellm/modules/temporal_digest/models/schemas.py`** — Added `classify_act_types: bool = Field(default=True)` to `DigestGenerationRequest`; updated `use_lgraph` description to mention community broadening and `__lgraph_communities` context.
+
+---
+
+#### TASK 2-C — lgraph: community summaries + community-aware PPR
+
+**`tilellm/modules/lgraph/services/community_summarizer.py`** — New file. `generate_community_summaries()` entry point:
+- Loads Leiden communities from FalkorDB (entities grouped by type + up to `max_chunks_per_community` chunk texts).
+- Calls LLM (`_SUMMARIZE_SYSTEM` prompt) per community to produce a thematic summary (supplier clusters, procurement areas, personnel groups, etc.).
+- Dual storage: **FalkorDB** `LCommunitySummary` node (MERGE) with `SUMMARIZES` edges to entities; **vector store** in namespace `{namespace}__lgraph_communities` as standard `Document` with metadata (`community_id`, `community_label`, `entity_count`, `source_namespace`, `summary_type: "community"`). Enables dense + sparse retrieval via standard RAG endpoints.
+- `overwrite=False` skips communities that already have a summary node in FalkorDB.
+
+**`tilellm/modules/lgraph/services/ppr_retriever.py`** — Added `ppr_community_aware_search()`:
+- Runs standard PPR, then identifies `top_community_ids` from top-20 entity scores.
+- Queries `chunk_community_map` from FalkorDB for community membership.
+- Additive boost: `min(community_boost * len(shared_communities), 0.5) * score` (default `community_boost=0.15`).
+
+**`tilellm/modules/lgraph/models/schemas.py`** — Added `LGraphCommunitySummarizationRequest` and `LGraphCommunitySummarizationResponse` models.
+
+**`tilellm/modules/lgraph/logic.py`** — Added `_get_vector_repo_for_engine(engine)` async helper (direct repo instantiation bypassing `@inject_repo_async` for nested DI). Added `summarize_communities_lgraph(request)` decorated with `@inject_llm_chat_async`.
+
+**`tilellm/modules/lgraph/controllers.py`** — Added `POST /api/lgraph/community_summaries` endpoint.
+
+---
 ## [2026-05-18]
 ### 0.10.1-rc24 (feat: /api/v2/qa simplified agentic endpoint with optional guard/grader; fix: rag_node StreamingResponse in graph; fix: lgraph date filter findall tuple)
 

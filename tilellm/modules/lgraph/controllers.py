@@ -21,6 +21,8 @@ from fastapi import APIRouter, HTTPException, Query, status
 from .models.schemas import (
     LGraphAsyncTaskResponse,
     LGraphBuildRequest,
+    LGraphCommunitySummarizationRequest,
+    LGraphCommunitySummarizationResponse,
     LGraphDeleteResponse,
     LGraphLeidenAsyncTaskResponse,
     LGraphLeidenRequest,
@@ -174,6 +176,33 @@ async def leiden_cluster(request: LGraphLeidenRequest):
         return LGraphLeidenAsyncTaskResponse(task_id=task.task_id)
     except Exception as e:
         logger.error(f"[lgraph] leiden dispatch error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---- Community summaries (LinearRAG-style) ----------------------------------
+
+@router.post("/community_summaries", response_model=LGraphCommunitySummarizationResponse)
+async def generate_community_summaries(request: LGraphCommunitySummarizationRequest):
+    """
+    Generate LLM summaries for each Leiden community and index them in the vector store.
+
+    **Requires**: Leiden clustering must have been run first (``POST /api/lgraph/leiden``).
+
+    For each community of co-occurring entities, the LLM produces a thematic summary
+    (supplier clusters, procurement areas, personnel groups, etc.). Summaries are stored:
+
+    - **FalkorDB**: as ``LCommunitySummary`` nodes linked to their entities.
+    - **Vector store**: in the namespace ``{namespace}__lgraph_communities``, enabling
+      dense + sparse retrieval via standard RAG endpoints.
+
+    Set ``overwrite=true`` to regenerate summaries that already exist.
+    """
+    try:
+        return await lgraph_logic.summarize_communities_lgraph(request)
+    except ImportError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        logger.error(f"[lgraph] community_summaries error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

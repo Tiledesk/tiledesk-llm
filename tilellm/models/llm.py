@@ -104,6 +104,22 @@ class PineconeRerankerConfig(BaseModel):
     )
 
 
+class CacheConfig(BaseModel):
+    """Granular toggles for each cache layer.
+
+    L1 — exact response cache (Redis key = sha256(question))
+    L2 — semantic response cache (cosine similarity on stored embeddings)
+    L4 — embedding cache (text → vector wrapper around the embedding model)
+    """
+    L1: bool = Field(default=False, description="Exact-match response cache")
+    L2: bool = Field(default=False, description="Semantic response cache (cosine similarity)")
+    L4: bool = Field(default=False, description="Embedding cache (text → vector)")
+
+    @property
+    def any_response_level(self) -> bool:
+        return self.L1 or self.L2
+
+
 class ItemSingle(BaseModel):
     id: str
     source: str | None = None
@@ -270,10 +286,24 @@ class QuestionAnswer(BaseModel):
         default=False,
         description="Enable RAPTOR (hierarchical tree-based retrieval) instead of standard RAG",
     )
-    use_cache: bool = Field(
-        default=False,
-        description="Enable semantic cache for this query (L1 exact + L2 cosine similarity)",
+    use_cache: Union[bool, CacheConfig] = Field(
+        default_factory=lambda: CacheConfig(),
+        description=(
+            "Cache configuration. Accepts either a bool (shortcut: True → all layers on, "
+            "False → all off) or an explicit dict like "
+            '{"L1": true, "L2": true, "L4": false} to toggle each layer individually. '
+            "L1 = exact response cache, L2 = semantic response cache, L4 = embedding cache."
+        ),
     )
+
+    @field_validator("use_cache", mode="before")
+    @classmethod
+    def _normalize_use_cache(cls, v):
+        if isinstance(v, bool):
+            return CacheConfig(L1=v, L2=v, L4=v)
+        if isinstance(v, dict):
+            return CacheConfig(**v)
+        return v
     id_project: Optional[str] = Field(
         default=None,
         description="Tiledesk project ID (used for analytics).",

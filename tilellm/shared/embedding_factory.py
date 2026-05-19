@@ -937,13 +937,20 @@ async def create_embedding_instance(question):
     # Chiamata asincrona
     embedding_obj, embedding_dimension = await factory.create(embedding_config)
 
-    # L4: wrap with embedding cache if Redis is available
-    try:
-        from tilellm.shared.cache.embedding_cache import CachedEmbeddings
-        model_key = f"{embedding_config.get('provider', 'unknown')}:{embedding_config.get('model_name', 'unknown')}"
-        embedding_obj = CachedEmbeddings(embedding_obj, model_key=model_key)
-    except Exception:
-        pass  # embedding cache is optional — fail silently
+    # L4 — wrap with embedding cache only when the caller opted in.
+    # Lookup is intentionally duck-typed: any object exposing `use_cache.L4 == True`
+    # enables wrapping. Callers without a use_cache attribute (ingestion paths,
+    # internal factories) get the raw embedder.
+    use_cache_attr = getattr(question, "use_cache", None)
+    enable_l4 = bool(getattr(use_cache_attr, "L4", False))
+
+    if enable_l4:
+        try:
+            from tilellm.shared.cache.embedding_cache import CachedEmbeddings
+            model_key = f"{embedding_config.get('provider', 'unknown')}:{embedding_config.get('model_name', 'unknown')}"
+            embedding_obj = CachedEmbeddings(embedding_obj, model_key=model_key)
+        except Exception:
+            pass  # embedding cache is optional — fail silently
 
     return embedding_obj, embedding_dimension
 

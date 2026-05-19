@@ -111,13 +111,20 @@ class SemanticCache:
         cls,
         namespace: str,
         question: str,
-        embedding: list[float],
+        embedding: Optional[list[float]],
         threshold: float = _DEFAULT_THRESHOLD,
+        check_l1: bool = True,
+        check_l2: bool = True,
     ) -> Optional[dict]:
         """
         Returns cached payload dict {answer, body, ...} on hit, None on miss.
-        Tries L1 (exact) first, then L2 (semantic).
+
+        check_l1 / check_l2 select which layers to query. When check_l2 is True the
+        caller must provide ``embedding``; if it is None L2 is silently skipped.
         """
+        if not (check_l1 or check_l2):
+            return None
+
         r = await cls._get_client()
         if r is None:
             return None
@@ -125,18 +132,24 @@ class SemanticCache:
         t0 = time.perf_counter()
         try:
             # L1 — exact match
-            key = _exact_key(namespace, question)
-            raw = await r.get(key)
-            if raw:
-                logger.info(f"SemanticCache L1 hit for namespace={namespace}")
-                payload = json.loads(raw)
-                payload["_cache_level"] = "exact"
-                payload["_cache_similarity"] = 1.0
-                CACHE_REQUESTS.labels(level="exact").inc()
-                CACHE_LOOKUP_DURATION.observe(time.perf_counter() - t0)
-                return payload
+            if check_l1:
+                key = _exact_key(namespace, question)
+                raw = await r.get(key)
+                if raw:
+                    logger.info(f"SemanticCache L1 hit for namespace={namespace}")
+                    payload = json.loads(raw)
+                    payload["_cache_level"] = "exact"
+                    payload["_cache_similarity"] = 1.0
+                    CACHE_REQUESTS.labels(level="exact").inc()
+                    CACHE_LOOKUP_DURATION.observe(time.perf_counter() - t0)
+                    return payload
 
             # L2 — semantic match
+            if not check_l2 or embedding is None:
+                CACHE_REQUESTS.labels(level="miss").inc()
+                CACHE_LOOKUP_DURATION.observe(time.perf_counter() - t0)
+                return None
+
             idx_key = _sem_idx_key(namespace)
             entry_ids = await r.smembers(idx_key)
             if not entry_ids:
@@ -185,15 +198,22 @@ class SemanticCache:
         cls,
         namespace: str,
         question: str,
-        embedding: list[float],
+        embedding: Optional[list[float]],
         body: dict,
         ttl_exact: int = _DEFAULT_TTL_EXACT,
         ttl_semantic: int = _DEFAULT_TTL_SEMANTIC,
+        store_l1: bool = True,
+        store_l2: bool = True,
     ) -> None:
         """
-        Store a query result in both L1 (exact) and L2 (semantic).
-        `body` is the full response dict to be returned on hit.
+        Store a query result in the configured layers.
+
+        store_l1 / store_l2 select which layers receive the payload. L2 requires
+        a non-None ``embedding``; if missing, L2 is skipped even if requested.
         """
+        if not (store_l1 or store_l2):
+            return
+
         r = await cls._get_client()
         if r is None:
             return
@@ -202,24 +222,23 @@ class SemanticCache:
         try:
             serialized = json.dumps(body)
 
-            # L1 — exact
-            key = _exact_key(namespace, question)
-            await r.set(key, serialized.encode(), ex=ttl_exact)
+            if store_l1:
+                key = _exact_key(namespace, question)
+                await r.set(key, serialized.encode(), ex=ttl_exact)
 
-            # L2 — semantic
-            entry_id = str(uuid.uuid4())
-            sem_key = _sem_key(namespace, entry_id)
-            await r.hset(sem_key, mapping={
-                "question": _normalize(question).encode(),
-                "body": serialized.encode(),
-                "embedding": _vec_to_bytes(embedding),
-            })
-            await r.expire(sem_key, ttl_semantic)
+            if store_l2 and embedding is not None:
+                entry_id = str(uuid.uuid4())
+                sem_key = _sem_key(namespace, entry_id)
+                await r.hset(sem_key, mapping={
+                    "question": _normalize(question).encode(),
+                    "body": serialized.encode(),
+                    "embedding": _vec_to_bytes(embedding),
+                })
+                await r.expire(sem_key, ttl_semantic)
 
-            # Register in namespace index (also with TTL)
-            idx_key = _sem_idx_key(namespace)
-            await r.sadd(idx_key, entry_id)
-            await r.expire(idx_key, ttl_semantic)
+                idx_key = _sem_idx_key(namespace)
+                await r.sadd(idx_key, entry_id)
+                await r.expire(idx_key, ttl_semantic)
 
             CACHE_STORE_DURATION.observe(time.perf_counter() - t0)
             logger.debug(f"SemanticCache stored entry for namespace={namespace}")

@@ -19,6 +19,8 @@ from tilellm.shared.utility import inject_repo_async, inject_llm_chat_async
 from .models.schemas import (
     ChunkResult,
     LGraphBuildRequest,
+    LGraphCommunitySummarizationRequest,
+    LGraphCommunitySummarizationResponse,
     LGraphDeleteResponse,
     LGraphLeidenRequest,
     LGraphLeidenResponse,
@@ -426,6 +428,67 @@ async def leiden_lgraph(request: LGraphLeidenRequest) -> LGraphLeidenResponse:
         graph_name=stats["graph_name"],
         community_count=stats["community_count"],
         entities_updated=stats["entities_updated"],
+        message=stats.get("message", ""),
+    )
+
+
+# ---------------------------------------------------------------------------
+# COMMUNITY SUMMARIES  (LinearRAG-style)
+# ---------------------------------------------------------------------------
+
+async def _get_vector_repo_for_engine(engine):
+    """Instantiate the appropriate vector store repository for a given engine."""
+    name = engine.name
+    repo_type = getattr(engine, "type", None)
+    if name == "pinecone":
+        if repo_type == "pod":
+            from tilellm.store.pinecone.pinecone_repository_pod import PineconeRepositoryPod
+            return PineconeRepositoryPod()
+        from tilellm.store.pinecone.pinecone_repository_serverless import PineconeRepositoryServerless
+        return PineconeRepositoryServerless()
+    if name == "qdrant":
+        from tilellm.store.qdrant.qdrant_repository_local import QdrantRepository
+        return QdrantRepository()
+    if name == "milvus":
+        from tilellm.store.milvus.milvus_repository import MilvusRepository
+        return MilvusRepository()
+    raise ValueError(f"Unknown engine '{name}' for community summaries")
+
+
+@inject_llm_chat_async
+async def summarize_communities_lgraph(
+    request: LGraphCommunitySummarizationRequest,
+    llm=None,
+    llm_embeddings=None,
+    **kwargs,
+) -> LGraphCommunitySummarizationResponse:
+    """Generate LLM summaries for Leiden communities and index them in the vector store."""
+    from .services.community_summarizer import generate_community_summaries
+    from .services.graph_builder import make_graph_name
+
+    falkor = _get_falkor_repo()
+    vector_repo = await _get_vector_repo_for_engine(request.engine)
+
+    stats = await generate_community_summaries(
+        repo=falkor,
+        llm=llm,
+        llm_embeddings=llm_embeddings,
+        vector_repo=vector_repo,
+        engine=request.engine,
+        namespace=request.namespace,
+        index_name=request.engine.index_name,
+        min_community_size=request.min_community_size,
+        max_chunks_per_community=request.max_chunks_per_community,
+        overwrite=request.overwrite,
+    )
+
+    return LGraphCommunitySummarizationResponse(
+        status=stats["status"],
+        graph_name=stats.get("graph_name", make_graph_name(request.namespace, request.engine.index_name)),
+        community_ns=stats.get("community_ns", f"{request.namespace}__lgraph_communities"),
+        communities_processed=stats.get("communities_processed", 0),
+        communities_indexed=stats.get("communities_indexed", 0),
+        errors=stats.get("errors", 0),
         message=stats.get("message", ""),
     )
 
