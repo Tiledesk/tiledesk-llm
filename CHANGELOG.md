@@ -8,7 +8,7 @@
 
 ---
 ## [2026-05-19]
-### 0.10.1-rc25 (feat: CacheConfig L1/L2/L4 granular control; feat: temporal_digest PA-ASL taxonomy + anomaly detection + LLM classifier + hierarchical rollup + community context; feat: lgraph community summaries dual storage FalkorDB + vector store)
+### 0.11.0-rc1 (feat: CacheConfig L1/L2/L4 granular control; feat: temporal_digest PA-ASL taxonomy + anomaly detection + LLM classifier + hierarchical rollup + community context; feat: lgraph community summaries dual storage FalkorDB + vector store)
 
 #### TASK 1 — Cache granular control
 
