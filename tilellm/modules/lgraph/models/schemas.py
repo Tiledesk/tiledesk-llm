@@ -176,3 +176,43 @@ class LGraphTaskPollResponse(BaseModel):
     status: str  # queued | in_progress | success | failed
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Community summaries (LinearRAG-style)
+# ---------------------------------------------------------------------------
+
+class LGraphCommunitySummarizationRequest(BaseModel):
+    """Request to generate and index LLM summaries for Leiden communities."""
+    namespace: str = Field(..., description="Tenant namespace")
+    engine: "Engine" = Field(..., description="Vector store engine config")
+    gptkey: Optional[SecretStr] = Field(default=None)
+    model: Union[str, "LlmEmbeddingModel"] = Field(default="gpt-4o-mini")
+    llm: str = Field(default="openai")
+    embedding: Union[str, "LlmEmbeddingModel"] = Field(default="text-embedding-3-small")
+    temperature: float = Field(default=0.0)
+    top_p: float = Field(default=1.0)
+    max_tokens: int = Field(default=1024)
+    min_community_size: int = Field(
+        default=3,
+        description="Skip communities with fewer entities than this threshold.",
+    )
+    max_chunks_per_community: int = Field(
+        default=30,
+        description="Maximum chunks to include in each community LLM context.",
+    )
+    overwrite: bool = Field(
+        default=False,
+        description="Regenerate summaries even if they already exist.",
+    )
+    webhook_url: Optional[str] = Field(default=None)
+
+
+class LGraphCommunitySummarizationResponse(BaseModel):
+    status: str
+    graph_name: str
+    community_ns: str = Field(description="Vector store namespace where summaries were indexed")
+    communities_processed: int
+    communities_indexed: int
+    errors: int = 0
+    message: str = ""

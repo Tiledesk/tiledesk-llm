@@ -685,6 +685,15 @@ async def _process_pdf_document_task_inner(
         from tilellm.modules.pdf_ocr.models.pdf_scraping import PDFScrapingRequest
         request = PDFScrapingRequest(**config)
 
+        namespace = request.namespace
+
+        # Transition dedup state: queued → processing
+        try:
+            from tilellm.modules.pdf_ocr.services.pdf_dedup_service import set_processing
+            await set_processing(namespace, doc_id)
+        except Exception as _de:
+            logger.warning(f"pdf_dedup set_processing skipped: {_de}")
+
         # Import logic function
         from tilellm.modules.pdf_ocr.logic import process_pdf_document_with_embeddings
 
@@ -696,6 +705,13 @@ async def _process_pdf_document_task_inner(
             file_path=file_path
             # repo, llm, llm_embeddings will be injected by decorators
         )
+
+        # Mark document as successfully indexed — prevents any re-submission
+        try:
+            from tilellm.modules.pdf_ocr.services.pdf_dedup_service import set_completed
+            await set_completed(namespace, doc_id)
+        except Exception as _de:
+            logger.warning(f"pdf_dedup set_completed skipped: {_de}")
 
         # Build lightweight result for Taskiq result_backend
         # Excludes large fields like Markdown_preview, Markdown_content, etc.
@@ -715,7 +731,6 @@ async def _process_pdf_document_task_inner(
         }
 
         # Cache invalidation (strategy B): invalidate namespace after pdf_ocr completes
-        namespace = config.get("namespace") if config else None
         if namespace:
             try:
                 from tilellm.shared.cache import SemanticCache
@@ -756,6 +771,16 @@ async def _process_pdf_document_task_inner(
 
     except Exception as e:
         logger.error(f"Task failed for {doc_id} (final={is_final_attempt}): {e}", exc_info=True)
+
+        # On final failure: mark as failed with short TTL so the doc can be
+        # re-submitted after the cooldown period (PDF_OCR_DEDUP_FAILED_TTL, default 1h).
+        if is_final_attempt:
+            try:
+                namespace = (config or {}).get("namespace")
+                from tilellm.modules.pdf_ocr.services.pdf_dedup_service import set_failed
+                await set_failed(namespace, doc_id)
+            except Exception as _de:
+                logger.warning(f"pdf_dedup set_failed skipped: {_de}")
 
         # Send error webhook only on the final attempt — intermediate failures are
         # retried silently so the client doesn't receive a premature "failed" event.

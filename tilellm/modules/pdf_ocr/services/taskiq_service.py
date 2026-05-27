@@ -55,7 +55,8 @@ class TaskiqService:
     async def submit(
         self,
         doc_id: str,
-        request: PDFScrapingRequest
+        request: PDFScrapingRequest,
+        force_reprocess: bool = False,
     ) -> Dict[str, Any]:
         """
         Submit a PDF processing job to Taskiq queue.
@@ -66,10 +67,14 @@ class TaskiqService:
                     the document is replaced (same namespace → aadd_documents deletes
                     the previous chunks before inserting the new ones).
             request: PDFScrapingRequest with document configuration (must have URL in file_content)
+            force_reprocess: If True, bypass the idempotency guard even when the doc
+                    was already completed. Use for re-ingestion after content corrections.
 
         Returns:
-            Dict with ``task_id`` (Taskiq task ID – use this for /status polling)
-            and ``doc_id`` (vector store document ID).
+            Dict with ``task_id`` (Taskiq task ID – use this for /status polling),
+            ``doc_id`` (vector store document ID), and optional ``already_processed``
+            / ``already_queued`` flags when the call is short-circuited by the
+            idempotency guard.
 
         Raises:
             RuntimeError: If Taskiq is not available
@@ -87,6 +92,57 @@ class TaskiqService:
                 "PDF file_content must be a URL (http:// or https://) for Taskiq pipeline. "
                 "Base64 content is not supported."
             )
+
+        from tilellm.modules.pdf_ocr.services.pdf_dedup_service import (
+            get_doc_state, set_queued, force_reset as dedup_reset,
+        )
+
+        namespace = request.namespace
+
+        # --- Idempotency guard ---
+        state = await get_doc_state(namespace, doc_id)
+
+        if force_reprocess:
+            # Admin override: reset whatever state exists and re-dispatch unconditionally.
+            await dedup_reset(namespace, doc_id)
+            logger.info(f"[dedup] force_reprocess: reset state for doc_id={doc_id} ns={namespace}")
+        elif state == "completed":
+            logger.info(f"[dedup] doc_id={doc_id} ns={namespace} already completed — skipping dispatch")
+            return {
+                "task_id": doc_id,
+                "doc_id": doc_id,
+                "already_processed": True,
+                "message": "Document already indexed — no new task dispatched.",
+                "estimated_time": 0,
+            }
+        elif state in ("queued", "processing"):
+            logger.info(f"[dedup] doc_id={doc_id} ns={namespace} already {state} — skipping dispatch")
+            return {
+                "task_id": doc_id,
+                "doc_id": doc_id,
+                "already_queued": True,
+                "message": f"Document is already {state} by a worker — no new task dispatched.",
+                "estimated_time": 0,
+            }
+        elif state == "failed":
+            # Previous attempt failed — allow transparent re-submission without force_reprocess.
+            # Clear the failed key so the NX claim below succeeds.
+            await dedup_reset(namespace, doc_id)
+            logger.info(f"[dedup] doc_id={doc_id} ns={namespace} was failed — resetting for re-dispatch")
+
+        # Claim ownership atomically (NX).  If another request races us here,
+        # one of them will get False and should not dispatch.
+        claimed = await set_queued(namespace, doc_id)
+        if not claimed:
+            state = await get_doc_state(namespace, doc_id)
+            logger.info(f"[dedup] race: doc_id={doc_id} already {state} — skipping dispatch")
+            return {
+                "task_id": doc_id,
+                "doc_id": doc_id,
+                "already_queued": True,
+                "message": "Document already queued by a concurrent request.",
+                "estimated_time": 0,
+            }
 
         # Import here to avoid circular imports
         from tilellm.modules.task_executor.tasks import process_pdf_document_task

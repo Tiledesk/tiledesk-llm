@@ -2536,8 +2536,14 @@ async def add_item(item, repo=None) -> IndexingResult:
         # Cache invalidation strategy B: invalidate entire namespace on any document update
         if item.namespace:
             from tilellm.shared.cache import SemanticCache
-
             await SemanticCache.invalidate_namespace(item.namespace)
+        # Clear pdf_ocr dedup key: add_item deletes the old document first, so any
+        # previous "completed" state is stale and must not block future pdf_ocr re-ingestion.
+        try:
+            from tilellm.modules.pdf_ocr.services.pdf_dedup_service import force_reset
+            await force_reset(item.namespace, item.id)
+        except Exception as _de:
+            pass
         return result
     except Exception as e:
         raise e
@@ -2554,8 +2560,13 @@ async def add_item_hybrid(item, repo=None) -> IndexingResult:
         # Cache invalidation strategy B: invalidate entire namespace on any document update
         if item.namespace:
             from tilellm.shared.cache import SemanticCache
-
             await SemanticCache.invalidate_namespace(item.namespace)
+        # Clear pdf_ocr dedup key: same reason as add_item above.
+        try:
+            from tilellm.modules.pdf_ocr.services.pdf_dedup_service import force_reset
+            await force_reset(item.namespace, item.id)
+        except Exception as _de:
+            pass
         return result
     except Exception as e:
         raise e

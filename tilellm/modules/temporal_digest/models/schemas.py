@@ -68,12 +68,22 @@ class DigestGenerationRequest(BaseModel):
         default=False,
         description=(
             "When True, also retrieves chunks linked to DATE_IT entities in the lgraph "
-            "that match the date window. Requires a built lgraph for this namespace+index."
+            "that match the date window, plus community-sibling chunks (LinearRAG-style). "
+            "Also injects community summary context from {namespace}__lgraph_communities. "
+            "Requires a built lgraph for this namespace+index."
         ),
     )
     lgraph_spacy_model: str = Field(
         default="it_core_news_lg",
         description="spaCy model used when building the lgraph (must match build phase).",
+    )
+    classify_act_types: bool = Field(
+        default=True,
+        description=(
+            "When True, run an LLM classifier to infer act_type for chunks that do not "
+            "have it populated in metadata. Improves digest categorization quality. "
+            "Disable to reduce LLM cost on high-volume batches."
+        ),
     )
 
 

@@ -48,6 +48,7 @@ async def scrape_pdf(request: PDFScrapingRequest):
         doc_id = request.id if request.id else str(uuid.uuid4())
         request.id = doc_id
 
+        result: dict = {}
         job_service = get_job_service()
 
         # Route to the new pipeline when:
@@ -77,10 +78,16 @@ async def scrape_pdf(request: PDFScrapingRequest):
             taskiq_service = get_taskiq_service()
 
             if taskiq_service.is_available():
-                result = await taskiq_service.submit(doc_id=doc_id, request=request)
+                result = await taskiq_service.submit(
+                    doc_id=doc_id,
+                    request=request,
+                    force_reprocess=request.force_reprocess,
+                )
                 job_id = result["task_id"]
                 message = result.get("message", "PDF processing job has been successfully queued.")
-                job_service.register_task(task_id=job_id, doc_id=doc_id, file_name=request.file_name)
+                # Only register tracking entry when a real task was dispatched
+                if not result.get("already_processed") and not result.get("already_queued"):
+                    job_service.register_task(task_id=job_id, doc_id=doc_id, file_name=request.file_name)
             else:
                 logger.info(f"Taskiq disabled or unavailable, processing PDF doc_id={doc_id} synchronously")
                 result = await taskiq_service.process_synchronously(request=request)
@@ -104,10 +111,16 @@ async def scrape_pdf(request: PDFScrapingRequest):
             job_id = doc_id
             message = "PDF processing job has been successfully queued."
 
+        # Propagate idempotency flags (only set by the Taskiq path)
+        already_processed = result.get("already_processed") or None
+        already_queued = result.get("already_queued") or None
+
         return PDFScrapingAcceptResponse(
             job_id=job_id,
             message=message,
-            estimated_time=120
+            estimated_time=0 if (already_processed or already_queued) else 120,
+            already_processed=already_processed,
+            already_queued=already_queued,
         )
 
     except HTTPException:
@@ -149,6 +162,39 @@ async def get_scraping_status(job_id: str):
     except Exception as e:
         logger.error(f"Error retrieving job status: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error retrieving job status: {str(e)}")
+
+
+@router.delete("/dedup/{namespace}", tags=["PDF OCR"])
+async def reset_dedup_namespace(namespace: str):
+    """
+    Clear all PDF OCR idempotency keys for the given namespace.
+
+    Call this after deleting or resetting a namespace so that documents can be
+    re-ingested without passing force_reprocess=true on every request.
+    This is called automatically by DELETE /api/namespace/{namespace}/{token},
+    but can also be called manually for admin/debug purposes.
+    """
+    try:
+        from tilellm.modules.pdf_ocr.services.pdf_dedup_service import clear_namespace
+        deleted = await clear_namespace(namespace)
+        return {"namespace": namespace, "dedup_keys_cleared": deleted}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear dedup keys: {e}")
+
+
+@router.delete("/dedup/{namespace}/{doc_id}", tags=["PDF OCR"])
+async def reset_dedup_doc(namespace: str, doc_id: str):
+    """
+    Clear the PDF OCR idempotency key for a single document.
+
+    Allows immediate re-ingestion of a specific document without affecting others.
+    """
+    try:
+        from tilellm.modules.pdf_ocr.services.pdf_dedup_service import force_reset
+        await force_reset(namespace, doc_id)
+        return {"namespace": namespace, "doc_id": doc_id, "dedup_reset": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to reset dedup key: {e}")
 
 
 @router.get("/health", tags=["PDF OCR"])

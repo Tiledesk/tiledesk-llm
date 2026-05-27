@@ -599,6 +599,19 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                     request_id=getattr(question_answer, "request_id", None),
                 )
                 analytics.publish_nowait(_et, question_answer.id_project, _pl)
+                _et, _pl = analytics.events.kb_query(
+                    kb_id=question_answer.namespace,
+                    kb_name=question_answer.namespace,
+                    query_text=question_answer.question if isinstance(question_answer.question, str) else str(question_answer.question),
+                    chunks_retrieved=len(result_context or []),
+                    reranking_applied=bool(question_answer.reranking),
+                    reranker_model=analytics.events.get_reranker_model(question_answer),
+                    latency_ms=_llm_latency_ms,
+                    request_id=getattr(question_answer, "request_id", None),
+                    success=success,
+                    agent_id=getattr(question_answer, "agent_id", None),
+                )
+                analytics.publish_nowait(_et, question_answer.id_project, _pl)
 
                 yield _create_event("metadata", {
                     "message_id": message_id,
@@ -806,6 +819,19 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                     latency_ms=_llm_latency_ms,
                     success=True,
                     request_id=getattr(question_answer, "request_id", None),
+                )
+                analytics.publish_nowait(_et, question_answer.id_project, _pl)
+                _et, _pl = analytics.events.kb_query(
+                    kb_id=question_answer.namespace,
+                    kb_name=question_answer.namespace,
+                    query_text=question_answer.question if isinstance(question_answer.question, str) else str(question_answer.question),
+                    chunks_retrieved=len(result_context or []),
+                    reranking_applied=bool(question_answer.reranking),
+                    reranker_model=analytics.events.get_reranker_model(question_answer),
+                    latency_ms=_llm_latency_ms,
+                    request_id=getattr(question_answer, "request_id", None),
+                    success=success,
+                    agent_id=getattr(question_answer, "agent_id", None),
                 )
                 analytics.publish_nowait(_et, question_answer.id_project, _pl)
 
@@ -1169,6 +1195,19 @@ async def get_streaming_response(runnable_with_history, question, callback_handl
             latency_ms=_llm_latency_ms,
             success=True,
             request_id=getattr(q, "request_id", None),
+        )
+        analytics.publish_nowait(_et, q.id_project, _pl)
+        _et, _pl = analytics.events.kb_query(
+            kb_id=q.namespace,
+            kb_name=q.namespace,
+            query_text=q.question if isinstance(q.question, str) else str(q.question),
+            chunks_retrieved=len(result.get("context") or []),
+            reranking_applied=bool(q.reranking),
+            reranker_model=analytics.events.get_reranker_model(q),
+            latency_ms=_llm_latency_ms,
+            request_id=getattr(q, "request_id", None),
+            success=success,
+            agent_id=getattr(q, "agent_id", None),
         )
         analytics.publish_nowait(_et, q.id_project, _pl)
 
