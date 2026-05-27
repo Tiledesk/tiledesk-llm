@@ -277,6 +277,7 @@ async def reader(channel: Redis):
                             chunks_indexed=getattr(pc_result, "chunks", 0) or 0,
                             error_message=_idx_error,
                             request_id=item_single.request_id,
+                            agent_id=item_single.agent_id,
                         )
                         analytics.publish_nowait(_et, item_single.id_project, _pl)
 
@@ -655,6 +656,7 @@ async def create_scrape_item_single(
                 else 0,
                 error_message=_idx_error,
                 request_id=item.request_id,
+                agent_id=item.agent_id,
             )
             analytics.publish_nowait(_et, item.id_project, _pl)
 
@@ -772,6 +774,7 @@ async def create_scrape_item_hybrid(
                 else 0,
                 error_message=_idx_error,
                 request_id=item.request_id,
+                agent_id=item.agent_id,
             )
             analytics.publish_nowait(_et, item.id_project, _pl)
 
@@ -838,6 +841,7 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
             reranker_model=_reranker_model,
             latency_ms=_chunks_latency_ms,
             request_id=question_answer.request_id,
+            agent_id=question_answer.agent_id,
         )
         analytics.publish_nowait(_et, question_answer.id_project, _pl)
         return _chunks_result
@@ -890,6 +894,7 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
                     latency_ms=0,
                     request_id=question_answer.request_id,
                     success=result.success,
+                    agent_id=question_answer.agent_id,
                 )
                 analytics.publish_nowait(_et, question_answer.id_project, _pl)
                 return result
@@ -965,6 +970,7 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
         latency_ms=_qa_latency_ms,
         request_id=question_answer.request_id,
         success=result_success,
+        agent_id=question_answer.agent_id,
     )
     analytics.publish_nowait(_et, question_answer.id_project, _pl)
     return result

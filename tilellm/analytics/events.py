@@ -104,6 +104,7 @@ def kb_query(
     reranker_latency_ms: Optional[int] = None,
     request_id: Optional[str] = None,
     success: Optional[bool] = None,
+    agent_id: Optional[str] = None,
 ) -> Tuple[str, dict]:
     """
     Build a kb.query_executed event payload.
@@ -120,6 +121,7 @@ def kb_query(
         request_id:          Tiledesk conversation/request ID.
         success:             Whether the LLM produced an answer from retrieved chunks.
                              Use None when no LLM answer exists (e.g. chunks_only).
+        agent_id:            Tiledesk agent/bot ID. Used for per-agent KB usage metrics.
     """
     payload: dict = {
         "kb_id":             kb_id,
@@ -130,6 +132,7 @@ def kb_query(
         "reranker_model":    reranker_model,
         "latency_ms":        latency_ms,
         "request_id":        request_id,
+        "agent_id":          agent_id,
     }
     if reranker_latency_ms is not None:
         payload["reranker_latency_ms"] = reranker_latency_ms
@@ -150,6 +153,7 @@ def content_indexed(
     chunks_indexed: int = 0,
     error_message: Optional[str] = None,
     request_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
 ) -> Tuple[str, dict]:
     """
     Build a kb.content_indexed event payload.
@@ -166,6 +170,7 @@ def content_indexed(
         chunks_indexed: Number of chunks successfully indexed.
         error_message:  str(e) on exception, else null.
         request_id:     Tiledesk conversation/request ID.
+        agent_id:       Tiledesk agent/bot ID. Used for per-agent KB usage metrics.
     """
     return "kb.content_indexed", {
         "kb_id":           kb_id,
@@ -179,6 +184,7 @@ def content_indexed(
         "success":         success,
         "error_message":   error_message,
         "request_id":      request_id,
+        "agent_id":        agent_id,
     }
 
 

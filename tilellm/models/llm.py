@@ -158,6 +158,10 @@ class ItemSingle(BaseModel):
         description="Tiledesk conversation/request ID. Links indexing operations to a "
         "specific customer conversation in the analytics platform.",
     )
+    agent_id: Optional[str] = Field(
+        default=None,
+        description="Tiledesk agent/bot ID for analytics. Enables per-agent KB usage metrics.",
+    )
     situated_context: Optional[SituatedContextConfig] = Field(
         default=None,
         description="Dedicated LLM configuration for Contextual Retrieval (situated context). Allows using a different/cheaper LLM for generating contextual sentences.",
