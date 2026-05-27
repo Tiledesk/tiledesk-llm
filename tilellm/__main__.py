@@ -962,26 +962,32 @@ async def post_ask_with_memory_main(question_answer: QuestionAnswer):
 
     logger.debug(result)
 
-    # Analytics: emit kb.query_executed (fire-and-forget)
-    from tilellm.analytics import events as an_events
+    # Analytics: emit kb.query_executed (fire-and-forget).
+    # Streaming responses emit this event from inside the generator (where success
+    # and chunks are available after the full response is assembled via verify_answer).
+    if not question_answer.stream:
+        from tilellm.analytics import events as an_events
 
-    _reranker_model = an_events.get_reranker_model(question_answer)
-    _et, _pl = an_events.kb_query(
-        kb_id=question_answer.namespace,
-        kb_name=question_answer.namespace,
-        query_text=question_answer.question
-        if isinstance(question_answer.question, str)
-        else str(question_answer.question),
-        chunks_retrieved=len(result.content_chunks or [])
-        if hasattr(result, "content_chunks")
-        else 0,
-        reranking_applied=bool(question_answer.reranking),
-        reranker_model=_reranker_model,
-        latency_ms=_qa_latency_ms,
-        request_id=question_answer.request_id,
-        success=result_success,
-    )
-    analytics.publish_nowait(_et, question_answer.id_project, _pl)
+        _reranker_model = an_events.get_reranker_model(question_answer)
+        _chunks = (
+            actual_result.get("content_chunks") or []
+            if isinstance(actual_result, dict)
+            else getattr(actual_result, "content_chunks", None) or []
+        )
+        _et, _pl = an_events.kb_query(
+            kb_id=question_answer.namespace,
+            kb_name=question_answer.namespace,
+            query_text=question_answer.question
+            if isinstance(question_answer.question, str)
+            else str(question_answer.question),
+            chunks_retrieved=len(_chunks),
+            reranking_applied=bool(question_answer.reranking),
+            reranker_model=_reranker_model,
+            latency_ms=_qa_latency_ms,
+            request_id=question_answer.request_id,
+            success=result_success,
+        )
+        analytics.publish_nowait(_et, question_answer.id_project, _pl)
     return result
 
 
