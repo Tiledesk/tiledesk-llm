@@ -1070,8 +1070,8 @@ def format_docs_with_id(docs: List[Document]) -> str:
     return "\n\n" + "\n\n".join(formatted)
 
 def verify_answer(s):
-    if s.endswith("<NOANS>"):
-        s = s[:-7]  # Rimuove <NOANS> dalla fine della stringa
+    if "<NOANS>" in s:
+        s = s.replace("<NOANS>", "").strip()
         success = False
     else:
         success = True
