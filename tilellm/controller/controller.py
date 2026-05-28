@@ -2719,8 +2719,8 @@ async def get_sources_namespace(
 
 
 def verify_answer(s):
-    if s.endswith("<NOANS>"):
-        s = s[:-7]  # Rimuove <NOANS> dalla fine della stringa
+    if "<NOANS>" in s:
+        s = s.replace("<NOANS>", "").strip()
         success = False
     else:
         success = True
