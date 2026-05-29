@@ -1350,6 +1350,24 @@ async def get_filtered_tools(
     return [t for t in all_tools if t.name in enabled_names]
 
 
+def _format_exception_details(exc: BaseException, *, indent: str = "") -> str:
+    """Format exception text for logs, unwrapping ExceptionGroup / TaskGroup wrappers."""
+    if isinstance(exc, BaseExceptionGroup):
+        lines = [f"{indent}{type(exc).__name__}: {exc}"]
+        for i, sub in enumerate(exc.exceptions):
+            lines.append(f"{indent}  sub-exception [{i}]:")
+            lines.append(_format_exception_details(sub, indent=indent + "    "))
+        return "\n".join(lines)
+    lines = [f"{indent}{type(exc).__name__}: {exc}"]
+    if exc.__cause__:
+        lines.append(f"{indent}  cause:")
+        lines.append(_format_exception_details(exc.__cause__, indent=indent + "    "))
+    elif exc.__context__ and not exc.__suppress_context__:
+        lines.append(f"{indent}  context:")
+        lines.append(_format_exception_details(exc.__context__, indent=indent + "    "))
+    return "\n".join(lines)
+
+
 async def get_all_filtered_tools(mcp_client, servers_config: Dict[str, ServerConfig]) -> List[BaseTool]:
     """
     Recupera e filtra i tool server per server prima di unirli.
@@ -1378,7 +1396,12 @@ async def get_all_filtered_tools(mcp_client, servers_config: Dict[str, ServerCon
 
         except Exception as e:
             # Gestione errore se un server specifico non risponde o non esiste
-            print(f"Errore nel recupero tool per il server {server_name}: {e}")
+            logger.error(
+                "Errore nel recupero tool per il server %s:\n%s",
+                server_name,
+                _format_exception_details(e),
+                exc_info=True,
+            )
             continue
 
     return final_tools
