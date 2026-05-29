@@ -649,9 +649,25 @@ class QuestionToLLM(BaseModel):
             )
             for name, server_config in self.servers.items()
         }
+        from tilellm.shared.mcp_headers import (
+            log_headers_inspection,
+            TILEDESK_COMMUNICATOR_HEADER_KEYS,
+        )
+
+        client = MultiServerMCPClient(config_dict)
         for name, cfg in config_dict.items():
-            _log.info(f"MCP server '{name}' config (sanitized): transport={cfg.get('transport')}, url={cfg.get('url')}, headers_keys={list(cfg.get('headers', {}).keys()) if cfg.get('headers') else None}")
-        return MultiServerMCPClient(config_dict)
+            _log.info(
+                "MCP server '%s' create_mcp_client: transport=%s url=%r",
+                name,
+                cfg.get("transport"),
+                (cfg.get("url") or "").strip() if cfg.get("url") else None,
+            )
+            log_headers_inspection(
+                cfg.get("headers"),
+                label=f"create_mcp_client server={name} (payload → MultiServerMCPClient)",
+                expected_keys=TILEDESK_COMMUNICATOR_HEADER_KEYS,
+            )
+        return client
 
     def get_question_content(self) -> Union[str, List[Dict[str, Any]]]:
         """

@@ -32,6 +32,7 @@ from tilellm.controller.controller_utils import (
     extract_conversation_flow,
     create_contextualize_query,
     get_all_filtered_tools,
+    log_agent_exception_details,
 )
 from tilellm.controller.agent_middleware import MessageCleaningMiddleware
 from tilellm.shared.tags_query_parser import build_tags_filter
@@ -98,10 +99,9 @@ def handle_agent_exception(
     Returns:
         JSONResponse: A response containing a clear, user‑friendly error message.
     """
-    import traceback
+    from langchain_core.tools import ToolException
 
-    traceback.print_exc()
-    logger.error(f"Error in {context}: {str(e)}")
+    log_agent_exception_details(e, context)
 
     # Determina il tipo di errore e crea un messaggio user-friendly
     error_message = str(e)
@@ -116,9 +116,10 @@ def handle_agent_exception(
         user_message = "The requested file was not found. Please verify that the file was uploaded correctly."
         status_code = 404
 
-    # Errori di tool/MCP
-    elif "tool" in error_message.lower() and (
-        "error" in error_message.lower() or "failed" in error_message.lower()
+    # Errori di tool/MCP (ToolException da risposta MCP isError=true)
+    elif isinstance(e, ToolException) or (
+        "tool" in error_message.lower()
+        and ("error" in error_message.lower() or "failed" in error_message.lower())
     ):
         user_message = f"Error running the tool: {error_message}"
         status_code = 400

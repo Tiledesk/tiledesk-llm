@@ -8,7 +8,7 @@ import tilellm.analytics as analytics
 from fastapi.responses import StreamingResponse
 import traceback
 import uuid
-from typing import List, Optional, Dict
+from typing import Any, List, Optional, Dict
 
 
 from langchain_core.documents import Document
@@ -46,6 +46,12 @@ from langchain_core.messages import (
 )
 
 from tilellm.tools.reranker import TileReranker
+from tilellm.shared.mcp_headers import (
+    log_headers_inspection,
+    log_mcp_headers_at_tool_call,
+    resolve_mcp_connection_headers,
+    TILEDESK_COMMUNICATOR_HEADER_KEYS,
+)
 
 
 import logging
@@ -1350,6 +1356,129 @@ async def get_filtered_tools(
     return [t for t in all_tools if t.name in enabled_names]
 
 
+def _sanitize_tool_args(args: Dict[str, Any]) -> Dict[str, Any]:
+    """Truncate large values in tool arguments for logging."""
+    sanitized: Dict[str, Any] = {}
+    for key, value in args.items():
+        if isinstance(value, str) and len(value) > 200:
+            sanitized[key] = f"{value[:200]}... (len={len(value)})"
+        elif isinstance(value, (dict, list)):
+            sanitized[key] = f"<{type(value).__name__} len={len(value)}>"
+        else:
+            sanitized[key] = value
+    return sanitized
+
+
+def _log_mcp_server_outgoing_headers(
+    mcp_client: Any, server_name: str, config: ServerConfig
+) -> None:
+    """Log HTTP headers from config and from the live MCP client connection."""
+    url = config.url.strip() if config.url else None
+    logger.info(
+        "MCP server '%s' setup: url=%r transport=%s",
+        server_name,
+        url,
+        config.transport,
+    )
+    log_headers_inspection(
+        config.headers,
+        label=f"load-tools server={server_name} source=ServerConfig.headers",
+        expected_keys=TILEDESK_COMMUNICATOR_HEADER_KEYS,
+    )
+    bundles = resolve_mcp_connection_headers(mcp_client, server_name, config.headers)
+    log_headers_inspection(
+        bundles["mcp_client_connection"],
+        label=f"load-tools server={server_name} source=MultiServerMCPClient.connections",
+        expected_keys=TILEDESK_COMMUNICATOR_HEADER_KEYS,
+    )
+
+
+def _wrap_mcp_tool_with_logging(
+    tool: BaseTool,
+    server_name: str,
+    config: ServerConfig,
+    mcp_client: Any,
+) -> BaseTool:
+    """Wrap an MCP LangChain tool to log headers, args, and errors on each invocation."""
+    coroutine = getattr(tool, "coroutine", None)
+    if coroutine is None:
+        return tool
+
+    url = config.url.strip() if config.url else None
+    tool_name = tool.name
+
+    async def logged_coroutine(*args, **kwargs):
+        log_mcp_headers_at_tool_call(
+            mcp_client,
+            server_name,
+            config.headers,
+            tool_name=tool_name,
+            url=url,
+        )
+        log_args = {k: v for k, v in kwargs.items() if k != "runtime"}
+        safe_args = _sanitize_tool_args(log_args)
+        logger.info(
+            "MCP tool call args: tool=%s server=%s %s",
+            tool_name,
+            server_name,
+            safe_args,
+        )
+        try:
+            result = await coroutine(*args, **kwargs)
+            logger.info(
+                "MCP tool call success: tool=%s server=%s",
+                tool_name,
+                server_name,
+            )
+            return result
+        except Exception as exc:
+            logger.error(
+                "MCP tool call failed: tool=%s server=%s url=%r\n%s",
+                tool_name,
+                server_name,
+                url,
+                _format_exception_details(exc),
+                exc_info=True,
+            )
+            raise
+
+    try:
+        return tool.model_copy(update={"coroutine": logged_coroutine})
+    except Exception:
+        tool.coroutine = logged_coroutine  # type: ignore[method-assign]
+        return tool
+
+
+def log_agent_exception_details(exc: BaseException, context: str) -> None:
+    """Log agent/MCP errors with ToolException and ExceptionGroup unwrapping."""
+    from langchain_core.tools import ToolException
+
+    if isinstance(exc, ToolException):
+        logger.error(
+            "ToolException in %s (MCP server responded with isError=true): %s",
+            context,
+            exc,
+            exc_info=True,
+        )
+        return
+
+    if isinstance(exc, BaseExceptionGroup):
+        for i, sub in enumerate(exc.exceptions):
+            logger.error("ExceptionGroup in %s — sub-exception [%d]:", context, i)
+            log_agent_exception_details(sub, context)
+        return
+
+    if exc.__cause__ and exc.__cause__ is not exc:
+        log_agent_exception_details(exc.__cause__, f"{context} (__cause__)")
+
+    logger.error(
+        "Error in %s:\n%s",
+        context,
+        _format_exception_details(exc),
+        exc_info=True,
+    )
+
+
 def _format_exception_details(exc: BaseException, *, indent: str = "") -> str:
     """Format exception text for logs, unwrapping ExceptionGroup / TaskGroup wrappers."""
     if isinstance(exc, BaseExceptionGroup):
@@ -1376,20 +1505,30 @@ async def get_all_filtered_tools(mcp_client, servers_config: Dict[str, ServerCon
 
     for server_name, config in servers_config.items():
         try:
+            _log_mcp_server_outgoing_headers(mcp_client, server_name, config)
+
             # 1. Recuperiamo i tool solo per questo specifico server
             server_tools = await mcp_client.get_tools(server_name=server_name)
-            print(server_tools)
+            wrapped_tools = [
+                _wrap_mcp_tool_with_logging(t, server_name, config, mcp_client)
+                for t in server_tools
+            ]
+            logger.info(
+                "MCP server '%s': loaded %d tools: %s",
+                server_name,
+                len(wrapped_tools),
+                [t.name for t in wrapped_tools],
+            )
+
             # 2. Applichiamo il filtro basato sulla config di QUESTO server
             if not config.enabled_tools:
                 continue
 
             if "all" in config.enabled_tools:
-                # Se è "all", prendiamo tutto quello che ha restituito questo server
-                final_tools.extend(server_tools)
+                final_tools.extend(wrapped_tools)
             else:
-                # Altrimenti prendiamo solo i tool esplicitamente nominati
                 filtered = [
-                    t for t in server_tools
+                    t for t in wrapped_tools
                     if t.name in config.enabled_tools
                 ]
                 final_tools.extend(filtered)
