@@ -9,6 +9,64 @@
 
 ---
 ## [2026-06-11]
+### 0.11.0-rc4 (feat: Compliance Checker v2 — discretionary criteria scoring for Italian public procurement)
+
+New module extension under `/api/compliance/v2/*`.  Existing v1 endpoints (`/api/compliance/*`) unchanged.
+
+#### New endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/compliance/v2/check` | Full v2 check: tabular + discretionary scoring, returns `ComplianceReportV2` JSON |
+| `POST` | `/api/compliance/v2/check/markdown` | Same check, returns Markdown table (⚠ marks for human-review criteria) |
+| `POST` | `/api/compliance/v2/requirements/extract` | xlsx → YAML extraction (LLM-assisted, one document per lot) |
+
+#### New files
+
+**`tilellm/modules/compliance_checker/models_v2.py`** — v2 data models:
+- `DiscretionaryMode` (StrEnum): `variabile`, `proporzionale`, `on_off`
+- `DiscretionaryCriterion`: `id`, `text`, `mode`, `max_points`, `human_only`
+- `TenderLotRequirements`: YAML root — tabular + discretionary requirements per lot; `from_yaml()`/`to_yaml()` with `mode="json"` for StrEnum-safe serialization
+- `ComplianceRequestV2`: accepts `requirements_yaml` (inline) or `requirements_yaml_url` (URL), mutually exclusive; all v1 retrieval/LLM/reranking fields
+- `DiscretionaryResult`: per-criterion output with `coefficient`, `score`, `measured_value`, `motivation`, `confidence`, `human_review_required`, `human_review_reason`, audit trail
+- `ComplianceSummaryV2` / `TabularSummary`: aggregated counts; `from_results()` factory
+- `ComplianceReportV2`: `tender + namespace + summary + tabular_results + discretionary_results`; `to_markdown()` generates Italian procurement table
+
+**`tilellm/modules/compliance_checker/prompts/xlsx_extraction.py`** — LLM structured-output models and prompts for xlsx→YAML extraction:
+- `_LLMTabularItem`, `_LLMDiscretionaryCriterion`, `_LLMLotExtractionResult`
+- `XLSX_EXTRACTION_SYSTEM_PROMPT`: classifies rows as tabular vs discretionary, detects mode and `human_only` markers
+- `XLSX_EXTRACTION_USER_TEMPLATE`
+
+**`tilellm/modules/compliance_checker/prompts/discretionary_judge.py`** — Judge LLM prompt for per-criterion scoring:
+- `DiscretionaryJudgeOutput`: `coefficient` (clamped 0–1), `measured_value`, `motivation`, `confidence`, `source_chunk_index`, `evidence_text`
+- `DISCRETIONARY_JUDGE_SYSTEM_PROMPT`: anchored scale (0=absent, 0.25=inadequate, 0.5=sufficient, 0.75=good, 1.0=excellent)
+- `build_judge_user_prompt()`: assembles message with mode-specific instructions
+
+**`tilellm/modules/compliance_checker/services/yaml_requirements_loader.py`** — `YamlRequirementsLoader`: async download + parse YAML (inline or URL); size limit 1 MB.
+
+**`tilellm/modules/compliance_checker/services/xlsx_extraction_service.py`** — `XlsxExtractionService`: download xlsx → openpyxl cell extraction → LLM structured output per sheet → `TenderLotRequirements`; sanitizes invalid mode (→ `variabile`) and `max_points ≤ 0` (skips criterion); size limit 10 MB.  `extract_requirements_di()` entry point decorated with `@inject_llm_chat_async`.
+
+**`tilellm/modules/compliance_checker/services/discretionary_check_service.py`** — `DiscretionaryCheckService`: per-lot evaluation orchestrator:
+- Tabular path: delegates to v1 `check_compliance` (its own DI decorators)
+- Discretionary path: per-criterion retrieval via `repo.get_chunks_from_repo` + judge LLM call
+- Human-review rules: `human_only=True`, no evidence found, `confidence < min_confidence`, `proporzionale` mode (cross-operator scoring)
+- `check_compliance_v2()` entry point decorated with `@inject_llm_chat_async @inject_repo_async`
+
+**`tilellm/modules/compliance_checker/controllers_v2.py`** — FastAPI router `router_v2` (prefix `/v2`), included in v1 `router` via `router.include_router(router_v2)`.
+
+#### fix: situated_context silently skipped with vllm thinking models (Qwen3)
+
+**Root cause**: Qwen3 and similar thinking models served via vllm enable thinking mode by default.
+With `max_tokens=256` (the default for situated context), all tokens are consumed by the thinking
+phase, leaving `content=null` or `content=""` in the response. `ctx` results empty → no enrichment.
+
+**File**: `tilellm/shared/situated_context.py`
+
+- `build_llm_from_config` — for `provider="vllm"`, adds `extra_body={"chat_template_kwargs": {"enable_thinking": False}}` to `ChatOpenAI` constructor. Disables thinking mode so the model generates the response directly; non-thinking vllm models ignore the parameter silently.
+- `_generate_situated_context` — added explicit `None` guard on `response.content` before `.strip()` to prevent `AttributeError` when content is null (silent exception → empty ctx).
+
+---
+## [2026-06-11]
 ### 0.11.0-rc3 (fix: Pinecone rejects null metadata fields on regex_custom ingestion)
 
 **`tilellm/store/pinecone/pinecone_repository_serverless.py`** — `add_item` and `add_item_hybrid`, `regex_custom` branch:

@@ -504,7 +504,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
             #indice = vector_store.async_index #index #get_pinecone_index(item.engine.index_name, pinecone_api_key=item.engine.apikey)
             idx = await vector_store.async_index
-            print(f"=======================>{item.namespace}")
+            logger.info(f"Namespace ==== {item.namespace} ====")
             await self.upsert_vector_store_hybrid(indice=idx,
                                                   contents=contents,
                                                   chunks=chunks,
