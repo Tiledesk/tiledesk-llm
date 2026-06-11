@@ -615,7 +615,7 @@ async def create_scrape_item_single(
 
         logger.debug(f"Start {add_to_queue}")
 
-        raw_webhook = item.webhook
+        raw_webhook = item.webhook or ""
         if "?" in raw_webhook:
             webhook, raw_token = raw_webhook.split("?")
 
@@ -640,8 +640,8 @@ async def create_scrape_item_single(
         finally:
             _idx_duration_ms = int((time.monotonic() - _idx_t0) * 1000)
             _et, _pl = analytics.events.content_indexed(
-                kb_id=item.namespace,
-                kb_name=item.namespace,
+                kb_id=item.namespace, # type: ignore
+                kb_name=item.namespace, # type: ignore
                 embedding_model=analytics.events.get_embedding_model_name(
                     item.embedding
                 ),
@@ -650,7 +650,7 @@ async def create_scrape_item_single(
                 success=_idx_error is None,
                 source_url=item.source,
                 source_type=item.type,
-                chunks_indexed=(pc_result.chunks or 0)
+                chunks_indexed=(pc_result.chunks or 0) # type: ignore
                 if _idx_error is None and pc_result is not None
                 else 0,
                 error_message=_idx_error,
@@ -735,7 +735,7 @@ async def create_scrape_item_hybrid(
 
         logger.debug(f"Start {add_to_queue}")
 
-        raw_webhook = item.webhook
+        raw_webhook = item.webhook or ""
         if "?" in raw_webhook:
             webhook, raw_token = raw_webhook.split("?")
 

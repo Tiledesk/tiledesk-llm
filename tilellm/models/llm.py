@@ -1,4 +1,5 @@
 import datetime
+from enum import IntEnum
 from typing import Dict, Optional, List, Union, Any, TYPE_CHECKING, Literal
 
 from pydantic import (
@@ -120,6 +121,16 @@ class CacheConfig(BaseModel):
         return self.L1 or self.L2
 
 
+class ScrapeType(IntEnum):
+    """Web-page scraping strategy used by get_content_by_url."""
+    UNSTRUCTURED = 0       # Trafilatura + UnstructuredURLLoader fallback
+    FULL_TEXT = 1          # Extract all raw text
+    PLAYWRIGHT_BS4 = 2     # Playwright + BS4 element selection
+    CHROMIUM_TEXT = 3      # AsyncChromiumLoader, text transform
+    CHROMIUM_BS4 = 4       # AsyncChromiumLoader + BS4 element selection
+    PLAYWRIGHT_BS4_CLASS = 5  # Playwright + BS4 class selection
+
+
 class ItemSingle(BaseModel):
     id: str
     source: str | None = None
@@ -140,7 +151,7 @@ class ItemSingle(BaseModel):
         default="splade"
     )  # spade|bge-m3 or TEIConfig
     gptkey: SecretStr | None = None
-    scrape_type: int = Field(default_factory=lambda: 0)
+    scrape_type: ScrapeType = Field(default=ScrapeType.UNSTRUCTURED)
     embedding: Union[str, LlmEmbeddingModel] = Field(default="text-embedding-3-small")
     browser_headers: Dict[str, str] = Field(
         default_factory=lambda: {
@@ -149,7 +160,7 @@ class ItemSingle(BaseModel):
     )
     namespace: str | None = None
     tags: Optional[List[str]] = None
-    webhook: str = Field(default_factory=lambda: "")
+    webhook: Optional[str] = Field(default=None)
     semantic_chunk: Optional[bool] = Field(default=False)
     breakpoint_threshold_type: Optional[str] = Field(default="percentile")
     chunk_size: int = Field(default_factory=lambda: 1000)
@@ -181,6 +192,15 @@ class ItemSingle(BaseModel):
     table_options: Optional[TableOptions] = Field(
         default=None,
         description="Dedicated handling for HTML tables extracted from web pages. When omitted the default TableOptions (adaptive strategy) is applied."
+    )
+    additional_metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Arbitrary key-value pairs merged into every chunk's metadata. "
+            "Example: {\"category\": \"tourism\", \"lang\": \"it\"}. "
+            "A 'date' value in DD/MM/YYYY format is auto-converted to ISO YYYY-MM-DD. "
+            "Keys here override the corresponding base metadata fields."
+        ),
     )
 
     @model_validator(mode="after")

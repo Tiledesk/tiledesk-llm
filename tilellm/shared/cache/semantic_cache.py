@@ -11,6 +11,7 @@ Redis key schema:
   tiledesk:cache:exact:{namespace}:{sha256}       → JSON payload
   tiledesk:cache:sem:{namespace}:{uuid}            → Hash {question, body, embedding}
   tiledesk:cache:sem_idx:{namespace}               → Set of semantic UUIDs for a namespace
+  tiledesk:cache:exact_idx:{namespace}             → Set of exact-match keys for a namespace (invalidation index)
 """
 
 import hashlib
@@ -40,6 +41,7 @@ _DEFAULT_TTL_EXACT = int(os.getenv("CACHE_TTL_EXACT", "86400"))    # 24h
 _DEFAULT_TTL_SEMANTIC = int(os.getenv("CACHE_TTL_SEMANTIC", "21600"))  # 6h
 
 _PREFIX_EXACT = "tiledesk:cache:exact"
+_PREFIX_EXACT_IDX = "tiledesk:cache:exact_idx"
 _PREFIX_SEM = "tiledesk:cache:sem"
 _PREFIX_SEM_IDX = "tiledesk:cache:sem_idx"
 
@@ -59,6 +61,10 @@ def _sem_key(namespace: str, entry_id: str) -> str:
 
 def _sem_idx_key(namespace: str) -> str:
     return f"{_PREFIX_SEM_IDX}:{namespace}"
+
+
+def _exact_idx_key(namespace: str) -> str:
+    return f"{_PREFIX_EXACT_IDX}:{namespace}"
 
 
 def _vec_to_bytes(vec: list[float]) -> bytes:
@@ -224,21 +230,27 @@ class SemanticCache:
 
             if store_l1:
                 key = _exact_key(namespace, question)
-                await r.set(key, serialized.encode(), ex=ttl_exact)
+                exact_idx = _exact_idx_key(namespace)
+                async with r.pipeline(transaction=False) as pipe:
+                    pipe.set(key, serialized.encode(), ex=ttl_exact)
+                    pipe.sadd(exact_idx, key)
+                    pipe.expire(exact_idx, ttl_exact, gt=True)
+                    await pipe.execute()
 
             if store_l2 and embedding is not None:
                 entry_id = str(uuid.uuid4())
                 sem_key = _sem_key(namespace, entry_id)
-                await r.hset(sem_key, mapping={
-                    "question": _normalize(question).encode(),
-                    "body": serialized.encode(),
-                    "embedding": _vec_to_bytes(embedding),
-                })
-                await r.expire(sem_key, ttl_semantic)
-
                 idx_key = _sem_idx_key(namespace)
-                await r.sadd(idx_key, entry_id)
-                await r.expire(idx_key, ttl_semantic)
+                async with r.pipeline(transaction=False) as pipe:
+                    pipe.hset(sem_key, mapping={
+                        "question": _normalize(question).encode(),
+                        "body": serialized.encode(),
+                        "embedding": _vec_to_bytes(embedding),
+                    })
+                    pipe.expire(sem_key, ttl_semantic)
+                    pipe.sadd(idx_key, entry_id)
+                    pipe.expire(idx_key, ttl_semantic, gt=True)
+                    await pipe.execute()
 
             CACHE_STORE_DURATION.observe(time.perf_counter() - t0)
             logger.debug(f"SemanticCache stored entry for namespace={namespace}")
@@ -255,20 +267,22 @@ class SemanticCache:
 
         deleted = 0
         try:
-            # Delete all semantic entries
+            # L2 — batch delete semantic entries via Set index (O(N-in-namespace), no SCAN)
             idx_key = _sem_idx_key(namespace)
             entry_ids = await r.smembers(idx_key)
-            for entry_id_bytes in entry_ids:
-                entry_id = entry_id_bytes.decode()
-                await r.delete(_sem_key(namespace, entry_id))
-                deleted += 1
+            if entry_ids:
+                sem_keys = [_sem_key(namespace, eid.decode()) for eid in entry_ids]
+                await r.delete(*sem_keys)
+                deleted += len(sem_keys)
             await r.delete(idx_key)
 
-            # Delete exact-match entries (scan by pattern)
-            pattern = f"{_PREFIX_EXACT}:{namespace}:*"
-            async for key in r.scan_iter(pattern):
-                await r.delete(key)
-                deleted += 1
+            # L1 — batch delete exact-match entries via Set index (O(N-in-namespace), no SCAN)
+            exact_idx = _exact_idx_key(namespace)
+            exact_keys = await r.smembers(exact_idx)
+            if exact_keys:
+                await r.delete(*exact_keys)
+                deleted += len(exact_keys)
+            await r.delete(exact_idx)
 
             CACHE_INVALIDATIONS.inc()
             logger.info(f"SemanticCache invalidated {deleted} entries for namespace={namespace}")

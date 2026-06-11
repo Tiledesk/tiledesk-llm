@@ -8,6 +8,15 @@
 
 
 ---
+## [2026-06-11]
+### 0.11.0-rc3 (fix: Pinecone rejects null metadata fields on regex_custom ingestion)
+
+**`tilellm/store/pinecone/pinecone_repository_serverless.py`** — `add_item` and `add_item_hybrid`, `regex_custom` branch:
+- `MetadataItem(...).model_dump()` → `.model_dump(exclude_none=True)`: prevents optional fields (`namespace`, etc.) from being serialized as `null` in chunk metadata — Pinecone 400s with `"Metadata value must be a string, number, boolean or list of strings, got 'null'"`.
+- Metadata merge expression hardened: `{k: v for k, v in {**document.metadata, **base_metadata}.items() if v is not None}` — filters any residual `None` values coming from `handle_regex_custom_chunk` fallback paths (e.g. `page_number: None` when no regex matches).
+
+
+---
 ## [2026-05-27]
 ### 0.11.0-rc2 (fix: reranking logic to return full document context instead of single top chunk; feat: extended situated_context with DeepSeek support)
 
