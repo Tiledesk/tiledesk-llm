@@ -8,7 +8,7 @@ import tilellm.analytics as analytics
 from fastapi.responses import StreamingResponse
 import traceback
 import uuid
-from typing import List, Optional, Dict
+from typing import Any, List, Optional, Dict
 
 
 from langchain_core.documents import Document
@@ -1350,6 +1350,169 @@ async def get_filtered_tools(
     return [t for t in all_tools if t.name in enabled_names]
 
 
+def _root_exception(exc: BaseException) -> BaseException:
+    """Extract the innermost cause from ExceptionGroup / __cause__ chains."""
+    if isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        return _root_exception(exc.exceptions[0])
+    if exc.__cause__ and exc.__cause__ is not exc:
+        return _root_exception(exc.__cause__)
+    return exc
+
+
+def _format_exception_details(exc: BaseException, *, indent: str = "") -> str:
+    """Format exception text for logs, unwrapping ExceptionGroup / TaskGroup wrappers."""
+    if isinstance(exc, BaseExceptionGroup):
+        lines = [f"{indent}{type(exc).__name__}: {exc}"]
+        for i, sub in enumerate(exc.exceptions):
+            lines.append(f"{indent}  sub-exception [{i}]:")
+            lines.append(_format_exception_details(sub, indent=indent + "    "))
+        return "\n".join(lines)
+    lines = [f"{indent}{type(exc).__name__}: {exc}"]
+    if exc.__cause__:
+        lines.append(f"{indent}  cause:")
+        lines.append(_format_exception_details(exc.__cause__, indent=indent + "    "))
+    elif exc.__context__ and not exc.__suppress_context__:
+        lines.append(f"{indent}  context:")
+        lines.append(_format_exception_details(exc.__context__, indent=indent + "    "))
+    return "\n".join(lines)
+
+
+def _describe_mcp_connection_error(exc: BaseException) -> str:
+    """Return a short, actionable hint for common MCP connection failures."""
+    root = _root_exception(exc)
+    msg = str(root).lower()
+    hints: List[str] = []
+
+    if "missing an 'http://' or 'https://' protocol" in msg:
+        hints.append(
+            "URL malformato: spesso c'è uno spazio prima di 'https://' "
+            "(es. url=' https://...'). Controlla servers.<nome>.url nel payload."
+        )
+    if "connection refused" in msg:
+        hints.append(
+            "Il server MCP non accetta connessioni (connection refused). "
+            "Verifica che il servizio sia avviato e che host/porta siano corretti."
+        )
+    if "timeout" in msg or "timed out" in msg:
+        hints.append(
+            "Timeout verso il server MCP. Verifica rete, ngrok, firewall o che l'URL sia raggiungibile."
+        )
+    if "401" in msg or "unauthorized" in msg:
+        hints.append(
+            "Autenticazione fallita (401). Verifica x-chatbotToken e gli altri header."
+        )
+    if "403" in msg or "forbidden" in msg:
+        hints.append("Accesso negato (403). Verifica permessi e token.")
+    if "404" in msg or "not found" in msg:
+        hints.append(
+            "Endpoint non trovato (404). Verifica il path MCP nell'URL (es. /communicator/mcp)."
+        )
+    if any(
+        token in msg
+        for token in ("getaddrinfo", "name resolution", "nodename nor servname", "failed to resolve")
+    ):
+        hints.append("Host DNS non risolvibile. Verifica il dominio nell'URL.")
+    if "ssl" in msg or "certificate" in msg:
+        hints.append("Errore TLS/certificato SSL. Verifica HTTPS e certificati del server MCP.")
+
+    if hints:
+        return " | ".join(hints)
+    return f"Causa radice: {type(root).__name__}: {root}"
+
+
+def _format_header_for_log(key: str, value: Any) -> str:
+    if value is None:
+        return f"    [{key}] = None (MISSING)"
+    if not isinstance(value, str):
+        value = str(value)
+    if not value:
+        return f"    [{key}] = '' (EMPTY)"
+    preview = value if len(value) <= 120 else f"{value[:120]}... (len={len(value)})"
+    warn = " [WARN: spazi in testa/coda]" if value.strip() != value else ""
+    return f"    [{key}] = {preview!r}{warn}"
+
+
+def _log_mcp_server_before_get_tools(
+    server_name: str, config: ServerConfig, mcp_client: Any
+) -> None:
+    """Log connection details before attempting mcp_client.get_tools()."""
+    url = config.url
+    logger.info(
+        "MCP get_tools — server=%r transport=%s url=%r enabled_tools=%s",
+        server_name,
+        config.transport,
+        url,
+        config.enabled_tools,
+    )
+
+    headers = config.headers or {}
+    if headers:
+        header_lines = [
+            f"MCP get_tools — server={server_name!r} headers dalla config ({len(headers)} chiavi):"
+        ]
+        for key in sorted(headers):
+            header_lines.append(_format_header_for_log(key, headers[key]))
+        logger.info("\n".join(header_lines))
+    else:
+        logger.warning(
+            "MCP get_tools — server=%r: nessun header in ServerConfig.headers",
+            server_name,
+        )
+
+    connections = getattr(mcp_client, "connections", None)
+    if isinstance(connections, dict) and server_name in connections:
+        conn = connections[server_name]
+        if isinstance(conn, dict):
+            conn_headers = conn.get("headers") or {}
+            logger.info(
+                "MCP get_tools — server=%r connection url=%r header_keys=%s",
+                server_name,
+                conn.get("url"),
+                list(conn_headers.keys()) if conn_headers else None,
+            )
+            if conn_headers:
+                conn_lines = [
+                    f"MCP get_tools — server={server_name!r} headers nella connection del client:"
+                ]
+                for key in sorted(conn_headers):
+                    conn_lines.append(_format_header_for_log(key, conn_headers[key]))
+                logger.info("\n".join(conn_lines))
+    else:
+        logger.warning(
+            "MCP get_tools — server=%r non trovato in mcp_client.connections (keys=%s)",
+            server_name,
+            list(connections.keys()) if isinstance(connections, dict) else None,
+        )
+
+
+def _log_mcp_get_tools_error(server_name: str, config: ServerConfig, exc: Exception) -> None:
+    """Log a detailed, actionable report when get_tools fails for one server."""
+    root = _root_exception(exc)
+    logger.error(
+        "Errore nel recupero tool per il server %r — sintesi: %s",
+        server_name,
+        _describe_mcp_connection_error(exc),
+    )
+    logger.error(
+        "Errore nel recupero tool per il server %r — config: transport=%s url=%r",
+        server_name,
+        config.transport,
+        config.url,
+    )
+    logger.error(
+        "Errore nel recupero tool per il server %r — causa radice: %s: %s",
+        server_name,
+        type(root).__name__,
+        root,
+    )
+    logger.error(
+        "Errore nel recupero tool per il server %r — dettaglio completo:\n%s",
+        server_name,
+        _format_exception_details(exc),
+        exc_info=True,
+    )
+
+
 async def get_all_filtered_tools(mcp_client, servers_config: Dict[str, ServerConfig]) -> List[BaseTool]:
     """
     Recupera e filtra i tool server per server prima di unirli.
@@ -1358,18 +1521,22 @@ async def get_all_filtered_tools(mcp_client, servers_config: Dict[str, ServerCon
 
     for server_name, config in servers_config.items():
         try:
-            # 1. Recuperiamo i tool solo per questo specifico server
+            _log_mcp_server_before_get_tools(server_name, config, mcp_client)
+
             server_tools = await mcp_client.get_tools(server_name=server_name)
-            print(server_tools)
-            # 2. Applichiamo il filtro basato sulla config di QUESTO server
+            logger.info(
+                "MCP get_tools — server=%r OK: %d tool caricati: %s",
+                server_name,
+                len(server_tools),
+                [t.name for t in server_tools],
+            )
+
             if not config.enabled_tools:
                 continue
 
             if "all" in config.enabled_tools:
-                # Se è "all", prendiamo tutto quello che ha restituito questo server
                 final_tools.extend(server_tools)
             else:
-                # Altrimenti prendiamo solo i tool esplicitamente nominati
                 filtered = [
                     t for t in server_tools
                     if t.name in config.enabled_tools
@@ -1377,8 +1544,7 @@ async def get_all_filtered_tools(mcp_client, servers_config: Dict[str, ServerCon
                 final_tools.extend(filtered)
 
         except Exception as e:
-            # Gestione errore se un server specifico non risponde o non esiste
-            print(f"Errore nel recupero tool per il server {server_name}: {e}")
+            _log_mcp_get_tools_error(server_name, config, e)
             continue
 
     return final_tools

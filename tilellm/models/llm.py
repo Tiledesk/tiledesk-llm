@@ -669,9 +669,18 @@ class QuestionToLLM(BaseModel):
             )
             for name, server_config in self.servers.items()
         }
+        client = MultiServerMCPClient(config_dict)
         for name, cfg in config_dict.items():
-            _log.info(f"MCP server '{name}' config (sanitized): transport={cfg.get('transport')}, url={cfg.get('url')}, headers_keys={list(cfg.get('headers', {}).keys()) if cfg.get('headers') else None}")
-        return MultiServerMCPClient(config_dict)
+            headers = cfg.get("headers") or {}
+            _log.info(
+                "MCP server %r create_mcp_client: transport=%s url=%r headers=%d chiavi %s",
+                name,
+                cfg.get("transport"),
+                cfg.get("url"),
+                len(headers),
+                list(headers.keys()) if headers else None,
+            )
+        return client
 
     def get_question_content(self) -> Union[str, List[Dict[str, Any]]]:
         """
