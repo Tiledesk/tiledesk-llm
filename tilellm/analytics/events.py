@@ -75,7 +75,10 @@ def model_call(
 
     Args:
         model:      Model name string.
-        provider:   LLM provider (e.g. 'openai', 'anthropic').
+        provider:   LLM provider (e.g. 'openai', 'anthropic'). Coerced to
+                    'unknown' when missing/empty so the analytics contract
+                    (provider is a required non-null string) is never violated
+                    and the gap is visible downstream rather than mislabeled.
         operation:  'qa' | 'ask' | 'thinking'.
         latency_ms: Wall-clock ms for the ainvoke/astream call only.
         success:    True unless exception was raised.
@@ -84,7 +87,7 @@ def model_call(
     """
     return "ai.model_call", {
         "model":      model,
-        "provider":   provider,
+        "provider":   provider or "unknown",
         "operation":  operation,
         "latency_ms": latency_ms,
         "success":    success,
