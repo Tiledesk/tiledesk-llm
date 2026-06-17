@@ -1,4 +1,5 @@
 import datetime
+from enum import IntEnum
 from typing import Dict, Optional, List, Union, Any, TYPE_CHECKING, Literal
 
 from pydantic import (
@@ -104,6 +105,32 @@ class PineconeRerankerConfig(BaseModel):
     )
 
 
+class CacheConfig(BaseModel):
+    """Granular toggles for each cache layer.
+
+    L1 — exact response cache (Redis key = sha256(question))
+    L2 — semantic response cache (cosine similarity on stored embeddings)
+    L4 — embedding cache (text → vector wrapper around the embedding model)
+    """
+    L1: bool = Field(default=False, description="Exact-match response cache")
+    L2: bool = Field(default=False, description="Semantic response cache (cosine similarity)")
+    L4: bool = Field(default=False, description="Embedding cache (text → vector)")
+
+    @property
+    def any_response_level(self) -> bool:
+        return self.L1 or self.L2
+
+
+class ScrapeType(IntEnum):
+    """Web-page scraping strategy used by get_content_by_url."""
+    UNSTRUCTURED = 0       # Trafilatura + UnstructuredURLLoader fallback
+    FULL_TEXT = 1          # Extract all raw text
+    PLAYWRIGHT_BS4 = 2     # Playwright + BS4 element selection
+    CHROMIUM_TEXT = 3      # AsyncChromiumLoader, text transform
+    CHROMIUM_BS4 = 4       # AsyncChromiumLoader + BS4 element selection
+    PLAYWRIGHT_BS4_CLASS = 5  # Playwright + BS4 class selection
+
+
 class ItemSingle(BaseModel):
     id: str
     source: str | None = None
@@ -124,7 +151,7 @@ class ItemSingle(BaseModel):
         default="splade"
     )  # spade|bge-m3 or TEIConfig
     gptkey: SecretStr | None = None
-    scrape_type: int = Field(default_factory=lambda: 0)
+    scrape_type: ScrapeType = Field(default=ScrapeType.UNSTRUCTURED)
     embedding: Union[str, LlmEmbeddingModel] = Field(default="text-embedding-3-small")
     browser_headers: Dict[str, str] = Field(
         default_factory=lambda: {
@@ -133,7 +160,7 @@ class ItemSingle(BaseModel):
     )
     namespace: str | None = None
     tags: Optional[List[str]] = None
-    webhook: str = Field(default_factory=lambda: "")
+    webhook: Optional[str] = Field(default=None)
     semantic_chunk: Optional[bool] = Field(default=False)
     breakpoint_threshold_type: Optional[str] = Field(default="percentile")
     chunk_size: int = Field(default_factory=lambda: 1000)
@@ -169,6 +196,15 @@ class ItemSingle(BaseModel):
     table_options: Optional[TableOptions] = Field(
         default=None,
         description="Dedicated handling for HTML tables extracted from web pages. When omitted the default TableOptions (adaptive strategy) is applied."
+    )
+    additional_metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Arbitrary key-value pairs merged into every chunk's metadata. "
+            "Example: {\"category\": \"tourism\", \"lang\": \"it\"}. "
+            "A 'date' value in DD/MM/YYYY format is auto-converted to ISO YYYY-MM-DD. "
+            "Keys here override the corresponding base metadata fields."
+        ),
     )
 
     @model_validator(mode="after")
@@ -274,10 +310,24 @@ class QuestionAnswer(BaseModel):
         default=False,
         description="Enable RAPTOR (hierarchical tree-based retrieval) instead of standard RAG",
     )
-    use_cache: bool = Field(
-        default=False,
-        description="Enable semantic cache for this query (L1 exact + L2 cosine similarity)",
+    use_cache: Union[bool, CacheConfig] = Field(
+        default_factory=lambda: CacheConfig(),
+        description=(
+            "Cache configuration. Accepts either a bool (shortcut: True → all layers on, "
+            "False → all off) or an explicit dict like "
+            '{"L1": true, "L2": true, "L4": false} to toggle each layer individually. '
+            "L1 = exact response cache, L2 = semantic response cache, L4 = embedding cache."
+        ),
     )
+
+    @field_validator("use_cache", mode="before")
+    @classmethod
+    def _normalize_use_cache(cls, v):
+        if isinstance(v, bool):
+            return CacheConfig(L1=v, L2=v, L4=v)
+        if isinstance(v, dict):
+            return CacheConfig(**v)
+        return v
     id_project: Optional[str] = Field(
         default=None,
         description="Tiledesk project ID (used for analytics).",

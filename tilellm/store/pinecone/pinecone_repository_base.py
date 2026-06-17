@@ -1,3 +1,4 @@
+import os
 import uuid
 from abc import abstractmethod
 
@@ -35,6 +36,14 @@ from tilellm.store.vector_store_repository import VectorStoreRepository
 from tilellm.tools.sparse_encoders import TiledeskSparseEncoders
 
 logger = logging.getLogger(__name__)
+
+# Pinecone index creation defaults — override via env vars to match your region.
+# Serverless: PINECONE_SERVERLESS_CLOUD (aws|gcp|azure), PINECONE_SERVERLESS_REGION (e.g. eu-west-1)
+# Pod:        PINECONE_POD_ENVIRONMENT (e.g. eu-west1-gcp)
+_PINECONE_SERVERLESS_CLOUD = os.getenv("PINECONE_SERVERLESS_CLOUD", "aws")
+_PINECONE_SERVERLESS_REGION = os.getenv("PINECONE_SERVERLESS_REGION", "us-east-1")
+_PINECONE_POD_ENVIRONMENT = os.getenv("PINECONE_POD_ENVIRONMENT", "us-east1-gcp")
+
 
 class CachedVectorStore:
     """
@@ -96,14 +105,14 @@ class CachedVectorStore:
                     name=self.engine.index_name,
                     dimension=self.emb_dimension,
                     metric=self.engine.metric,
-                    spec=pinecone.ServerlessSpec(cloud="aws", region="us-west-2")
+                    spec=pinecone.ServerlessSpec(cloud=_PINECONE_SERVERLESS_CLOUD, region=_PINECONE_SERVERLESS_REGION)
                 )
             else:
                 await pc.create_index(
                     name=self.engine.index_name,
                     dimension=self.emb_dimension,
                     metric=self.engine.metric,
-                    spec=pinecone.PodSpec(pod_type="p1", pods=1, environment="us-west4-gpc")
+                    spec=pinecone.PodSpec(pod_type="p1", pods=1, environment=_PINECONE_POD_ENVIRONMENT)
                 )
             logger.info(f"Index '{self.engine.index_name}' create request sent.")
         except PineconeApiException as e:
@@ -912,8 +921,8 @@ class PineconeRepositoryBase(VectorStoreRepository):
                 await pc.create_index(engine.index_name,   # const.PINECONE_INDEX,
                                 dimension=emb_dimension,
                                 metric=engine.metric,
-                                spec=pinecone.ServerlessSpec(cloud="aws",
-                                                             region="us-west-2"
+                                spec=pinecone.ServerlessSpec(cloud=_PINECONE_SERVERLESS_CLOUD,
+                                                             region=_PINECONE_SERVERLESS_REGION
                                                              )
                                 )
             else:
@@ -922,7 +931,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
                                 metric=engine.metric,
                                 spec=pinecone.PodSpec(pod_type="p1",
                                                       pods=1,
-                                                      environment="us-west4-gpc"
+                                                      environment=_PINECONE_POD_ENVIRONMENT
                                                       )
                                 )
             while not (await pc.describe_index(engine.index_name)).status["ready"]:

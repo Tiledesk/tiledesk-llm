@@ -422,29 +422,34 @@ async def fail_safe_node(state: GraphState):
 
 async def cache_lookup_node(state: GraphState) -> dict:
     """
-    Looks up the query in the semantic cache (L1 exact + L2 cosine).
-    If use_cache=False, passes through immediately.
+    Looks up the query in the response cache layers (L1 exact + L2 cosine),
+    driven by qa.use_cache.L1 / qa.use_cache.L2.
     On hit: populates retrieval_result and sets cache_hit=True so the workflow
     can skip rag_core / raptor entirely.
     """
     qa = state["question_answer"]
+    cache_cfg = qa.use_cache
 
-    if not qa.use_cache:
+    if not cache_cfg.any_response_level:
         return {"cache_hit": False}
 
-    try:
-        from tilellm.shared.embedding_factory import create_embedding_instance
-        embedding_model, _ = await create_embedding_instance(qa)
-        query_text = qa.retrieval_query or qa.question
-        embedding = await embedding_model.aembed_query(query_text)
-    except Exception as e:
-        logger.warning(f"cache_lookup_node: embedding failed ({e}), skipping cache")
-        return {"cache_hit": False}
+    embedding = None
+    if cache_cfg.L2:
+        try:
+            from tilellm.shared.embedding_factory import create_embedding_instance
+            embedding_model, _ = await create_embedding_instance(qa)
+            query_text = qa.retrieval_query or qa.question
+            embedding = await embedding_model.aembed_query(query_text)
+        except Exception as e:
+            logger.warning(f"cache_lookup_node: embedding failed ({e}), skipping L2")
+            embedding = None
 
     cached = await SemanticCache.lookup(
         namespace=qa.namespace,
         question=qa.question,
         embedding=embedding,
+        check_l1=cache_cfg.L1,
+        check_l2=cache_cfg.L2,
     )
 
     if cached is None:
@@ -494,12 +499,13 @@ async def cache_lookup_node(state: GraphState) -> dict:
 
 async def cache_store_node(state: GraphState) -> dict:
     """
-    Stores the RAG result in the semantic cache after a successful retrieval.
-    Only runs when use_cache=True and cache_hit=False (i.e., it was a miss).
+    Stores the RAG result in the response cache layers after a successful retrieval.
+    Only runs when at least one of L1/L2 is enabled and cache_hit=False.
     """
     qa = state["question_answer"]
+    cache_cfg = qa.use_cache
 
-    if not qa.use_cache:
+    if not cache_cfg.any_response_level:
         return {}
 
     if state.get("cache_hit"):
@@ -509,14 +515,12 @@ async def cache_store_node(state: GraphState) -> dict:
     if retrieval is None:
         return {}
 
-    # Handle both objects and dictionaries (including JSONResponse extraction if needed)
     actual_result = retrieval
     from fastapi.responses import JSONResponse
     if isinstance(retrieval, JSONResponse):
         import json
         actual_result = json.loads(retrieval.body.decode())
 
-    # Ensure success (must not be explicitly False)
     is_success = True
     if hasattr(actual_result, "success"):
         is_success = actual_result.success
@@ -529,29 +533,30 @@ async def cache_store_node(state: GraphState) -> dict:
     try:
         from fastapi.encoders import jsonable_encoder
         body = jsonable_encoder(actual_result)
-        
-        # Ensure namespace is stored in cache
         if "namespace" not in body or not body["namespace"]:
             body["namespace"] = qa.namespace
-            
     except Exception as e:
         logger.warning(f"cache_store_node: serialization failed ({e}), skipping store")
         return {}
 
-    try:
-        from tilellm.shared.embedding_factory import create_embedding_instance
-        embedding_model, _ = await create_embedding_instance(qa)
-        query_text = qa.retrieval_query or qa.question
-        embedding = await embedding_model.aembed_query(query_text)
-    except Exception as e:
-        logger.warning(f"cache_store_node: embedding failed ({e}), skipping store")
-        return {}
+    embedding = None
+    if cache_cfg.L2:
+        try:
+            from tilellm.shared.embedding_factory import create_embedding_instance
+            embedding_model, _ = await create_embedding_instance(qa)
+            query_text = qa.retrieval_query or qa.question
+            embedding = await embedding_model.aembed_query(query_text)
+        except Exception as e:
+            logger.warning(f"cache_store_node: embedding failed ({e}), skipping L2 store")
+            embedding = None
 
     await SemanticCache.store(
         namespace=qa.namespace,
         question=qa.question,
         embedding=embedding,
         body=body,
+        store_l1=cache_cfg.L1,
+        store_l2=cache_cfg.L2 and embedding is not None,
     )
 
     logger.debug(f"cache_store_node: stored result for namespace={qa.namespace}")

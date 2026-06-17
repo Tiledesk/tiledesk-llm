@@ -403,6 +403,14 @@ async def build_llm_from_config(config: "SituatedContextConfig", fallback_api_ke
                 **kwargs
             )
 
+        elif config.provider == 'deepseek':
+            from langchain_deepseek import ChatDeepSeek
+            return ChatDeepSeek(
+                model=config.model or 'deepseek-chat',
+                api_key=api_key,
+                **kwargs
+            )
+
         else:
             logger.warning(f"Situated context: unsupported provider '{config.provider}'")
             return None

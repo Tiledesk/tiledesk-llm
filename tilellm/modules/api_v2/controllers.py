@@ -1,13 +1,19 @@
 import json
 import logging
-from fastapi import APIRouter
+import traceback
+
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
+from redis.asyncio import Redis
 from starlette.responses import JSONResponse as StarletteJSONResponse
 
 from tilellm.agents.workflow import app, simple_app
-from tilellm.models import QuestionAnswer
-from tilellm.models.schemas import RetrievalResult
+from tilellm.models import ItemSingle, QuestionAnswer
+from tilellm.models.schemas import IndexingResult, RetrievalResult
+from tilellm.modules.api_v2.dependencies import get_redis_client
 from tilellm.modules.api_v2.models import QASimpleRequest
+from tilellm.modules.api_v2.services.scrape_single_service import ScrapeSingleService
+from tilellm.modules.api_v2.services.scrape_status_service import ScrapeStatusService
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +69,31 @@ async def ask_question_full(payload: QuestionAnswer):
     }
     final_state = await app.ainvoke(initial_state)
     return _build_response(final_state)
+
+
+@router.post("/scrape/single", response_model=IndexingResult, tags=["Scrape v2"])
+async def scrape_single_v2(
+    item: ItemSingle,
+    redis_client: Redis = Depends(get_redis_client),
+):
+    """
+    Index a single document into the vector store.
+
+    Mirrors /api/scrape/single with SOLID-compliant service decomposition:
+    ``ScrapeStatusService`` owns Redis lifecycle writes; ``ScrapeSingleService``
+    owns indexing orchestration and analytics.
+    """
+    status_svc = ScrapeStatusService(redis_client)
+    await status_svc.set_started(item.namespace, item.id)
+    try:
+        result = await ScrapeSingleService().run(item)
+        await status_svc.set_finished(item.namespace, item.id)
+        return JSONResponse(content=result.model_dump(exclude_none=True))
+    except Exception as e:
+        await status_svc.set_error(item.namespace, item.id)
+        traceback.print_exc()
+        logger.error(e)
+        return JSONResponse(status_code=400, content=e.args[0] if e.args else str(e))
 
 
 @router.post("/qa")

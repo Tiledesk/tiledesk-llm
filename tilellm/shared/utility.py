@@ -1110,7 +1110,7 @@ async def _create_llm_instance(question):
                     client_config["output_version"] = "responses/v1"
             return ChatOpenAI(**client_config)
 
-        elif question.llm == "vllm":
+        elif provider_param == "vllm":
             from langchain_openai import ChatOpenAI # vLLM uses OpenAI compatible API
             client_config["max_completion_tokens"] = client_config.pop("max_tokens", None)
             return ChatOpenAI(**client_config)

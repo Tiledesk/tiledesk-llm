@@ -294,16 +294,16 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                     source=item.source,
                     type=item.type,
                     embedding=str(item.embedding)
-                ).model_dump()
+                ).model_dump(exclude_none=True)
 
                 if item.tags:
                     base_metadata["tags"] = item.tags
 
-                # Unisci i metadati del documento con i metadati base
+                # Unisci i metadati del documento con i metadati base, escludendo None
                 chunks = [
                     Document(
                         page_content=document.page_content,
-                        metadata={**document.metadata, **base_metadata}  # Merge dei due dizionari
+                        metadata={k: v for k, v in {**document.metadata, **base_metadata}.items() if v is not None}
                     )
                     for document in documents
                 ]
@@ -439,16 +439,16 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                     source=item.source,
                     type=item.type,
                     embedding=str(item.embedding)
-                ).model_dump()
+                ).model_dump(exclude_none=True)
 
                 if item.tags:
                     base_metadata["tags"] = item.tags
 
-                # Unisci i metadati del documento con i metadati base
+                # Unisci i metadati del documento con i metadati base, escludendo None
                 chunks = [
                     Document(
                         page_content=document.page_content,
-                        metadata={**document.metadata, **base_metadata}  # Merge dei due dizionari
+                        metadata={k: v for k, v in {**document.metadata, **base_metadata}.items() if v is not None}
                     )
                     for document in documents
                 ]

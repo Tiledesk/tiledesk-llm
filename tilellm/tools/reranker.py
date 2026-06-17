@@ -195,43 +195,44 @@ def apply_maxp_chunking(documents: List[Document], max_tokens: int = 200, overla
     return chunked_docs, doc_indices
 
 
-def aggregate_maxp_scores(chunked_scores: List[Tuple[Document, float]], doc_indices: List[int]) -> List[Tuple[Document, float]]:
+def aggregate_maxp_scores(
+    chunked_scores: List[Tuple[Document, float]],
+    doc_indices: List[int],
+    original_documents: Optional[List[Document]] = None,
+) -> List[Tuple[Document, float]]:
     """
     Aggrega i punteggi dei chunk usando strategia Max-P (punteggio massimo per documento).
 
     Args:
         chunked_scores: Lista di (documento_chunk, score)
         doc_indices: Mapping da indice chunk a indice documento originale
+        original_documents: Lista dei documenti originali prima del chunking.
+            Se fornita, il documento restituito è sempre quello originale completo,
+            non il primo sub-chunk (fix troncamento contenuto dopo reranking).
 
     Returns:
         Lista di (documento_originale, max_score) aggregata
     """
-    # Raggruppa punteggi per documento originale
-    doc_max_scores = {}  # original_doc_idx -> (doc, max_score)
+    doc_max_scores: dict = {}  # original_doc_idx -> (doc, max_score)
 
     for (chunk_doc, score), orig_idx in zip(chunked_scores, doc_indices):
         if orig_idx not in doc_max_scores:
-            # Prima volta che vediamo questo documento: crea entry
-            # Se è un chunk, ricostruisci il documento originale dai metadata
-            if chunk_doc.metadata.get("_is_chunk"):
-                # Trova il documento originale (potrebbe essere in chunked_scores)
-                # Per ora usa il chunk doc ma marca che è stato processato
-                original_doc = Document(
-                    page_content=chunk_doc.page_content,  # Useremo il primo chunk come rappresentante
+            if original_documents is not None and orig_idx < len(original_documents):
+                doc = original_documents[orig_idx]
+            elif chunk_doc.metadata.get("_is_chunk"):
+                doc = Document(
+                    page_content=chunk_doc.page_content,
                     metadata={k: v for k, v in chunk_doc.metadata.items() if not k.startswith("_")}
                 )
-                doc_max_scores[orig_idx] = (original_doc, score)
             else:
-                doc_max_scores[orig_idx] = (chunk_doc, score)
+                doc = chunk_doc
+            doc_max_scores[orig_idx] = (doc, score)
         else:
-            # Aggiorna il punteggio se questo chunk ha score maggiore
             existing_doc, existing_score = doc_max_scores[orig_idx]
             if score > existing_score:
                 doc_max_scores[orig_idx] = (existing_doc, score)
 
-    # Converti in lista ordinata per indice originale
-    result = [doc_max_scores[idx] for idx in sorted(doc_max_scores.keys())]
-    return result
+    return [doc_max_scores[idx] for idx in sorted(doc_max_scores.keys())]
 
 
 # ============================================================================
@@ -358,7 +359,7 @@ class TEIReranker:
 
         # ===== STEP 3: Aggregate scores using Max-P =====
         # Map chunks back to original documents and take max score
-        aggregated_docs = aggregate_maxp_scores(all_scored_docs, doc_indices)
+        aggregated_docs = aggregate_maxp_scores(all_scored_docs, doc_indices, original_documents=documents)
 
         # Sort by score (descending)
         aggregated_docs.sort(key=lambda x: x[1], reverse=True)
@@ -463,7 +464,7 @@ class TEIReranker:
 
         # ===== STEP 3: Aggregate scores using Max-P =====
         # Map chunks back to original documents and take max score
-        aggregated_docs = aggregate_maxp_scores(all_scored_docs, doc_indices)
+        aggregated_docs = aggregate_maxp_scores(all_scored_docs, doc_indices, original_documents=documents)
 
         # Sort by score (descending)
         aggregated_docs.sort(key=lambda x: x[1], reverse=True)
@@ -670,7 +671,7 @@ class PineconeReranker:
         # ===== STEP 4: Aggregate and rank results =====
         if self.use_maxp:
             # Aggregate scores using Max-P strategy
-            aggregated_docs = aggregate_maxp_scores(all_scored_chunks, doc_indices)
+            aggregated_docs = aggregate_maxp_scores(all_scored_chunks, doc_indices, original_documents=documents)
             # Sort by score (descending)
             aggregated_docs.sort(key=lambda x: x[1], reverse=True)
             return [doc for doc, _ in aggregated_docs[:top_k]]
@@ -874,7 +875,7 @@ class TileReranker:
 
         # ===== STEP 4: Aggregate scores using Max-P =====
         scored_chunks = list(zip(chunked_docs, scores))
-        aggregated_docs = aggregate_maxp_scores(scored_chunks, doc_indices)
+        aggregated_docs = aggregate_maxp_scores(scored_chunks, doc_indices, original_documents=documents)
 
         aggregated_docs.sort(key=lambda x: x[1], reverse=True)
         return [doc for doc, _ in aggregated_docs[:top_k]]

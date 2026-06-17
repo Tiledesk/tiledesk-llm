@@ -1103,9 +1103,14 @@ async def handle_regex_custom_chunk(url: str, chunk_regex: str, browser_headers:
     
     documents = []
     for match in matches:
-        if len(match) >= 2:
+        if isinstance(match, tuple) and len(match) >= 2:
+            # 2-group regex: (identifier, content) — include identifier in content for RAG context
             page_identifier = match[0]
-            page_content = match[1].strip()
+            page_content = (match[0] + "\n" + match[1]).strip()
+        elif isinstance(match, str):
+            # 1-group regex: the full match is the chunk content
+            page_identifier = len(documents) + 1
+            page_content = match.strip()
         else:
             page_identifier = len(documents) + 1
             page_content = match[0].strip() if match else ""
