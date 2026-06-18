@@ -69,6 +69,8 @@ def model_call(
     success: bool,
     error_type: Optional[str] = None,
     request_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
+    source: Optional[str] = None,
 ) -> Tuple[str, dict]:
     """
     Build an ai.model_call event payload.
@@ -84,6 +86,9 @@ def model_call(
         success:    True unless exception was raised.
         error_type: type(e).__name__ on exception, else None.
         request_id: Tiledesk conversation/request ID.
+        agent_id:   Tiledesk agent/bot ID (canonical root id). None for
+                    draft/unpublished runs; used to gate chat-source events.
+        source:     'chat' (agent-attributed) or 'rag'/'kb' (KB context).
     """
     return "ai.model_call", {
         "model":      model,
@@ -93,6 +98,8 @@ def model_call(
         "success":    success,
         "error_type": error_type,
         "request_id": request_id,
+        "agent_id":   agent_id,
+        "source":     source,
     }
 
 
@@ -200,6 +207,7 @@ def tool_call(
     operation: Optional[str] = None,
     error_type: Optional[str] = None,
     request_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
 ) -> Tuple[str, dict]:
     """
     Build an ai.tool_call event payload.
@@ -213,6 +221,9 @@ def tool_call(
         operation:     Null (reserved for future use).
         error_type:    type(e).__name__ on exception, else None.
         request_id:    Tiledesk conversation/request ID.
+        agent_id:      Tiledesk agent/bot ID (canonical root id). None for
+                       draft/unpublished runs. Tool calls are always chat /
+                       agent-attributed, so a null agent_id marks a draft run.
     """
     return "ai.tool_call", {
         "tool_name":     tool_name,
@@ -223,6 +234,7 @@ def tool_call(
         "success":       success,
         "error_type":    error_type,
         "request_id":    request_id,
+        "agent_id":      agent_id,
     }
 
 

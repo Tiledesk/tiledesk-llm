@@ -148,6 +148,20 @@ def _build_envelope(
     }
 
 
+# Event types whose attribution requires a PUBLISHED agent. KB events (kb.*) and
+# KB/RAG-source AI usage are exempt — a knowledge base can be queried or indexed
+# without a chatbot. The chatbot only sends agent_id once a bot is published, so
+# a chat-attributed AI event with no agent_id is a draft/test run.
+def _requires_published_agent(event_type: str, payload: Dict[str, Any]) -> bool:
+    if event_type.startswith("kb."):
+        return False  # KB usage may be agent-less
+    if event_type in ("ai.token_usage", "ai.model_call"):
+        return payload.get("source") == "chat"  # rag/kb/other sources are KB-context
+    if event_type == "ai.tool_call":
+        return True  # tool calls only happen inside an agent/chat session
+    return False
+
+
 def publish_nowait(
     event_type: str,
     id_project: Optional[str],
@@ -172,6 +186,12 @@ def publish_nowait(
 
     if not id_project:
         logger.info("analytics: id_project is None/empty — dropping event %s", event_type)
+        return
+
+    # Published-chatbot-only: drop chat-attributed AI events that carry no
+    # agent_id (draft/unpublished runs). KB events and KB-source AI usage pass.
+    if _requires_published_agent(event_type, payload) and not payload.get("agent_id"):
+        logger.info("analytics: dropping %s — chat AI with no published agent_id (draft run)", event_type)
         return
 
     if _client is None:

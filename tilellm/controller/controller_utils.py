@@ -597,6 +597,8 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                     latency_ms=_llm_latency_ms,
                     success=True,
                     request_id=getattr(question_answer, "request_id", None),
+                    agent_id=getattr(question_answer, "agent_id", None),
+                    source="rag",
                 )
                 analytics.publish_nowait(_et, question_answer.id_project, _pl)
                 _et, _pl = analytics.events.kb_query(
@@ -699,6 +701,8 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                 latency_ms=_llm_latency_ms,
                 success=True,
                 request_id=getattr(question_answer, "request_id", None),
+                agent_id=getattr(question_answer, "agent_id", None),
+                source="rag",
             )
             analytics.publish_nowait(_et, question_answer.id_project, _pl)
 
@@ -819,6 +823,8 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                     latency_ms=_llm_latency_ms,
                     success=True,
                     request_id=getattr(question_answer, "request_id", None),
+                    agent_id=getattr(question_answer, "agent_id", None),
+                    source="rag",
                 )
                 analytics.publish_nowait(_et, question_answer.id_project, _pl)
                 _et, _pl = analytics.events.kb_query(
@@ -943,6 +949,8 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
             latency_ms=_llm_latency_ms,
             success=True,
             request_id=getattr(question_answer, "request_id", None),
+            agent_id=getattr(question_answer, "agent_id", None),
+            source="rag",
         )
         analytics.publish_nowait(_et, question_answer.id_project, _pl)
 
@@ -1195,6 +1203,8 @@ async def get_streaming_response(runnable_with_history, question, callback_handl
             latency_ms=_llm_latency_ms,
             success=True,
             request_id=getattr(q, "request_id", None),
+            agent_id=getattr(question_answer, "agent_id", None),
+            source="rag",
         )
         analytics.publish_nowait(_et, q.id_project, _pl)
         _et, _pl = analytics.events.kb_query(

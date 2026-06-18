@@ -379,6 +379,8 @@ async def ask_reason_llm(question, chat_model=None):
                 latency_ms=_latency_ms,
                 success=True,
                 request_id=question.request_id,
+                agent_id=question.agent_id,
+                source="chat",
             )
             analytics.publish_nowait(_et, question.id_project, _pl)
 
@@ -442,6 +444,8 @@ async def ask_reason_llm(question, chat_model=None):
                 latency_ms=_latency_ms,
                 success=True,
                 request_id=question.request_id,
+                agent_id=question.agent_id,
+                source="chat",
             )
             analytics.publish_nowait(_et, question.id_project, _pl)
 
@@ -469,6 +473,8 @@ async def ask_reason_llm(question, chat_model=None):
                 success=False,
                 error_type=type(e).__name__,
                 request_id=question.request_id,
+                agent_id=question.agent_id,
+                source="chat",
             )
             analytics.publish_nowait(_et, question.id_project, _pl)
         import traceback
@@ -600,6 +606,8 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None):
                 latency_ms=_latency_ms,
                 success=True,
                 request_id=question.request_id,
+                agent_id=question.agent_id,
+                source="chat",
             )
             analytics.publish_nowait(_et, question.id_project, _pl)
 
@@ -647,6 +655,8 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None):
                 latency_ms=_latency_ms,
                 success=True,
                 request_id=question.request_id,
+                agent_id=question.agent_id,
+                source="chat",
             )
             analytics.publish_nowait(_et, question.id_project, _pl)
 
@@ -674,6 +684,8 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None):
                 success=False,
                 error_type=type(e).__name__,
                 request_id=question.request_id,
+                agent_id=question.agent_id,
+                source="chat",
             )
             analytics.publish_nowait(_et, question.id_project, _pl)
         import traceback
@@ -1007,6 +1019,8 @@ async def _stream_generic_response(
         latency_ms=_stream_latency_ms,
         success=True,
         request_id=question.request_id,
+        agent_id=question.agent_id,
+        source="chat",
     )
     analytics.publish_nowait(_et, question.id_project, _pl)
 
@@ -1761,6 +1775,8 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
             latency_ms=_agent_latency_ms,
             success=True,
             request_id=question.request_id,
+            agent_id=question.agent_id,
+            source="chat",
         )
         analytics.publish_nowait(_et, question.id_project, _pl)
 
@@ -1794,6 +1810,7 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
                         latency_ms=0,
                         success=_tc_success,
                         request_id=question.request_id,
+                        agent_id=question.agent_id,
                     )
                     analytics.publish_nowait(_et, question.id_project, _pl)
 
@@ -2346,6 +2363,8 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
             latency_ms=_agent_latency_ms,
             success=True,
             request_id=question.request_id,
+            agent_id=question.agent_id,
+            source="chat",
         )
         analytics.publish_nowait(_et, question.id_project, _pl)
 
@@ -2375,6 +2394,7 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
                         latency_ms=0,
                         success=_tc_success,
                         request_id=question.request_id,
+                        agent_id=question.agent_id,
                     )
                     analytics.publish_nowait(_et, question.id_project, _pl)
 
@@ -2403,6 +2423,8 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
             success=False,
             error_type=type(e).__name__,
             request_id=question.request_id,
+            agent_id=question.agent_id,
+            source="chat",
         )
         analytics.publish_nowait(_et, question.id_project, _pl)
         return handle_agent_exception(e, "ask_mcp_agent_llm_simple")
