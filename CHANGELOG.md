@@ -6,6 +6,218 @@
 ### **Copyright**: Tiledesk SRL
 
 
+---
+## [2026-06-17]
+### 0.11.1-rc4 (feat: Compliance v2 — massive multi-operator evaluation)
+
+**Massive batch evaluation across N operators** (`POST /v2/check/bulk`). One batch + list of namespaces 
+(one Economic Operator each) → parallel check per operator, followed by **cross-operator proportional resolution** 
+(range amplitude): the highest value gets the maximum score, and the others are scored proportionally. 
+**Semi-automatic** proposal (flagged for human confirmation).
+
+- **`services/bulk_check_service.py`** (new): `check_compliance_v2_bulk` (parallel orchestration 
+  with `max_concurrent_operators`, reuses `check_compliance_v2` for each namespace 
+  via `BulkComplianceRequestV2.to_operator_request`); `resolve_proportional` (pure, testable 
+  function: `score = (q / q_max) × max_points`, `proportional_auto=True`, remains `human_review_required`).
+- **judge** (`prompts/discretionary_judge.py`): new `measured_quantity` output (comparable numerical quantity 
+  for proportional scoring); parsing implemented in `discretionary_check_service`.
+- **`models_v2.py`**: `OperatorRef`, `BulkComplianceRequestV2` (+`to_operator_request`), `BulkOperatorReport`, 
+  `BulkComplianceReport`; `DiscretionaryResult.measured_quantity` + `proportional_auto`.
+- **`restituzione_xlsx_service.py`**: resolved proportional scoring now displays `<score> (to be confirmed)`.
+- **`controllers_v2.py`**: `POST /v2/check/bulk` (json or massive restitution xlsx).
+
+
+---
+## [2026-06-15]
+### 0.11.1-rc3 (feat: Compliance v2 — market-template taxonomy + restitution xlsx)
+
+**Alignment with the market template `ipotesi tabella criteri.xlsx`** (business review + restitution). 3-value taxonomy:
+`Tipo criterio` (Criterion type) = **Conformità (Compliance) / Tabellare (Tabular) / Discrezionale (Discretionary)** 
+(resolves the naming collision of the term "Tabellare"): 
+Conformità→`tabular`, Tabellare→`discretionary` (`on_off`|`proporzionale`), Discrezionale→`discretionary` (`variabile`).
+
+- **`services/xlsx_taxonomy.py`** (new): single point of truth for taxonomy↔model mapping, modality deduction 
+  from text (`ON/OFF`/`PROPORZIONALE`), cell helpers (SOLID — single responsibility).
+- **`services/requirements_xlsx_service.py`**: review workbook rewritten based on the taxonomy + market template headers. 
+  The parser **directly** reads a file containing only core columns (`Criterio`/`Tipo criterio`/`Punteggio previsto`): 
+  modality is deduced from text, IDs are auto-generated; `Modalità`/`Obbligatorio`/`Solo revisione umana`/`ID` 
+  columns are tolerated if missing.
+- **`services/restituzione_xlsx_service.py`** (new): `RestituzioneXlsxService.build_workbook` renders the outcome 
+  in the market template with an **Economic Operator** column; accepts a **list** of reports 
+  (1 sheet per lot, rows **per criterion→operator**) → ready for multi-operator bulk processing.
+- **`controllers_v2.py`**: new `POST /v2/check/xlsx` (downloadable single-operator restitution).
+- **YAML → reviewable xlsx**: `POST /v2/requirements/to-xlsx` + `export_requirements_xlsx` 
+  (deterministic, no LLM) — converts an existing requirements YAML into the review workbook, enabling 
+  business operator review without running the extraction pipeline.
+- **fix**: restored `YamlRequirementsLoader._load_from_url` (accidentally removed in rc2 → was 
+  breaking the `requirements_yaml_url` branch of the check).
+
+
+---
+## [2026-06-15]
+### 0.11.1-rc2 (feat: Compliance v2 — standardized xlsx round-trip for business review)
+
+**Reviewable xlsx export + re-import into check** — business users do not read YAML: 
+`POST /api/compliance/v2/requirements/extract` can now return a **standardized xlsx workbook** 
+(`output_format=xlsx`, default `yaml`) — one sheet per lot, with a metadata block, a single 
+table `Tipo | ID | Requisito/Criterio | Obbligatorio | Modalità | Punteggio massimo | Solo revisione umana | Note` 
+and dropdowns for allowed values.
+
+- **`tilellm/modules/compliance_checker/services/requirements_xlsx_service.py`** (new): 
+  `RequirementsXlsxService.build_workbook` / `parse_workbook` — **deterministic round-trip (without LLM)**; 
+  extraction warnings are rendered as guideline rows but ignored during import; `parse_workbook` 
+  validates modality/score (ValueError → 400). `select_lot` handles lot selection.
+- **`models_v2.py`**: `ExtractRequirementsRequest.output_format` (`yaml`|`xlsx`); 
+  `ComplianceRequestV2.requirements_xlsx_url` (mutually exclusive with inline/url yaml) + `requirements_lot_id` 
+  (lot selection on multi-lot xlsx).
+- **`yaml_requirements_loader.py`**: new `_load_from_xlsx_url` branch (download max 10 MB, 
+  deterministic parse, `select_lot`).
+- **`controllers_v2.py`**: downloadable xlsx export from `extract`.
+
+
+---
+## [2026-06-14]
+### 0.11.1-rc1 (feat: Compliance v2 — aggregate cross-operator report + reranking on discretionary path + citation audit + xlsx never-drop)
+
+**Aggregate report (`POST /api/compliance/v2/reports/aggregate`)** — combines N v2 check reports (JSON) into a comparative table across operators, grouped by lot.
+
+- **`tilellm/modules/compliance_checker/services/aggregate_report_service.py`** (new): `AggregateReportService` 
+ (fetches reports, resolves operator from namespace or explicit label, groups by lot, handles scoring, deterministic 
+ synthesis + optional LLM, extracts items for review); renderers `render_markdown`/`render_docx` 
+ (python-docx)/`render_pdf` (reportlab); `render_report` with **Markdown fallback** if docx/pdf libraries are 
+ missing (`X-Report-Format` / `X-Report-Warning` headers); `build_aggregate_report` DI entry point 
+ (LLM resolved only if `synthesis_llm=true`).
+- **`models_v2.py`**: `ReportSource`, `AggregateReportRequest` (output md/docx/pdf/json), `HumanReviewItem`, 
+ `OperatorScore`, `LotComparison`, `AggregateReport`.
+- **`pyproject.toml`**: added `reportlab ^4.2.0` for PDF export.
+
+**Reranking on discretionary path** — previously applied only to tabular criteria. `ComplianceRequestV2` now includes 
+the `reranker_config` property; `_evaluate_criterion` performs oversampling (`top_k × multiplier`) + `_rerank_chunks` 
+with graceful fallback. Added `top_p` to `ComplianceRequestV2`/`ExtractRequirementsRequest` (`_create_llm_instance` 
+reads it unconditionally).
+
+**Citation audit** — `DiscretionaryResult.citation_attributed` + `ComplianceSummaryV2.citation_unattributed_count`; 
+`⚠ unattributed citation` marker in Markdown. Strengthened judge prompt to enforce `source_chunk_index`/`evidence_text` 
+when the requirement is found.
+
+**XLSX never-drop** — `XlsxExtractionService.extract_requirements` returns `List[ExtractedLot]` (lot + warnings); 
+criteria missing `max_points` are no longer discarded but kept with a placeholder and a warning for human review.
+
+
+---
+## [2026-06-13]
+### 0.11.0-rc5 (feat: memory-bounded PDF conversion pipeline — crash-proof retry + degradation ladder for heavy PDFs)
+
+**Problem**: heavy PDFs (e.g. conformity documents with a multi-page table of thousands of products)
+OOM-killed the TaskIQ worker during Docling conversion. `SimpleRetryMiddleware` counts retries only
+on exceptions — a SIGKILL raises nothing, the stream message is never XACKed, and the startup reclaim
+re-publishes it with the original labels → infinite reprocessing loop.
+
+#### Layer 1 — crash-proof attempt counter
+**`tilellm/modules/pdf_ocr/services/attempt_tracker.py`** (new) — Redis counter
+(`pdf_ocr:attempts:{ns}:{doc_id}`) incremented at task start, BEFORE the dangerous work, so it
+survives worker death. `PDF_OCR_MAX_ATTEMPTS` (default 3); above it the task marks the doc failed,
+sends the error webhook, and returns (ACK) instead of raising. Wired in
+`task_executor/tasks.py::process_pdf_document_task`; counter cleared on success.
+
+#### Layer 2 — subprocess isolation of Docling conversion
+**`tilellm/modules/pdf_ocr/services/docling_subprocess.py`** (new) — conversion runs in a
+single-worker spawn `ProcessPoolExecutor`; the child caches its converter (warm models across
+segments). An OOM kill terminates only the child: the parent gets `ConversionProcessDied`, the
+worker survives, normal retry logic applies. Pool self-heals after a kill. Per-segment timeout
+`PDF_OCR_SEGMENT_TIMEOUT_S` (default 1800s) with hard child kill. DoclingDocument crosses the
+process boundary via `export_to_dict()`/`model_validate()`.
+
+#### Layer 3 — pre-flight profiling + segmented conversion
+**`tilellm/modules/pdf_ocr/services/pdf_profiler.py`** (new) — PyMuPDF profile: pages, size,
+dense pages. Thresholds: `PDF_SEGMENT_PAGE_THRESHOLD` (30), `PDF_SEGMENT_SIZE_MB` (20),
+`PDF_DENSE_PAGE_WORDS` (1500).
+**`tilellm/modules/pdf_ocr/services/pdf_segmenter.py`** (new) — splits heavy PDFs into page-range
+sub-PDFs (`PDF_SEGMENT_PAGES`, default 20); each segment converts independently → peak RAM is
+bounded by segment size, not document size. Page numbers corrected via `page_offset`, element
+ids/order de-collided across segments.
+
+#### Layer 4 — degradation ladder (attempt → strategy)
+**`tilellm/modules/pdf_ocr/services/conversion_pipeline.py`** (new) — `select_plan(profile, attempt)`:
+attempt 1 = full Docling (segmented if heavy); attempt 2 = light (no table structure, smaller
+segments); attempt 3+ = native PyMuPDF (`process_pdf_native`, reused). Content is never truncated —
+degradation reduces structural fidelity, not page coverage. Resulting quality recorded as
+`extraction_quality` (`full` | `no_table_structure` | `degraded_native`) in chunk metadata,
+task result and webhook payload.
+
+#### Modified
+- `markdown_extraction_agent.py` — `_extract_structure_node` uses the pipeline (no more in-process
+  whole-document `converter.convert`); `_parse_docling_result` accepts a DoclingDocument +
+  `page_offset`; new `_native_result_to_elements` adapter; `attempt` threaded through state.
+- `pdf_ocr/logic.py` — `attempt` kwarg drives the ladder in both `process_pdf_markdown_extraction`
+  and the default pipeline (attempt ≥ 3 forces `strategy='fast'`); `extraction_quality` added to
+  chunk source metadata and result payload. Chunk metadata keeps `file_name`, `num_pages` and
+  per-chunk `page` at every degradation level.
+- `task_executor/tasks.py` — attempt-tracker wiring, terminal poison-pill path, counter reset.
+
+#### Tests
+**`tests/unit/modules/pdf_ocr/test_heavy_pdf_pipeline.py`** — 16 tests: profiler thresholds,
+segmenter coverage/cleanup, strategy ladder, attempt tracker (fail-open), native adapter shapes,
+run_conversion dispatch with segment offsets. Verified end-to-end: real Docling conversion in
+subprocess + simulated OOM-kill → clean `ConversionProcessDied` + pool recovery.
+
+---
+## [2026-06-11]
+### 0.11.0-rc4 (feat: Compliance Checker v2 — discretionary criteria scoring for Italian public procurement)
+
+New module extension under `/api/compliance/v2/*`.  Existing v1 endpoints (`/api/compliance/*`) unchanged.
+
+#### New endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/compliance/v2/check` | Full v2 check: tabular + discretionary scoring, returns `ComplianceReportV2` JSON |
+| `POST` | `/api/compliance/v2/check/markdown` | Same check, returns Markdown table (⚠ marks for human-review criteria) |
+| `POST` | `/api/compliance/v2/requirements/extract` | xlsx → YAML extraction (LLM-assisted, one document per lot) |
+
+#### New files
+
+**`tilellm/modules/compliance_checker/models_v2.py`** — v2 data models:
+- `DiscretionaryMode` (StrEnum): `variabile`, `proporzionale`, `on_off`
+- `DiscretionaryCriterion`: `id`, `text`, `mode`, `max_points`, `human_only`
+- `TenderLotRequirements`: YAML root — tabular + discretionary requirements per lot; `from_yaml()`/`to_yaml()` with `mode="json"` for StrEnum-safe serialization
+- `ComplianceRequestV2`: accepts `requirements_yaml` (inline) or `requirements_yaml_url` (URL), mutually exclusive; all v1 retrieval/LLM/reranking fields
+- `DiscretionaryResult`: per-criterion output with `coefficient`, `score`, `measured_value`, `motivation`, `confidence`, `human_review_required`, `human_review_reason`, audit trail
+- `ComplianceSummaryV2` / `TabularSummary`: aggregated counts; `from_results()` factory
+- `ComplianceReportV2`: `tender + namespace + summary + tabular_results + discretionary_results`; `to_markdown()` generates Italian procurement table
+
+**`tilellm/modules/compliance_checker/prompts/xlsx_extraction.py`** — LLM structured-output models and prompts for xlsx→YAML extraction:
+- `_LLMTabularItem`, `_LLMDiscretionaryCriterion`, `_LLMLotExtractionResult`
+- `XLSX_EXTRACTION_SYSTEM_PROMPT`: classifies rows as tabular vs discretionary, detects mode and `human_only` markers
+- `XLSX_EXTRACTION_USER_TEMPLATE`
+
+**`tilellm/modules/compliance_checker/prompts/discretionary_judge.py`** — Judge LLM prompt for per-criterion scoring:
+- `DiscretionaryJudgeOutput`: `coefficient` (clamped 0–1), `measured_value`, `motivation`, `confidence`, `source_chunk_index`, `evidence_text`
+- `DISCRETIONARY_JUDGE_SYSTEM_PROMPT`: anchored scale (0=absent, 0.25=inadequate, 0.5=sufficient, 0.75=good, 1.0=excellent)
+- `build_judge_user_prompt()`: assembles message with mode-specific instructions
+
+**`tilellm/modules/compliance_checker/services/yaml_requirements_loader.py`** — `YamlRequirementsLoader`: async download + parse YAML (inline or URL); size limit 1 MB.
+
+**`tilellm/modules/compliance_checker/services/xlsx_extraction_service.py`** — `XlsxExtractionService`: download xlsx → openpyxl cell extraction → LLM structured output per sheet → `TenderLotRequirements`; sanitizes invalid mode (→ `variabile`) and `max_points ≤ 0` (skips criterion); size limit 10 MB.  `extract_requirements_di()` entry point decorated with `@inject_llm_chat_async`.
+
+**`tilellm/modules/compliance_checker/services/discretionary_check_service.py`** — `DiscretionaryCheckService`: per-lot evaluation orchestrator:
+- Tabular path: delegates to v1 `check_compliance` (its own DI decorators)
+- Discretionary path: per-criterion retrieval via `repo.get_chunks_from_repo` + judge LLM call
+- Human-review rules: `human_only=True`, no evidence found, `confidence < min_confidence`, `proporzionale` mode (cross-operator scoring)
+- `check_compliance_v2()` entry point decorated with `@inject_llm_chat_async @inject_repo_async`
+
+**`tilellm/modules/compliance_checker/controllers_v2.py`** — FastAPI router `router_v2` (prefix `/v2`), included in v1 `router` via `router.include_router(router_v2)`.
+
+#### fix: situated_context silently skipped with vllm thinking models (Qwen3)
+
+**Root cause**: Qwen3 and similar thinking models served via vllm enable thinking mode by default.
+With `max_tokens=256` (the default for situated context), all tokens are consumed by the thinking
+phase, leaving `content=null` or `content=""` in the response. `ctx` results empty → no enrichment.
+
+**File**: `tilellm/shared/situated_context.py`
+
+- `build_llm_from_config` — for `provider="vllm"`, adds `extra_body={"chat_template_kwargs": {"enable_thinking": False}}` to `ChatOpenAI` constructor. Disables thinking mode so the model generates the response directly; non-thinking vllm models ignore the parameter silently.
+- `_generate_situated_context` — added explicit `None` guard on `response.content` before `.strip()` to prevent `AttributeError` when content is null (silent exception → empty ctx).
 
 ---
 ## [2026-06-11]

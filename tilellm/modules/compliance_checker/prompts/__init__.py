@@ -4,11 +4,30 @@ Built-in domain prompts for ComplianceChecker.
 Usage:
     from tilellm.modules.compliance_checker.prompts import get_builtin_config
     config = get_builtin_config("e_procurement")
+
+    from tilellm.modules.compliance_checker.prompts import (
+        XLSX_EXTRACTION_SYSTEM_PROMPT,
+        XLSX_EXTRACTION_USER_TEMPLATE,
+        _LLMLotExtractionResult,
+        DISCRETIONARY_JUDGE_SYSTEM_PROMPT,
+        build_judge_user_prompt,
+        DiscretionaryJudgeOutput,
+    )
 """
 from tilellm.modules.compliance_checker.prompts.e_procurement import E_PROCUREMENT_CONFIG
 from tilellm.modules.compliance_checker.prompts.hr_assessment import HR_ASSESSMENT_CONFIG
 from tilellm.modules.compliance_checker.prompts.legal_audit import LEGAL_AUDIT_CONFIG
 from tilellm.modules.compliance_checker.prompts.medical_devices import MEDICAL_DEVICES_CONFIG
+from tilellm.modules.compliance_checker.prompts.xlsx_extraction import (
+    XLSX_EXTRACTION_SYSTEM_PROMPT,
+    XLSX_EXTRACTION_USER_TEMPLATE,
+    _LLMLotExtractionResult,
+)
+from tilellm.modules.compliance_checker.prompts.discretionary_judge import (
+    DISCRETIONARY_JUDGE_SYSTEM_PROMPT,
+    DiscretionaryJudgeOutput,
+    build_judge_user_prompt,
+)
 
 _REGISTRY = {
     "e_procurement": E_PROCUREMENT_CONFIG,

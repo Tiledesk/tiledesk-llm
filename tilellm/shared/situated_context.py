@@ -209,9 +209,11 @@ async def _generate_situated_context(
     _empty_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
     try:
         response = await llm.ainvoke([HumanMessage(content=prompt)])
-        # Handle reasoning models that return list content
+        # Handle reasoning models that return list content or None
         raw_content = response.content
-        if isinstance(raw_content, list):
+        if raw_content is None:
+            raw_content = ""
+        elif isinstance(raw_content, list):
             raw_content = "\n".join(
                 p.get("text", "") if isinstance(p, dict) else str(p)
                 for p in raw_content
@@ -369,6 +371,11 @@ async def build_llm_from_config(config: "SituatedContextConfig", fallback_api_ke
             init_kwargs = dict(model=config.model or 'gpt-4o-mini', api_key=api_key, **kwargs)
             if config.url:
                 init_kwargs['base_url'] = config.url
+            if config.provider == 'vllm':
+                # Disable thinking mode for vllm — required for Qwen3 and similar thinking
+                # models where thinking consumes all max_tokens leaving content empty.
+                # Non-thinking models served by vllm ignore this extra_body parameter.
+                init_kwargs['extra_body'] = {"chat_template_kwargs": {"enable_thinking": False}}
             return ChatOpenAI(**init_kwargs)
 
         elif config.provider == 'anthropic':

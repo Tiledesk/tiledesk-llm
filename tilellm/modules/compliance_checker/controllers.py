@@ -244,3 +244,8 @@ async def get_domain_config(domain: str):
                    f"Available: {list_builtin_domains()}",
         )
     return config
+
+
+# v2 endpoints — included here so the feature-router scanner picks up a single `router`
+from tilellm.modules.compliance_checker.controllers_v2 import router_v2  # noqa: E402
+router.include_router(router_v2)

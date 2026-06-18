@@ -277,6 +277,7 @@ class ExcelLoader:
                                 "col_names": ", ".join(col_names),
                                 "row_range": f"{i}-{i + len(chunk_df)}",
                                 "type": file_type,
+                                "element_type": "table",
                             },
                         ))
                 else:
@@ -287,6 +288,7 @@ class ExcelLoader:
                             "sheet_name": sheet_name,
                             "col_names": ", ".join(col_names),
                             "type": file_type,
+                            "element_type": "table",
                         },
                     ))
             return documents
@@ -334,6 +336,7 @@ class CSVLoader:
                             "col_names": ", ".join(col_names),
                             "row_range": f"{i}-{i + len(chunk_df)}",
                             "type": "csv",
+                            "element_type": "table",
                         },
                     ))
             else:
@@ -343,6 +346,7 @@ class CSVLoader:
                         "source": self.file_path,
                         "col_names": ", ".join(col_names),
                         "type": "csv",
+                        "element_type": "table",
                     },
                 ))
             return documents

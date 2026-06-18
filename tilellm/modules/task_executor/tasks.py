@@ -645,21 +645,71 @@ async def process_pdf_document_task(
     On failure, re-raises so SimpleRetryMiddleware can retry up to max_retries=3 times.
     The error webhook is sent only on the final attempt.
     """
-    attempt = int(ctx.message.labels.get("_retries", 0)) + 1
-    max_retries = int(ctx.message.labels.get("max_retries", 3))
-    logger.info(f"Task started: process_pdf_document_task for {doc_id} (attempt {attempt}/{max_retries})")
+    from tilellm.modules.pdf_ocr.services.attempt_tracker import (
+        MAX_ATTEMPTS,
+        clear_attempts,
+        incr_attempt,
+    )
+
+    namespace = (config or {}).get("namespace")
 
     async with _get_pdf_semaphore():
         logger.debug(f"PDF semaphore acquired for {doc_id}")
-        return await _process_pdf_document_task_inner(
+
+        # Crash-proof attempt counter: incremented BEFORE the dangerous work, so it
+        # survives an OOM-kill of the worker. SimpleRetryMiddleware's label-based
+        # counter does NOT survive a SIGKILL (the message is re-published by the
+        # startup reclaim with its original labels), which caused infinite
+        # reprocessing loops on memory-heavy PDFs.
+        attempt = await incr_attempt(namespace, doc_id)
+        logger.info(f"Task started: process_pdf_document_task for {doc_id} (attempt {attempt}/{MAX_ATTEMPTS})")
+
+        if attempt > MAX_ATTEMPTS:
+            # Poison pill: every strategy (including the native fallback) has
+            # crashed the worker. Stop retrying, mark failed, notify, ACK.
+            logger.error(f"Max attempts ({MAX_ATTEMPTS}) exhausted for {doc_id} — giving up")
+            try:
+                from tilellm.modules.pdf_ocr.services.pdf_dedup_service import set_failed
+                await set_failed(namespace, doc_id)
+            except Exception as _de:
+                logger.warning(f"pdf_dedup set_failed skipped: {_de}")
+            await clear_attempts(namespace, doc_id)
+            if webhook_url:
+                import httpx
+                try:
+                    async with httpx.AsyncClient() as client:
+                        await client.post(webhook_url, json={
+                            "status": "failed",
+                            "doc_id": doc_id,
+                            "error": f"Processing crashed the worker on all {MAX_ATTEMPTS} attempts "
+                                     f"(degradation ladder exhausted)",
+                        }, timeout=10)
+                except Exception as we:
+                    logger.warning(f"Error webhook failed for {doc_id}: {we}")
+            # Return (not raise) so the message is ACKed and never redelivered.
+            return {
+                "job_id": doc_id,
+                "status": "failed",
+                "progress": 0,
+                "message": f"Max attempts ({MAX_ATTEMPTS}) exhausted",
+                "result": None,
+                "error_message": "max_attempts_exhausted",
+            }
+
+        result = await _process_pdf_document_task_inner(
             doc_id=doc_id,
             file_path=file_path,
             bucket_name=bucket_name,
             object_name=object_name,
             webhook_url=webhook_url,
             config=config,
-            is_final_attempt=(attempt >= max_retries),
+            is_final_attempt=(attempt >= MAX_ATTEMPTS),
+            attempt=attempt,
         )
+        # Successful run — reset the counter so future re-submissions of the
+        # same doc_id start from a clean slate.
+        await clear_attempts(namespace, doc_id)
+        return result
 
 
 async def _process_pdf_document_task_inner(
@@ -670,6 +720,7 @@ async def _process_pdf_document_task_inner(
         webhook_url: Optional[str],
         config: Optional[Dict[str, Any]],
         is_final_attempt: bool = True,
+        attempt: int = 1,
 ) -> Dict[str, Any]:
     """Inner implementation — runs under the PDF semaphore."""
     try:
@@ -702,7 +753,8 @@ async def _process_pdf_document_task_inner(
             question=request,
             bucket_name=bucket_name,
             object_name=object_name,
-            file_path=file_path
+            file_path=file_path,
+            attempt=attempt  # drives the conversion degradation ladder
             # repo, llm, llm_embeddings will be injected by decorators
         )
 
@@ -725,6 +777,7 @@ async def _process_pdf_document_task_inner(
                 "num_chunks": full_result.get("num_chunks", 0),
                 "num_images": full_result.get("num_images", 0),
                 "num_tables": full_result.get("num_tables", 0),
+                "extraction_quality": full_result.get("extraction_quality", "full"),
                 "metadata": full_result.get("metadata", {})
             },
             "error_message": None

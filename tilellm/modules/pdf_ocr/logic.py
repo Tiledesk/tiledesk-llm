@@ -243,6 +243,16 @@ async def process_pdf_document_with_embeddings(
 
     strategy = getattr(question, 'strategy', None)
 
+    # Degradation ladder for the default pipeline: on the last attempt force the
+    # cheap native (PyMuPDF) path so the document gets indexed even when Docling
+    # kept crashing on previous attempts.
+    _attempt = int(kwargs.get('attempt', 1))
+    if _attempt >= 3:
+        logger.warning(
+            f"Attempt {_attempt} for {question.id}: forcing native (fast) strategy"
+        )
+        strategy = 'fast'
+
     try:
         # Process document from MinIO, file path, or direct content
         result = None
@@ -1126,7 +1136,11 @@ async def process_pdf_markdown_extraction(
         
         # Initialize LangGraph agent
         agent = MarkdownExtractionAgent()
-        
+
+        # Attempt number (from the crash-proof tracker) drives the conversion
+        # degradation ladder: 1=full, 2=no table structure, 3+=native PyMuPDF.
+        attempt = int(kwargs.get('attempt', 1))
+
         # Extract Markdown using the agent
         extraction_result = await agent.extract_markdown(
             file_path=file_path_to_use,
@@ -1134,7 +1148,8 @@ async def process_pdf_markdown_extraction(
             llm=llm,
             include_images=question.include_images,
             include_tables=question.include_tables,
-            include_formulas=question.include_formulas
+            include_formulas=question.include_formulas,
+            attempt=attempt
         )
         
         markdown_content = extraction_result["markdown"]
@@ -1168,6 +1183,7 @@ async def process_pdf_markdown_extraction(
             'num_pages': metadata.get('num_pages', 0),
             'namespace': namespace,
             'date': question.doc_date or "",
+            'extraction_quality': metadata.get('extraction_quality', 'full'),
         }
         if question.tags:
             source_metadata['tags'] = question.tags
@@ -1247,6 +1263,7 @@ async def process_pdf_markdown_extraction(
             "status": "success",
             "doc_id": doc_id,
             "extraction_method": "langgraph_agent",
+            "extraction_quality": metadata.get('extraction_quality', 'full'),
             "markdown_length": len(markdown_content),
             "num_chunks": len(documents),
             "num_images": len(images),
