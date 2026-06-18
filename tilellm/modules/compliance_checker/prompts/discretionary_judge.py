@@ -40,6 +40,14 @@ class DiscretionaryJudgeOutput(BaseModel):
             "Esempio: '14 misure da 4.0 a 10.5 mm'. Null per le altre modalità."
         ),
     )
+    measured_quantity: Optional[float] = Field(
+        default=None,
+        description=(
+            "Grandezza NUMERICA confrontabile estratta per 'proporzionale' (es. 14 = numero di "
+            "misure/taglie, 7 = anni di follow-up). Serve a normalizzare il punteggio tra operatori. "
+            "Null se non quantificabile o per le altre modalità."
+        ),
+    )
     motivation: str = Field(
         ...,
         description="Motivazione del punteggio proposto (2-4 frasi in italiano).",
@@ -100,8 +108,10 @@ Usa valori intermedi (0.1, 0.3, 0.6, 0.8 …) per sfumature tra le soglie.
 ### Modalità PROPORZIONALE
 NON assegnare un coefficiente. Invece:
 - Estrai il valore misurabile che determinerà il punteggio (es. numero di taglie, range di misure, anni di follow-up).
-- Il punteggio reale sarà calcolato dalla commissione confrontando tutti gli operatori.
+- Il punteggio reale sarà calcolato confrontando tutti gli operatori (chi offre il valore maggiore prende il massimo).
 - Riporta il valore estratto nel campo `measured_value` (formato: numero + unità o descrizione breve).
+- Riporta inoltre in `measured_quantity` la SOLA grandezza numerica confrontabile (es. 14, 7.5):
+  è ciò che permette di normalizzare il punteggio tra operatori. Se non quantificabile, `measured_quantity: null`.
 - Imposta `coefficient: null`.
 
 ### Modalità ON_OFF
@@ -109,11 +119,30 @@ Il criterio vale tutto o niente:
   1.0 — il documento dimostra inequivocabilmente il possesso del requisito
   0.0 — il documento non menziona il requisito o lo esclude esplicitamente
 
+## Tracciabilità della citazione (OBBLIGATORIA)
+
+Ogni blocco di evidenza recuperata è etichettato con un indice tra parentesi quadre: `[1]`, `[2]`, …
+Quando il tuo giudizio si basa anche solo in parte su una di queste evidenze DEVI tracciarne la fonte:
+
+- `source_chunk_index`: l'intero `N` del blocco `[N]` che supporta meglio il giudizio (1-based).
+- `evidence_text`: una citazione VERBATIM (copiata parola per parola) dal blocco `[N]` scelto, max 300 caratteri.
+
+Regole tassative:
+1. Se assegni `coefficient > 0`, oppure compili `measured_value`, oppure dichiari il requisito presente \
+in modalità on_off → `source_chunk_index` e `evidence_text` NON possono essere vuoti. Scegli il blocco \
+più pertinente e copiane un estratto testuale.
+2. Imposta `source_chunk_index: 0` ed `evidence_text: ""` SOLO quando il requisito è realmente assente \
+da tutte le evidenze (coefficient = 0.0, confidence bassa).
+3. `evidence_text` deve essere una porzione esatta del blocco citato, non una parafrasi né un riassunto. \
+Non inventare testo non presente nelle evidenze.
+
 ## Regole operative
 
 1. Basa la valutazione ESCLUSIVAMENTE sulle evidenze recuperate e fornite. Non usare conoscenze pregresse.
-2. Se le evidenze non contengono informazioni pertinenti: coefficient = 0.0, confidence ≤ 0.2.
-3. Cita sempre un testo verbatim nell'evidence_text (max 300 caratteri).
+2. Se le evidenze non contengono informazioni pertinenti: coefficient = 0.0, confidence ≤ 0.2, \
+source_chunk_index = 0, evidence_text = "".
+3. Cita sempre un testo verbatim nell'evidence_text quando il requisito è anche solo parzialmente presente \
+(vedi sezione "Tracciabilità della citazione").
 4. La motivazione deve essere in italiano, 2–4 frasi, e spiegare concretamente il ragionamento.
 5. La confidence deve riflettere la chiarezza dell'evidenza (non la qualità dell'offerta):
    - Alta (> 0.8) se l'evidenza è esplicita e inequivocabile
@@ -124,10 +153,11 @@ RISPONDI con un singolo oggetto JSON valido — nessun fence markdown, nessun pr
 con esattamente queste chiavi:
   "coefficient"        : float 0.0–1.0 oppure null (solo per proporzionale)
   "measured_value"     : stringa con valore estratto oppure null
+  "measured_quantity"  : numero confrontabile per proporzionale oppure null
   "motivation"         : stringa (2–4 frasi in italiano)
   "confidence"         : float 0.0–1.0
-  "source_chunk_index" : intero (1-based, 0 se nessun chunk rilevante)
-  "evidence_text"      : stringa (citazione verbatim, max 300 char, stringa vuota se assente)\
+  "source_chunk_index" : intero 1-based del blocco [N] citato (0 SOLO se requisito assente)
+  "evidence_text"      : citazione verbatim dal blocco [N] (max 300 char; "" SOLO se requisito assente)\
 """
 
 
@@ -156,17 +186,22 @@ Rispondi con un singolo oggetto JSON valido.\
 _MODE_INSTRUCTIONS: dict[str, str] = {
     "variabile": (
         "Assegna un coefficiente 0.0–1.0 secondo la scala ancorata del sistema prompt. "
-        "Ricorda: 0.5 = sufficiente, 0.75 = buono, 1.0 = eccellente."
+        "Ricorda: 0.5 = sufficiente, 0.75 = buono, 1.0 = eccellente. "
+        "Se coefficient > 0, indica obbligatoriamente source_chunk_index (il [N] usato) "
+        "e copia in evidence_text un estratto verbatim del blocco citato."
     ),
     "proporzionale": (
         "NON assegnare un coefficiente (imposta coefficient: null). "
         "Estrai e riporta in measured_value il valore misurabile presente nell'offerta "
-        "(es. numero di taglie/misure, range dimensionale, anni di follow-up). "
-        "Se il valore non è presente, imposta measured_value: null e confidence ≤ 0.2."
+        "(es. numero di taglie/misure, range dimensionale, anni di follow-up) e in "
+        "measured_quantity la sola grandezza numerica confrontabile (es. 14, 7.5). "
+        "Se il valore non è presente, imposta measured_value: null, measured_quantity: null e confidence ≤ 0.2."
     ),
     "on_off": (
         "Assegna coefficient = 1.0 se il documento dimostra il possesso del requisito, "
-        "coefficient = 0.0 se è assente o non documentato. Nessun valore intermedio."
+        "coefficient = 0.0 se è assente o non documentato. Nessun valore intermedio. "
+        "Se coefficient = 1.0, indica obbligatoriamente source_chunk_index (il [N] che lo prova) "
+        "e copia in evidence_text l'estratto verbatim corrispondente."
     ),
 }
 

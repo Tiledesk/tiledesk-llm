@@ -10,6 +10,7 @@ Workflow per sheet:
 """
 import io
 import logging
+from dataclasses import dataclass, field
 from typing import Dict, List
 
 import httpx
@@ -38,6 +39,18 @@ _DEFAULT_MODE = DiscretionaryMode.VARIABILE
 
 MAX_XLSX_SIZE: int = 10 * 1024 * 1024  # 10 MB
 
+_MISSING_MAX_POINTS_FLAG = (
+    "⚠️ PUNTEGGIO MASSIMO NON TROVATO NEL DOCUMENTO — verificare e correggere manualmente."
+)
+_MISSING_MAX_POINTS_PLACEHOLDER = 1.0
+
+
+@dataclass
+class ExtractedLot:
+    """Un lotto estratto da uno sheet, con i warning da mostrare in revisione umana."""
+    lot: TenderLotRequirements
+    warnings: List[str] = field(default_factory=list)
+
 
 class XlsxExtractionService:
     def __init__(self, llm):
@@ -47,11 +60,17 @@ class XlsxExtractionService:
     # Public: full pipeline
     # ------------------------------------------------------------------
 
-    async def extract_requirements(self, url: str) -> List[TenderLotRequirements]:
-        """Download xlsx from *url* and return one TenderLotRequirements per sheet."""
+    async def extract_requirements(self, url: str) -> List[ExtractedLot]:
+        """Download xlsx from *url* and return one ExtractedLot per sheet.
+
+        Ogni riga individuata nel foglio viene sempre mantenuta nell'output —
+        anche quando dati come il punteggio massimo non sono ricavabili dal
+        documento — così che l'operatore umano possa intervenire sulla
+        sezione (tabellare o discrezionale) prima di lanciare il check.
+        """
         xlsx_bytes = await self._download(url)
         sheets = self.extract_cells(xlsx_bytes)
-        lots: List[TenderLotRequirements] = []
+        extracted: List[ExtractedLot] = []
         structured_llm = self._llm.with_structured_output(_LLMLotExtractionResult)
         for sheet_name, sheet_content in sheets.items():
             user_msg = XLSX_EXTRACTION_USER_TEMPLATE.format(
@@ -64,10 +83,8 @@ class XlsxExtractionService:
                 HumanMessage(content=user_msg),
             ]
             result: _LLMLotExtractionResult = await structured_llm.ainvoke(messages)
-            lot = self._convert(result)
-            if lot is not None:
-                lots.append(lot)
-        return lots
+            extracted.append(self._convert(result))
+        return extracted
 
     # ------------------------------------------------------------------
     # Public: cell extraction (testable independently)
@@ -107,21 +124,37 @@ class XlsxExtractionService:
                 )
             return content
 
-    def _convert(self, result: _LLMLotExtractionResult) -> TenderLotRequirements | None:
-        """Convert LLM extraction result to TenderLotRequirements, sanitizing bad values."""
+    def _convert(self, result: _LLMLotExtractionResult) -> ExtractedLot:
+        """Convert LLM extraction result to TenderLotRequirements, sanitizing bad values.
+
+        Nessun criterio viene mai scartato: i dati non ricavabili dal documento
+        (es. punteggio massimo assente) vengono sostituiti con un placeholder
+        e segnalati nei `warnings`, in modo che la riga resti visibile e
+        modificabile dall'operatore umano.
+        """
         tabular = [
             TabularRequirementV2(id=t.id, text=t.text, mandatory=t.mandatory)
             for t in result.tabular
         ]
 
+        warnings: List[str] = list(result.warnings)
         discretionary: List[DiscretionaryCriterion] = []
         for c in result.discretionary:
-            if c.max_points <= 0:
+            max_points = c.max_points
+            notes = c.notes
+            if max_points <= 0:
                 logger.warning(
-                    "XlsxExtractionService: criterio '%s' ha max_points=%s <= 0 — saltato.",
-                    c.id, c.max_points,
+                    "XlsxExtractionService: criterio '%s' ha max_points=%s <= 0 — "
+                    "impostato placeholder=%s, richiede revisione manuale.",
+                    c.id, c.max_points, _MISSING_MAX_POINTS_PLACEHOLDER,
                 )
-                continue
+                warnings.append(
+                    f"Criterio '{c.id}': punteggio massimo non trovato nel documento "
+                    f"— impostato a {_MISSING_MAX_POINTS_PLACEHOLDER} come placeholder, "
+                    f"verificare manualmente."
+                )
+                max_points = _MISSING_MAX_POINTS_PLACEHOLDER
+                notes = f"{_MISSING_MAX_POINTS_FLAG} {notes}" if notes else _MISSING_MAX_POINTS_FLAG
 
             raw_mode = (c.mode or "").strip().lower().replace("/", "_")
             if raw_mode not in _VALID_MODES:
@@ -130,6 +163,10 @@ class XlsxExtractionService:
                     "impostata a 'variabile'.",
                     c.mode, c.id,
                 )
+                warnings.append(
+                    f"Criterio '{c.id}': modalità '{c.mode}' non riconosciuta — "
+                    f"impostata a 'variabile'."
+                )
                 raw_mode = _DEFAULT_MODE.value
 
             discretionary.append(
@@ -137,13 +174,13 @@ class XlsxExtractionService:
                     id=c.id,
                     text=c.text,
                     mode=DiscretionaryMode(raw_mode),
-                    max_points=c.max_points,
+                    max_points=max_points,
                     human_only=c.human_only,
-                    notes=c.notes,
+                    notes=notes,
                 )
             )
 
-        return TenderLotRequirements(
+        lot = TenderLotRequirements(
             tender=TenderInfo(
                 title=result.lot_name,
                 lot_id=result.lot_id,
@@ -154,6 +191,7 @@ class XlsxExtractionService:
                 discretionary=discretionary,
             ),
         )
+        return ExtractedLot(lot=lot, warnings=warnings)
 
 
 # ---------------------------------------------------------------------------

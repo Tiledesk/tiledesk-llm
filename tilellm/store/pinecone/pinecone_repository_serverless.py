@@ -1,7 +1,15 @@
 import datetime
+import re
+import unicodedata
 import uuid
 from abc import ABC
 from typing import List, Optional, Union, Dict
+
+
+def _ascii_id(s: str) -> str:
+    """Sanitize a string for use as a Pinecone vector ID prefix (ASCII-only requirement)."""
+    normalized = unicodedata.normalize('NFKD', s)
+    return re.sub(r'[^\x00-\x7F]', '-', normalized)
 
 from tilellm.models.schemas import (IndexingResult,
                                     RetrievalChunksResult
@@ -573,7 +581,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
             # namespaces = describe.get("namespaces", {})
             # logger.debug(namespaces)
 
-            for ids in index.list(prefix=f"{metadata_id}#", namespace=namespace):
+            for ids in index.list(prefix=f"{_ascii_id(metadata_id)}#", namespace=namespace):
                 logger.info(f"deleted ids: {ids}")  # ['doc1#chunk1', 'doc1#chunk2', 'doc1#chunk3']
                 index.delete(ids=ids, namespace=namespace)
 
@@ -683,7 +691,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
         embedding_chunk_size = doc_batch_size
         #batch_size: int = 32
 
-        ids = [f"{metadata_id}#{uuid.uuid4().hex}" for _ in range(len(chunks))]
+        ids = [f"{_ascii_id(metadata_id)}#{uuid.uuid4().hex}" for _ in range(len(chunks))]
         metadatas = [{**chunk.metadata, engine.text_key: chunk.page_content} for chunk in chunks]
         async_req = True
 
@@ -864,6 +872,6 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
     @staticmethod
     async def upsert_vector_store(vector_store, chunks, metadata_id, namespace):
-        ids = [f"{metadata_id}#{uuid.uuid4().hex}" for _ in range(len(chunks))]
+        ids = [f"{_ascii_id(metadata_id)}#{uuid.uuid4().hex}" for _ in range(len(chunks))]
         returned_ids = await vector_store.aadd_documents(chunks, namespace=namespace, ids=ids)
         logger.debug(f"upsert_vector_store: {returned_ids}")

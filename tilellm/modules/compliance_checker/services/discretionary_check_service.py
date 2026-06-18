@@ -17,6 +17,7 @@ from tilellm.models import QuestionAnswer
 from tilellm.modules.compliance_checker.logic import (
     _build_evidence_block,
     _pick_best_source,
+    _rerank_chunks,
     check_compliance,
 )
 from tilellm.modules.compliance_checker.models import (
@@ -136,7 +137,15 @@ class DiscretionaryCheckService:
                 confidence=0.0,
             )
 
-        # Retrieve evidence from vector store
+        # Retrieve evidence from vector store.
+        # When reranking is enabled, oversample (top_k × multiplier) then rerank
+        # down to top_k — mirrors the v1 tabular path (logic.py).
+        reranker_config = self._request.reranker_config
+        search_top_k = (
+            self._request.top_k * self._request.reranking_multiplier
+            if reranker_config
+            else self._request.top_k
+        )
         qa = QuestionAnswer(
             question=criterion.text,
             namespace=self._request.namespace,
@@ -147,7 +156,7 @@ class DiscretionaryCheckService:
             model=self._request.model,
             temperature=self._request.temperature,
             max_tokens=self._request.max_tokens,
-            top_k=self._request.top_k,
+            top_k=search_top_k,
             search_type=self._request.search_type,
         )
         try:
@@ -158,6 +167,17 @@ class DiscretionaryCheckService:
             logger.warning("Retrieval failed for criterion '%s': %s", criterion.id, e)
             chunks = []
             metadata = []
+
+        if reranker_config and chunks:
+            try:
+                chunks, metadata = await _rerank_chunks(
+                    criterion.text, chunks, metadata, reranker_config, self._request.top_k
+                )
+            except Exception as e:
+                logger.warning(
+                    "Reranking failed for criterion '%s': %s — proceeding without reranking",
+                    criterion.id, e,
+                )
 
         # No evidence → flag without calling LLM
         if not chunks:
@@ -186,6 +206,12 @@ class DiscretionaryCheckService:
         if coefficient is not None:
             coefficient = max(0.0, min(1.0, float(coefficient)))
         measured_value = raw_output.get("measured_value")
+        measured_quantity = raw_output.get("measured_quantity")
+        if measured_quantity is not None:
+            try:
+                measured_quantity = float(measured_quantity)
+            except (TypeError, ValueError):
+                measured_quantity = None
         motivation = str(raw_output.get("motivation", ""))
         confidence = max(0.0, min(1.0, float(raw_output.get("confidence", 0.0))))
         source_index = int(raw_output.get("source_chunk_index", 0))
@@ -194,6 +220,17 @@ class DiscretionaryCheckService:
         evidence_doc, evidence_page, evidence_section, matched_idx = _pick_best_source(
             chunks, metadata, evidence_text, source_index
         )
+        # Audit: we got here only with non-empty chunks, so matched_idx == 0 means the
+        # judge produced a verdict but did not anchor it to any chunk (empty evidence_text
+        # / source_index out of range). The score is still usable, but the documental
+        # citation is an unverified fallback → flag it for the human operator.
+        citation_attributed = matched_idx > 0
+        if not citation_attributed:
+            logger.info(
+                "Citation not attributable for criterion '%s' (model returned no usable "
+                "evidence_text/source_chunk_index) — flagged for human audit.",
+                criterion.id,
+            )
 
         # Compute score based on mode
         score: Optional[float] = None
@@ -231,10 +268,12 @@ class DiscretionaryCheckService:
             coefficient=coefficient,
             score=score,
             measured_value=measured_value,
+            measured_quantity=measured_quantity,
             motivation=motivation,
             confidence=confidence,
             human_review_required=human_review_required,
             human_review_reason=human_review_reason,
+            citation_attributed=citation_attributed,
             evidence_document=evidence_doc,
             evidence_page=evidence_page,
             evidence_section=evidence_section,
@@ -298,6 +337,8 @@ async def check_compliance_v2(
     lot = await loader.load(
         yaml_inline=request.requirements_yaml,
         yaml_url=request.requirements_yaml_url,
+        xlsx_url=request.requirements_xlsx_url,
+        lot_id=request.requirements_lot_id,
     )
     svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
     return await svc.evaluate_lot(lot)
