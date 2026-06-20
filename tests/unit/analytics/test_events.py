@@ -65,6 +65,40 @@ def test_kb_query_keeps_agent_id_null_when_no_agent() -> None:
     assert payload["agent_id"] is None
 
 
+def test_token_usage_includes_kb_id_for_rag_source() -> None:
+    # rag-source token usage carries kb_id so KB-token analytics can attribute
+    # tokens to a knowledge base directly, without joining on request_id.
+    event_type, payload = events.token_usage(
+        model="gpt-4o",
+        prompt_tokens=100,
+        completion_tokens=50,
+        total_tokens=150,
+        operation="ask",
+        source="rag",
+        request_id=None,
+        agent_id=None,
+        kb_id="my-namespace",
+    )
+
+    assert event_type == "ai.token_usage"
+    assert payload["kb_id"] == "my-namespace"
+
+
+def test_token_usage_keeps_kb_id_null_for_chat_source() -> None:
+    # Non-KB (e.g. source='chat') usage has no knowledge base; kb_id stays null.
+    _, payload = events.token_usage(
+        model="gpt-4o",
+        prompt_tokens=100,
+        completion_tokens=50,
+        total_tokens=150,
+        operation="chat",
+        source="chat",
+    )
+
+    assert "kb_id" in payload
+    assert payload["kb_id"] is None
+
+
 def test_model_call_coerces_missing_provider_to_unknown() -> None:
     # The ai.model_call contract requires provider to be a non-null string.
     # Callers pass getattr(question, "llm", None), which can be None.

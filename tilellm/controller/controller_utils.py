@@ -588,6 +588,7 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                     source="rag",
                     request_id=getattr(question_answer, "request_id", None),
                     agent_id=getattr(question_answer, "agent_id", None),
+                    kb_id=question_answer.namespace,
                 )
                 analytics.publish_nowait(_et, question_answer.id_project, _pl)
                 _et, _pl = analytics.events.model_call(
@@ -692,6 +693,7 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                 source="rag",
                 request_id=getattr(question_answer, "request_id", None),
                 agent_id=getattr(question_answer, "agent_id", None),
+                kb_id=question_answer.namespace,
             )
             analytics.publish_nowait(_et, question_answer.id_project, _pl)
             _et, _pl = analytics.events.model_call(
@@ -814,6 +816,7 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                     source="rag",
                     request_id=getattr(question_answer, "request_id", None),
                     agent_id=getattr(question_answer, "agent_id", None),
+                    kb_id=question_answer.namespace,
                 )
                 analytics.publish_nowait(_et, question_answer.id_project, _pl)
                 _et, _pl = analytics.events.model_call(
@@ -940,6 +943,7 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
             source="rag",
             request_id=getattr(question_answer, "request_id", None),
             agent_id=getattr(question_answer, "agent_id", None),
+            kb_id=question_answer.namespace,
         )
         analytics.publish_nowait(_et, question_answer.id_project, _pl)
         _et, _pl = analytics.events.model_call(
@@ -1194,6 +1198,7 @@ async def get_streaming_response(runnable_with_history, question, callback_handl
             source="rag",
             request_id=getattr(q, "request_id", None),
             agent_id=getattr(q, "agent_id", None),
+            kb_id=q.namespace,
         )
         analytics.publish_nowait(_et, q.id_project, _pl)
         _et, _pl = analytics.events.model_call(

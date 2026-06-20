@@ -33,6 +33,7 @@ def token_usage(
     thinking_tokens: int = 0,
     request_id: Optional[str] = None,
     agent_id: Optional[str] = None,
+    kb_id: Optional[str] = None,
 ) -> Tuple[str, dict]:
     """
     Build an ai.token_usage event payload.
@@ -43,10 +44,14 @@ def token_usage(
         completion_tokens: Output token count.
         total_tokens:      Total token count.
         operation:         'qa' | 'ask' | 'thinking'.
-        source:            'kb' | 'chat'.
+        source:            'rag' | 'chat'.
         thinking_tokens:   Reasoning tokens (GPT-5, Claude 4+, Gemini 2.5+, DeepSeek).
         request_id:        Tiledesk conversation/request ID.
         agent_id:          Tiledesk agent/bot ID.
+        kb_id:             Namespace / KB ID when source='rag'. Lets KB-token
+                           analytics attribute tokens to a knowledge base directly,
+                           without joining to kb.query_executed on request_id.
+                           Pass None for non-KB (e.g. source='chat') usage.
     """
     return "ai.token_usage", {
         "model":             model,
@@ -58,6 +63,7 @@ def token_usage(
         "source":            source,
         "request_id":        request_id,
         "agent_id":          agent_id,
+        "kb_id":             kb_id,
     }
 
 
