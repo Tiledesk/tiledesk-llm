@@ -32,6 +32,17 @@ class ServerConfig(BaseModel):
     enabled_tools: Optional[List[str]] = Field(default_factory=lambda: ["all"])
     parameters: Optional[dict] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def normalize_url_and_headers(self):
+        if self.url is not None:
+            self.url = self.url.strip()
+        if self.headers:
+            self.headers = {
+                k: (v.strip() if isinstance(v, str) else v)
+                for k, v in self.headers.items()
+            }
+        return self
+
     @model_validator(mode='after')
     def validate_transport_specific_fields(self):
         # Validazione per trasporto SSE
