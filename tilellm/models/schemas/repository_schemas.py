@@ -56,6 +56,7 @@ class IndexingResult(BaseModel):
     sc_input_tokens: int | None = None
     sc_output_tokens: int | None = None
     sc_total_tokens: int | None = None
+    token_usage: Optional[dict] = None  # {total, calls} — populated only when debug=true
 
 
 class RepositoryItemNamespaceResult(BaseModel):

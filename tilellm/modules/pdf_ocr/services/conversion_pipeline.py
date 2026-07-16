@@ -101,8 +101,14 @@ def select_plan(profile: PdfProfile, attempt: int) -> ConversionPlan:
     )
 
 
-async def run_conversion(file_path: str, doc_id: str, attempt: int = 1) -> ConversionOutcome:
+async def run_conversion(
+    file_path: str, doc_id: str, attempt: int = 1, do_ocr_override: Optional[bool] = None
+) -> ConversionOutcome:
     """Profile the PDF, select a plan for this attempt, and execute it.
+
+    do_ocr_override, when set, forces Docling's OCR on/off regardless of the
+    attempt-selected plan (e.g. skip OCR on native-digital PDFs). It has no
+    effect on the degraded native level, which never uses OCR.
 
     Raises ConversionProcessDied (from docling_subprocess) when the child
     process is killed — the caller's retry logic will re-enter with a higher
@@ -110,6 +116,8 @@ async def run_conversion(file_path: str, doc_id: str, attempt: int = 1) -> Conve
     """
     profile = await asyncio.to_thread(profile_pdf, file_path)
     plan = select_plan(profile, attempt)
+    if do_ocr_override is not None:
+        plan.do_ocr = do_ocr_override
     logger.info(
         f"conversion_pipeline: doc={doc_id} attempt={attempt} → level={plan.level} "
         f"segmented={plan.segmented} quality={plan.extraction_quality}"

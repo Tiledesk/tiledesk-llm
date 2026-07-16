@@ -31,6 +31,8 @@ from tilellm.modules.compliance_checker.models_v2 import (
     OperatorScore,
 )
 from tilellm.shared.utility import inject_llm_chat_async
+from tilellm.shared import token_tracking
+from tilellm.shared.token_tracking import TokenUsageCollector, model_name_of
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +50,11 @@ _LLM_SYNTHESIS_SYSTEM = (
 
 
 class AggregateReportService:
-    def __init__(self, llm=None):
+    def __init__(self, llm=None, model_name: str = ""):
         self._llm = llm
+        self._model_name = model_name
+        # Token usage from per-operator LLM synthesis calls (only when synthesis_llm=true).
+        self.tokens = TokenUsageCollector()
 
     # ------------------------------------------------------------------
     # Public pipeline
@@ -184,6 +189,7 @@ class AggregateReportService:
                 SystemMessage(content=_LLM_SYNTHESIS_SYSTEM),
                 HumanMessage(content=user),
             ])
+            self.tokens.record(resp, operation="aggregate_synthesis", model=self._model_name)
             content = resp.content
             if isinstance(content, list):
                 content = " ".join(
@@ -482,5 +488,18 @@ async def build_aggregate_report(request: AggregateReportRequest) -> AggregateRe
         except Exception as e:
             logger.warning("Could not resolve LLM for synthesis: %s — using deterministic synthesis.", e)
             llm = None
-    svc = AggregateReportService(llm=llm)
-    return await svc.build(request)
+    svc = AggregateReportService(llm=llm, model_name=model_name_of(request.model))
+    report = await svc.build(request)
+
+    # Always attempt analytics (fire-and-forget); attach token detail only on debug.
+    token_tracking.emit_analytics(
+        svc.tokens,
+        id_project=getattr(request, "id_project", None),
+        source="compliance",
+        provider=getattr(request, "llm", None),
+        request_id=getattr(request, "request_id", None),
+    )
+    if getattr(request, "debug", False):
+        report.token_usage = svc.tokens.to_dict()
+
+    return report

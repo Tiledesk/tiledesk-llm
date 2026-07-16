@@ -7,6 +7,44 @@
 
 
 ---
+## [2026-07-16]
+### 0.11.2-rc2 fix: scrape_type 0/1 indexed only the cookie banner on chrome-heavy pages
+
+`_handle_trafilatura_scrape` used `favor_precision=True` unconditionally: on pages with tiny main
+content and large nav/footer (e.g. PA portals) trafilatura discarded the content and kept only the
+cookie banner. Now, when the precision extraction is shorter than 500 chars, extraction is retried
+without `favor_precision` and the longer result wins. Tests: `tests/unit/tools/test_trafilatura_quality_guard.py`.
+
+---
+## [2026-06-30]
+### 0.11.2-rc1 (feat: pdf_ocr md_simple — native markdown, image retrieval, LightOnOCR + MinerU converters)
+
+**Native Docling markdown (`extract_md_simple: true`)** — replaced hand-assembled markdown with
+`DoclingDocument.export_to_markdown(page_break_placeholder=...)` + `split_segment_pages`; lists,
+inline formatting and reading order are now preserved correctly.
+
+**Image retrieval via vector store** — LLM captions are merged back into image objects, each PNG is
+uploaded to object storage (`MINIO_IMAGES_BUCKET`, compatible with AWS S3 via env-var), and captions
+are indexed as separate vector-store documents (`chunk_type: image_caption`, `path` pointing to the
+PNG). Gated by `include_images: true` + `index_images_to_vector_store: true` (both default). Failures
+are soft (path left empty, caption still indexed). See §6 in `docs/PDF_INGEST_EXAMPLE.md`.
+
+**Pluggable converter seam** — `converter_registry.py` (`PdfConverter` protocol + `ConverterResult`);
+`converter_options` request field threads per-request engine config down to the converter.
+- **`lighton` engine** (`lighton_converter.py`): rasterizes pages (PyMuPDF) → POST to an
+  OpenAI-compatible vision endpoint. `endpoint_url` required in `converter_options`. No new dep.
+- **`mineru` engine** (`mineru_converter.py`): local MinerU in subprocess (memory isolation); parses
+  `content_list.json` → page bodies + PIL images + tables. Optional dep: `poetry install -E mineru`
+  or `-E all`. Install absent → actionable error with hint.
+
+**`export_md` flag** — uploads the assembled markdown to MinIO/S3 (`bucket_pdfs/{id}/{id}.md`) and
+returns `markdown_path` in the result.
+
+**`skip_ocr` flag** — passes `do_ocr=False` to Docling (native-digital PDFs only).
+
+See `docs/PDF_INGEST_EXAMPLE.md` for curl examples of all new fields.
+
+---
 ## [2026-06-17]
 ### 0.11.1-rc4 (feat: Compliance v2 — massive multi-operator evaluation)
 

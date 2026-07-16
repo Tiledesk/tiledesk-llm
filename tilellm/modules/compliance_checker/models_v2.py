@@ -162,6 +162,8 @@ class ExtractRequirementsRequest(BaseModel):
     top_p: Optional[float] = Field(default=1.0)
     max_tokens: int = Field(default=2048)
     debug: bool = Field(default=False)
+    id_project: Optional[str] = Field(default=None, description="Tiledesk project ID per analytics token.")
+    request_id: Optional[str] = Field(default=None, description="ID richiesta Tiledesk per analytics.")
 
     @field_validator("output_format", mode="before")
     @classmethod
@@ -192,6 +194,10 @@ class LotYamlDocument(BaseModel):
 class ExtractRequirementsResponse(BaseModel):
     """Risposta dell'endpoint /requirements/extract — un documento YAML per lotto."""
     lots: List[LotYamlDocument]
+    token_usage: Optional[Dict] = Field(
+        default=None,
+        description="Consumo token dell'estrazione LLM. Popolato solo quando debug=true.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -283,7 +289,20 @@ class ComplianceRequestV2(BaseModel):
     temperature: float = Field(default=0.0)
     top_p: Optional[float] = Field(default=1.0)
     max_tokens: int = Field(default=512)
-    debug: bool = Field(default=False)
+    debug: bool = Field(
+        default=False,
+        description="Se true, include il blocco 'token_usage' (per-chiamata + aggregato) nella risposta.",
+    )
+
+    # Analytics routing (come nelle altre API)
+    id_project: Optional[str] = Field(
+        default=None,
+        description="Tiledesk project ID per il routing analytics del consumo token.",
+    )
+    request_id: Optional[str] = Field(
+        default=None,
+        description="ID conversazione/richiesta Tiledesk, propagato negli eventi analytics.",
+    )
 
     # Reranking
     reranking: Union[bool, TEIConfig, PineconeRerankerConfig] = Field(default=False)
@@ -505,6 +524,10 @@ class ComplianceReportV2(BaseModel):
     summary: ComplianceSummaryV2
     tabular_results: List[ComplianceResult]
     discretionary_results: List[DiscretionaryResult]
+    token_usage: Optional[Dict] = Field(
+        default=None,
+        description="Consumo token per-chiamata LLM + aggregato. Popolato solo quando debug=true.",
+    )
 
     def to_markdown(self, judgment_map: Optional[Dict[str, str]] = None) -> str:
         """
@@ -633,6 +656,8 @@ class AggregateReportRequest(BaseModel):
     top_p: Optional[float] = Field(default=1.0)
     max_tokens: int = Field(default=512)
     debug: bool = Field(default=False)
+    id_project: Optional[str] = Field(default=None, description="Tiledesk project ID per analytics token.")
+    request_id: Optional[str] = Field(default=None, description="ID richiesta Tiledesk per analytics.")
 
     @field_validator("output_format", mode="before")
     @classmethod
@@ -692,6 +717,10 @@ class AggregateReport(BaseModel):
     lots: List[LotComparison] = Field(default_factory=list)
     total_operators: int = 0
     total_reports: int = 0
+    token_usage: Optional[Dict] = Field(
+        default=None,
+        description="Consumo token della sintesi LLM (se synthesis_llm=true). Popolato solo quando debug=true.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -755,6 +784,8 @@ class BulkComplianceRequestV2(BaseModel):
     top_p: Optional[float] = Field(default=1.0)
     max_tokens: int = Field(default=512)
     debug: bool = Field(default=False)
+    id_project: Optional[str] = Field(default=None, description="Tiledesk project ID per analytics token.")
+    request_id: Optional[str] = Field(default=None, description="ID richiesta Tiledesk per analytics.")
 
     # Reranking
     reranking: Union[bool, TEIConfig, PineconeRerankerConfig] = Field(default=False)
@@ -812,6 +843,8 @@ class BulkComplianceRequestV2(BaseModel):
             top_p=self.top_p,
             max_tokens=self.max_tokens,
             debug=self.debug,
+            id_project=self.id_project,
+            request_id=self.request_id,
             reranking=self.reranking,
             reranking_multiplier=self.reranking_multiplier,
             reranker_model=self.reranker_model,
@@ -831,6 +864,10 @@ class BulkComplianceReport(BaseModel):
     lot_id: str
     lot_name: str
     operators: List[BulkOperatorReport] = Field(default_factory=list)
+    token_usage: Optional[Dict] = Field(
+        default=None,
+        description="Consumo token aggregato su tutti gli operatori. Popolato solo quando debug=true.",
+    )
 
     @computed_field(return_type=int)
     @property

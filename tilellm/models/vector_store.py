@@ -14,6 +14,8 @@ class Engine(BaseModel):
     port: Optional[int] = Field(default=6333)
     deployment: Optional[Literal["local", "cloud"]] = Field(default="local")
     database: Optional[str] = Field(default="default")
+    cloud: str = Field(default="aws", description="Pinecone serverless cloud provider (aws, gcp, azure)")
+    region: str = Field(default="eu-west-1", description="Pinecone serverless region (e.g. eu-west-1, us-east-1)")
 
     @model_validator(mode='after')
     def validate_fields(self):

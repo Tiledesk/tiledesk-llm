@@ -34,6 +34,8 @@ from tilellm.modules.compliance_checker.models import (
     RequirementItem,
 )
 from tilellm.shared.utility import inject_llm_chat_async, inject_repo_async
+from tilellm.shared import token_tracking
+from tilellm.shared.token_tracking import TokenUsageCollector, model_name_of
 
 logger = logging.getLogger(__name__)
 
@@ -42,27 +44,27 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _JUDGE_USER_PROMPT = """\
-<requirement>
+<requisito>
 ID: {req_id}
-Text: {req_text}
-</requirement>
+Testo: {req_text}
+</requisito>
 
-<retrieved_evidence>
+<evidenze_recuperate>
 {evidence_block}
-</retrieved_evidence>
+</evidenze_recuperate>
 
-Based ONLY on the retrieved evidence above, evaluate whether the requirement is satisfied.
-Respond with a single valid JSON object (no markdown fences) with exactly these keys:
-  "judgment"           : one of {valid_judgments}
-  "confidence"         : float between 0.0 and 1.0
-  "source_chunk_index" : integer — the [N] index of the chunk (from the labels above) whose text \
-best supports your judgment; use 0 if no chunk is relevant
-  "evidence_text"      : verbatim quote (copy-paste) from the chosen chunk that best supports \
-your judgment; empty string if none
-  "justification"      : 1-3 sentences explaining your judgment
+Basandoti ESCLUSIVAMENTE sulle evidenze recuperate sopra, valuta se il requisito è soddisfatto.
+Rispondi con un singolo oggetto JSON valido (senza fence markdown) con esattamente queste chiavi:
+  "judgment"           : uno tra {valid_judgments}
+  "confidence"         : numero float tra 0.0 e 1.0
+  "source_chunk_index" : intero — l'indice [N] del chunk (tra quelli sopra etichettati) il cui testo \
+supporta meglio il tuo giudizio; usa 0 se nessun chunk è rilevante
+  "evidence_text"      : citazione verbatim (copia-incolla) dal chunk scelto che supporta meglio \
+il giudizio; stringa vuota se assente
+  "justification"      : 1-3 frasi in italiano che spiegano il giudizio
 
-If there is no relevant evidence, set judgment to "not_verifiable", confidence to 0.0, \
-source_chunk_index to 0, and evidence_text to ""."""
+Se non vi sono evidenze rilevanti, imposta judgment a "not_verifiable", confidence a 0.0, \
+source_chunk_index a 0 ed evidence_text a ""."""
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +182,8 @@ async def _judge_requirement(
     metadata: List[dict],
     config: ComplianceConfig,
     llm,
+    token_collector: TokenUsageCollector = None,
+    model_name: str = "",
 ) -> ComplianceResult:
     """Run the judge LLM for a single requirement and return a ComplianceResult."""
     chunk_ids = [str(m.get("id", m.get("doc_id", ""))) for m in metadata]
@@ -214,6 +218,8 @@ async def _judge_requirement(
             SystemMessage(content=config.system_prompt),
             HumanMessage(content=user_msg),
         ])
+        if token_collector is not None:
+            token_collector.record(response, operation="compliance_judge", model=model_name)
         content = response.content
         # Reasoning models (gpt-5.x, o-series) return content as a list of blocks
         if isinstance(content, list):
@@ -243,7 +249,7 @@ async def _judge_requirement(
         judgment = "not_verifiable"
 
     confidence = float(parsed.get("confidence", 0.0))
-    source_index = int(parsed.get("source_chunk_index", 0))
+    source_index = int(parsed.get("source_chunk_index") or 0)
     evidence_text = str(parsed.get("evidence_text", ""))
     justification = str(parsed.get("justification", "LLM response could not be parsed."))
 
@@ -296,6 +302,7 @@ async def check_compliance(
     llm_embeddings=None,    # injected by @inject_llm_chat_async, not used directly
     callback_handler=None,  # injected by @inject_llm_chat_async, not used directly
     embedding_config_key=None,
+    token_collector: TokenUsageCollector = None,
     **kwargs,
 ) -> ComplianceReport:
     """
@@ -312,6 +319,13 @@ async def check_compliance(
 
     Requirements are evaluated concurrently up to ``request.max_concurrent_requirements``.
     """
+    # When a caller (e.g. the v2 discretionary service) passes its own collector,
+    # we only RECORD into it and let the caller own analytics emission + the
+    # debug token_usage block. Standalone (v1 endpoint) we own both.
+    owns_collector = token_collector is None
+    collector = token_collector if token_collector is not None else TokenUsageCollector()
+    model_name = model_name_of(request.model)
+
     semaphore = asyncio.Semaphore(request.max_concurrent_requirements)
 
     async def _process_one(req: RequirementItem) -> ComplianceResult:
@@ -352,14 +366,31 @@ async def check_compliance(
                 except Exception as e:
                     logger.warning(f"Reranking failed for requirement '{req.id}': {e} — proceeding without reranking")
 
-            return await _judge_requirement(req, chunks, metadata, request.config, llm)
+            return await _judge_requirement(
+                req, chunks, metadata, request.config, llm,
+                token_collector=collector, model_name=model_name,
+            )
 
     results = list(await asyncio.gather(*[_process_one(r) for r in request.requirements]))
     summary = _compute_summary(results)
 
-    return ComplianceReport(
+    report = ComplianceReport(
         domain=request.config.domain,
         namespace=request.namespace,
         summary=summary,
         results=results,
     )
+
+    if owns_collector:
+        # Always attempt analytics (fire-and-forget); attach token detail only on debug.
+        token_tracking.emit_analytics(
+            collector,
+            id_project=getattr(request, "id_project", None),
+            source="compliance",
+            provider=request.llm,
+            request_id=getattr(request, "request_id", None),
+        )
+        if request.debug:
+            report.token_usage = collector.to_dict()
+
+    return report

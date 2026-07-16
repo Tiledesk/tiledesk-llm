@@ -162,6 +162,10 @@ class ItemSingle(BaseModel):
     tags: Optional[List[str]] = None
     webhook: Optional[str] = Field(default=None)
     semantic_chunk: Optional[bool] = Field(default=False)
+    debug: bool = Field(
+        default=False,
+        description="Se true, include il blocco 'token_usage' (embedding + situated_context) nella risposta di ingestion.",
+    )
     breakpoint_threshold_type: Optional[str] = Field(default="percentile")
     chunk_size: int = Field(default_factory=lambda: 1000)
     chunk_overlap: int = Field(default_factory=lambda: 400)

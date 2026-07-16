@@ -164,6 +164,8 @@ class ComplianceRequest(BaseModel):
     top_p: Optional[float] = Field(default=1.0)
     max_tokens: int = Field(default=512)
     debug: bool = Field(default=False)
+    id_project: Optional[str] = Field(default=None, description="Tiledesk project ID per analytics token.")
+    request_id: Optional[str] = Field(default=None, description="ID richiesta Tiledesk per analytics.")
     search_type: str = Field(default_factory=lambda: "similarity")
 
     # Reranking (mirrors QuestionAnswer pattern)
@@ -262,6 +264,10 @@ class ComplianceReport(BaseModel):
     namespace: str
     summary: ComplianceSummary
     results: List[ComplianceResult]
+    token_usage: Optional[Dict] = Field(
+        default=None,
+        description="Consumo token per-chiamata LLM + aggregato. Popolato solo quando debug=true.",
+    )
 
     def to_rtm_csv(self, judgment_map: Optional[Dict[str, str]] = None) -> str:
         """

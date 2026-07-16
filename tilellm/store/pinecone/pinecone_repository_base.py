@@ -105,7 +105,7 @@ class CachedVectorStore:
                     name=self.engine.index_name,
                     dimension=self.emb_dimension,
                     metric=self.engine.metric,
-                    spec=pinecone.ServerlessSpec(cloud=_PINECONE_SERVERLESS_CLOUD, region=_PINECONE_SERVERLESS_REGION)
+                    spec=pinecone.ServerlessSpec(cloud=self.engine.cloud, region=self.engine.region)
                 )
             else:
                 await pc.create_index(
@@ -921,9 +921,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
                 await pc.create_index(engine.index_name,   # const.PINECONE_INDEX,
                                 dimension=emb_dimension,
                                 metric=engine.metric,
-                                spec=pinecone.ServerlessSpec(cloud=_PINECONE_SERVERLESS_CLOUD,
-                                                             region=_PINECONE_SERVERLESS_REGION
-                                                             )
+                                spec=pinecone.ServerlessSpec(cloud=engine.cloud, region=engine.region)
                                 )
             else:
                 await pc.create_index(engine.index_name, #const.PINECONE_INDEX,

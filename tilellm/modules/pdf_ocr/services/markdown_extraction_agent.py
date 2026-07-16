@@ -16,7 +16,6 @@ import asyncio
 import base64
 import io
 from typing import Dict, Any, List, Optional, TypedDict, Annotated
-from dataclasses import dataclass, field
 from enum import Enum
 
 # Silence noisy RapidOCR logs
@@ -35,6 +34,10 @@ import pandas as pd
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage
 from tilellm.shared.llm_utils import extract_llm_text
+from tilellm.modules.pdf_ocr.services.converter_registry import (
+    ConverterResult,
+    register_converter,
+)
 
 # LangGraph imports
 try:
@@ -45,64 +48,6 @@ except ImportError:
     LANGGRAPH_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Singleton DocumentConverter — Docling loads TableTransformer + layout models
-# onto GPU/CPU once at startup and keeps them resident.  Creating a new
-# DocumentConverter per task causes a GPU VRAM leak: each instance loads the
-# models, then Python's GC/torch allocator retains them until empty_cache().
-# Under sustained load this exhausts VRAM before the cleanup can run.
-# ---------------------------------------------------------------------------
-_converter_instance: Optional["DocumentConverter"] = None
-_converter_lock: Optional[asyncio.Lock] = None
-
-
-def _get_converter_lock() -> asyncio.Lock:
-    global _converter_lock
-    if _converter_lock is None:
-        _converter_lock = asyncio.Lock()
-    return _converter_lock
-
-
-def _build_converter(device: str = "auto") -> "DocumentConverter":
-    from docling.datamodel.accelerator_options import AcceleratorOptions
-    opts = PdfPipelineOptions()
-    opts.do_ocr = True
-    opts.do_table_structure = True
-    opts.table_structure_options.do_cell_matching = True
-    opts.accelerator_options = AcceleratorOptions(device=device)
-    return DocumentConverter(
-        format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=opts)}
-    )
-
-
-async def get_or_create_converter() -> "DocumentConverter":
-    """Return the process-wide singleton DocumentConverter, creating it on first call."""
-    global _converter_instance
-    if _converter_instance is not None:
-        return _converter_instance
-    async with _get_converter_lock():
-        if _converter_instance is not None:
-            return _converter_instance
-        loop = asyncio.get_event_loop()
-        try:
-            _converter_instance = await loop.run_in_executor(
-                None, _build_converter, "auto"
-            )
-            logger.info("MarkdownExtractionAgent: DocumentConverter (auto device) initialized.")
-        except RuntimeError as e:
-            if "meta tensor" in str(e):
-                logger.warning(
-                    f"GPU meta-tensor error, initializing DocumentConverter on CPU: {e}"
-                )
-                _converter_instance = await loop.run_in_executor(
-                    None, _build_converter, "cpu"
-                )
-                logger.info("MarkdownExtractionAgent: DocumentConverter (CPU fallback) initialized.")
-            else:
-                raise
-        return _converter_instance
-
 
 class ExtractionPhase(str, Enum):
     """Phases of the extraction workflow."""
@@ -131,6 +76,80 @@ def _merge_dicts(left: Dict, right: Dict) -> Dict:
     return result
 
 
+# Placeholder Docling inserts at page boundaries when serializing a segment;
+# split_segment_pages turns it back into per-page bodies with global numbers.
+PAGE_BREAK = "<!-- PAGE_BREAK -->"
+
+
+def split_segment_pages(markdown: str, page_offset: int, page_break: str = PAGE_BREAK):
+    """Split one segment's native markdown into (global_page_no, body) pairs.
+
+    page_offset is the 0-based index of the segment's first page in the
+    original document; page numbers returned are 1-based to match the
+    "## Page N" contract the MarkdownChunker relies on.
+    """
+    return [
+        (page_offset + i + 1, chunk.strip())
+        for i, chunk in enumerate(markdown.split(page_break))
+    ]
+
+
+def assemble_markdown(doc_id, page_bodies, image_notes, table_notes) -> str:
+    """Assemble the final document from native per-page markdown bodies.
+
+    page_bodies: list of (page_no, markdown) already in reading order.
+    image_notes / table_notes: list of (page_no, description) from the LLM
+    enrichment; appended as trailing sections (Docling leaves image
+    placeholders and renders tables but never the semantic description).
+    """
+    parts = [f"# Document: {doc_id}\n"]
+    for page_no, body in page_bodies:
+        parts.append(f"\n## Page {page_no}\n")
+        parts.append(body)
+    if image_notes:
+        parts.append("\n## Image descriptions\n")
+        for page_no, desc in image_notes:
+            parts.append(f"\n**Image (page {page_no}):** {desc}\n")
+    if table_notes:
+        parts.append("\n## Table descriptions\n")
+        for page_no, desc in table_notes:
+            parts.append(f"\n**Table (page {page_no}):** {desc}\n")
+    return "\n".join(parts)
+
+
+def _segment_to_markdown(document) -> str:
+    """Serialize one Docling segment to markdown, page breaks marked.
+
+    Never raises: a serializer failure degrades to an empty body for that
+    segment rather than killing the whole extraction.
+    """
+    try:
+        return document.export_to_markdown(page_break_placeholder=PAGE_BREAK)
+    except Exception as e:
+        logger.warning(f"export_to_markdown failed for a segment, skipping body: {e}")
+        return ""
+
+
+def _native_to_page_bodies(text_elements: List[Dict], tables: List[Dict]):
+    """Build (page_no, body) pairs from native (PyMuPDF) elements.
+
+    The degraded native level has no DoclingDocument to serialize, so we
+    stitch plain text + rendered tables per page. page numbers are 1-based.
+    """
+    from collections import defaultdict
+
+    by_page: Dict[int, List[str]] = defaultdict(list)
+    for el in text_elements:
+        text = el.get("text", "")
+        if text:
+            by_page[el.get("page", 0)].append(text)
+    for tbl in tables:
+        md_table = tbl.get("markdown_table")
+        if md_table:
+            by_page[tbl.get("page", 0)].append(md_table)
+    return [(p + 1, "\n\n".join(by_page[p])) for p in sorted(by_page)]
+
+
 class MarkdownExtractionState(TypedDict):
     """State for the Markdown extraction agent."""
     # Input - these are set once and read by parallel nodes
@@ -141,6 +160,9 @@ class MarkdownExtractionState(TypedDict):
     include_tables: Annotated[bool, _keep_last]
     include_formulas: Annotated[bool, _keep_last]
     attempt: Annotated[int, _keep_last]  # 1-based; drives the conversion degradation ladder
+    converter: Annotated[str, _keep_last]  # registry name of the PDF converter
+    skip_ocr: Annotated[bool, _keep_last]  # converter hint: skip OCR (native-digital PDFs)
+    converter_options: Annotated[Optional[Dict[str, Any]], _keep_last]  # per-request converter config
 
     # Processing state
     phase: Annotated[str, _keep_last]
@@ -157,19 +179,13 @@ class MarkdownExtractionState(TypedDict):
     image_descriptions: Annotated[Dict[str, str], _merge_dicts]  # image_id -> description
     table_descriptions: Annotated[Dict[str, str], _merge_dicts]  # table_id -> description
     
+    # Native per-page markdown bodies (page_no, body) from Docling's own
+    # serializer — populated by extract_structure, consumed by assemble.
+    page_bodies: Annotated[List[Any], _keep_last]
+
     # Output - populated by assemble_markdown node
     markdown_content: Annotated[str, _keep_last]
     metadata: Annotated[Dict[str, Any], _merge_dicts]
-
-
-@dataclass
-class MarkdownElement:
-    """Represents an element in the Markdown document."""
-    element_type: str  # 'text', 'heading', 'table', 'image', 'formula', 'list'
-    content: str
-    page_number: int
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    order: int = 0
 
 
 class MarkdownExtractionAgent:
@@ -226,7 +242,10 @@ class MarkdownExtractionAgent:
         include_images: bool = True,
         include_tables: bool = True,
         include_formulas: bool = True,
-        attempt: int = 1
+        attempt: int = 1,
+        converter: str = "docling",
+        skip_ocr: bool = False,
+        converter_options: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Extract Markdown from PDF using the LangGraph agent.
@@ -240,6 +259,10 @@ class MarkdownExtractionAgent:
             include_formulas: Whether to include formula extraction
             attempt: 1-based attempt number; higher attempts select
                 progressively cheaper conversion strategies (degradation ladder)
+            converter: registry name of the PDF converter to use (default docling)
+            skip_ocr: converter hint to skip OCR (native-digital PDFs)
+            converter_options: per-request config merged into the converter's
+                options (e.g. LightOnOCR endpoint_url/api_key/model)
 
         Returns:
             Dict containing markdown content, metadata, and processing info
@@ -253,6 +276,9 @@ class MarkdownExtractionAgent:
             "include_tables": include_tables,
             "include_formulas": include_formulas,
             "attempt": attempt,
+            "converter": converter,
+            "skip_ocr": skip_ocr,
+            "converter_options": converter_options,
             "phase": ExtractionPhase.INIT,
             "error_message": None,
             "docling_result": None,
@@ -262,6 +288,7 @@ class MarkdownExtractionAgent:
             "formulas": [],
             "image_descriptions": {},
             "table_descriptions": {},
+            "page_bodies": [],
             "markdown_content": "",
             "metadata": {}
         }
@@ -291,70 +318,46 @@ class MarkdownExtractionAgent:
             raise
     
     async def _extract_structure_node(self, state: MarkdownExtractionState) -> MarkdownExtractionState:
-        """Node: Extract document structure via the memory-bounded conversion pipeline.
+        """Node: convert the PDF via the selected pluggable converter.
 
-        The conversion runs in an isolated child process (segmented for heavy
-        documents); the strategy is selected from the attempt number, so a
-        previously crashed attempt automatically re-enters with a cheaper plan.
+        The converter (default "docling") returns engine-agnostic per-page
+        markdown plus images/tables for downstream LLM enrichment. Swapping in
+        MinerU/LightOnOCR/... is a registry entry, not a change here.
         """
+        converter_name = state.get("converter") or "docling"
         logger.info(f"[Node: extract_structure] Processing {state['doc_id']} "
-                    f"(attempt {state.get('attempt', 1)})")
+                    f"(attempt {state.get('attempt', 1)}, converter={converter_name})")
 
         try:
-            from tilellm.modules.pdf_ocr.services.conversion_pipeline import run_conversion
+            from tilellm.modules.pdf_ocr.services.converter_registry import get_converter
 
-            outcome = await run_conversion(
+            result = await get_converter(converter_name)(
                 state["file_path"],
                 state["doc_id"],
                 attempt=state.get("attempt", 1),
+                options={
+                    "skip_ocr": state.get("skip_ocr", False),
+                    **(state.get("converter_options") or {}),
+                },
             )
 
-            if outcome.native_result is not None:
-                # Degraded native level: PyMuPDF raw extraction, full coverage
-                text_elements, images, tables, formulas = self._native_result_to_elements(
-                    outcome.native_result, state["doc_id"]
-                )
-                num_pages = outcome.native_result.get("metadata", {}).get(
-                    "num_pages", outcome.profile.num_pages
-                )
-            else:
-                # Docling levels: merge per-segment parses with corrected pages/order
-                text_elements, images, tables, formulas = [], [], [], []
-                order_offset = 0
-                for seg_idx, seg in enumerate(outcome.segments):
-                    seg_texts, seg_imgs, seg_tbls, seg_forms = self._parse_docling_result(
-                        seg.document, state["doc_id"], page_offset=seg.page_offset
-                    )
-                    seg_count = len(seg_texts) + len(seg_imgs) + len(seg_tbls)
-                    for coll in (seg_texts, seg_imgs, seg_tbls, seg_forms):
-                        for el in coll:
-                            el["order"] = el.get("order", 0) + order_offset
-                            if seg_idx > 0:
-                                el["id"] = f"{el['id']}_s{seg_idx}"
-                    order_offset += seg_count
-                    text_elements.extend(seg_texts)
-                    images.extend(seg_imgs)
-                    tables.extend(seg_tbls)
-                    formulas.extend(seg_forms)
-                num_pages = outcome.profile.num_pages
-
-            # Update state — the raw conversion objects stay out of agent state
-            # (per-segment documents are released as soon as parsing is done).
+            # The raw conversion objects stay out of agent state.
             state["docling_result"] = None
-            state["text_elements"] = text_elements
-            state["images"] = images
-            state["tables"] = tables
-            state["formulas"] = formulas
+            state["text_elements"] = result.text_elements
+            state["images"] = result.images
+            state["tables"] = result.tables
+            state["formulas"] = result.formulas
+            state["page_bodies"] = result.page_bodies
             state["phase"] = ExtractionPhase.EXTRACT_STRUCTURE
             state["metadata"] = {
                 "doc_id": state["doc_id"],
-                "num_pages": num_pages,
-                "extraction_quality": outcome.extraction_quality,
+                "num_pages": result.num_pages,
+                "extraction_quality": result.extraction_quality,
             }
 
-            logger.info(f"[Node: extract_structure] Extracted {len(text_elements)} texts, "
-                        f"{len(images)} images, {len(tables)} tables "
-                        f"(quality={outcome.extraction_quality})")
+            logger.info(f"[Node: extract_structure] Extracted {len(result.text_elements)} texts, "
+                        f"{len(result.images)} images, {len(result.tables)} tables "
+                        f"(quality={result.extraction_quality})")
 
         except Exception as e:
             logger.error(f"[Node: extract_structure] Error: {e}")
@@ -446,118 +449,54 @@ class MarkdownExtractionAgent:
         return state
     
     async def _assemble_markdown_node(self, state: MarkdownExtractionState) -> MarkdownExtractionState:
-        """Node: Assemble final Markdown document."""
-        logger.info(f"[Node: assemble_markdown] Assembling final document")
-        
+        """Node: Assemble the final document from Docling's native per-page markdown.
+
+        The structural body comes verbatim from Docling's own serializer
+        (lists, inline formatting, tables, reading order). The LLM image/table
+        descriptions — which Docling does not produce — are appended as
+        trailing sections keyed by page.
+        """
+        logger.info("[Node: assemble_markdown] Assembling final document")
+
         try:
-            # Build Markdown content
-            markdown_parts = []
-            
-            # Document header
-            markdown_parts.append(f"# Document: {state['doc_id']}\n")
-            
-            # Add metadata
-            metadata = state["metadata"]
-            if metadata.get("title"):
-                markdown_parts.append(f"**Title:** {metadata['title']}\n")
-            markdown_parts.append(f"**Document ID:** {state['doc_id']}\n")
-            markdown_parts.append("---\n")
-            
-            # Build elements by page
-            elements_by_page = self._organize_elements_by_page(state)
-            
-            for page_num in sorted(elements_by_page.keys()):
-                page_elements = elements_by_page[page_num]
-                
-                markdown_parts.append(f"\n## Page {page_num + 1}\n")
-                
-                for element in page_elements:
-                    if element.element_type == "heading":
-                        markdown_parts.append(f"\n{element.content}\n")
-                    elif element.element_type == "text":
-                        markdown_parts.append(f"\n{element.content}\n")
-                    elif element.element_type == "list":
-                        markdown_parts.append(f"\n{element.content}\n")
-                    elif element.element_type == "image":
-                        img_id = element.metadata.get("image_id")
-                        img_data = next((img for img in state["images"] if img["id"] == img_id), None)
-                        if img_data:
-                            markdown_parts.append(f"\n### Image: {img_id}\n")
-                            markdown_parts.append(f"**Location:** Page {img_data['page'] + 1}\n")
-                            markdown_parts.append(f"\n{img_data.get('description', 'No description available')}\n")
-                    elif element.element_type == "table":
-                        tbl_id = element.metadata.get("table_id")
-                        tbl_data = next((tbl for tbl in state["tables"] if tbl["id"] == tbl_id), None)
-                        if tbl_data:
-                            markdown_parts.append(f"\n### Table: {tbl_id}\n")
-                            if tbl_data.get("caption"):
-                                markdown_parts.append(f"**Caption:** {tbl_data['caption']}\n")
-                            markdown_parts.append(f"**Location:** Page {tbl_data['page'] + 1}\n")
-                            markdown_parts.append(f"\n{tbl_data.get('description', 'No description available')}\n")
-                            markdown_parts.append(f"\n**Table Data:**\n")
-                            markdown_parts.append(tbl_data.get("markdown_table", ""))
-                            markdown_parts.append("\n")
-            
-            # Add remaining images not yet inserted
-            inserted_images = set()
-            for element in sum(elements_by_page.values(), []):
-                if element.element_type == "image":
-                    inserted_images.add(element.metadata.get("image_id"))
-            
-            remaining_images = [
-                img for img in state["images"] 
-                if img["id"] not in inserted_images
+            img_desc = state.get("image_descriptions", {})
+            tbl_desc = state.get("table_descriptions", {})
+            image_notes = [
+                (img.get("page", 0) + 1, img_desc[img["id"]])
+                for img in state["images"]
+                if img.get("id") in img_desc
             ]
-            
-            if remaining_images:
-                markdown_parts.append("\n## Additional Images\n")
-                for img in remaining_images:
-                    markdown_parts.append(f"\n### Image: {img['id']}\n")
-                    markdown_parts.append(f"**Location:** Page {img['page'] + 1}\n")
-                    markdown_parts.append(f"\n{img.get('description', 'No description available')}\n")
-            
-            # Add remaining tables not yet inserted
-            inserted_tables = set()
-            for element in sum(elements_by_page.values(), []):
-                if element.element_type == "table":
-                    inserted_tables.add(element.metadata.get("table_id"))
-            
-            remaining_tables = [
-                tbl for tbl in state["tables"] 
-                if tbl["id"] not in inserted_tables
+            table_notes = [
+                (tbl.get("page", 0) + 1, tbl_desc[tbl["id"]])
+                for tbl in state["tables"]
+                if tbl.get("id") in tbl_desc
             ]
-            
-            if remaining_tables:
-                markdown_parts.append("\n## Additional Tables\n")
-                for tbl in remaining_tables:
-                    markdown_parts.append(f"\n### Table: {tbl['id']}\n")
-                    if tbl.get("caption"):
-                        markdown_parts.append(f"**Caption:** {tbl['caption']}\n")
-                    markdown_parts.append(f"**Location:** Page {tbl['page'] + 1}\n")
-                    markdown_parts.append(f"\n{tbl.get('description', 'No description available')}\n")
-                    markdown_parts.append(f"\n**Table Data:**\n")
-                    markdown_parts.append(tbl.get("markdown_table", ""))
-                    markdown_parts.append("\n")
-            
-            state["markdown_content"] = "\n".join(markdown_parts)
+            state["markdown_content"] = assemble_markdown(
+                state["doc_id"],
+                state.get("page_bodies", []),
+                image_notes,
+                table_notes,
+            )
             state["phase"] = ExtractionPhase.COMPLETE
-            
-            logger.info(f"[Node: assemble_markdown] Assembled {len(state['markdown_content'])} characters")
-            
+
+            logger.info(
+                f"[Node: assemble_markdown] Assembled {len(state['markdown_content'])} characters"
+            )
+
         except Exception as e:
             logger.error(f"[Node: assemble_markdown] Error: {e}")
             state["error_message"] = f"Markdown assembly failed: {str(e)}"
             state["phase"] = ExtractionPhase.ERROR
-        
+
         return state
-    
+
     async def _handle_error_node(self, state: MarkdownExtractionState) -> MarkdownExtractionState:
         """Node: Handle errors gracefully."""
         logger.error(f"[Node: handle_error] Error occurred: {state.get('error_message')}")
         return state
     
+    @staticmethod
     def _parse_docling_result(
-        self,
         result: Any,
         doc_id: str,
         page_offset: int = 0
@@ -685,8 +624,8 @@ class MarkdownExtractionAgent:
 
         return text_elements, images, tables, formulas
 
+    @staticmethod
     def _native_result_to_elements(
-        self,
         native: Dict[str, Any],
         doc_id: str
     ) -> tuple[List[Dict], List[Dict], List[Dict], List[Dict]]:
@@ -870,69 +809,73 @@ Focus on understanding what the data represents, not just technical details. Exp
             logger.error(f"Error analyzing table: {e}")
             return f"Table with {len(df)} rows and {len(df.columns)} columns on page {table['page'] + 1}"
     
-    def _organize_elements_by_page(
-        self, 
-        state: MarkdownExtractionState
-    ) -> Dict[int, List[MarkdownElement]]:
-        """Organize all elements by page for sequential output."""
-        elements_by_page: Dict[int, List[MarkdownElement]] = {}
-        
-        # Add text elements
-        for elem in state["text_elements"]:
-            page = elem.get('page', 0)
-            if page not in elements_by_page:
-                elements_by_page[page] = []
-            
-            elem_type = elem.get('type', 'text')
-            if elem_type == 'heading':
-                elements_by_page[page].append(MarkdownElement(
-                    element_type='heading',
-                    content=elem['text'],
-                    page_number=page,
-                    order=elem.get('order', 0)
-                ))
-            else:
-                elements_by_page[page].append(MarkdownElement(
-                    element_type='text',
-                    content=elem['text'],
-                    page_number=page,
-                    order=elem.get('order', 0)
-                ))
-        
-        # Add images
-        for img in state["images"]:
-            page = img.get('page', 0)
-            if page not in elements_by_page:
-                elements_by_page[page] = []
-            
-            elements_by_page[page].append(MarkdownElement(
-                element_type='image',
-                content='',
-                page_number=page,
-                metadata={'image_id': img['id']},
-                order=img.get('order', 0)
-            ))
-        
-        # Add tables
-        for tbl in state["tables"]:
-            page = tbl.get('page', 0)
-            if page not in elements_by_page:
-                elements_by_page[page] = []
-            
-            elements_by_page[page].append(MarkdownElement(
-                element_type='table',
-                content='',
-                page_number=page,
-                metadata={'table_id': tbl['id']},
-                order=tbl.get('order', 0)
-            ))
-        
-        # Sort each page by order
-        for page in elements_by_page:
-            elements_by_page[page].sort(key=lambda x: x.order)
-        
-        return elements_by_page
-    
+async def docling_convert(file_path, doc_id, attempt: int = 1, options=None) -> ConverterResult:
+    """Default PDF converter: Docling via the memory-bounded conversion pipeline.
+
+    Produces engine-agnostic per-page native markdown plus images/tables for
+    downstream LLM enrichment. Segmented heavy documents are merged with
+    corrected page numbers and reading order. options={"skip_ocr": True}
+    forces Docling to skip OCR (use for native-digital PDFs — faster and, on a
+    clean text layer, more accurate than OCR-ing it).
+    """
+    from tilellm.modules.pdf_ocr.services.conversion_pipeline import run_conversion
+
+    skip_ocr = bool(options and options.get("skip_ocr"))
+    outcome = await run_conversion(
+        file_path, doc_id, attempt=attempt,
+        do_ocr_override=False if skip_ocr else None,
+    )
+
+    page_bodies: List[Any] = []
+    if outcome.native_result is not None:
+        # Degraded native level: PyMuPDF raw extraction, full coverage.
+        text_elements, images, tables, formulas = (
+            MarkdownExtractionAgent._native_result_to_elements(outcome.native_result, doc_id)
+        )
+        num_pages = outcome.native_result.get("metadata", {}).get(
+            "num_pages", outcome.profile.num_pages
+        )
+        page_bodies = _native_to_page_bodies(text_elements, tables)
+    else:
+        # Docling levels: merge per-segment parses with corrected pages/order.
+        text_elements, images, tables, formulas = [], [], [], []
+        order_offset = 0
+        for seg_idx, seg in enumerate(outcome.segments):
+            page_bodies.extend(
+                split_segment_pages(_segment_to_markdown(seg.document), seg.page_offset)
+            )
+            seg_texts, seg_imgs, seg_tbls, seg_forms = (
+                MarkdownExtractionAgent._parse_docling_result(
+                    seg.document, doc_id, page_offset=seg.page_offset
+                )
+            )
+            seg_count = len(seg_texts) + len(seg_imgs) + len(seg_tbls)
+            for coll in (seg_texts, seg_imgs, seg_tbls, seg_forms):
+                for el in coll:
+                    el["order"] = el.get("order", 0) + order_offset
+                    if seg_idx > 0:
+                        el["id"] = f"{el['id']}_s{seg_idx}"
+            order_offset += seg_count
+            text_elements.extend(seg_texts)
+            images.extend(seg_imgs)
+            tables.extend(seg_tbls)
+            formulas.extend(seg_forms)
+        num_pages = outcome.profile.num_pages
+
+    return ConverterResult(
+        page_bodies=page_bodies,
+        images=images,
+        tables=tables,
+        text_elements=text_elements,
+        formulas=formulas,
+        num_pages=num_pages,
+        extraction_quality=outcome.extraction_quality,
+    )
+
+
+register_converter("docling", docling_convert)
+
+
 # Convenience function for external use
 async def extract_markdown_with_agent(
     file_path: str,

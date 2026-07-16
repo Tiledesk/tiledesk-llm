@@ -176,14 +176,20 @@ async def _handle_trafilatura_scrape(url: str, headers: Optional[dict] = None) -
     if not downloaded:
         return []
 
-    text = trafilatura.extract(
-        downloaded,
+    extract_kwargs = dict(
         include_tables=True,
         include_images=False,
         include_links=False,
         output_format="txt",
-        favor_precision=True
     )
+    text = trafilatura.extract(downloaded, favor_precision=True, **extract_kwargs)
+    # favor_precision drops tiny main content on chrome-heavy pages (e.g. PA
+    # portals where only the cookie banner survives): retry without it and
+    # keep the longer extraction.
+    if not text or len(text.strip()) < 500:
+        fallback = trafilatura.extract(downloaded, **extract_kwargs)
+        if fallback and len(fallback.strip()) > len((text or "").strip()):
+            text = fallback
     if not text or len(text.strip()) < 100:
         return []
 

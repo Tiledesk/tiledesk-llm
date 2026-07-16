@@ -41,6 +41,8 @@ from tilellm.modules.compliance_checker.prompts import (
 from tilellm.modules.compliance_checker.prompts.xlsx_extraction import _LLMLotExtractionResult
 from tilellm.modules.compliance_checker.services.yaml_requirements_loader import YamlRequirementsLoader
 from tilellm.shared.utility import inject_llm_chat_async, inject_repo_async
+from tilellm.shared import token_tracking
+from tilellm.shared.token_tracking import TokenUsageCollector, model_name_of
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +54,8 @@ class DiscretionaryCheckService:
         self._repo = repo
         self._llm = llm
         self._request = request
+        # Collects token usage from every LLM call in this check (tabular + discretionary).
+        self.tokens = TokenUsageCollector()
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -103,7 +107,9 @@ class DiscretionaryCheckService:
             reranker_model=self._request.reranker_model,
             max_concurrent_requirements=self._request.max_concurrent_requirements,
         )
-        tabular_report = await check_compliance(v1_request)
+        # Pass our collector so tabular judge tokens are merged into this check's total;
+        # the v1 path records into it and leaves emission/attachment to us.
+        tabular_report = await check_compliance(v1_request, token_collector=self.tokens)
         return tabular_report.results
 
     # ------------------------------------------------------------------
@@ -214,7 +220,7 @@ class DiscretionaryCheckService:
                 measured_quantity = None
         motivation = str(raw_output.get("motivation", ""))
         confidence = max(0.0, min(1.0, float(raw_output.get("confidence", 0.0))))
-        source_index = int(raw_output.get("source_chunk_index", 0))
+        source_index = int(raw_output.get("source_chunk_index") or 0)
         evidence_text = str(raw_output.get("evidence_text", ""))
 
         evidence_doc, evidence_page, evidence_section, matched_idx = _pick_best_source(
@@ -287,6 +293,9 @@ class DiscretionaryCheckService:
             SystemMessage(content=DISCRETIONARY_JUDGE_SYSTEM_PROMPT),
             HumanMessage(content=user_prompt),
         ])
+        self.tokens.record(
+            response, operation="discretionary_judge", model=model_name_of(self._request.model)
+        )
         content = response.content
         if isinstance(content, list):
             text_parts = []
@@ -341,4 +350,17 @@ async def check_compliance_v2(
         lot_id=request.requirements_lot_id,
     )
     svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
-    return await svc.evaluate_lot(lot)
+    report = await svc.evaluate_lot(lot)
+
+    # Always attempt analytics (fire-and-forget); attach the token detail only on debug.
+    token_tracking.emit_analytics(
+        svc.tokens,
+        id_project=request.id_project,
+        source="compliance",
+        provider=request.llm,
+        request_id=request.request_id,
+    )
+    if request.debug:
+        report.token_usage = svc.tokens.to_dict()
+
+    return report

@@ -31,6 +31,8 @@ from tilellm.modules.compliance_checker.prompts.xlsx_extraction import (
 )
 
 from tilellm.shared.utility import inject_llm_chat_async
+from tilellm.shared import token_tracking
+from tilellm.shared.token_tracking import TokenUsageCollector, model_name_of
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +57,14 @@ class ExtractedLot:
 class XlsxExtractionService:
     def __init__(self, llm):
         self._llm = llm
+        # Token usage from each per-sheet structured extraction call.
+        self.tokens = TokenUsageCollector()
 
     # ------------------------------------------------------------------
     # Public: full pipeline
     # ------------------------------------------------------------------
 
-    async def extract_requirements(self, url: str) -> List[ExtractedLot]:
+    async def extract_requirements(self, url: str, model_name: str = "") -> List[ExtractedLot]:
         """Download xlsx from *url* and return one ExtractedLot per sheet.
 
         Ogni riga individuata nel foglio viene sempre mantenuta nell'output —
@@ -71,7 +75,9 @@ class XlsxExtractionService:
         xlsx_bytes = await self._download(url)
         sheets = self.extract_cells(xlsx_bytes)
         extracted: List[ExtractedLot] = []
-        structured_llm = self._llm.with_structured_output(_LLMLotExtractionResult)
+        # include_raw=True keeps the underlying AIMessage so token usage survives the
+        # structured-output parsing (otherwise only the parsed object is returned).
+        structured_llm = self._llm.with_structured_output(_LLMLotExtractionResult, include_raw=True)
         for sheet_name, sheet_content in sheets.items():
             user_msg = XLSX_EXTRACTION_USER_TEMPLATE.format(
                 sheet_name=sheet_name,
@@ -82,7 +88,19 @@ class XlsxExtractionService:
                 SystemMessage(content=XLSX_EXTRACTION_SYSTEM_PROMPT),
                 HumanMessage(content=user_msg),
             ]
-            result: _LLMLotExtractionResult = await structured_llm.ainvoke(messages)
+            raw_result = await structured_llm.ainvoke(messages)
+            self.tokens.record(raw_result, operation="xlsx_extraction", model=model_name)
+            # include_raw=True yields {"raw","parsed","parsing_error"}; providers (or
+            # tests) that don't honor it return the parsed object directly.
+            if isinstance(raw_result, dict):
+                if raw_result.get("parsing_error"):
+                    raise ValueError(
+                        f"Estrazione LLM fallita per il foglio '{sheet_name}': "
+                        f"{raw_result['parsing_error']}"
+                    )
+                result: _LLMLotExtractionResult = raw_result["parsed"]
+            else:
+                result = raw_result
             extracted.append(self._convert(result))
         return extracted
 
@@ -214,4 +232,17 @@ async def extract_requirements_di(
     Decorated with @inject_llm_chat_async which resolves the LLM from request credentials.
     """
     svc = XlsxExtractionService(llm=llm)
-    return await svc.extract_requirements(request.source)
+    extracted = await svc.extract_requirements(
+        request.source, model_name=model_name_of(request.model)
+    )
+
+    # Always attempt analytics (fire-and-forget); return token detail for debug responses.
+    token_tracking.emit_analytics(
+        svc.tokens,
+        id_project=getattr(request, "id_project", None),
+        source="compliance",
+        provider=getattr(request, "llm", None),
+        request_id=getattr(request, "request_id", None),
+    )
+    token_usage = svc.tokens.to_dict() if getattr(request, "debug", False) else None
+    return extracted, token_usage

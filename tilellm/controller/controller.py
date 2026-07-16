@@ -81,6 +81,42 @@ import logging
 
 from tilellm.tools.reranker import RerankedRetriever, TileReranker
 import tilellm.analytics as analytics
+from tilellm.shared import token_tracking
+
+
+def _emit_ingestion_tokens(item, result):
+    """
+    Emit ai.token_usage for an ingestion (embedding + situated_context) and, when
+    item.debug is set, attach the token_usage block to the IndexingResult.
+
+    Always attempted (fire-and-forget); never raises. Token counts are read from the
+    IndexingResult the repository already returns, so this stays at the controller
+    boundary and works for every vector-store backend.
+    """
+    try:
+        sc_model = ""
+        sc_cfg = getattr(item, "situated_context", None)
+        if sc_cfg is not None:
+            sc_model = token_tracking.model_name_of(getattr(sc_cfg, "model", "")) or ""
+        collector = token_tracking.build_ingestion_collector(
+            embedding_model=token_tracking.model_name_of(getattr(item, "embedding", "")),
+            embedding_tokens=getattr(result, "total_tokens", 0) or 0,
+            sc_model=sc_model,
+            sc_input_tokens=getattr(result, "sc_input_tokens", 0) or 0,
+            sc_output_tokens=getattr(result, "sc_output_tokens", 0) or 0,
+            sc_total_tokens=getattr(result, "sc_total_tokens", 0) or 0,
+        )
+        token_tracking.emit_analytics(
+            collector,
+            id_project=getattr(item, "id_project", None),
+            source="ingestion",
+            request_id=getattr(item, "request_id", None),
+        )
+        if getattr(item, "debug", False) and hasattr(result, "token_usage"):
+            result.token_usage = collector.to_dict()
+    except Exception as _te:  # never break ingestion on analytics
+        logger.debug("ingestion token tracking skipped: %s", _te)
+    return result
 
 logger = logging.getLogger(__name__)
 
@@ -2533,6 +2569,7 @@ async def add_item(item, repo=None) -> IndexingResult:
     """
     try:
         result = await repo.add_item(item)
+        _emit_ingestion_tokens(item, result)
         # Cache invalidation strategy B: invalidate entire namespace on any document update
         if item.namespace:
             import asyncio
@@ -2558,6 +2595,7 @@ async def add_item_hybrid(item, repo=None) -> IndexingResult:
     """
     try:
         result = await repo.add_item_hybrid(item)
+        _emit_ingestion_tokens(item, result)
         # Cache invalidation strategy B: invalidate entire namespace on any document update
         if item.namespace:
             import asyncio

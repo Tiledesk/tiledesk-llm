@@ -112,6 +112,8 @@ class AskComplianceRequest(BaseModel):
     top_p: Optional[float] = Field(default=1.0)
     max_tokens: int = Field(default=512)
     debug: bool = Field(default=False)
+    id_project: Optional[str] = Field(default=None, description="Tiledesk project ID per analytics token.")
+    request_id: Optional[str] = Field(default=None, description="ID richiesta Tiledesk per analytics.")
     top_k: int = Field(default=8)
     domain_hint: Optional[str] = Field(
         default=None,
@@ -136,6 +138,12 @@ async def ask_compliance(request: AskComplianceRequest):
     """
     from tilellm.models import QuestionAnswer
     from tilellm.agents.nodes import _get_guard_llm, IntentExtractionResult
+    from tilellm.shared import token_tracking
+    from tilellm.shared.token_tracking import TokenUsageCollector, model_name_of
+
+    # Single collector for the whole /ask flow (intent extraction + judge calls).
+    tokens = TokenUsageCollector()
+    model_name = model_name_of(request.model)
 
     # Build a minimal QuestionAnswer so _get_guard_llm can resolve the LLM
     qa = QuestionAnswer(
@@ -157,13 +165,23 @@ async def ask_compliance(request: AskComplianceRequest):
     # Step 1 — intent extraction
     try:
         llm = await _get_guard_llm(qa)
-        structured_llm = llm.with_structured_output(IntentExtractionResult)
+        # include_raw keeps the AIMessage so intent-extraction tokens are captured.
+        structured_llm = llm.with_structured_output(IntentExtractionResult, include_raw=True)
         prompt = (
             f"Analizza questa richiesta e determina l'intento:\n\n"
             f"Richiesta: {request.question}\n\n"
             f"Rispondi con un JSON strutturato secondo lo schema richiesto."
         )
-        intent_result = await structured_llm.ainvoke(prompt)
+        raw_intent = await structured_llm.ainvoke(prompt)
+        tokens.record(raw_intent, operation="compliance_intent", model=model_name)
+        # include_raw=True yields {"raw","parsed","parsing_error"}; fall back to the
+        # parsed object directly for providers/mocks that don't honor include_raw.
+        if isinstance(raw_intent, dict):
+            if raw_intent.get("parsing_error"):
+                raise ValueError(raw_intent["parsing_error"])
+            intent_result = raw_intent["parsed"]
+        else:
+            intent_result = raw_intent
     except Exception as e:
         logger.warning(f"/ask intent extraction failed: {e}")
         raise HTTPException(status_code=500, detail=f"Intent extraction failed: {e}")
@@ -206,9 +224,22 @@ async def ask_compliance(request: AskComplianceRequest):
             top_p=request.top_p,
             max_tokens=request.max_tokens,
             debug=request.debug,
+            id_project=request.id_project,
+            request_id=request.request_id,
             top_k=request.top_k,
         )
-        report = await check_compliance(compliance_request)
+        # Pass the shared collector so judge tokens merge with intent tokens;
+        # the controller owns analytics emission + the debug token_usage block.
+        report = await check_compliance(compliance_request, token_collector=tokens)
+        token_tracking.emit_analytics(
+            tokens,
+            id_project=request.id_project,
+            source="compliance",
+            provider=request.llm,
+            request_id=request.request_id,
+        )
+        if request.debug:
+            report.token_usage = tokens.to_dict()
         return report
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

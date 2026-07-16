@@ -209,6 +209,20 @@ class TestRunConversionDispatch:
         assert outcome.native_result["metadata"]["num_pages"] == 5
 
     @pytest.mark.asyncio
+    async def test_do_ocr_override_forces_no_ocr(self, small_pdf):
+        from tilellm.modules.pdf_ocr.services import conversion_pipeline as cp
+
+        seen = {}
+
+        async def fake_convert(path, do_table_structure=True, do_ocr=True):
+            seen["do_ocr"] = do_ocr
+            return "doc"
+
+        with patch.object(cp, "convert_in_subprocess", new=fake_convert):
+            await cp.run_conversion(small_pdf, "doc", attempt=1, do_ocr_override=False)
+        assert seen["do_ocr"] is False
+
+    @pytest.mark.asyncio
     async def test_segmented_conversion_offsets(self, heavy_pdf):
         from tilellm.modules.pdf_ocr.services import conversion_pipeline as cp
 

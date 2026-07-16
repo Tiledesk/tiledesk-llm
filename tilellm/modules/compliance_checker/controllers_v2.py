@@ -157,7 +157,7 @@ async def extract_requirements_from_xlsx(request: ExtractRequirementsRequest):
       `requirements_xlsx_url` (no YAML editing required).
     """
     try:
-        extracted_lots = await extract_requirements_di(request)
+        extracted_lots, token_usage = await extract_requirements_di(request)
 
         if request.output_format == "xlsx":
             lots = [item.lot for item in extracted_lots]
@@ -180,7 +180,7 @@ async def extract_requirements_from_xlsx(request: ExtractRequirementsRequest):
             )
             for item in extracted_lots
         ]
-        return ExtractRequirementsResponse(lots=lot_docs)
+        return ExtractRequirementsResponse(lots=lot_docs, token_usage=token_usage)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

@@ -10,6 +10,38 @@ import asyncio
 
 from tilellm.shared.utility import inject_llm_chat_async, inject_repo_async, inject_llm_async
 from tilellm.shared.llm_utils import extract_llm_text
+from tilellm.shared import token_tracking
+import tilellm.analytics as analytics
+
+
+def _emit_pdf_sc_tokens(question, sc_tokens) -> Optional[dict]:
+    """
+    Emit ai.token_usage for the situated-context LLM enrichment of a PDF/OCR run
+    and return the token_usage block (only when question.debug is set).
+
+    Always attempted (fire-and-forget); never raises. PDF embedding tokens are not
+    metered by the OCR pipeline, so only the situated-context usage is reported here.
+    """
+    if not sc_tokens or not sc_tokens.get("total_tokens"):
+        return None
+    try:
+        collector = token_tracking.build_ingestion_collector(
+            embedding_model=token_tracking.model_name_of(getattr(question, "embedding", "")),
+            sc_model=token_tracking.model_name_of(getattr(question, "model", "")),
+            sc_input_tokens=sc_tokens.get("input_tokens", 0) or 0,
+            sc_output_tokens=sc_tokens.get("output_tokens", 0) or 0,
+            sc_total_tokens=sc_tokens.get("total_tokens", 0) or 0,
+        )
+        token_tracking.emit_analytics(
+            collector,
+            id_project=getattr(question, "id_project", None),
+            source="ingestion",
+            request_id=getattr(question, "request_id", None),
+        )
+        return collector.to_dict() if getattr(question, "debug", False) else None
+    except Exception as _te:
+        logging.getLogger(__name__).debug("pdf_ocr token tracking skipped: %s", _te)
+        return None
 from tilellm.modules.pdf_ocr.models.pdf_scraping import PDFScrapingRequest
 from tilellm.tools.document_tools import _extract_file_name
 from tilellm.models.chunk_metadata import CommonChunkMetadata
@@ -22,6 +54,11 @@ from .services.context_aware_chunker import ContextAwareChunker
 from .services.table_semantic_linker import TableSemanticLinker
 from .services.image_semantic_linker import ImageSemanticLinker
 from .services.markdown_extraction_agent import MarkdownExtractionAgent
+# Imported for side effect: each module registers its engine in the converter
+# registry at import time. Heavy/remote deps are imported lazily inside the
+# converters, so these imports are safe even when the runtime is absent.
+from .services import lighton_converter as _lighton_converter  # noqa: F401
+from .services import mineru_converter as _mineru_converter  # noqa: F401
 from .services.markdown_chunker import MarkdownChunker
 from ...models.llm import TEIConfig
 
@@ -36,6 +73,78 @@ except ImportError:
     Relationship = None
 
 logger = logging.getLogger(__name__)
+
+
+def _export_markdown_to_minio(doc_id: str, markdown: str) -> Optional[str]:
+    """Upload the assembled markdown document to MinIO under {doc_id}/{doc_id}.md.
+
+    Returns the "bucket/object" path, or None on any failure — exporting the
+    artifact must never block or fail the ingestion that already succeeded.
+    """
+    try:
+        from tilellm.modules.knowledge_graph.services.minio_storage import (
+            get_minio_storage_service,
+        )
+        svc = get_minio_storage_service()
+        object_name = f"{doc_id}/{doc_id}.md"
+        svc.upload_data(
+            bucket_name=svc.bucket_pdfs,
+            object_name=object_name,
+            data=markdown.encode("utf-8"),
+            content_type="text/markdown",
+        )
+        return f"{svc.bucket_pdfs}/{object_name}"
+    except Exception as e:
+        logger.warning(f"export_md: failed to upload markdown for {doc_id}: {e}")
+        return None
+
+
+def _merge_image_captions(images: list, image_descriptions: dict) -> None:
+    """Merge image_descriptions (image_id → caption str) into each image dict."""
+    for img in images:
+        img_id = img.get("id")
+        if img_id and img_id in image_descriptions:
+            img["caption"] = image_descriptions[img_id]
+
+
+def _upload_images_to_object_storage(doc_id: str, images: list) -> None:
+    """Upload each PIL image to object storage and set img["path"].
+
+    On any failure (service unavailable, upload error) the image path is left
+    as '' and ingestion continues — the caption is still indexed without a URL.
+    After a successful upload, image_data is set to None to free memory.
+    """
+    import io as _io
+
+    try:
+        from tilellm.modules.knowledge_graph.services.minio_storage import (
+            get_minio_storage_service,
+        )
+        svc = get_minio_storage_service()
+    except Exception as e:
+        logger.warning(f"upload_images: storage service unavailable for {doc_id}: {e}")
+        return
+
+    for img in images:
+        image_data = img.get("image_data")
+        if not image_data:
+            continue
+        image_id = img.get("id", "unknown")
+        object_name = f"{doc_id}/images/{image_id}.png"
+        try:
+            buf = _io.BytesIO()
+            image_data.save(buf, format="PNG")
+            svc.upload_data(
+                bucket_name=svc.bucket_images,
+                object_name=object_name,
+                data=buf.getvalue(),
+                content_type="image/png",
+            )
+            img["path"] = f"{svc.bucket_images}/{object_name}"
+            img["image_data"] = None
+        except Exception as e:
+            logger.warning(f"upload_images: failed to upload {image_id} for {doc_id}: {e}")
+            img.setdefault("path", "")
 
 
 def _normalize_date_str(val: str) -> str:
@@ -441,6 +550,7 @@ async def process_pdf_document_with_embeddings(
         formulas = result.get('formulas', [])
 
         sc_used = _sc_tokens["total_tokens"] > 0
+        _token_usage = _emit_pdf_sc_tokens(question, _sc_tokens)
 
         return {
             "status": "success",
@@ -453,6 +563,7 @@ async def process_pdf_document_with_embeddings(
                 "images": len(images),
                 "formulas": len(formulas),
                 **({"situated_context_tokens": _sc_tokens} if sc_used else {}),
+                **({"token_usage": _token_usage} if _token_usage else {}),
             }
         }
         
@@ -1149,13 +1260,20 @@ async def process_pdf_markdown_extraction(
             include_images=question.include_images,
             include_tables=question.include_tables,
             include_formulas=question.include_formulas,
-            attempt=attempt
+            attempt=attempt,
+            converter=getattr(question, 'converter', 'docling') or 'docling',
+            skip_ocr=getattr(question, 'skip_ocr', False),
+            converter_options=getattr(question, 'converter_options', None),
         )
         
         markdown_content = extraction_result["markdown"]
         images = extraction_result.get("images", [])
         tables = extraction_result.get("tables", [])
         metadata = extraction_result.get("metadata", {})
+
+        # Merge LLM-generated captions back into each image dict so that
+        # _index_images_to_vector_store can use img["caption"] directly.
+        _merge_image_captions(images, extraction_result.get("image_descriptions", {}))
         
         logger.info(f"Extracted {len(markdown_content)} characters of Markdown with "
                    f"{len(images)} images and {len(tables)} tables")
@@ -1255,15 +1373,39 @@ async def process_pdf_markdown_extraction(
             )
             logger.info(f"Successfully indexed {len(documents)} Markdown chunks")
 
+        # Upload image PNGs to object storage and index captions as separate
+        # vector-store documents (same flags as the md_simple=false path).
+        if question.index_images_to_vector_store and question.include_images and images:
+            _upload_images_to_object_storage(doc_id, images)
+            await _index_images_to_vector_store(
+                repo=repo,
+                llm_embeddings=llm_embeddings,
+                images=images,
+                question=question,
+                namespace=namespace,
+                engine=question.engine,
+                sparse_encoder=question.sparse_encoder,
+                tags=question.tags if question.tags else None,
+                skip_delete=True,  # text chunks already indexed above
+                llm=llm,
+            )
+            logger.info(f"Indexed {len(images)} image captions for document {doc_id}")
+
         # Cleanup temp file if created
         if temp_file_path and os.path.exists(temp_file_path):
             os.remove(temp_file_path)
+
+        # Optional: export the assembled markdown to MinIO (gated by export_md).
+        markdown_path = None
+        if getattr(question, 'export_md', False):
+            markdown_path = _export_markdown_to_minio(doc_id, markdown_content)
 
         return {
             "status": "success",
             "doc_id": doc_id,
             "extraction_method": "langgraph_agent",
             "extraction_quality": metadata.get('extraction_quality', 'full'),
+            **({"markdown_path": markdown_path} if markdown_path else {}),
             "markdown_length": len(markdown_content),
             "num_chunks": len(documents),
             "num_images": len(images),
@@ -1271,6 +1413,7 @@ async def process_pdf_markdown_extraction(
             "metadata": metadata,
             "markdown_preview": markdown_content[:500] + "..." if len(markdown_content) > 500 else markdown_content,
             **({"situated_context_tokens": sc_token_usage} if sc_token_usage else {}),
+            **({"token_usage": _md_token_usage} if (_md_token_usage := _emit_pdf_sc_tokens(question, sc_token_usage)) else {}),
         }
         
     except Exception as e:

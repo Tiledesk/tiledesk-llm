@@ -39,6 +39,10 @@ class PDFScrapingRequest(ItemSingle):
     extract_entities: bool = Field(False, description="Whether to extract semantic entities using GraphRAG.")
     extract_structure: bool = Field(True, description="Whether to extract hierarchical document structure.")
     extract_md_simple: bool = Field(False, description="If True, extracts a single Markdown document from the entire PDF with enhanced image/table descriptions, then indexes it with MD-specific chunking.")
+    export_md: bool = Field(False, description="If True (only with extract_md_simple), uploads the assembled Markdown to MinIO and returns its path in the result as 'markdown_path'.")
+    converter: str = Field("docling", description="PDF converter engine for extract_md_simple (registry name). Default 'docling'; other engines (e.g. mineru, lighton) can be registered.")
+    skip_ocr: bool = Field(False, description="Converter hint for extract_md_simple: skip OCR. Use on native-digital PDFs (faster and more accurate than OCR-ing a clean text layer).")
+    converter_options: Optional[Dict[str, Any]] = Field(None, description="Per-request config passed to the selected converter (e.g. LightOnOCR endpoint_url/api_key/model). Merged into the converter's options; ignored by docling.")
     doc_date: Optional[str] = Field(None, description="Document adoption/emission date in ISO format (YYYY-MM-DD). Written as 'date' in chunk metadata and used by the temporal digest filter.")
     additional_metadata: Optional[Dict[str, Any]] = Field(
         None,
