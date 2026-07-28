@@ -168,8 +168,9 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                     id=item.id,
                     source=item.source,
                     type=item.type,
-                    embedding=str(item.embedding)
-                ).model_dump()
+                    embedding=str(item.embedding),
+                    namespace=item.namespace,
+                ).model_dump(exclude_none=True)
 
                 if item.tags:
                     base_metadata["tags"] = item.tags

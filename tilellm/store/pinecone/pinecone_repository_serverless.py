@@ -301,7 +301,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                     id=item.id,
                     source=item.source,
                     type=item.type,
-                    embedding=str(item.embedding)
+                    embedding=str(item.embedding),
+                    namespace=item.namespace,
                 ).model_dump(exclude_none=True)
 
                 if item.tags:
@@ -320,7 +321,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                 metadata = MetadataItem(id=item.id,
                                         source=item.source,
                                         type=item.type,
-                                        embedding=str(item.embedding)).model_dump(exclude_none=True)
+                                        embedding=str(item.embedding),
+                                        namespace=item.namespace).model_dump(exclude_none=True)
                 if item.tags:
                     metadata["tags"] = item.tags
 
@@ -446,7 +448,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                     id=item.id,
                     source=item.source,
                     type=item.type,
-                    embedding=str(item.embedding)
+                    embedding=str(item.embedding),
+                    namespace=item.namespace,
                 ).model_dump(exclude_none=True)
 
                 if item.tags:
@@ -465,7 +468,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                 metadata = MetadataItem(id=item.id,
                                         source=item.source,
                                         type=item.type,
-                                        embedding=str(item.embedding)).model_dump(exclude_none=True)
+                                        embedding=str(item.embedding),
+                                        namespace=item.namespace).model_dump(exclude_none=True)
                 if item.tags:
                     metadata["tags"] = item.tags
 
