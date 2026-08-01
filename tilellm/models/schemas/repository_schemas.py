@@ -1,6 +1,6 @@
 import datetime
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from langchain_core.documents import Document
 
 from tilellm.models.vector_store import Engine
@@ -13,6 +13,11 @@ class RepositoryQueryResult(BaseModel):
     metadata_type: Optional[str] = Field(default="")
     date: Optional[str] = Field(default="Date not defined")
     text: Optional[str] | None = None
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Full raw chunk metadata passthrough (page_number, doc_type, ...) — "
+                    "the fixed fields above don't cover custom metadata keys.",
+    )
 
 
 class RepositoryItems(BaseModel):

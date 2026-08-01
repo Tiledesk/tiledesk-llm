@@ -237,6 +237,43 @@ class StructuredDocxLoader:
 # ExcelLoader
 # ---------------------------------------------------------------------------
 
+# Righe iniziali entro cui cercare l'intestazione reale (i modelli PA ne premettono
+# una o due di istruzioni; oltre questa soglia si tratta di un foglio anomalo).
+_HEADER_SCAN_ROWS = 10
+
+# Oltre questa dimensione il markdown della tabella viene spezzato per righe.
+# Il taglio deve avvenire QUI e non nello splitter a valle: `to_markdown` riscrive
+# l'intestazione in ogni blocco, mentre un taglio a caratteri la lascerebbe solo
+# nel primo chunk, rendendo gli altri illeggibili (celle senza nome di colonna).
+_MAX_TABLE_CHARS = 4000
+_ROWS_PER_CHUNK = 50
+
+
+def _detect_header_row(path, sheet_name) -> int:
+    """Indice (0-based) della riga di intestazione reale del foglio.
+
+    I modelli della PA premettono righe di nota ("L'OE e' tenuto ad aggiungere una
+    riga per ogni ref. offerto..."), e la loro quantita' cambia da allegato ad
+    allegato. Assumendo la riga 0 si prendono quelle note come intestazione e ogni
+    colonna vera diventa `Unnamed: N`. Si sceglie invece la prima riga con il numero
+    massimo di celle piene fra le prime righe del foglio.
+    """
+    try:
+        probe = pd.read_excel(path, sheet_name=sheet_name, header=None,
+                              nrows=_HEADER_SCAN_ROWS)
+    except Exception as e:
+        logger.debug("Header detection non riuscita su '%s' (%s): uso la riga 0.", sheet_name, e)
+        return 0
+    if probe.empty:
+        return 0
+    filled = probe.notna().sum(axis=1)
+    best = int(filled.max())
+    if best <= 1:
+        # Nessuna riga tabellare nelle prime righe: foglio di sole note.
+        return 0
+    return int(filled.idxmax())
+
+
 class ExcelLoader:
     def __init__(self, file_path: str):
         self.file_path = file_path
@@ -259,14 +296,34 @@ class ExcelLoader:
             documents: List[Document] = []
             excel_file = pd.ExcelFile(local_path)
             for sheet_name in excel_file.sheet_names:
-                df = pd.read_excel(excel_file, sheet_name=sheet_name)
+                header_row = _detect_header_row(local_path, sheet_name)
+                df = pd.read_excel(excel_file, sheet_name=sheet_name, header=header_row)
                 if df.empty:
                     continue
 
+                # Colonne interamente vuote: informazione zero, costo altissimo.
+                # Nei tracciati di gara reali sono 59 su 61 (il modello e' ampio, il
+                # compilatore ne usa una minima parte): renderle produce ~86% di
+                # padding `nan`, che satura la finestra dell'embedder prima del dato.
+                slim = df.dropna(axis=1, how="all")
+                if not slim.empty and slim.shape[1] < df.shape[1]:
+                    logger.info(
+                        "ExcelLoader '%s': scartate %d colonne vuote su %d.",
+                        sheet_name, df.shape[1] - slim.shape[1], df.shape[1],
+                    )
+                    df = slim
+
                 col_names = list(df.columns.astype(str))
                 file_type = "xlsx" if local_path.endswith(".xlsx") else "xls"
-                rows_per_chunk = 50
-                if len(df) > 100:
+                rows_per_chunk = _ROWS_PER_CHUNK
+                rendered = df.to_markdown(index=False)
+                # Il numero di righe da solo non basta: una tabella larga supera i
+                # 45.000 caratteri gia' con 29 righe.
+                if len(df) > 100 or len(rendered) > _MAX_TABLE_CHARS:
+                    rows_per_chunk = min(
+                        rows_per_chunk,
+                        max(1, int(len(df) * _MAX_TABLE_CHARS / max(len(rendered), 1))),
+                    )
                     for i in range(0, len(df), rows_per_chunk):
                         chunk_df = df.iloc[i : i + rows_per_chunk]
                         documents.append(Document(

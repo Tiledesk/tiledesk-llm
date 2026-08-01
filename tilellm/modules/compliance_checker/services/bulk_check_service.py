@@ -73,7 +73,8 @@ async def check_compliance_v2_bulk(request: BulkComplianceRequestV2) -> BulkComp
 
     async def _run(operator):
         async with semaphore:
-            report = await check_compliance_v2(request.to_operator_request(operator.namespace))
+            # Pass the OperatorRef, not just the namespace: each OE files its own L01.
+            report = await check_compliance_v2(request.to_operator_request(operator))
             return operator, report
 
     results = await asyncio.gather(*[_run(op) for op in request.operators])

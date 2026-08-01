@@ -61,6 +61,16 @@ class DiscretionaryCriterion(BaseModel):
         description="Se True il criterio non viene mai valutato dall'IA (es. criteri soggettivi).",
     )
     notes: Optional[str] = None
+    quantity_from_l01: bool = Field(
+        default=False,
+        description=(
+            "Se True la grandezza confrontabile del criterio (measured_quantity) è il "
+            "NUMERO DI PRODOTTI elencati nell'L01 dell'operatore, non un valore estratto "
+            "dai documenti. Serve per l'ampiezza di gamma: il listino sta nell'L01, che "
+            "non viene indicizzato, quindi il giudice LLM non potrebbe mai misurarlo. "
+            "Richiede un 'l01_xlsx_url'; la misura del giudice, se presente, ha la precedenza."
+        ),
+    )
 
     @field_validator("max_points")
     @classmethod
@@ -268,6 +278,14 @@ class ComplianceRequestV2(BaseModel):
                     "Ignorato per gli input YAML (sempre mono-lotto).",
     )
 
+    # Controllo di coerenza L01 → PDF (opzionale, opt-in): URL del file prodotti L01.
+    # Se valorizzato, per ogni prodotto in L01 si verifica la presenza di una scheda PDF.
+    l01_xlsx_url: Optional[str] = Field(
+        default=None,
+        description="URL del workbook xlsx L01 (elenco prodotti dell'OE). Se fornito, "
+                    "attiva il controllo di coerenza L01→PDF nel report (l01_check).",
+    )
+
     # Soglia confidence sotto la quale si attiva human_review_required
     min_confidence: float = Field(
         default=0.6,
@@ -339,6 +357,47 @@ class ComplianceRequestV2(BaseModel):
                 "(URL YAML) oppure 'requirements_xlsx_url' (URL workbook xlsx standardizzato)."
             )
         return self
+
+
+# ---------------------------------------------------------------------------
+# 1.8b — L01 products-consistency check (L01 -> PDF)
+# ---------------------------------------------------------------------------
+
+class L01Product(BaseModel):
+    """Prodotto letto dal file strutturato L01 (elenco prodotti offerti dall'OE)."""
+    code: Optional[str] = None
+    name: str = ""
+
+
+class L01ReconItem(BaseModel):
+    """Esito della verifica di un singolo prodotto L01 contro le schede PDF."""
+    code: Optional[str] = None
+    name: str = ""
+    present_in_pdf: bool = False
+    matched_by: Optional[str] = Field(
+        default=None,
+        description="Come è stato trovato nel PDF: 'code' (match sul codice) o 'name' (fallback nome). None se assente.",
+    )
+    evidence_document: str = ""
+    evidence_text: str = ""
+
+
+class L01CheckResult(BaseModel):
+    """
+    Controllo di coerenza L01 → PDF: per ogni prodotto dichiarato in L01 verifica
+    che esista una scheda PDF (nel namespace) che lo supporta.
+
+    `used` dichiara esplicitamente se il controllo è stato eseguito (l01_xlsx_url fornito).
+    """
+    used: bool = False
+    l01_products_total: int = 0
+    matched: int = 0
+    missing_count: int = 0
+    missing: List[str] = Field(
+        default_factory=list,
+        description="Codici (o nomi se il codice manca) dei prodotti L01 non riscontrati nei PDF.",
+    )
+    items: List[L01ReconItem] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -524,6 +583,10 @@ class ComplianceReportV2(BaseModel):
     summary: ComplianceSummaryV2
     tabular_results: List[ComplianceResult]
     discretionary_results: List[DiscretionaryResult]
+    l01_check: Optional[L01CheckResult] = Field(
+        default=None,
+        description="Esito del controllo di coerenza L01→PDF. `used=False` se non richiesto.",
+    )
     token_usage: Optional[Dict] = Field(
         default=None,
         description="Consumo token per-chiamata LLM + aggregato. Popolato solo quando debug=true.",
@@ -587,6 +650,26 @@ class ComplianceReportV2(BaseModel):
                     f"| {doc} | {page} | {mot} | {hr_reason} |\n"
                 )
             buf.write("\n")
+
+        # Sezione L01 → PDF (solo se il controllo è stato eseguito)
+        if self.l01_check and self.l01_check.used:
+            l = self.l01_check
+            buf.write("## Coerenza L01 → schede PDF\n\n")
+            buf.write(
+                f"**Prodotti L01:** {l.l01_products_total} | riscontrati nei PDF: {l.matched} "
+                f"| mancanti: {l.missing_count}\n\n"
+            )
+            missing_items = [it for it in l.items if not it.present_in_pdf]
+            if missing_items:
+                buf.write("Prodotti L01 **non riscontrati** in alcuna scheda PDF:\n\n")
+                buf.write("| Codice | Prodotto |\n|--------|----------|\n")
+                for it in missing_items:
+                    code = (it.code or "").replace("|", "\\|")
+                    name = (it.name or "").replace("|", "\\|")
+                    buf.write(f"| {code} | {name} |\n")
+                buf.write("\n")
+            else:
+                buf.write("✓ Tutti i prodotti L01 risultano supportati da una scheda PDF.\n\n")
 
         # Riepilogo
         s = self.summary
@@ -734,6 +817,13 @@ class OperatorRef(BaseModel):
         default=None,
         description="Etichetta dell'operatore mostrata nella tabella. Se assente si usa il namespace.",
     )
+    l01_xlsx_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "URL dell'L01 DI QUESTO operatore ('L. 01 - <operatore>.xlsx'): in gara ogni OE "
+            "deposita il proprio. Se assente si usa l'eventuale 'l01_xlsx_url' della richiesta."
+        ),
+    )
 
 
 class BulkComplianceRequestV2(BaseModel):
@@ -751,6 +841,14 @@ class BulkComplianceRequestV2(BaseModel):
     requirements_lot_id: Optional[str] = Field(
         default=None,
         description="lot_id del lotto da valutare quando l'xlsx contiene più lotti.",
+    )
+    l01_xlsx_url: Optional[str] = Field(
+        default=None,
+        description=(
+            "URL L01 condiviso, usato come fallback per gli operatori che non indicano il "
+            "proprio 'operators[].l01_xlsx_url'. Se fornito, l'operatore esegue anche il "
+            "controllo di coerenza L01→PDF."
+        ),
     )
 
     # Operatori economici partecipanti
@@ -822,13 +920,23 @@ class BulkComplianceRequestV2(BaseModel):
             )
         return self
 
-    def to_operator_request(self, namespace: str) -> "ComplianceRequestV2":
-        """Build a single-operator ComplianceRequestV2 for *namespace*."""
+    def to_operator_request(self, operator: Union["OperatorRef", str]) -> "ComplianceRequestV2":
+        """Build a single-operator ComplianceRequestV2 for *operator*.
+
+        Accepts an OperatorRef (so the operator's own L01 wins over the shared one) or
+        a bare namespace string, kept for existing callers.
+        """
+        if isinstance(operator, str):
+            namespace, l01_xlsx_url = operator, self.l01_xlsx_url
+        else:
+            namespace = operator.namespace
+            l01_xlsx_url = operator.l01_xlsx_url or self.l01_xlsx_url
         return ComplianceRequestV2(
             requirements_yaml=self.requirements_yaml,
             requirements_yaml_url=self.requirements_yaml_url,
             requirements_xlsx_url=self.requirements_xlsx_url,
             requirements_lot_id=self.requirements_lot_id,
+            l01_xlsx_url=l01_xlsx_url,
             min_confidence=self.min_confidence,
             namespace=namespace,
             engine=self.engine,

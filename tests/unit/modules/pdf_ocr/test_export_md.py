@@ -7,7 +7,7 @@ None instead of raising.
 from tilellm.modules.pdf_ocr.logic import _export_markdown_to_minio
 
 MINIO_FACTORY = (
-    "tilellm.modules.knowledge_graph.services.minio_storage.get_minio_storage_service"
+    "tilellm.shared.minio_storage.get_minio_storage_service"
 )
 
 

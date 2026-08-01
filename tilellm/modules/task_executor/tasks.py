@@ -190,13 +190,38 @@ async def task_community_analysis(request_dict: dict) -> dict:
 
 # ==================== FALKORDB TASKS ====================
 
+async def _result_already_stored(ctx) -> bool:
+    """
+    True if this exact task_id already has a stored result, i.e. we are seeing a
+    re-delivery of work that already completed.
+
+    RedisStreamBroker.listen() calls xautoclaim(min_idle_time=IDLE_TIMEOUT_MS) on
+    every loop iteration, so any task still in-flight past that threshold gets
+    re-delivered under the SAME task_id (no new stream entry — invisible in xlen).
+    Tasks whose first action is destructive must therefore be idempotent; this is
+    the same check _startup_reclaim performs for the startup reclaim path.
+    Never blocks real work: an unreachable backend returns False.
+    """
+    try:
+        task_id = ctx.message.task_id
+        return bool(await broker.result_backend.is_result_ready(task_id))
+    except Exception as e:  # noqa: BLE001 — guard must never mask the real task
+        logger.warning(f"Duplicate-delivery guard check failed, proceeding: {e}")
+        return False
+
+
 @broker.task(retry_on_error=False, labels={"task_type": "falkor_graph_create"})
-async def task_falkor_graph_create(request_dict: dict) -> dict:
+async def task_falkor_graph_create(request_dict: dict, ctx: Context = TaskiqDepends()) -> dict:
     """
     Task to create/import a community graph using FalkorDB.
     """
-
-
+    if await _result_already_stored(ctx):
+        logger.warning(
+            f"♻️ Skipping duplicate delivery of falkor_graph_create "
+            f"(task_id={ctx.message.task_id}, namespace={request_dict.get('namespace')}): "
+            f"a result is already stored. Re-running would wipe the graph it just built."
+        )
+        return {"status": "skipped_duplicate", "namespace": request_dict.get("namespace")}
 
     try:
         from tilellm.modules.knowledge_graph_falkor import logic as falkor_logic

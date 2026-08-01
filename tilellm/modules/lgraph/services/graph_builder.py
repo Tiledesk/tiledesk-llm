@@ -72,6 +72,7 @@ async def build_light_graph(
             "text": (c.get("text") or "")[:_TEXT_SNIPPET_LEN],
             "metadata_id": c.get("metadata_id") or "",
             "source": c.get("source") or "",
+            "page_number": c.get("page_number"),
             "namespace": namespace,
             "index_name": index_name,
         }
@@ -84,7 +85,7 @@ async def build_light_graph(
         q = """
         UNWIND $nodes AS nd
         MERGE (c:LChunk {chunk_id: nd.chunk_id, namespace: nd.namespace, index_name: nd.index_name})
-        SET c.text = nd.text, c.metadata_id = nd.metadata_id, c.source = nd.source
+        SET c.text = nd.text, c.metadata_id = nd.metadata_id, c.source = nd.source, c.page_number = nd.page_number
         RETURN id(c) AS id, c.chunk_id AS chunk_id
         """
         rows = await repo._execute_query(q, {"nodes": batch}, graph_name=graph_name)

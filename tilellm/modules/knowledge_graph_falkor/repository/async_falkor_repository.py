@@ -21,6 +21,11 @@ from tilellm.modules.knowledge_graph.models import Node, Relationship
 
 logger = logging.getLogger(__name__)
 
+# Max entity ids per BELONGS_TO_COMMUNITY link query. Communities can hold
+# thousands of entities (6 972 in the largest on namespace 256237); sending them
+# as one list is what took FalkorDB down mid-restore.
+_COMMUNITY_LINK_BATCH_SIZE = int(os.environ.get("FALKOR_COMMUNITY_LINK_BATCH_SIZE", "500"))
+
 try:
     from falkordb.asyncio import FalkorDB
     from falkordb import Node as FalkorNode, Edge as FalkorEdge, Path as FalkorPath
@@ -1556,24 +1561,39 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
 
                 # Link entities in the community to this report (BELONGS_TO_COMMUNITY relationships)
                 entities = report.get("entities", [])
+                # A report round-tripped through parquet carries entities as a JSON
+                # string ('["11", "22"]'); iterating that yields single characters.
+                if isinstance(entities, str):
+                    try:
+                        entities = json.loads(entities)
+                    except (ValueError, TypeError):
+                        logger.warning(f"Unparsable entities payload on report {community_id}, skipping links")
+                        entities = []
                 if entities and report_node_id:
                     try:
                         # Convert entity IDs to integers (FalkorDB uses integer IDs)
                         entity_ids = [int(eid) if isinstance(eid, str) else eid for eid in entities]
 
-                        # FalkorDB version: use id() instead of elementId()
+                        # The report node is bound ONCE, before the UNWIND: keeping the
+                        # MATCH (c) inside the UNWIND scope re-scans every node for every
+                        # entity (6 972 entities x 10 000 nodes killed the server on
+                        # namespace 256237). FalkorDB version: id() instead of elementId().
                         link_query = """
+                        MATCH (c) WHERE id(c) = $report_id
+                        WITH c
                         UNWIND $entity_ids as entity_id
                         MATCH (e) WHERE id(e) = entity_id
-                        MATCH (c) WHERE id(c) = $report_id
                         MERGE (e)-[:BELONGS_TO_COMMUNITY]->(c)
                         """
-                        result = await self._execute_query(
-                            link_query,
-                            {"entity_ids": entity_ids, "report_id": int(report_node_id)},
-                            namespace=namespace,
-                            graph_name=graph_name
-                        )
+                        # Chunked so a single query never carries an unbounded list.
+                        for start in range(0, len(entity_ids), _COMMUNITY_LINK_BATCH_SIZE):
+                            batch = entity_ids[start: start + _COMMUNITY_LINK_BATCH_SIZE]
+                            await self._execute_query(
+                                link_query,
+                                {"entity_ids": batch, "report_id": int(report_node_id)},
+                                namespace=namespace,
+                                graph_name=graph_name
+                            )
                         logger.info(f"Linked {len(entity_ids)} entities to community report {report_node_id}")
                     except Exception as link_error:
                         logger.error(f"Failed to link entities to community report: {link_error}", exc_info=True)

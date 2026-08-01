@@ -1,5 +1,24 @@
 # Knowledge Graph (GraphRAG) Module
 
+> ## ⚠️ DEPRECATO — NON MANTENUTO
+>
+> Questa implementazione **Neo4j** è disabilitata in configurazione (`ENABLE_GRAPHRAG=false`) e non riceve più fix né nuove funzionalità. La documentazione qui sotto è conservata solo come riferimento storico.
+>
+> **Modulo attivo da usare: [`knowledge_graph_falkor`](../knowledge_graph_falkor/) (FalkorDB, router `/api/kg-falkor`).**
+>
+> I due package sono copie parallele quasi omonime: prima di editare, verificare sempre nel log di `register_feature_routers` quale è attivo.
+>
+> **Pronto per la cancellazione.** L'infrastruttura condivisa che teneva in vita questo package è già stata estratta:
+>
+> | Era qui | Ora sta in |
+> |---|---|
+> | `models.models` (Node/Relationship/+Update) | `tilellm.models.graph` |
+> | `models.schemas.TaskPollResponse` | `tilellm.models.schemas.general_schemas` |
+> | `utils.rrf` | `tilellm.shared.rrf` |
+> | `services.minio_storage` | `tilellm.shared.minio_storage` |
+>
+> I residui (`repository.repository`, `tools.graphrag_extractor`, i 6 task legacy in `task_executor`) sono tutti Neo4j-specifici e guardati da `try/except` o importati a livello di funzione: cancellare la cartella non rompe avvio né worker. Dettaglio completo nel docstring di `__init__.py`.
+
 A modular component for Graph-based Retrieval Augmented Generation (GraphRAG) using Neo4j graph database and MinIO object storage.
 
 ## Features

@@ -1,11 +1,17 @@
 import logging
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import PlainTextResponse, Response
 from tilellm.models.document_type import DocumentType
 from tilellm.models.llm import ItemSingle
 from tilellm.controller.controller import add_item, add_item_hybrid
 from tilellm.modules.pdf_ocr.controllers import scrape_pdf
 from tilellm.modules.pdf_ocr.models.pdf_scraping import PDFScrapingRequest
 from tilellm.modules.ingestion.type_detector import resolve_item_type
+from tilellm.modules.ingestion.export.models import ExportMdRequest
+from tilellm.modules.ingestion.export.service import export_document
+from tilellm.modules.ingestion.export.serializers import to_json, to_md
+from tilellm.modules.ingestion.ingest.models import IngestMdRequest, IngestMdResult
+from tilellm.modules.ingestion.ingest.service import ingest_md
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +25,36 @@ def _build_pdf_request(item: ItemSingle) -> PDFScrapingRequest:
     PDFScrapingRequest extends ItemSingle with additional required fields
     (file_name, file_content) and uses ``llm`` / ``model`` instead of
     ``llm_provider`` / ``llm_model`` for the DI decorators.
+
+    Two things this function must get right, both learned the hard way:
+
+    * **Pipeline.** ``ItemSingle`` carries none of the PDF-specific switches, so a
+      request built from ``model_dump()`` alone leaves ``use_docling=False`` and
+      ``strategy=None`` — and ``scrape_pdf`` then picks the *legacy* MinIO pipeline,
+      which enqueues onto a Redis list that has no consumer in this codebase. The
+      documents are uploaded and never processed. We therefore request the Docling
+      (Taskiq) pipeline explicitly, while leaving ``strategy='quality'`` reachable
+      for callers that really want the legacy path.
+    * **Unknown keys.** ``pdf_options`` keys are validated against the real
+      ``PDFScrapingRequest`` fields and rejected when unknown. Silently dropping an
+      unrecognised option is exactly the failure mode above.
     """
     data = item.model_dump()
+
+    options = data.pop("pdf_options", None) or {}
+    if options:
+        unknown = sorted(set(options) - set(PDFScrapingRequest.model_fields))
+        if unknown:
+            raise ValueError(
+                f"pdf_options: chiavi sconosciute {unknown}. "
+                f"Ammesse: {sorted(PDFScrapingRequest.model_fields)}"
+            )
+        data.update(options)
+
+    # Docling/Taskiq pipeline unless the caller asked for something else: the legacy
+    # alternative enqueues onto a queue nothing consumes.
+    if not data.get("use_docling") and not data.get("strategy"):
+        data["strategy"] = "auto"
 
     # file_content: URL or base64 blob — use source as primary
     if not data.get("file_content"):
@@ -142,3 +176,38 @@ async def unified_ingestion(item: ItemSingle):
     # ── Standard ──────────────────────────────────────────────────────────
     logger.info("Routing doc_id=%s → standard ingestion pipeline", item.id)
     return await add_item(item)
+
+
+@router.post("/export/md")
+async def export_md_endpoint(request: ExportMdRequest):
+    """
+    Extract a document into the canonical form (Markdown+frontmatter or JSON) —
+    **no vector store write**. The counterpart ingestion endpoint (parsing the
+    frontmatter back into a real vector-store write) is a separate, later step.
+
+    `format`: 'md' (default, frontmatter+body) or 'json' (lossless).
+    """
+    try:
+        doc = await export_document(request)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    if request.format == "json":
+        return Response(content=to_json(doc), media_type="application/json")
+    return PlainTextResponse(content=to_md(doc), media_type="text/markdown")
+
+
+@router.post("/ingest/md", response_model=IngestMdResult)
+async def ingest_md_endpoint(request: IngestMdRequest):
+    """
+    Ingest a previously-exported document (Markdown+frontmatter or JSON, from
+    POST /api/export/md) into the vector store — the F2 counterpart of export/md.
+
+    Writes via `repo.aadd_documents` (not add_item/add_item_hybrid): the caller's
+    frontmatter becomes real per-chunk metadata with no gap. `hybrid=True`
+    additionally generates sparse vectors (`sparse_encoder`).
+    """
+    try:
+        return await ingest_md(request)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

@@ -927,11 +927,18 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
 # Function to format the result into the expected output structure
 def format_result(result, citations, question_answer, callback_handler, question_answer_list, success, duration=0.0):
     docs = result["context"]
-    ids, sources, content_chunks, source_file_map = extract_ids_sources(docs, question_answer.debug)
+    ids, sources, content_chunks, source_file_map, content_chunks_metadata = extract_ids_sources(
+        docs, question_answer.debug
+    )
     source = format_sources(citations, sources, question_answer.citations)
     if citations:
         for cit in citations:
             cit.source_file_name = source_file_map.get(cit.source_name)
+            # source_id indexes directly into `docs` (format_docs_with_id numbers
+            # sources the same way: "Source ID: {i}" over enumerate(docs)) — but it's
+            # LLM-produced, so bounds-check defensively against hallucination.
+            if 0 <= cit.source_id < len(docs):
+                cit.page = docs[cit.source_id].metadata.get('page_number')
     
     # Avoid IndexError if no documents are found
     metadata_id = ids[0] if ids else None
@@ -959,6 +966,7 @@ def format_result(result, citations, question_answer, callback_handler, question
         citations=citations,
         prompt_token_size=prompt_token_size,
         content_chunks=content_chunks,
+        content_chunks_metadata=content_chunks_metadata,
         success=success,
         duration=duration,
         error_message=None,
@@ -972,13 +980,20 @@ def extract_ids_sources(docs, debug):
     ids = []
     sources = []
     content_chunks = None
+    content_chunks_metadata = None
     source_file_map = {}
     if debug:
         content_chunks = []
+        content_chunks_metadata = []
         for doc in docs:
             ids.append(doc.metadata.get('id'))
             sources.append(doc.metadata.get('source'))
             content_chunks.append(doc.page_content)
+            content_chunks_metadata.append({
+                'source': doc.metadata.get('source'),
+                'file_name': doc.metadata.get('file_name'),
+                'page_number': doc.metadata.get('page_number'),
+            })
             src = doc.metadata.get('source')
             fn = doc.metadata.get('file_name')
             if src and fn:
@@ -995,7 +1010,7 @@ def extract_ids_sources(docs, debug):
     # Filter out None values and get unique elements
     ids = list(set([i for i in ids if i is not None]))
     sources = list(set([s for s in sources if s is not None]))
-    return ids, sources, content_chunks, source_file_map
+    return ids, sources, content_chunks, source_file_map, content_chunks_metadata
 
 
 # Function to format sources based on citations

@@ -18,7 +18,7 @@ from unittest.mock import MagicMock
 import pytest
 
 MINIO_FACTORY = (
-    "tilellm.modules.knowledge_graph.services.minio_storage.get_minio_storage_service"
+    "tilellm.shared.minio_storage.get_minio_storage_service"
 )
 
 

@@ -2,10 +2,27 @@
 Configurazione centralizzata per i parametri dei vari provider LLM.
 Ogni provider ha regole specifiche su quali parametri accettare.
 """
+import os
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
 
 from pydantic import SecretStr
+
+# Timeout per singola richiesta LLM, in secondi.
+#
+# NON e' una protezione da "richiesta appesa all'infinito": la libreria openai
+# ha gia' i suoi default (Timeout(connect=5s, read=600s), max_retries=2), quindi
+# una connessione morta viene comunque rilevata. Verificato: durante il blackout
+# di rete del 2026-07-30 il worker emetteva regolarmente APIConnectionError e
+# ritentava — non era bloccato in silenzio.
+#
+# Serve invece a rendere il valore ESPLICITO e REGOLABILE: 600s di read timeout
+# sono molto generosi per una singola chiamata di estrazione, e con i retry
+# sovrapposti (openai + quelli di graphrag_extractor) una singola chunk puo'
+# occupare uno slot di concorrenza per decine di minuti. 300s stringe il caso
+# peggiore lasciando ampio margine alle risposte lente, ed e' tarabile via env
+# senza toccare il codice.
+LLM_REQUEST_TIMEOUT_S = float(os.environ.get("LLM_REQUEST_TIMEOUT_S", "300"))
 
 
 @dataclass
@@ -140,6 +157,12 @@ def get_llm_params(
 
     # Aggiungi eventuali parametri extra
     params.update(extra_params)
+
+    # Timeout di default per OGNI provider (anche quelli non in PROVIDER_CONFIGS):
+    # e' una rete di sicurezza contro le richieste appese, non un parametro
+    # specifico del provider. Un timeout passato esplicitamente in extra_params
+    # ha la precedenza.
+    params.setdefault("timeout", LLM_REQUEST_TIMEOUT_S)
 
     return params
 

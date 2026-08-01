@@ -10,7 +10,7 @@ from collections import defaultdict
 
 try:
     from tilellm.modules.knowledge_graph.repository.repository import GraphRepository
-    from tilellm.modules.knowledge_graph.models import Node, Relationship
+    from tilellm.models.graph import Node, Relationship
     KNOWLEDGE_GRAPH_AVAILABLE = True
 except ImportError:
     KNOWLEDGE_GRAPH_AVAILABLE = False

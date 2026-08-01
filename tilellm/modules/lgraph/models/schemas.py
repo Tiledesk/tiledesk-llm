@@ -3,6 +3,7 @@ from typing import List, Optional, Dict, Any, Union
 
 from tilellm.models.vector_store import Engine
 from tilellm.models.embedding import LlmEmbeddingModel
+from tilellm.models.llm import TEIConfig
 
 
 # ---------------------------------------------------------------------------
@@ -16,7 +17,7 @@ class LGraphBuildRequest(BaseModel):
     spacy_model: str = Field(default="it_core_news_lg", description="spaCy model for entity extraction")
     use_noun_chunks: bool = Field(default=True, description="Include noun chunks as CONCEPT entities")
     include_entity_types: List[str] = Field(
-        default=["PER", "ORG", "LOC", "MISC", "CIG", "CUP", "DATE_IT", "MONEY", "QUANTITY"],
+        default=["PER", "ORG", "LOC", "MISC", "CIG", "CUP", "CF", "DATE_IT", "MONEY", "QUANTITY"],
         description="NER entity types to include (empty = all types).",
     )
     npmi_threshold: float = Field(default=0.1, description="Minimum NPMI for entity co-occurrence edges")
@@ -59,7 +60,7 @@ class LGraphSearchRequest(BaseModel):
     spacy_model: str = Field(default="it_core_news_lg", description="spaCy model matching the build phase")
     use_noun_chunks: bool = Field(default=True)
     include_entity_types: List[str] = Field(
-        default=["PER", "ORG", "LOC", "MISC", "CIG", "CUP", "DATE_IT", "MONEY", "QUANTITY"],
+        default=["PER", "ORG", "LOC", "MISC", "CIG", "CUP", "CF", "DATE_IT", "MONEY", "QUANTITY"],
     )
     top_k: int = Field(default=5, ge=1, le=50)
     ppr_alpha: float = Field(default=0.85, description="PageRank damping factor")
@@ -73,6 +74,10 @@ class ChunkResult(BaseModel):
     metadata_id: str
     source: str
     ppr_score: float
+    page: Optional[int] = Field(
+        default=None,
+        description="Page number the chunk comes from, when the source document is paginated.",
+    )
 
 
 class LGraphSearchResponse(BaseModel):
@@ -103,7 +108,7 @@ class LGraphQARequest(BaseModel):
     spacy_model: str = Field(default="it_core_news_lg")
     use_noun_chunks: bool = Field(default=True)
     include_entity_types: List[str] = Field(
-        default=["PER", "ORG", "LOC", "MISC", "CIG", "CUP", "DATE_IT", "MONEY", "QUANTITY"],
+        default=["PER", "ORG", "LOC", "MISC", "CIG", "CUP", "CF", "DATE_IT", "MONEY", "QUANTITY"],
     )
     top_k: int = Field(default=10, ge=1, le=100)
     ppr_alpha: float = Field(default=0.85)
@@ -114,6 +119,23 @@ class LGraphQARequest(BaseModel):
     date_to: Optional[str] = Field(default=None)
     system_context: str = Field(default="")
     debug: bool = Field(default=False)
+
+
+class LGraphHybridRequest(LGraphQARequest):
+    """Vector-seeded PPR + RRF fusion: a prior dense/sparse search on the same
+    namespace seeds the PPR (seed_chunk_ids), then vector-rank and PPR-rank are
+    combined with Reciprocal Rank Fusion. Falls back to entity-only PPR (like
+    plain /qa) when the vector search finds nothing."""
+    sparse_encoder: Union[str, TEIConfig, None] = Field(default="splade")
+    search_type: str = Field(default="hybrid")
+    vector_top_k: int = Field(
+        default=10, ge=1, le=100,
+        description="How many vector-search chunks seed the PPR.",
+    )
+    rrf_k: int = Field(
+        default=60,
+        description="RRF constant (see knowledge_graph/utils/rrf.py) for fusing vector-rank and PPR-rank.",
+    )
 
 
 class LGraphQAResponse(BaseModel):

@@ -178,6 +178,16 @@ class ItemSingle(BaseModel):
         default=False,
         description="Whether to use OCR for PDF processing (routes to Advanced PDF pipeline).",
     )
+    pdf_options: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Opzioni della pipeline PDF/OCR, valide solo con use_ocr=true. Le chiavi sono "
+            "campi di PDFScrapingRequest (es. extract_md_simple, export_md, converter, "
+            "skip_ocr, strategy, include_tables): una chiave sconosciuta viene RIFIUTATA, "
+            "non ignorata. Omesso, la pipeline Docling viene comunque usata "
+            "(strategy='auto')."
+        ),
+    )
     id_project: Optional[str] = Field(
         default=None,
         description="Tiledesk project ID — required for analytics routing. "

@@ -813,6 +813,7 @@ class MilvusRepository(VectorStoreRepository):
                 namespace=question_answer.namespace,
                 chunks=[doc.page_content for doc in documents],
                 metadata=[doc.metadata for doc in documents],
+                chunk_ids=[str(doc.id) for doc in documents],
                 error_message=None,
                 duration=duration
             )
@@ -1077,7 +1078,8 @@ class MilvusRepository(VectorStoreRepository):
                     metadata_source=metadata.get("source", ""),
                     metadata_type=metadata.get("type", ""),
                     date=metadata.get("date", "Date not defined"),
-                    text=result.get("page_content", "") if with_text else None
+                    text=result.get("page_content", "") if with_text else None,
+                    metadata=metadata,
                 ))
 
             logger.debug(f"Retrieved {len(matches)} objects from namespace='{namespace}'")

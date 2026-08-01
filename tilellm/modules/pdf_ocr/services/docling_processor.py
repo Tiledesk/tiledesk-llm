@@ -23,7 +23,7 @@ except ImportError:
 from tilellm.shared.embedding_factory import AsyncEmbeddingFactory
 from tilellm.modules.pdf_ocr.services.document_structure_extractor import DocumentStructureExtractor
 from tilellm.shared.utility import get_service_config
-from tilellm.modules.knowledge_graph.services.minio_storage import get_minio_storage_service
+from tilellm.shared.minio_storage import get_minio_storage_service
 
 logger = logging.getLogger(__name__)
 
@@ -280,7 +280,7 @@ class ProductionDocumentProcessor:
         doc_node_id = None
         if self.graph_repository:
             try:
-                from tilellm.modules.knowledge_graph.models import Node
+                from tilellm.models.graph import Node
                 
                 # Check if exists
                 existing = self.graph_repository.find_nodes_by_property("Document", "id", doc_id)
@@ -528,7 +528,7 @@ class ProductionDocumentProcessor:
         # Neo4J Node via GraphRepository
         if self.graph_repository:
             try:
-                from tilellm.modules.knowledge_graph.models import Node, Relationship
+                from tilellm.models.graph import Node, Relationship
                 
                 table_node = Node(
                     id=table_id,
@@ -589,7 +589,7 @@ class ProductionDocumentProcessor:
             logger.warning(f"Skipping text node creation: Document {doc_id} not found in graph")
             return
 
-        from tilellm.modules.knowledge_graph.models import Node, Relationship
+        from tilellm.models.graph import Node, Relationship
 
         for element in text_elements:
             try:
@@ -661,7 +661,7 @@ class ProductionDocumentProcessor:
         # Neo4J Node via GraphRepository
         if self.graph_repository:
             try:
-                from tilellm.modules.knowledge_graph.models import Node, Relationship
+                from tilellm.models.graph import Node, Relationship
                 
                 image_node = Node(
                     id=image_id,
@@ -718,7 +718,7 @@ class ProductionDocumentProcessor:
         logger.info(f"Building spatial graph for document {doc_id}")
         
         try:
-            from tilellm.modules.knowledge_graph.models import Node, Relationship
+            from tilellm.models.graph import Node, Relationship
             
             # 1. Collect all elements across all pages
             all_elements = []

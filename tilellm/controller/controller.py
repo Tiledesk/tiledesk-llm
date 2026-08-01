@@ -1234,7 +1234,6 @@ async def ask_to_llm_1(question: QuestionToLLM, chat_model=None):
         return JSONResponse(status_code=400, content=result_to_return.model_dump())
 
 
-@inject_llm_async
 async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
     """
     Invokes an MCP agent by handling multimodal inputs (text, images, documents).
@@ -1848,7 +1847,6 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
         return handle_agent_exception(e, "ask_mcp_agent_llm")
 
 
-@inject_llm_async
 async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
     """
     Optimized version that resolves the context overflow issue.
@@ -2442,6 +2440,47 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
         )
         analytics.publish_nowait(_et, question.id_project, _pl)
         return handle_agent_exception(e, "ask_mcp_agent_llm_simple")
+
+
+# ---------------------------------------------------------------------------
+# MCP agent dispatch — shared by /api/ask and /api/thinking
+# ---------------------------------------------------------------------------
+# The agent cores (ask_mcp_agent_llm / _simple) are model-agnostic: they take an
+# already-built chat_model. The only difference between /api/ask and /api/thinking
+# is which decorator builds that model (standard vs reasoning). So routing lives
+# here, injection lives in the two thin shims below.
+
+def _is_simple_question(question: QuestionToLLM) -> bool:
+    """True for a plain string prompt; False for a list or a JSON-encoded list
+    (multimodal / multi-part input needs the full agent path)."""
+    if not isinstance(question.question, str):
+        return False
+    try:
+        parsed = json.loads(question.question)
+    except (json.JSONDecodeError, ValueError):
+        return True
+    return not isinstance(parsed, list)
+
+
+async def _dispatch_mcp_agent(question: QuestionToLLM, chat_model):
+    """Route to the optimized simple core or the full multimodal core."""
+    if _is_simple_question(question):
+        logger.info("Using ask_mcp_agent_llm_simple (simple string input)")
+        return await ask_mcp_agent_llm_simple(question, chat_model)
+    logger.info("Using ask_mcp_agent_llm (complex/multimodal input)")
+    return await ask_mcp_agent_llm(question, chat_model)
+
+
+@inject_llm_async
+async def ask_mcp_agent(question: QuestionToLLM, chat_model=None):
+    """MCP-agent entry point for /api/ask (standard chat model)."""
+    return await _dispatch_mcp_agent(question, chat_model)
+
+
+@inject_reason_llm_async
+async def ask_mcp_agent_reason(question: QuestionToLLM, chat_model=None):
+    """MCP-agent entry point for /api/thinking (reasoning-capable chat model)."""
+    return await _dispatch_mcp_agent(question, chat_model)
 
 
 @inject_repo_async

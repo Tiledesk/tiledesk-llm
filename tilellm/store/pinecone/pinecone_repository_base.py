@@ -186,7 +186,17 @@ class CachedVectorStore:
 class PineconeRepositoryBase(VectorStoreRepository):
     sparse_enabled = False
 
-
+    @staticmethod
+    def _normalize_upsert_metadata(metadata: dict) -> dict:
+        """
+        Ensure tags is always present as a list (never omitted) before upsert:
+        it's used for metadata filtering (build_tags_filter / query filter),
+        so callers must be able to rely on the key existing. Namespace is not
+        normalized here: Pinecone namespaces are native, passed via the
+        `namespace=` param on upsert/query, not stored in metadata.
+        """
+        metadata["tags"] = metadata.get("tags") or []
+        return metadata
 
     @abstractmethod
     async def search_community_report(self, question_answer, index, dense_vector, sparse_vector):
@@ -236,11 +246,11 @@ class PineconeRepositoryBase(VectorStoreRepository):
                 vectors_to_upsert = []
                 for j, content in enumerate(batch_contents):
                     # Combine original metadata with page_content for text_key and namespace for filtering
-                    combined_metadata = {
+                    combined_metadata = self._normalize_upsert_metadata({
                         **batch_metadatas[j],
                         engine.text_key: content, # This is crucial for text retrieval
                         "namespace": namespace # Ensure namespace is in metadata for easy filtering
-                    }
+                    })
 
                     vector = {
                         "id": batch_ids[j],
@@ -573,12 +583,14 @@ class PineconeRepositoryBase(VectorStoreRepository):
             result = []
 
             for obj in matches:
+                obj_metadata = obj.get('metadata') or {}
                 result.append(RepositoryQueryResult(id=obj.get('id', ""),
-                                                    metadata_id=obj.get('metadata').get('id'),
-                                                    metadata_source=obj.get('metadata').get('source'),
-                                                    metadata_type=obj.get('metadata').get('type'),
-                                                    date=obj.get('metadata').get('date', 'Date not defined'),
-                                                    text=obj.get('metadata').get(engine.text_key) if with_text else None  # su pod content, su Serverless text
+                                                    metadata_id=obj_metadata.get('id'),
+                                                    metadata_source=obj_metadata.get('source'),
+                                                    metadata_type=obj_metadata.get('type'),
+                                                    date=obj_metadata.get('date', 'Date not defined'),
+                                                    text=obj_metadata.get(engine.text_key) if with_text else None,  # su pod content, su Serverless text
+                                                    metadata=obj_metadata,
                                                     )
                               )
             res = RepositoryItems(matches=result)

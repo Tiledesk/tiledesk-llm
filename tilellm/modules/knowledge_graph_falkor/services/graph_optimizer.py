@@ -407,79 +407,87 @@ class GraphOptimizer:
 
         logger.info(f"Reimporting optimised graph into FalkorDB (graph='{graph_name}')...")
 
-        # Wipe existing nodes for this namespace
-        await self.repository.delete_all_nodes(namespace=namespace, graph_name=graph_name)
+        # Wipe existing nodes for this namespace. Only namespace is passed (no
+        # engine_name/engine_type) so CommunityReport nodes match too — they carry
+        # namespace but are saved with those two as None — giving a complete wipe
+        # before the snapshot restores both entities and reports.
+        await self.repository.delete_nodes_by_metadata(namespace=namespace, graph_name=graph_name)
 
-        # ---- Reimport nodes ----
+        # ---- Reimport nodes (bulk UNWIND, not one query per node) ----
+        # A per-row create_node/create_relationship loop meant 17 311 round trips on
+        # namespace 256237 and FalkorDB dropped the connection mid-restore. These are
+        # the same batch writers import_from_vector_store uses.
         nodes_df = pd.read_parquet(io.BytesIO(nodes_bytes))
-        entity_node_map: Dict[str, str] = {}
 
+        entities_payload = []
         for _, row in nodes_df.iterrows():
             props = row.to_dict()
-            label = props.pop("label", "ENTITY")
-            node_id_original = str(props.pop("id", ""))
-            # Deserialise source_ids
-            src = props.get("source_ids", "[]")
-            try:
-                props["source_ids"] = json.loads(src) if isinstance(src, str) else (src or [])
-            except Exception:
-                props["source_ids"] = []
+            entities_payload.append({
+                "entity_name": str(props.get("name", "")),
+                "entity_type": str(props.get("label") or props.get("entity_type") or "ENTITY"),
+                "description": props.get("description", "") or "",
+                "source_id": _as_list(props.get("source_ids", [])),
+                "metadata_id": props.get("metadata_id", "unknown"),
+            })
 
-            from tilellm.modules.knowledge_graph.models import Node
-            node = Node(label=label, properties=props)
-            created = await self.repository.create_node(
-                node, namespace=namespace, graph_name=graph_name
-            )
-            if created.id and props.get("name"):
-                entity_node_map[self.repository._normalize_name(props["name"])] = created.id
+        entity_node_map: Dict[str, str] = await self.repository.batch_create_nodes(
+            entities=entities_payload,
+            namespace=namespace,
+            graph_name=graph_name,
+        )
+        logger.info(f"Reimported {len(entities_payload)} nodes (batch)")
 
-        logger.info(f"Reimported {len(nodes_df)} nodes")
-
-        # ---- Reimport relationships ----
+        # ---- Reimport relationships (bulk UNWIND) ----
+        # Re-linked by entity NAME: the stored source_id/target_id are ids of the graph
+        # just wiped, whereas batch_create_nodes hands back normalized_name → new id.
         rels_df = pd.read_parquet(io.BytesIO(rels_bytes))
-        # Build old_id → new_id map using names (entity_node_map already has new IDs)
-        # The rels reference old FalkorDB node IDs; we need to resolve via names.
-        # Since we remapped in _apply_merge using canonical IDs, and the nodes Parquet
-        # still carries the original IDs, build a direct old_id → new_falkor_id map.
+
+        rels_payload = []
+        for _, row in rels_df.iterrows():
+            props = row.to_dict()
+            rels_payload.append({
+                "relationship_type": str(props.get("type") or "RELATED_TO"),
+                "src_id": str(props.get("source_entity", "") or ""),
+                "tgt_id": str(props.get("target_entity", "") or ""),
+                "description": props.get("description", "") or "",
+                "weight": props.get("weight", 1.0),
+                "source_id": _as_list(props.get("source_ids", [])),
+            })
+
+        rels_created = await self.repository.batch_create_relationships(
+            relationships=rels_payload,
+            entity_node_map=entity_node_map,
+            namespace=namespace,
+            graph_name=graph_name,
+        )
+        logger.info(f"Reimported {rels_created} relationships (batch)")
+
+        # Snapshot id → new id, for the community reports below.
         old_to_new: Dict[str, str] = {}
         for _, row in nodes_df.iterrows():
-            old_to_new[str(row["id"])] = entity_node_map.get(
-                self.repository._normalize_name(str(row.get("name", "")))
-            ) or ""
-
-        rels_created = 0
-        from tilellm.modules.knowledge_graph.models import Relationship, RelationshipProperties
-        for _, row in rels_df.iterrows():
-            src_new = old_to_new.get(str(row["source_id"]))
-            tgt_new = old_to_new.get(str(row["target_id"]))
-            if not src_new or not tgt_new:
-                continue
-            try:
-                props = row.to_dict()
-                for drop_col in ("id", "source_id", "target_id", "type"):
-                    props.pop(drop_col, None)
-                # Deserialise source_ids if present
-                src_ids = props.get("source_ids", "[]")
-                try:
-                    props["source_ids"] = json.loads(src_ids) if isinstance(src_ids, str) else (src_ids or [])
-                except Exception:
-                    props["source_ids"] = []
-                rel = Relationship(
-                    source_id=src_new,
-                    target_id=tgt_new,
-                    type=str(row.get("type", "RELATED_TO")),
-                    properties=props,
-                )
-                await self.repository.create_relationship(rel, namespace=namespace, graph_name=graph_name)
-                rels_created += 1
-            except Exception as e:
-                logger.warning(f"Skipping relationship during reimport: {e}")
-
-        logger.info(f"Reimported {rels_created} relationships")
+            new_id = entity_node_map.get(self.repository._normalize_name(str(row.get("name", ""))))
+            if new_id:
+                old_to_new[str(row["id"])] = new_id
 
         # ---- Restore community reports ----
         for report in community_reports:
             try:
+                # report["entities"] holds ids from the graph we just wiped, and may
+                # arrive JSON-encoded from parquet. Remap through old_to_new so the
+                # BELONGS_TO_COMMUNITY edges point at the recreated nodes; ids that
+                # no longer resolve (e.g. lost to the old resultset_size truncation)
+                # are dropped rather than linked to an unrelated node.
+                raw_entities = report.get("entities", [])
+                if isinstance(raw_entities, str):
+                    try:
+                        raw_entities = json.loads(raw_entities)
+                    except (ValueError, TypeError):
+                        raw_entities = []
+                remapped = [
+                    new_id for new_id in (old_to_new.get(str(e)) for e in raw_entities) if new_id
+                ]
+                report = {**report, "entities": remapped}
+
                 await self.repository.save_community_report(
                     community_id=report.get("community_id", ""),
                     report=report,
@@ -495,3 +503,66 @@ class GraphOptimizer:
                 logger.warning(f"Failed to restore community report {report.get('community_id')}: {e}")
 
         logger.info(f"Restored {len(community_reports)} community reports")
+
+
+def _as_list(value) -> List[str]:
+    """
+    Coerce a parquet cell into a list.
+
+    Parquet round-trips make this messier than it looks: a missing cell comes
+    back as NaN (a float — and `NaN is not None` is True, which is what raised
+    "'float' object is not iterable"), and list columns come back as numpy
+    arrays rather than Python lists. Anything unrecognised degrades to [].
+    """
+    import json as _json
+
+    if isinstance(value, str):
+        try:
+            parsed = _json.loads(value)
+        except (ValueError, TypeError):
+            return []
+        return list(parsed) if isinstance(parsed, (list, tuple)) else []
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    if hasattr(value, "tolist"):  # numpy array / pandas array
+        listed = value.tolist()
+        return list(listed) if isinstance(listed, (list, tuple)) else []
+    return []
+
+
+def convert_stats_snapshot_to_optimizer_format(entities_bytes: bytes, relationships_bytes: bytes) -> Tuple[bytes, bytes]:
+    """
+    Bridge community_graph_service._save_stats's snapshot schema (columns
+    node_id/labels/entity_type/..., relationship_id/relationship_type/...,
+    auto-saved on every /create run) into the id/label/... and
+    id/type/source_id/target_id/... schema that GraphOptimizer._reimport
+    expects (its own graph_snapshots/ format). Lets the existing /reimport
+    endpoint rebuild a graph from either snapshot kind.
+    """
+    import pandas as pd
+
+    entities_df = pd.read_parquet(io.BytesIO(entities_bytes))
+    if not entities_df.empty:
+        entities_df = entities_df.rename(columns={"node_id": "id"})
+        if "labels" in entities_df.columns:
+            entities_df["label"] = entities_df["labels"].apply(
+                lambda v: v[0] if isinstance(v, (list, tuple)) and len(v) else None
+            )
+            entities_df = entities_df.drop(columns=["labels"])
+        if "label" not in entities_df.columns or entities_df["label"].isna().any():
+            fallback = entities_df.get("entity_type", "ENTITY")
+            entities_df["label"] = entities_df.get("label", fallback).fillna(fallback)
+
+    relationships_df = pd.read_parquet(io.BytesIO(relationships_bytes))
+    if not relationships_df.empty:
+        relationships_df = relationships_df.rename(columns={
+            "relationship_id": "id",
+            "relationship_type": "type",
+        })
+
+    nodes_buf = io.BytesIO()
+    entities_df.to_parquet(nodes_buf, index=False)
+    rels_buf = io.BytesIO()
+    relationships_df.to_parquet(rels_buf, index=False)
+
+    return nodes_buf.getvalue(), rels_buf.getvalue()

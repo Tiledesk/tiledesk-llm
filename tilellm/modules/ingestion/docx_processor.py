@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 def _get_minio_service():
     """Return MinIOStorageService if configured, else None."""
     try:
-        from tilellm.modules.knowledge_graph.services.minio_storage import (
+        from tilellm.shared.minio_storage import (
             get_minio_storage_service,
         )
         return get_minio_storage_service()

@@ -77,6 +77,14 @@ class AsyncTaskResponse(BaseModel):
     message: str = "Task submitted successfully"
 
 
+class TaskPollResponse(BaseModel):
+    """Response model for Task Polling"""
+    task_id: str
+    status: str  # queued, in_progress, success, failed
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
 class SimpleAnswer(BaseModel):
     answer: Union[str, Dict[str, Any], list] = Field(default="No answer")
     tools_log: Optional[list] = None

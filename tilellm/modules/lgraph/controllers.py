@@ -7,6 +7,7 @@ POST   /api/lgraph/build              Build light graph (async TaskIQ)
 GET    /api/lgraph/tasks/{id}         Poll async task status
 POST   /api/lgraph/search             PPR-based retrieval (sync)
 POST   /api/lgraph/qa                 PPR + LLM answer
+POST   /api/lgraph/hybrid             Vector-seeded PPR + RRF fusion + LLM answer
 POST   /api/lgraph/leiden             Leiden community detection (async TaskIQ)
 GET    /api/lgraph/network            Visualization data
 DELETE /api/lgraph/{namespace}        Delete graph for a namespace/index
@@ -24,6 +25,7 @@ from .models.schemas import (
     LGraphCommunitySummarizationRequest,
     LGraphCommunitySummarizationResponse,
     LGraphDeleteResponse,
+    LGraphHybridRequest,
     LGraphLeidenAsyncTaskResponse,
     LGraphLeidenRequest,
     LGraphLeidenResponse,
@@ -151,6 +153,27 @@ async def qa_graph(request: LGraphQARequest):
         raise HTTPException(status_code=501, detail=str(e))
     except Exception as e:
         logger.error(f"[lgraph] qa error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---- HYBRID (vector-seeded PPR + RRF fusion + LLM) -------------------------
+
+@router.post("/hybrid", response_model=LGraphQAResponse)
+async def qa_graph_hybrid(request: LGraphHybridRequest):
+    """
+    Vector-seeded PPR + RRF fusion + LLM answer.
+
+    A dense/sparse search on the namespace supplies seed_chunk_ids for the PPR
+    (entity-only PPR is the /qa behavior); vector-rank and PPR-rank are combined
+    with Reciprocal Rank Fusion. Falls back to entity-only PPR if the vector
+    search finds nothing.
+    """
+    try:
+        return await lgraph_logic.qa_lgraph_hybrid(request)
+    except ImportError as e:
+        raise HTTPException(status_code=501, detail=str(e))
+    except Exception as e:
+        logger.error(f"[lgraph] hybrid error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

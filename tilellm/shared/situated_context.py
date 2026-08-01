@@ -19,6 +19,8 @@ from pathlib import Path
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage
 
+from tilellm.shared.llm_config import LLM_REQUEST_TIMEOUT_S
+
 if TYPE_CHECKING:
     from tilellm.models.llm import SituatedContextConfig
 
@@ -363,7 +365,10 @@ async def build_llm_from_config(config: "SituatedContextConfig", fallback_api_ke
             logger.warning("SituatedContextConfig: api_key is missing or invalid")
             return None
 
-    kwargs = dict(temperature=config.temperature, max_tokens=config.max_tokens)
+    # timeout: senza, una connessione morta senza FIN lascia la richiesta appesa
+    # all'infinito e l'ingestion si ferma in silenzio (vedi LLM_REQUEST_TIMEOUT_S).
+    kwargs = dict(temperature=config.temperature, max_tokens=config.max_tokens,
+                  timeout=LLM_REQUEST_TIMEOUT_S)
 
     try:
         if config.provider in ('openai', 'vllm'):

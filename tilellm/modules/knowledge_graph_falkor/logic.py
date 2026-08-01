@@ -680,22 +680,45 @@ async def reimport_graph(
     minio = get_minio_storage_service()
     optimizer = GraphOptimizer(repository=graph_repo, minio_storage_service=minio)
 
-    snapshot = minio.load_graph_snapshot(
-        graph_name=request.graph_db_name,
-        timestamp=request.snapshot_timestamp,
-    )
-    community_reports = minio.load_community_reports(request.graph_db_name) if request.preserve_community_reports else []
+    from minio.error import S3Error
+
+    try:
+        snapshot = minio.load_graph_snapshot(
+            graph_name=request.graph_db_name,
+            timestamp=request.snapshot_timestamp,
+        )
+        community_reports = minio.load_community_reports(request.graph_db_name) if request.preserve_community_reports else []
+        nodes_bytes, rels_bytes = snapshot["nodes"], snapshot["relationships"]
+        snapshot_timestamp = snapshot["timestamp"]
+    except (FileNotFoundError, S3Error):
+        # Fall back to the snapshot every /create run auto-saves
+        # (community_graph_service._save_stats) — a different MinIO path/schema
+        # from GraphOptimizer's own graph_snapshots/, bridged via
+        # convert_stats_snapshot_to_optimizer_format.
+        from .services.graph_optimizer import convert_stats_snapshot_to_optimizer_format
+
+        stats_snapshot = minio.load_stats_snapshot(
+            namespace=request.namespace,
+            index_name=request.engine.index_name,
+            index_type=request.engine.type,
+            timestamp=request.snapshot_timestamp,
+        )
+        nodes_bytes, rels_bytes = convert_stats_snapshot_to_optimizer_format(
+            stats_snapshot["entities"], stats_snapshot["relationships"]
+        )
+        community_reports = stats_snapshot["community_reports"] if request.preserve_community_reports else []
+        snapshot_timestamp = stats_snapshot["timestamp"]
 
     await optimizer._reimport(
         namespace=request.namespace,
         graph_name=request.graph_db_name,
-        nodes_bytes=snapshot["nodes"],
-        rels_bytes=snapshot["relationships"],
+        nodes_bytes=nodes_bytes,
+        rels_bytes=rels_bytes,
         community_reports=community_reports,
     )
     return {
         "status": "success",
-        "snapshot_timestamp": snapshot["timestamp"],
+        "snapshot_timestamp": snapshot_timestamp,
         "community_reports_restored": len(community_reports),
     }
 

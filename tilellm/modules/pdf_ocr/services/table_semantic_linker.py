@@ -53,7 +53,7 @@ class TableSemanticLinker:
         # 4. Update Knowledge Graph if repository is available
         if self.graph_repository:
             try:
-                from tilellm.modules.knowledge_graph.models import Relationship
+                from tilellm.models.graph import Relationship
                 
                 # Link referencing paragraphs to table
                 for elem in referencing_elements:

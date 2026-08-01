@@ -35,6 +35,10 @@ class Citation(BaseModel):
         default=None,
         description="Human-readable file/page name from document metadata (e.g. 'price-list.pdf', 'Home – Acme Corp'). Use as link label in UX.",
     )
+    page: Optional[int] = Field(
+        default=None,
+        description="Page number the cited evidence comes from, resolved server-side from document metadata (never LLM-provided, to avoid hallucination).",
+    )
 
     @classmethod
     def from_llm(cls, llm_cit: "_LLMCitation") -> "Citation":
@@ -91,6 +95,10 @@ class RetrievalResult(BaseModel):
     sources: Optional[List[Union[str, Dict[str,str]]]] | None = None
     citations: Optional[List[Citation]] | None = None
     content_chunks: Optional[List[str]] | None = None
+    content_chunks_metadata: Optional[List[Dict[str, Any]]] | None = Field(
+        default=None,
+        description="Per-chunk provenance (source, file_name, page_number), same order/length as content_chunks — audit trail. Populated only when debug=true.",
+    )
     prompt_token_size: int = Field(default=0)
     error_message: Optional[str] | None = None
     duration: Optional[float]= Field(default=0)
@@ -104,6 +112,11 @@ class RetrievalChunksResult(BaseModel):
     namespace: str
     chunks: Optional[List[str]] | None = None
     metadata: Optional[List[dict]] | None = None
+    chunk_ids: Optional[List[str]] | None = Field(
+        default=None,
+        description="Vector store's own per-chunk id (same id space as RepositoryQueryResult.id), "
+                    "same order as chunks/metadata. Used as PPR seed_chunk_ids for graph hybrid retrieval.",
+    )
     error_message: Optional[str] | None = None
     duration: Optional[float]= Field(default=0)
 

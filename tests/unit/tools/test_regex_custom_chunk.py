@@ -165,9 +165,53 @@ Contenuto pagina 1
     assert doc.metadata['source'] == "http://example.com/test.txt"
     assert doc.metadata['type'] == 'regex_custom'
     assert doc.metadata['page_number'] == 1
-    
+
     print(f"Metadata: {doc.metadata}")
     print("✓ Metadata population works correctly")
+
+
+def test_regex_custom_chunk_file_name_derived_from_url():
+    """file_name must be derived from the source URL so downstream citation
+    building (extract_ids_sources / source_file_map) can resolve a human-readable
+    name — previously only 'source' (the raw URL) was set, leaving citations
+    without a document identity for regex_custom-ingested content."""
+    test_content = """========== INIZIO: pagina_1.md ==========
+Contenuto pagina 1
+========== FINE: pagina_1.md =========="""
+
+    chunk_regex = r"={10,}\s*INIZIO: pagina_(\d+)\.md\s*={10,}(.*?)\s*={10,}\s*FINE: pagina_\1\.md\s*={10,}"
+
+    with patch('tilellm.tools.document_tools.requests.get') as mock_get:
+        mock_response = mock_get.return_value
+        mock_response.text = test_content
+        mock_response.raise_for_status = lambda: None
+
+        import asyncio
+        documents = asyncio.run(handle_regex_custom_chunk(
+            url="http://localhost:5200/download/00002_ABC123.txt",
+            chunk_regex=chunk_regex
+        ))
+
+    assert documents[0].metadata.get('file_name') == "00002_ABC123.txt"
+
+
+def test_regex_custom_chunk_file_name_on_no_match_fallback():
+    """The no-match fallback path (whole content as one Document) must also
+    carry file_name, not just the paginated path."""
+    chunk_regex = r"={10,}\s*INIZIO: pagina_(\d+)\.md\s*={10,}(.*?)\s*={10,}\s*FINE: pagina_\1\.md\s*={10,}"
+
+    with patch('tilellm.tools.document_tools.requests.get') as mock_get:
+        mock_response = mock_get.return_value
+        mock_response.text = "plain text, no markers"
+        mock_response.raise_for_status = lambda: None
+
+        import asyncio
+        documents = asyncio.run(handle_regex_custom_chunk(
+            url="http://localhost:5200/download/report.txt",
+            chunk_regex=chunk_regex
+        ))
+
+    assert documents[0].metadata.get('file_name') == "report.txt"
 
 
 if __name__ == "__main__":

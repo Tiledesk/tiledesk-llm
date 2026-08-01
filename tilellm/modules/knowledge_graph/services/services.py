@@ -21,7 +21,7 @@ from tilellm.models.schemas import RepositoryItems
 from tilellm.tools.reranker import TileReranker
 from langchain_core.documents import Document
 from .clustering import ClusterService  # type: ignore
-from .minio_storage import MinIOStorageService
+from tilellm.shared.minio_storage import MinIOStorageService
 
 from ..utils import (
     GRAPH_QA_PROMPT_TEMPLATE,

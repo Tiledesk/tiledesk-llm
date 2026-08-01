@@ -236,6 +236,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                                               namespace=question_answer.namespace,
                                               chunks=[chunk.page_content for chunk in results],
                                               metadata=[chunk.metadata for chunk in results],
+                                              chunk_ids=[str(chunk.id) for chunk in results],
                                               error_message=None,
                                               duration=duration
                                               )
@@ -297,24 +298,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                                                        browser_headers=item.browser_headers,
                                                        chunk_regex=item.chunk_regex
                                                        )
-                base_metadata = MetadataItem(
-                    id=item.id,
-                    source=item.source,
-                    type=item.type,
-                    embedding=str(item.embedding)
-                ).model_dump(exclude_none=True)
-
-                if item.tags:
-                    base_metadata["tags"] = item.tags
-
-                # Unisci i metadati del documento con i metadati base, escludendo None
-                chunks = [
-                    Document(
-                        page_content=document.page_content,
-                        metadata={k: v for k, v in {**document.metadata, **base_metadata}.items() if v is not None}
-                    )
-                    for document in documents
-                ]
+                chunks = self._build_regex_custom_chunks(item, documents)
             else:
                 # Direct text content — use auto-detection for format
                 metadata = MetadataItem(id=item.id,
@@ -442,24 +426,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                                                        browser_headers=item.browser_headers,
                                                        chunk_regex=item.chunk_regex
                                                        )
-                base_metadata = MetadataItem(
-                    id=item.id,
-                    source=item.source,
-                    type=item.type,
-                    embedding=str(item.embedding)
-                ).model_dump(exclude_none=True)
-
-                if item.tags:
-                    base_metadata["tags"] = item.tags
-
-                # Unisci i metadati del documento con i metadati base, escludendo None
-                chunks = [
-                    Document(
-                        page_content=document.page_content,
-                        metadata={k: v for k, v in {**document.metadata, **base_metadata}.items() if v is not None}
-                    )
-                    for document in documents
-                ]
+                chunks = self._build_regex_custom_chunks(item, documents)
             else:
                 # Direct text content — use auto-detection for format
                 metadata = MetadataItem(id=item.id,
@@ -681,6 +648,36 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
         return chunks
 
     @staticmethod
+    def _build_regex_custom_chunks(item, documents) -> List[Document]:
+        """
+        Build chunks for the regex_custom ingestion type. Shared by add_item and
+        add_item_hybrid so both paths stay consistent: same metadata fields
+        (tags, file_name, page) as the standard chunk_documents path.
+        """
+        base_metadata = MetadataItem(
+            id=item.id,
+            source=item.source,
+            type=item.type,
+            embedding=str(item.embedding)
+        ).model_dump(exclude_none=True)
+
+        if item.tags:
+            base_metadata["tags"] = item.tags
+
+        chunks = []
+        for document in documents:
+            if not document.metadata.get("file_name"):
+                document.metadata["file_name"] = _extract_file_name(item.source or "")
+            if "page" not in document.metadata:
+                document.metadata["page"] = 1
+            # Unisci i metadati del documento con i metadati base, escludendo None
+            chunks.append(Document(
+                page_content=document.page_content,
+                metadata={k: v for k, v in {**document.metadata, **base_metadata}.items() if v is not None}
+            ))
+        return chunks
+
+    @staticmethod
     async def process_contents(type_source, source, metadata, content):
         document = Document(page_content=content, metadata=MetadataItem(**metadata).model_dump(exclude_none=True))
         return [document]
@@ -692,7 +689,10 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
         #batch_size: int = 32
 
         ids = [f"{_ascii_id(metadata_id)}#{uuid.uuid4().hex}" for _ in range(len(chunks))]
-        metadatas = [{**chunk.metadata, engine.text_key: chunk.page_content} for chunk in chunks]
+        metadatas = [
+            PineconeRepositoryServerless._normalize_upsert_metadata({**chunk.metadata, engine.text_key: chunk.page_content})
+            for chunk in chunks
+        ]
         async_req = True
 
         for i in range(0, len(contents), embedding_chunk_size):
@@ -872,6 +872,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
     @staticmethod
     async def upsert_vector_store(vector_store, chunks, metadata_id, namespace):
+        for chunk in chunks:
+            PineconeRepositoryServerless._normalize_upsert_metadata(chunk.metadata)
         ids = [f"{_ascii_id(metadata_id)}#{uuid.uuid4().hex}" for _ in range(len(chunks))]
         returned_ids = await vector_store.aadd_documents(chunks, namespace=namespace, ids=ids)
         logger.debug(f"upsert_vector_store: {returned_ids}")

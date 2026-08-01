@@ -1,4 +1,4 @@
-from .models import Node, NodeUpdate, Relationship, RelationshipUpdate
+from tilellm.models.graph import Node, NodeUpdate, Relationship, RelationshipUpdate  # moved out of this deprecated package
 from .schemas import GraphQARequest, GraphQAResponse, GraphCreateRequest, GraphCreateResponse
 
 __all__ = [

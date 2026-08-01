@@ -1095,18 +1095,21 @@ async def handle_regex_custom_chunk(url: str, chunk_regex: str, browser_headers:
     pattern = re.compile(chunk_regex, re.DOTALL)
     matches = pattern.findall(content)
     
+    file_name = _extract_file_name(url)
+
     if not matches:
         logger.warning(f"No matches found for regex pattern in content from {url}")
         doc = Document(
             page_content=content,
             metadata={
                 'source': url,
+                'file_name': file_name,
                 'type': 'regex_custom',
                 'page_number': None
             }
         )
         return [doc]
-    
+
     documents = []
     for match in matches:
         if isinstance(match, tuple) and len(match) >= 2:
@@ -1133,6 +1136,7 @@ async def handle_regex_custom_chunk(url: str, chunk_regex: str, browser_headers:
             page_content=page_content,
             metadata={
                 'source': url,
+                'file_name': file_name,
                 'type': 'regex_custom',
                 'page_number': page_number
             }
@@ -1146,6 +1150,7 @@ async def handle_regex_custom_chunk(url: str, chunk_regex: str, browser_headers:
             page_content=content,
             metadata={
                 'source': url,
+                'file_name': file_name,
                 'type': 'regex_custom',
                 'page_number': None
             }

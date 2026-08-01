@@ -124,6 +124,91 @@ class TestUtilityFunctions:
         assert _str_to_bool("random") is False
 
 
+class TestGoogleVertexAiRouting:
+    """Vertex AI routing for the 'google' LLM provider (project/location on LlmEmbeddingModel)."""
+
+    def test_apply_google_vertex_flag_sets_vertexai_when_project_present(self):
+        from tilellm.shared.utility import _apply_google_vertex_flag
+
+        client_config = {"model": "gemini-2.5-flash", "project": "poc-tiledesk-496310"}
+        result = _apply_google_vertex_flag(client_config)
+
+        assert result["vertexai"] is True
+
+    def test_apply_google_vertex_flag_leaves_config_untouched_without_project(self):
+        from tilellm.shared.utility import _apply_google_vertex_flag
+
+        client_config = {"model": "gemini-2.5-flash"}
+        result = _apply_google_vertex_flag(client_config)
+
+        assert "vertexai" not in result
+
+    def test_apply_google_vertex_flag_strips_project_and_location(self):
+        """
+        project/location must NOT reach ChatGoogleGenerativeAI: the google-genai
+        SDK discards an env-var API key whenever they're explicit constructor
+        args, forcing an unwanted ADC lookup (google.auth.exceptions.DefaultCredentialsError)
+        at request time instead of using the supplied api_key.
+        """
+        from tilellm.shared.utility import _apply_google_vertex_flag
+
+        client_config = {
+            "model": "gemini-2.5-flash",
+            "google_api_key": "AQ.Ab8RN6Jjqyi62sQ",
+            "project": "poc-tiledesk-496310",
+            "location": "europe-west8",
+        }
+        result = _apply_google_vertex_flag(client_config)
+
+        assert result["vertexai"] is True
+        assert "project" not in result
+        assert "location" not in result
+        assert result["google_api_key"] == "AQ.Ab8RN6Jjqyi62sQ"
+
+    @pytest.mark.asyncio
+    async def test_get_llm_config_for_client_propagates_project_and_location(self):
+        from tilellm.shared.utility import _get_llm_config_for_client
+        from tilellm.models.embedding import LlmEmbeddingModel
+        from tilellm.models.base import LLMEmbeddingProviders
+        from unittest.mock import MagicMock
+
+        question = MagicMock()
+        question.llm = "google"
+        question.model = LlmEmbeddingModel(
+            provider=LLMEmbeddingProviders.GOOGLE,
+            name="gemini-2.5-flash",
+            api_key="AQ.Ab8RN6Jjqyi62sQ",
+            project="poc-tiledesk-496310",
+            location="europe-west8",
+        )
+
+        client_config = await _get_llm_config_for_client(question, {})
+
+        assert client_config["project"] == "poc-tiledesk-496310"
+        assert client_config["location"] == "europe-west8"
+
+    @pytest.mark.asyncio
+    async def test_get_llm_config_for_client_omits_project_when_absent(self):
+        from tilellm.shared.utility import _get_llm_config_for_client
+        from tilellm.models.embedding import LlmEmbeddingModel
+        from tilellm.models.base import LLMEmbeddingProviders
+
+        from unittest.mock import MagicMock
+
+        question = MagicMock()
+        question.llm = "google"
+        question.model = LlmEmbeddingModel(
+            provider=LLMEmbeddingProviders.GOOGLE,
+            name="gemini-2.5-flash",
+            api_key="sk-ai-studio",
+        )
+
+        client_config = await _get_llm_config_for_client(question, {})
+
+        assert "project" not in client_config
+        assert "location" not in client_config
+
+
 class TestInjectDecorators:
     """Test dependency injection decorators."""
     

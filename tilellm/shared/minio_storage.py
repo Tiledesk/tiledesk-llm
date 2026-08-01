@@ -619,24 +619,39 @@ class MinIOStorageService:
         namespace: str,
         timestamp: Optional[str] = None,
         index_name: Optional[str] = None,
-        index_type: Optional[str] = None
+        index_type: Optional[str] = None,
+        confirm_destroy: bool = False
     ) -> int:
         """
         Delete artifacts for a namespace (or specific timestamp).
-        
+
+        PROTECTED — stored artifacts are a restore point, so deletion must be
+        deliberate: pass confirm_destroy=True. Same guard, same rationale as
+        knowledge_graph_falkor/services/minio_storage.py (see the "snapshot
+        durability policy" note at the top of that module); these two services
+        are diverged copies of one another and must not drift on this.
+
         Args:
             namespace: Namespace/collection name
-            timestamp: Optional timestamp (if None, delete all timestamps)
+            timestamp: Optional timestamp (if None, delete ALL timestamps)
             index_name: Optional name of the vector index (e.g., 'tilellm')
             index_type: Optional type of index ('serverless', 'pod', 'local', 'cloud')
-            
+            confirm_destroy: Must be True to actually delete anything
+
         Returns:
             Number of objects deleted
         """
         # Require index_name and index_type for new structure
         if not index_name or not index_type:
             raise ValueError("index_name and index_type are required for MinIO storage")
-        
+
+        if not confirm_destroy:
+            scope = f"timestamp {timestamp}" if timestamp else "ALL timestamps"
+            raise PermissionError(
+                f"Refusing to delete artifacts for namespace '{namespace}' ({scope}): "
+                f"they are a restore point. Pass confirm_destroy=True if you really mean it."
+            )
+
         if timestamp:
             prefix = f"{index_name}/{index_type}/{namespace}/{timestamp}/"
         else:

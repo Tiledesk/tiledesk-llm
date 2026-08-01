@@ -32,6 +32,7 @@ from tilellm.modules.compliance_checker.models_v2 import (
     DiscretionaryCriterion,
     DiscretionaryMode,
     DiscretionaryResult,
+    L01CheckResult,
     TenderLotRequirements,
 )
 from tilellm.modules.compliance_checker.prompts import (
@@ -40,6 +41,7 @@ from tilellm.modules.compliance_checker.prompts import (
 )
 from tilellm.modules.compliance_checker.prompts.xlsx_extraction import _LLMLotExtractionResult
 from tilellm.modules.compliance_checker.services.yaml_requirements_loader import YamlRequirementsLoader
+from tilellm.modules.compliance_checker.services.l01_service import run_l01_check
 from tilellm.shared.utility import inject_llm_chat_async, inject_repo_async
 from tilellm.shared import token_tracking
 from tilellm.shared.token_tracking import TokenUsageCollector, model_name_of
@@ -47,6 +49,32 @@ from tilellm.shared.token_tracking import TokenUsageCollector, model_name_of
 logger = logging.getLogger(__name__)
 
 _E_PROCUREMENT_DOMAIN = "e_procurement"
+
+
+def _apply_l01_quantity(
+    lot: TenderLotRequirements,
+    results: List[DiscretionaryResult],
+    l01_check: L01CheckResult,
+) -> None:
+    """Use the L01 product count as the comparable quantity for `quantity_from_l01` criteria.
+
+    Ampiezza di gamma: the price list lives in the operator's L01, which is deliberately
+    NOT indexed — the judge sees no chunk carrying it and returns `measured_quantity=None`,
+    leaving the criterion unscored for every operator. The count is the measurement.
+    A quantity the judge did manage to extract wins: this is a fallback, not an override.
+    """
+    if not l01_check or not l01_check.used:
+        return
+    flagged = {c.id for c in lot.requirements.discretionary if c.quantity_from_l01}
+    if not flagged:
+        return
+    for r in results:
+        if r.criterion_id in flagged and r.measured_quantity is None:
+            r.measured_quantity = float(l01_check.l01_products_total)
+            logger.info(
+                "Criterio '%s': measured_quantity=%s dal conteggio prodotti L01.",
+                r.criterion_id, r.measured_quantity,
+            )
 
 
 class DiscretionaryCheckService:
@@ -64,6 +92,8 @@ class DiscretionaryCheckService:
     async def evaluate_lot(self, lot: TenderLotRequirements) -> ComplianceReportV2:
         tabular_results = await self._check_tabular(lot)
         disc_results = await self._check_discretionary(lot)
+        l01_check = await self._check_l01()
+        _apply_l01_quantity(lot, disc_results, l01_check)
         summary = ComplianceSummaryV2.from_results(tabular_results, disc_results)
         return ComplianceReportV2(
             tender=lot.tender,
@@ -71,6 +101,39 @@ class DiscretionaryCheckService:
             summary=summary,
             tabular_results=tabular_results,
             discretionary_results=disc_results,
+            l01_check=l01_check,
+        )
+
+    # ------------------------------------------------------------------
+    # L01 → PDF consistency check (opt-in via request.l01_xlsx_url)
+    # ------------------------------------------------------------------
+
+    async def _check_l01(self) -> L01CheckResult:
+        """Explicit L01 flag: `used=False` unless an l01_xlsx_url was provided."""
+        if not (self._request.l01_xlsx_url and self._request.l01_xlsx_url.strip()):
+            return L01CheckResult(used=False)
+
+        async def _retrieve(query: str):
+            qa = QuestionAnswer(
+                question=query,
+                namespace=self._request.namespace,
+                engine=self._request.engine,
+                embedding=self._request.embedding,
+                sparse_encoder=self._request.sparse_encoder,
+                gptkey=self._request.gptkey,
+                model=self._request.model,
+                temperature=self._request.temperature,
+                max_tokens=self._request.max_tokens,
+                top_k=self._request.top_k,
+                search_type=self._request.search_type,
+            )
+            retrieval = await self._repo.get_chunks_from_repo(qa)
+            return (retrieval.chunks or [], retrieval.metadata or [])
+
+        return await run_l01_check(
+            self._request.l01_xlsx_url,
+            _retrieve,
+            concurrency=self._request.max_concurrent_requirements,
         )
 
     # ------------------------------------------------------------------

@@ -54,7 +54,7 @@ from tilellm.models.schemas import (
     RetrievalChunksResult,
 )
 from tilellm.models.schemas.general_schemas import AsyncTaskResponse
-from tilellm.modules.knowledge_graph.models.schemas import TaskPollResponse
+from tilellm.models.schemas.general_schemas import TaskPollResponse
 
 try:
     from tilellm.modules.task_executor.tasks import task_scrape_item_single
@@ -90,8 +90,8 @@ from tilellm.controller.controller import (
     get_sources_namespace,
     ask_to_llm,
     ask_reason_llm,
-    ask_mcp_agent_llm,
-    ask_mcp_agent_llm_simple,
+    ask_mcp_agent,
+    ask_mcp_agent_reason,
 )
 
 import logging
@@ -1002,44 +1002,29 @@ async def post_ask_to_llm_main(question: QuestionToLLM):
     logger.info(question)
 
     if not (question.servers or question.tools):
-        # Nessun MCP server -> usa l'LLM semplice
+        # Nessun MCP server / tool -> usa l'LLM semplice
         return await ask_to_llm(question=question)
-    else:
-        # Ci sono MCP servers -> verifica la complessità
-        is_simple_string = isinstance(question.question, str)
-
-        # Se è una stringa, prova a verificare se è un JSON/lista
-        if is_simple_string:
-            try:
-                parsed = json.loads(question.question)
-                # Se il parsing riesce ed è una lista, è complesso
-                if isinstance(parsed, list):
-                    is_simple_string = False
-            except (json.JSONDecodeError, ValueError):
-                # Non è JSON, rimane stringa semplice
-                pass
-
-        if is_simple_string:
-            # Stringa semplice -> usa la versione semplice MCP
-            logger.info("Using ask_mcp_agent_llm_simple (simple string input)")
-            # Per ora usa la versione complessa
-            return await ask_mcp_agent_llm_simple(question=question)
-        else:
-            # Input complesso (lista o multimodale) -> usa la versione complessa MCP
-            logger.info("Using ask_mcp_agent_llm (complex/multimodal input)")
-            return await ask_mcp_agent_llm(question=question)
+    # Con MCP server o tool interni -> agente (standard chat model)
+    return await ask_mcp_agent(question=question)
 
 
 @app.post("/api/thinking", response_model=SimpleAnswer, tags=["Question & Answer"])
 async def post_ask_to_llm_reason_main(question: QuestionToLLM):
     """
-    Query and Answer with a LLM
+    Query and Answer with a reasoning-capable LLM.
+
+    Come /api/ask, ma con modello di reasoning:
+    - niente servers/tools -> ask_reason_llm (thinking semplice)
+    - con MCP servers o tool interni -> agente di reasoning con supporto tool
     :param question:
-    :return: RetrievalResult
+    :return: SimpleAnswer / ReasoningAnswer
     """
     logger.info(question)
 
-    return await ask_reason_llm(question=question)
+    if not (question.servers or question.tools):
+        return await ask_reason_llm(question=question)
+    # Con MCP server o tool interni -> agente (reasoning chat model)
+    return await ask_mcp_agent_reason(question=question)
 
 
 @app.post("/api/scrape/status", response_model=ScrapeStatusResponse, tags=["Scrape"])

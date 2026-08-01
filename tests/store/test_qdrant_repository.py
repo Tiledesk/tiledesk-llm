@@ -353,6 +353,82 @@ async def test_get_all_obj_namespace_success(mocker):
     assert call_kwargs['scroll_filter'].must[0].match.value == namespace
     assert call_kwargs['with_payload'] == ['metadata']
 
+
+@pytest.mark.asyncio
+async def test_get_all_obj_namespace_passes_through_full_metadata(mocker):
+    """RepositoryQueryResult.metadata must carry the full raw metadata dict
+    (already fetched from Qdrant's payload) — needed so callers like lgraph's
+    build_lgraph can see custom fields (e.g. page_number, doc_type) that the
+    fixed id/source/type/date fields don't cover."""
+    namespace = "my-namespace"
+    mock_engine = Engine(
+        name="qdrant", deployment="local", host="localhost", port=6333,
+        index_name="test-collection", apikey=None,
+    )
+
+    mock_async_qdrant_client = AsyncMock()
+    mock_async_qdrant_client.collection_exists.return_value = True
+
+    raw_metadata = {
+        "id": "id1", "source": "src1", "type": "type1",
+        "namespace": namespace, "page_number": 7, "doc_type": "delibera",
+    }
+    mock_scroll_points = [MagicMock(id="chunk1", payload={"metadata": raw_metadata})]
+    mock_async_qdrant_client.scroll.side_effect = [(mock_scroll_points, None)]
+
+    mocker.patch('tilellm.store.qdrant.qdrant_repository_local.AsyncQdrantClient', return_value=mock_async_qdrant_client)
+
+    repo = QdrantRepository()
+    result = await repo.get_all_obj_namespace(mock_engine, namespace)
+
+    assert result.matches[0].metadata == raw_metadata
+
+
+@pytest.mark.asyncio
+async def test_get_chunks_from_repo_exposes_chunk_ids(mocker):
+    """RetrievalChunksResult.chunk_ids must carry each match's point id (same id
+    space as get_all_obj_namespace) — needed as PPR seed_chunk_ids for lgraph
+    hybrid retrieval. Point ids were already read onto Document.id and discarded."""
+    from pydantic import SecretStr
+    from tilellm.models import QuestionAnswer
+    from tilellm.store.qdrant.qdrant_repository_local import QdrantRepository
+
+    mock_engine = Engine(
+        name="qdrant", deployment="local", host="localhost", port=6333,
+        index_name="test-collection", apikey=None,
+    )
+    question_answer = QuestionAnswer(
+        question="q", namespace="ns", engine=mock_engine, search_type="similarity", top_k=2,
+        gptkey=SecretStr("test-key"),
+    )
+
+    mock_point = MagicMock()
+    mock_point.id = "point-123"
+    mock_point.payload = {"page_content": "hello", "metadata": {"source": "s1"}}
+
+    mock_client = MagicMock()
+    mock_client.query_points = MagicMock(return_value=MagicMock(points=[mock_point]))
+
+    mock_vector_store = MagicMock()
+    mock_vector_store.client = mock_client
+
+    mock_embedding_obj = AsyncMock()
+    mock_embedding_obj.aembed_query = AsyncMock(return_value=[0.1, 0.2])
+
+    mock_factory = AsyncMock()
+    mock_factory.create = AsyncMock(return_value=(mock_embedding_obj, 1536))
+    mocker.patch(
+        "tilellm.shared.embeddings.embedding_client_manager.CachedAsyncEmbeddingFactory",
+        return_value=mock_factory,
+    )
+
+    repo = QdrantRepository()
+    mocker.patch.object(repo, "create_index", AsyncMock(return_value=mock_vector_store))
+
+    result = await repo.get_chunks_from_repo(question_answer)
+
+    assert result.chunk_ids == ["point-123"]
+
 @pytest.mark.asyncio
 async def test_get_desc_namespace_success(mocker):
     """Test get_desc_namespace successfully returns a description of the namespace."""
@@ -452,3 +528,159 @@ async def test_get_sources_namespace_success(mocker):
     assert call_kwargs['scroll_filter'].must[1].key == "metadata.namespace"
     assert call_kwargs['scroll_filter'].must[1].match.value == namespace
     assert call_kwargs['with_payload'] == ['page_content', 'metadata']
+
+
+@pytest.mark.asyncio
+async def test_upsert_vector_store_enforces_namespace_on_every_chunk():
+    """
+    regex_custom builds its MetadataItem without `namespace` (defaults to None,
+    clobbering document.metadata via the merge in add_item). upsert_vector_store
+    must stamp the real namespace on every chunk before upsert regardless of what
+    upstream produced, mirroring upsert_vector_store_hybrid's existing behavior.
+    """
+    from langchain_core.documents import Document
+
+    namespace = "tenant-a"
+    chunks = [
+        Document(page_content="c1", metadata={"id": "doc1", "namespace": None}),  # regex_custom bug
+        Document(page_content="c2", metadata={"id": "doc1"}),  # namespace missing entirely
+        Document(page_content="c3", metadata={"id": "doc1", "namespace": "stale-namespace"}),
+    ]
+
+    mock_vector_store = MagicMock()
+    mock_vector_store.aadd_documents = AsyncMock(return_value=["id1", "id2", "id3"])
+
+    await QdrantRepository.upsert_vector_store(
+        vector_store=mock_vector_store,
+        chunks=chunks,
+        metadata_id="doc1",
+        namespace=namespace,
+    )
+
+    assert all(chunk.metadata["namespace"] == namespace for chunk in chunks)
+    mock_vector_store.aadd_documents.assert_awaited_once()
+    awaited_chunks = mock_vector_store.aadd_documents.call_args.kwargs["documents"]
+    assert all(chunk.metadata["namespace"] == namespace for chunk in awaited_chunks)
+
+
+class TestNormalizeUpsertMetadata:
+    """Shared normalization applied by both upsert_vector_store and upsert_vector_store_hybrid."""
+
+    def test_sets_namespace_and_defaults_missing_tags_to_empty_list(self):
+        metadata = {"id": "doc1"}
+        result = QdrantRepository._normalize_upsert_metadata(metadata, "tenant-a")
+
+        assert result["namespace"] == "tenant-a"
+        assert result["tags"] == []
+
+    def test_overrides_stale_namespace_and_none_tags(self):
+        metadata = {"id": "doc1", "namespace": "wrong-namespace", "tags": None}
+        result = QdrantRepository._normalize_upsert_metadata(metadata, "tenant-a")
+
+        assert result["namespace"] == "tenant-a"
+        assert result["tags"] == []
+
+    def test_preserves_existing_tags(self):
+        metadata = {"id": "doc1", "tags": ["billing", "urgent"]}
+        result = QdrantRepository._normalize_upsert_metadata(metadata, "tenant-a")
+
+        assert result["tags"] == ["billing", "urgent"]
+
+
+@pytest.mark.asyncio
+async def test_upsert_vector_store_defaults_tags_to_empty_list():
+    """Used for metadata filtering (build_tags_filter/build_filter): must always be a list, never absent."""
+    from langchain_core.documents import Document
+
+    chunks = [Document(page_content="c1", metadata={"id": "doc1"})]
+    mock_vector_store = MagicMock()
+    mock_vector_store.aadd_documents = AsyncMock(return_value=["id1"])
+
+    await QdrantRepository.upsert_vector_store(
+        vector_store=mock_vector_store, chunks=chunks, metadata_id="doc1", namespace="tenant-a"
+    )
+
+    assert chunks[0].metadata["tags"] == []
+
+
+@pytest.mark.asyncio
+async def test_upsert_vector_store_hybrid_defaults_tags_to_empty_list():
+    from langchain_core.documents import Document
+
+    chunks = [Document(page_content="c1", metadata={"id": "doc1"})]
+    mock_vector_store = MagicMock()
+    mock_vector_store.client.upsert = MagicMock()
+    mock_engine = Engine(name="qdrant", deployment="local", host="localhost", port=6333, index_name="test-collection")
+    mock_embeddings = MagicMock()
+    mock_embeddings.aembed_documents = AsyncMock(return_value=[[0.1, 0.2]])
+
+    await QdrantRepository.upsert_vector_store_hybrid(
+        vector_store=mock_vector_store,
+        contents=["c1"],
+        chunks=chunks,
+        metadata_id="doc1",
+        engine=mock_engine,
+        namespace="tenant-a",
+        embeddings=mock_embeddings,
+        sparse_vectors=[{"indices": [0], "values": [1.0]}],
+    )
+
+    payload = mock_vector_store.client.upsert.call_args.kwargs["points"][0].payload
+    assert payload["metadata"]["namespace"] == "tenant-a"
+    assert payload["metadata"]["tags"] == []
+    # Original chunk metadata must be untouched (hybrid builds a copy, unlike upsert_vector_store).
+    assert "tags" not in chunks[0].metadata
+
+
+class TestBuildRegexCustomChunks:
+    """Shared by add_item and add_item_hybrid so both stay consistent."""
+
+    @staticmethod
+    def _make_item(**overrides):
+        from types import SimpleNamespace
+        defaults = dict(
+            id="doc1", source="https://example.com/doc", type="regex_custom",
+            embedding="text-embedding-3-small", namespace="tenant-a", tags=None,
+        )
+        defaults.update(overrides)
+        return SimpleNamespace(**defaults)
+
+    def test_sets_namespace_file_name_page_and_stringified_embedding(self):
+        from langchain_core.documents import Document
+        from tilellm.store.qdrant.qdrant_repository_local import QdrantRepository as Repo
+
+        item = self._make_item()
+        documents = [Document(page_content="chunk one", metadata={})]
+
+        chunks = Repo._build_regex_custom_chunks(item, documents)
+
+        assert len(chunks) == 1
+        meta = chunks[0].metadata
+        assert meta["namespace"] == "tenant-a"
+        assert meta["file_name"]  # non-empty, derived from source
+        assert meta["page"] == 1
+        assert meta["embedding"] == "text-embedding-3-small"
+        assert isinstance(meta["embedding"], str)
+
+    def test_preserves_existing_file_name_and_page(self):
+        from langchain_core.documents import Document
+        from tilellm.store.qdrant.qdrant_repository_local import QdrantRepository as Repo
+
+        item = self._make_item()
+        documents = [Document(page_content="chunk one", metadata={"file_name": "custom.txt", "page": 3})]
+
+        chunks = Repo._build_regex_custom_chunks(item, documents)
+
+        assert chunks[0].metadata["file_name"] == "custom.txt"
+        assert chunks[0].metadata["page"] == 3
+
+    def test_includes_tags_when_present(self):
+        from langchain_core.documents import Document
+        from tilellm.store.qdrant.qdrant_repository_local import QdrantRepository as Repo
+
+        item = self._make_item(tags=["billing"])
+        documents = [Document(page_content="chunk one", metadata={})]
+
+        chunks = Repo._build_regex_custom_chunks(item, documents)
+
+        assert chunks[0].metadata["tags"] == ["billing"]

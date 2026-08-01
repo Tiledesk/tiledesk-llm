@@ -2,6 +2,38 @@
 MinIO Storage Service for GraphRAG artifacts.
 Handles storage and retrieval of Parquet files (community reports, entities, relationships)
 from MinIO S3-compatible storage.
+
+Snapshot durability policy
+--------------------------
+**The parquet snapshots written here are the system's only restore point, and
+nothing may delete them implicitly.**
+
+Why (incident, 2026-07-30): a duplicate TaskIQ delivery re-ran a destructive
+`overwrite=True` graph build on namespace 256237 and wiped 10 908 freshly
+extracted nodes out of FalkorDB. What made that recoverable at zero cost was
+the snapshot the successful build had already written here: POST
+/api/kg-falkor/reimport rebuilt the graph straight from parquet, with no LLM
+calls. Had those files been cleaned up "because the run failed", the only way
+back would have been a ~2 h RunPod extraction. A graph build succeeding is
+exactly when its snapshot becomes precious — a later failure must never take it
+down with it.
+
+Consequences, deliberately accepted:
+
+* Snapshots are **append-only**. Each run writes a fresh timestamped folder
+  (`{index_name}/{index_type}/{namespace}/{timestamp}/`) and never overwrites a
+  previous one, so any past run stays restorable.
+* `delete_artifacts` and `delete_community_reports` refuse to run unless the
+  caller passes `confirm_destroy=True`. Both had **zero callers** when this was
+  written: the guard exists so no future cleanup path can quietly turn into data
+  loss. Deleting must be a decision, never a side effect.
+* Storage grows over time. That is the intended trade-off — disk is cheaper than
+  a lost extraction. If retention is ever needed it must be an explicit,
+  operator-driven job, never an automatic cleanup inside a build.
+* **Checkpoints are NOT covered by this policy.** `checkpoints/` holds transient
+  per-window resume state that the extraction loop legitimately clears on
+  `overwrite=True` and after completion; `delete_checkpoints` therefore needs no
+  confirmation.
 """
 
 import os
@@ -622,24 +654,39 @@ class MinIOStorageService:
         namespace: str,
         timestamp: Optional[str] = None,
         index_name: Optional[str] = None,
-        index_type: Optional[str] = None
+        index_type: Optional[str] = None,
+        confirm_destroy: bool = False
     ) -> int:
         """
         Delete artifacts for a namespace (or specific timestamp).
-        
+
+        PROTECTED — see the "snapshot durability" note at the top of this module.
+        These parquet files are the only restore point for a graph that a
+        destructive job wiped, so deletion must be deliberate: pass
+        confirm_destroy=True. Without it this raises instead of deleting.
+
         Args:
             namespace: Namespace/collection name
-            timestamp: Optional timestamp (if None, delete all timestamps)
+            timestamp: Optional timestamp (if None, delete ALL timestamps)
             index_name: Optional name of the vector index (e.g., 'tilellm')
             index_type: Optional type of index ('serverless', 'pod', 'local', 'cloud')
-            
+            confirm_destroy: Must be True to actually delete anything
+
         Returns:
             Number of objects deleted
         """
         # Require index_name and index_type for new structure
         if not index_name or not index_type:
             raise ValueError("index_name and index_type are required for MinIO storage")
-        
+
+        if not confirm_destroy:
+            scope = f"timestamp {timestamp}" if timestamp else "ALL timestamps"
+            raise PermissionError(
+                f"Refusing to delete graph snapshots for namespace '{namespace}' ({scope}): "
+                f"they are the restore point used by POST /api/kg-falkor/reimport. "
+                f"Pass confirm_destroy=True if you really mean it."
+            )
+
         if timestamp:
             prefix = f"{index_name}/{index_type}/{namespace}/{timestamp}/"
         else:
@@ -847,8 +894,21 @@ class MinIOStorageService:
         logger.info(f"Loaded {len(all_reports)} community reports for graph '{graph_name}'")
         return all_reports
 
-    def delete_community_reports(self, graph_name: str) -> int:
-        """Delete all community report files for a graph."""
+    def delete_community_reports(self, graph_name: str, confirm_destroy: bool = False) -> int:
+        """
+        Delete all community report files for a graph.
+
+        PROTECTED — see the "snapshot durability" note at the top of this module.
+        Community reports cost LLM calls to produce and are restored by
+        /reimport, so deletion must be deliberate: pass confirm_destroy=True.
+        """
+        if not confirm_destroy:
+            raise PermissionError(
+                f"Refusing to delete community reports for graph '{graph_name}': they are part of "
+                f"the restore point and cost LLM calls to regenerate. "
+                f"Pass confirm_destroy=True if you really mean it."
+            )
+
         prefix = f"{COMMUNITY_REPORTS_PREFIX}{graph_name}/"
         try:
             objects = list(self.client.list_objects(self.bucket_name, prefix=prefix, recursive=True))
@@ -937,6 +997,56 @@ class MinIOStorageService:
             return timestamps[0] if timestamps else None
         except S3Error:
             return None
+
+    def load_stats_snapshot(
+        self,
+        namespace: str,
+        index_name: str,
+        index_type: str,
+        timestamp: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Load a snapshot saved by community_graph_service._save_stats (every
+        /create run, path {index_name}/{index_type}/{namespace}/{timestamp}/)
+        — a different, independently-existing snapshot format from
+        save_graph_snapshot's graph_snapshots/ (GraphOptimizer's own).
+        If timestamp is None, loads the most recent one.
+        Returns {'entities': bytes, 'relationships': bytes,
+                 'community_reports': List[dict], 'timestamp': str}.
+        """
+        import pandas as pd
+
+        prefix = f"{index_name}/{index_type}/{namespace}/"
+        if timestamp is None:
+            try:
+                objects = list(self.client.list_objects(self.bucket_name, prefix=prefix, recursive=False))
+            except S3Error:
+                objects = []
+            timestamps = sorted(
+                {obj.object_name.replace(prefix, "").split("/")[0]
+                 for obj in objects if obj.object_name},
+                reverse=True,
+            )
+            if not timestamps:
+                raise FileNotFoundError(f"No stats snapshot found under '{prefix}'")
+            timestamp = timestamps[0]
+
+        base = f"{prefix}{timestamp}/"
+        result: Dict[str, Any] = {"timestamp": timestamp}
+        for key_name, file_name in (("entities", "entities.parquet"), ("relationships", "relationships.parquet")):
+            resp = self.client.get_object(self.bucket_name, f"{base}{file_name}")
+            result[key_name] = resp.read()
+            resp.close(); resp.release_conn()
+
+        try:
+            resp = self.client.get_object(self.bucket_name, f"{base}community_reports.parquet")
+            data = resp.read(); resp.close(); resp.release_conn()
+            result["community_reports"] = pd.read_parquet(io.BytesIO(data)).to_dict(orient="records")
+        except S3Error:
+            result["community_reports"] = []
+
+        logger.info(f"Stats snapshot loaded for namespace='{namespace}' (timestamp={timestamp})")
+        return result
 
     def list_graph_snapshots(self, graph_name: str) -> List[str]:
         """Return list of available snapshot timestamps for a graph, newest first."""

@@ -35,6 +35,9 @@ _PA_PATTERNS: List[Tuple[str, re.Pattern]] = [
     ("CIG",      re.compile(r'\bCIG\s*[:\.]?\s*([A-Z0-9]{10})\b', re.IGNORECASE)),
     # CUP: "CUP" + 15 char alfanumerico
     ("CUP",      re.compile(r'\bCUP\s*[:\.]?\s*([A-Z0-9]{15})\b', re.IGNORECASE)),
+    # Codice fiscale persona fisica: 6 lettere + 2 cifre + lettera + 2 cifre + lettera + 3 cifre + lettera
+    # (formato fisso, nessun prefisso richiesto — a differenza di CIG/CUP)
+    ("CF",       re.compile(r'\b[A-Z]{6}[0-9]{2}[A-Z][0-9]{2}[A-Z][0-9]{3}[A-Z]\b', re.IGNORECASE)),
     # Date italiane: DD/MM/YYYY o DD-MM-YYYY o DD.MM.YYYY
     ("DATE_IT",  re.compile(r'\b(\d{1,2}[/\-\.]\d{2}[/\-\.]\d{4})\b')),
     # Importi con €: € 10.500,00 oppure 10.500,00 Euro/€

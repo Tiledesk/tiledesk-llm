@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 try:
     from tilellm.modules.knowledge_graph.tools.graphrag_extractor import extract_entities as graphrag_extract_entities
     from tilellm.modules.knowledge_graph.repository.repository import GraphRepository
-    from tilellm.modules.knowledge_graph.models import Node, Relationship
+    from tilellm.models.graph import Node, Relationship
     GRAPHRAG_AVAILABLE = True
     GRAPHRAG_IMPORT_ERROR = None
 except ImportError as e:

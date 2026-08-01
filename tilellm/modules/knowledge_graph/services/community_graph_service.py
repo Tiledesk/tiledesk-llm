@@ -26,7 +26,7 @@ from tilellm.models import QuestionAnswer # Aggiunto per Hybrid Search
 from tilellm.controller.controller_utils import fetch_question_vectors # Aggiunto per Hybrid Search
 from tilellm.tools.sparse_encoders import TiledeskSparseEncoders
 from ..utils import format_chat_history
-from ..utils.rrf import reciprocal_rank_fusion_with_metadata
+from tilellm.shared.rrf import reciprocal_rank_fusion_with_metadata
 from ..utils.query_analysis import detect_query_type_with_llm, get_weight_adjustments
 from ..utils.graph_expansion import GraphExpander
 from ..utils.synthetic_qa import (
@@ -36,7 +36,7 @@ from ..utils.synthetic_qa import (
 
 from .services import GraphRAGService, GraphService
 from .clustering import ClusterService
-from .minio_storage import MinIOStorageService, get_minio_storage_service
+from tilellm.shared.minio_storage import MinIOStorageService, get_minio_storage_service
 from tilellm.tools.reranker import TileReranker
 from tilellm.shared.llm_utils import extract_llm_text
 

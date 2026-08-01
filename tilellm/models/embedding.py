@@ -41,6 +41,8 @@ class LlmEmbeddingModel(BaseModel):
     url: Optional[str] = Field(default_factory=lambda: "")
     dimension: Optional[int] = 1024 #qwel2-deepseek 3584, llama3.2 3072
     custom_headers: Optional[Dict[str, Any]] = None
+    project: Optional[str] = None  # GCP project id, routes google provider to Vertex AI
+    location: Optional[str] = None  # GCP region for Vertex AI (e.g. europe-west8)
 
     @model_validator(mode='after')
     def validate_model(self):

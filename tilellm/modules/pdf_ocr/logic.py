@@ -64,7 +64,7 @@ from ...models.llm import TEIConfig
 
 try:
     from tilellm.modules.knowledge_graph.repository.repository import GraphRepository
-    from tilellm.modules.knowledge_graph.models import Node, Relationship
+    from tilellm.models.graph import Node, Relationship
     KNOWLEDGE_GRAPH_AVAILABLE = True
 except ImportError:
     KNOWLEDGE_GRAPH_AVAILABLE = False
@@ -82,7 +82,7 @@ def _export_markdown_to_minio(doc_id: str, markdown: str) -> Optional[str]:
     artifact must never block or fail the ingestion that already succeeded.
     """
     try:
-        from tilellm.modules.knowledge_graph.services.minio_storage import (
+        from tilellm.shared.minio_storage import (
             get_minio_storage_service,
         )
         svc = get_minio_storage_service()
@@ -117,7 +117,7 @@ def _upload_images_to_object_storage(doc_id: str, images: list) -> None:
     import io as _io
 
     try:
-        from tilellm.modules.knowledge_graph.services.minio_storage import (
+        from tilellm.shared.minio_storage import (
             get_minio_storage_service,
         )
         svc = get_minio_storage_service()

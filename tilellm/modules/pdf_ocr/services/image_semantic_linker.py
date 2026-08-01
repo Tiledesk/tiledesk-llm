@@ -42,7 +42,7 @@ class ImageSemanticLinker:
         # 2. Update Knowledge Graph if repository is available
         if self.graph_repository:
             try:
-                from tilellm.modules.knowledge_graph.models import Relationship
+                from tilellm.models.graph import Relationship
                 
                 # Link referencing paragraphs to image
                 for elem in referencing_elements:

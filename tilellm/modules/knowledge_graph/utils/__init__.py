@@ -13,7 +13,7 @@ from .prompts import (
     format_chat_history
 )
 
-from .rrf import (
+from tilellm.shared.rrf import (  # moved out of this deprecated package
     reciprocal_rank_fusion,
     reciprocal_rank_fusion_with_metadata,
     normalize_scores

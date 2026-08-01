@@ -7,7 +7,7 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Optional, List, Dict, Any
 
-from tilellm.modules.knowledge_graph.models import Node, Relationship
+from tilellm.models.graph import Node, Relationship
 
 logger = logging.getLogger(__name__)
 

@@ -7,6 +7,97 @@
 
 
 ---
+## [2026-07-31]
+### 0.12.0-rc1 fix: /api/ingestion routed every PDF into a dead-letter legacy queue
+
+Found while importing a 118-document real-world batch: the 6 xlsx files were indexed,
+the **112 PDFs vanished**. The API returned `200 {"status":"accepted", ...}` for all of
+them, so nothing in the client-side log flagged a failure.
+
+Root cause: `ItemSingle` didn't declare the PDF-pipeline fields (`use_docling`,
+`strategy`, etc.), so Pydantic silently dropped them before building
+`PDFScrapingRequest`. The pipeline-selection condition was therefore always false,
+routing every request to the legacy path — an upload to object storage plus a Redis
+list push with **no consumer anywhere in the codebase**. Documents stayed queued
+forever.
+
+Fix: default to the Docling/Taskiq pipeline unless the caller explicitly opts into the
+legacy one; added `ItemSingle.pdf_options` with keys validated against
+`PDFScrapingRequest` fields — an unknown key now raises HTTP 400 instead of being
+ignored. Tests: `tests/unit/modules/test_ingestion_pdf_routing.py` (12).
+
+### fix: ExcelLoader — malformed government-template spreadsheets
+
+Real-world xlsx attachments broke extraction three ways: instruction rows before the
+real header (row count varies per file, so a fixed offset doesn't work), fully-empty
+columns padding chunks with over 80% unusable content, and wide tables losing their
+header once split downstream. Fixed via header auto-detection over the first 10 rows,
+`dropna` on fully-empty columns only, and size-based table splitting that reinjects the
+header into every chunk. Tests: `tests/unit/tools/test_excel_loader_pa_templates.py`
+(14).
+
+---
+## [2026-07-24]
+### feat: POST /api/lgraph/hybrid — vector-seeded PPR + RRF fusion
+
+New retrieval mode combining dense/sparse vector search with lgraph's graph-based PPR
+reasoning: a same-question vector search returns top-K chunk ids, which seed the PPR
+run alongside entity seeds; vector-rank and PPR-rank are then fused via reciprocal rank
+fusion before LLM synthesis. Falls back to entity-only PPR if the vector search fails or
+returns nothing.
+
+Required exposing `chunk_ids` in `RetrievalChunksResult` across all vector-store
+backends (Pinecone, Qdrant, Milvus) — the id was already read from the store but never
+returned, which made vector-seeded PPR structurally impossible before this fix.
+
+### fix: document/page provenance across /api/qa, lgraph and falkor /hybrid
+
+Every chunk returned by a retrieval endpoint should be traceable to its source document
+and page. Found and fixed 5 gaps, all the same pattern — metadata already available but
+silently dropped before reaching the response: `regex_custom` not setting `file_name`;
+`/api/qa` capturing `page_number` at ingest but never exposing it; `RepositoryQueryResult`
+lacking a generic metadata passthrough; lgraph not propagating `page_number` through PPR;
+falkor `/hybrid` missing source attribution entirely.
+
+---
+## [2026-07-23]
+### fix: ingestion export/md — chunk provenance (page/position + document identity)
+
+Two gaps fixed: document identity had no fallback to `file_name` when a file arrives via
+base64 content without a `source` URL, so chunks were indexed without knowing which file
+they came from; DOCX conversion was discarding `heading_path`/paragraph position already
+extracted by the loader (DOCX has no real page concept, so a distinct `Block.position`
+was added instead of fabricating a page number).
+
+### feat: ingestion redesign F2 — POST /api/ingest/md (frontmatter → vector store)
+
+Second phase of the ingestion redesign: ingests a document previously exported by
+`/api/export/md` into the vector store via `repo.aadd_documents` (not `add_item`, whose
+direct-content path silently drops `additional_metadata`). Table blocks route through
+the existing adaptive table chunker; text blocks through
+`RecursiveCharacterTextSplitter`. Note: hybrid indexing behavior is not uniform across
+backends (pre-existing `aadd_documents` behavior, not introduced here). Tests: 20.
+
+### feat: ingestion redesign F1 — POST /api/export/md (extraction, no vector store)
+
+First phase of the `tilellm/modules/ingestion` redesign: document → Markdown with YAML
+frontmatter, or lossless JSON, via a canonical `ExtractedDocument`/`Block` model with
+round-trip-tested serializers. Converters for txt/md/csv/xlsx/pdf/docx. Purely stateless;
+vector-store ingestion is the separate F2 phase. Tests: 45.
+
+---
+## [2026-07-22]
+### feat: /api/thinking now supports MCP servers + internal tools (like /api/ask)
+
+`/api/thinking` previously always called `ask_reason_llm` (no tool support). Now it mirrors
+`/api/ask`: with `servers`/`tools` it runs the MCP agent, but with the **reasoning-capable**
+chat model. Refactor (SOLID): the MCP agent cores (`ask_mcp_agent_llm` / `_simple`) are now
+model-agnostic (no injector decorator); the simple-vs-complex routing lives in the shared
+`_dispatch_mcp_agent`; two thin shims inject the model — `ask_mcp_agent` (`@inject_llm_async`,
+for /ask) and `ask_mcp_agent_reason` (`@inject_reason_llm_async`, for /thinking). Both endpoints
+share the exact same tool path. Tests: `tests/unit/controller/test_thinking_tools_routing.py`.
+
+---
 ## [2026-07-16]
 ### 0.11.2-rc2 fix: scrape_type 0/1 indexed only the cookie banner on chrome-heavy pages
 

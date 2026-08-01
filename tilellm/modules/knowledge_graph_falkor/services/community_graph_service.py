@@ -132,6 +132,32 @@ def _load_parquet_efficiently(file_path: str, columns: Optional[List[str]] = Non
         return pd.read_parquet(file_path)
 
 
+def _chunk_from_match(m: Dict[str, Any]) -> Dict[str, Any]:
+    """Narrow a raw vector-store match to the chunk-dict shape context_fusion_search
+    uses — including provenance (source/file_name/page_number) that used to be
+    silently dropped even though the full metadata dict was already available."""
+    meta = m.get("metadata", {}) or {}
+    return {
+        "id": m.get("id"),
+        "text": meta.get("text", "") or m.get("page_content", ""),
+        "score": m.get("score", 0),
+        "source": meta.get("source"),
+        "file_name": meta.get("file_name"),
+        "page_number": meta.get("page_number"),
+    }
+
+
+def _citations_from_local_chunks(chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Audit trail for GraphQAAdvancedResponse: which document/page each local
+    chunk that fed the answer came from. Chunks without a source are skipped
+    (nothing to cite)."""
+    return [
+        {"source": c["source"], "file_name": c.get("file_name"), "page_number": c.get("page_number")}
+        for c in chunks
+        if c.get("source")
+    ]
+
+
 class CommunityGraphService:
     """
     Service for creating community reports and performing global search.
@@ -279,10 +305,14 @@ class CommunityGraphService:
                     logger.info("Skipping FalkorDB import (import_to_graph=False)")
 
                 # 3-7. Generate community reports and export (Hierarchical 0-2)
-                cluster_stats = await self.generate_hierarchical_reports(
+                # Call the already-locked variant directly: this whole method already
+                # holds _graph_create_lock(_lock_graph_name) above, and generate_hierarchical_reports
+                # (used by other, top-level callers) would try to acquire that same
+                # non-reentrant lock again and deadlock on itself.
+                cluster_stats = await self._generate_hierarchical_reports_locked(
                     namespace=namespace,
                     index_name=index_name,
-                    graph_name=graph_name,
+                    graph_name_to_use=graph_name if graph_name is not None else namespace,
                     sparse_encoder=sparse_encoder,
                     output_dir=output_dir,
                     save_to_minio=save_to_minio,
@@ -291,7 +321,11 @@ class CommunityGraphService:
                     vector_store_repo=vector_store_repo,
                     llm_embeddings=llm_embeddings,
                     engine=engine,
-                    cleanup_before=cleanup_before
+                    overwrite=True,
+                    cleanup_before=cleanup_before,
+                    resolutions=None,
+                    min_community_size=8,
+                    max_community_prompt_chars=18000,
                 )
 
                 # Combine stats
@@ -366,7 +400,7 @@ class CommunityGraphService:
         _lock_ttl = int(os.environ.get("GRAPH_LOCK_TTL_SECONDS", 86400))
         async with _graph_create_lock(_lock_key, ttl=_lock_ttl):
             return await self._generate_hierarchical_reports_locked(
-                namespace=namespace, index_name=index_name, graph_name=graph_name_to_use,
+                namespace=namespace, index_name=index_name, graph_name_to_use=graph_name_to_use,
                 sparse_encoder=sparse_encoder, output_dir=output_dir, save_to_minio=save_to_minio,
                 timestamp=timestamp, llm=llm, vector_store_repo=vector_store_repo,
                 llm_embeddings=llm_embeddings, engine=engine, overwrite=overwrite,
@@ -1050,96 +1084,55 @@ class CommunityGraphService:
             return pd.DataFrame()
     
     async def _export_entities_to_dataframe(self, repository, namespace: Optional[str] = None, index_name: Optional[str] = None, graph_name: Optional[str] = None):
-        """Export entities (nodes) from FalkorDB to pandas DataFrame."""
+        """Export entities (nodes) from FalkorDB to pandas DataFrame.
+
+        Delegates to get_all_nodes_and_relationships, which paginates via
+        SKIP/LIMIT — a raw unpaginated query here would be silently truncated
+        by FalkorDB's default resultset_size cap (10 000), as happened on
+        namespace 256237 (2026-07-29): 10908 real entities, only 10000 exported.
+        """
         try:
-            # Build dynamic WHERE to avoid FalkorDB null-parameter issues
-            where_parts = ["NOT n:CommunityReport"]
-            filter_params = {}
-            if namespace is not None:
-                where_parts.append("n.namespace = $namespace")
-                filter_params["namespace"] = namespace
-            if index_name is not None:
-                where_parts.append("n.index_name = $index_name")
-                filter_params["index_name"] = index_name
-            where_clause = "WHERE " + " AND ".join(where_parts)
-
-            query = f"""
-            MATCH (n)
-            {where_clause}
-            RETURN
-                id(n) as node_id,
-                labels(n) as labels,
-                properties(n) as properties
-            """
-
-            result = await repository._execute_query(
-                query,
-                filter_params,
-                namespace=namespace,
-                graph_name=graph_name
+            graph_data = await repository.get_all_nodes_and_relationships(
+                namespace=namespace, index_name=index_name, graph_name=graph_name
             )
 
-            # _execute_query returns List[Dict], so iterate directly
             records = []
-            if result:
-                for row_dict in result:
-                    props = dict(row_dict.get("properties", {})) if row_dict.get("properties") else {}
-                    props["node_id"] = str(row_dict.get("node_id", ""))
-                    props["labels"] = list(row_dict.get("labels", [])) if row_dict.get("labels") else []
-                    records.append(props)
-            
+            for node in graph_data.get("nodes", []):
+                props = dict(node.get("properties") or {})
+                props["node_id"] = str(node.get("id", ""))
+                props["labels"] = [node["label"]] if node.get("label") else []
+                records.append(props)
+
             import pandas as pd
             df = pd.DataFrame(records)
-            
+
             return df
-            
+
         except Exception as e:
             logger.error(f"Failed to export entities: {e}")
             import pandas as pd
             return pd.DataFrame()
     
     async def _export_relationships_to_dataframe(self, repository, namespace: Optional[str] = None, index_name: Optional[str] = None, graph_name: Optional[str] = None):
-        """Export relationships from FalkorDB to pandas DataFrame."""
+        """Export relationships from FalkorDB to pandas DataFrame.
+
+        Delegates to get_all_nodes_and_relationships (paginated) — see
+        _export_entities_to_dataframe docstring for why a raw query here
+        would silently lose rows past FalkorDB's resultset_size cap.
+        """
         try:
-            # Build dynamic WHERE to avoid FalkorDB null-parameter issues
-            where_parts = []
-            filter_params = {}
-            if namespace is not None:
-                where_parts.append("s.namespace = $namespace AND t.namespace = $namespace")
-                filter_params["namespace"] = namespace
-            if index_name is not None:
-                where_parts.append("s.index_name = $index_name AND t.index_name = $index_name")
-                filter_params["index_name"] = index_name
-            where_clause = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
-
-            query = f"""
-            MATCH (s)-[r]->(t)
-            {where_clause}
-            RETURN
-                id(r) as relationship_id,
-                id(s) as source_id,
-                id(t) as target_id,
-                type(r) as relationship_type,
-                properties(r) as properties
-            """
-
-            result = await repository._execute_query(
-                query,
-                filter_params,
-                namespace=namespace,
-                graph_name=graph_name
+            graph_data = await repository.get_all_nodes_and_relationships(
+                namespace=namespace, index_name=index_name, graph_name=graph_name
             )
 
-            # _execute_query returns List[Dict], so iterate directly
             records = []
-            if result:
-                for row_dict in result:
-                    props = dict(row_dict.get("properties", {})) if row_dict.get("properties") else {}
-                    props["relationship_id"] = str(row_dict.get("relationship_id", ""))
-                    props["source_id"] = str(row_dict.get("source_id", ""))
-                    props["target_id"] = str(row_dict.get("target_id", ""))
-                    props["relationship_type"] = row_dict.get("relationship_type", "")
-                    records.append(props)
+            for rel in graph_data.get("relationships", []):
+                props = dict(rel.get("properties") or {})
+                props["relationship_id"] = str(rel.get("id", ""))
+                props["source_id"] = str(rel.get("source_id", ""))
+                props["target_id"] = str(rel.get("target_id", ""))
+                props["relationship_type"] = rel.get("type", "")
+                records.append(props)
 
             import pandas as pd
             df = pd.DataFrame(records)
@@ -1893,11 +1886,7 @@ class CommunityGraphService:
                 chunks = []
                 if results and results.get('matches'):
                     for m in results['matches']:
-                        chunks.append({
-                            "id": m.get("id"),
-                            "text": m.get("metadata", {}).get("text", "") or m.get("page_content", ""),
-                            "score": m.get("score", 0)
-                        })
+                        chunks.append(_chunk_from_match(m))
                 return chunks
             except Exception as e:
                 logger.error(f"Local retrieval failed: {e}")
@@ -2081,6 +2070,7 @@ class CommunityGraphService:
             },
             "expanded_nodes": graph_nodes,
             "expanded_relationships": graph_rels,
+            "sources": _citations_from_local_chunks(local_chunks),
             "chat_history_dict": updated_history,
             "query_contextualized": retrieval_query if contextualize_prompt else None
         }

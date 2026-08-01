@@ -250,14 +250,18 @@ async def _get_llm_config_for_client(question, llm_params: Dict[str, Any]) -> Di
     custom_headers_to_use = None
     model_name_param = None
     base_url_param = None
+    project_param = None
+    location_param = None
     #provider_param = None
-    
+
     # Determine API key, model name, base URL, and custom headers
     if isinstance(question.model, LlmEmbeddingModel):
         api_key_param = question.model.api_key
         custom_headers_to_use = question.model.custom_headers
         model_name_param = question.model.name
         base_url_param = question.model.url
+        project_param = question.model.project
+        location_param = question.model.location
         #provider_param = question.model.provider
     else:
         # Fallback for when question.model is a string or other object
@@ -282,15 +286,40 @@ async def _get_llm_config_for_client(question, llm_params: Dict[str, Any]) -> Di
         "model": model_name_param,
         "base_url": base_url_param,
         "default_headers": custom_headers_to_use,
+        "project": project_param,
+        "location": location_param,
         **llm_params # Include generic LLM parameters
     }
-    
+
     # Filter out None values for default_headers if it's None to avoid passing default_headers=None explicitly
     # Some LangChain clients might not like default_headers=None if they expect Dict[str, str]
     if client_config.get("default_headers") is None:
         del client_config["default_headers"]
-    
+    if client_config.get("project") is None:
+        del client_config["project"]
+    if client_config.get("location") is None:
+        del client_config["location"]
+
     return client_config
+
+
+def _apply_google_vertex_flag(client_config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Route ChatGoogleGenerativeAI to Vertex AI instead of the AI Studio endpoint
+    when a GCP project was supplied (via LlmEmbeddingModel.project).
+
+    project/location are used only as the trigger and then dropped: the
+    google-genai SDK discards an API key supplied via env var (which is how
+    langchain_google_genai passes it through) whenever project or location
+    are explicit constructor args, forcing an unwanted ADC credentials
+    lookup at request time. Omitting them keeps auth on the API key alone,
+    routed through the global Vertex endpoint (https://aiplatform.googleapis.com/).
+    """
+    if client_config.pop("project", None):
+        client_config["vertexai"] = True
+    client_config.pop("location", None)
+    return client_config
+
 
 class LLMInjectionError(Exception):
     """Eccezione personalizzata per errori di injection LLM"""
@@ -558,6 +587,10 @@ def inject_llm(func):
                     inner_client_config["base_url"] = inner_client_base_config["base_url"]
                 if inner_client_base_config.get("default_headers"):
                     inner_client_config["default_headers"] = inner_client_base_config["default_headers"]
+                if inner_client_base_config.get("project"):
+                    inner_client_config["project"] = inner_client_base_config["project"]
+                if inner_client_base_config.get("location"):
+                    inner_client_config["location"] = inner_client_base_config["location"]
 
                 if question.llm == "openai" or question.llm == "vllm":
                     from langchain_openai import ChatOpenAI
@@ -576,6 +609,7 @@ def inject_llm(func):
                 elif question.llm == "google":
                     from langchain_google_genai import ChatGoogleGenerativeAI
                     inner_client_config["google_api_key"] = inner_client_config.pop("api_key", None)
+                    _apply_google_vertex_flag(inner_client_config)
                     return ChatGoogleGenerativeAI(**inner_client_config)
 
                 elif question.llm == "ollama":
@@ -744,6 +778,10 @@ def inject_llm_chat(func):
                     inner_client_config["base_url"] = inner_client_base_config["base_url"]
                 if inner_client_base_config.get("default_headers"):
                     inner_client_config["default_headers"] = inner_client_base_config["default_headers"]
+                if inner_client_base_config.get("project"):
+                    inner_client_config["project"] = inner_client_base_config["project"]
+                if inner_client_base_config.get("location"):
+                    inner_client_config["location"] = inner_client_base_config["location"]
 
 
                 if question.llm == "openai" or question.llm == "vllm":
@@ -763,6 +801,7 @@ def inject_llm_chat(func):
                 elif question.llm == "google":
                     from langchain_google_genai import ChatGoogleGenerativeAI
                     inner_client_config["google_api_key"] = inner_client_config.pop("api_key", None)
+                    _apply_google_vertex_flag(inner_client_config)
                     return ChatGoogleGenerativeAI(**inner_client_config)
 
                 elif question.llm == "mistralai":
@@ -1087,6 +1126,10 @@ async def _create_llm_instance(question):
             client_config["base_url"] = client_base_config["base_url"]
         if client_base_config.get("default_headers"):
             client_config["default_headers"] = client_base_config["default_headers"]
+        if client_base_config.get("project"):
+            client_config["project"] = client_base_config["project"]
+        if client_base_config.get("location"):
+            client_config["location"] = client_base_config["location"]
 
         thinking_config = question.thinking if hasattr(question, 'thinking') and question.thinking else None
         if provider_param == "openai":
@@ -1128,6 +1171,8 @@ async def _create_llm_instance(question):
         elif provider_param == "google":
             from langchain_google_genai import ChatGoogleGenerativeAI
             client_config["google_api_key"] = client_config.pop("api_key", None)
+            _apply_google_vertex_flag(client_config)
+
             return ChatGoogleGenerativeAI(**client_config)
 
         elif provider_param == "mistralai":
@@ -1180,6 +1225,10 @@ async def _create_standard_llm_instance(question) -> Any:
             client_config["base_url"] = client_base_config["base_url"]
         if client_base_config.get("default_headers"):
             client_config["default_headers"] = client_base_config["default_headers"]
+        if client_base_config.get("project"):
+            client_config["project"] = client_base_config["project"]
+        if client_base_config.get("location"):
+            client_config["location"] = client_base_config["location"]
 
         # Now, adapt client_config for each specific provider
         if question.llm == "openai" or question.llm == "vllm":
@@ -1199,6 +1248,7 @@ async def _create_standard_llm_instance(question) -> Any:
         elif question.llm == "google":
             from langchain_google_genai import ChatGoogleGenerativeAI
             client_config["google_api_key"] = client_config.pop("api_key", None)
+            _apply_google_vertex_flag(client_config)
             return ChatGoogleGenerativeAI(**client_config)
 
         elif question.llm == "ollama":
@@ -1471,6 +1521,10 @@ async def _create_reasoning_llm_instance(question) -> Any:
             client_config["base_url"] = client_base_config["base_url"]
         if client_base_config.get("default_headers"):
             client_config["default_headers"] = client_base_config["default_headers"]
+        if client_base_config.get("project"):
+            client_config["project"] = client_base_config["project"]
+        if client_base_config.get("location"):
+            client_config["location"] = client_base_config["location"]
 
         # Estrai la configurazione reasoning se presente
         thinking_config = question.thinking if hasattr(question, 'thinking') and question.thinking else None
@@ -1525,6 +1579,7 @@ async def _create_reasoning_llm_instance(question) -> Any:
                     # Gemini 3.0 Pro usa thinkingLevel
                     client_config["thinking_level"] = thinking_config.thinkingLevel
 
+            _apply_google_vertex_flag(client_config)
             return ChatGoogleGenerativeAI(**client_config)
 
         elif question.llm == "deepseek":

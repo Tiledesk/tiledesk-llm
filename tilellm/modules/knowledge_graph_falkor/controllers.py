@@ -459,7 +459,7 @@ async def graph_qa_hybrid(request: GraphQAAdvancedRequest):
     """
     try:
         result = await kg_logic.context_fusion_graph_search(request)
-        
+
         return GraphQAAdvancedResponse(
             answer=result.get("answer", ""),
             entities=result.get("entities", []),
@@ -469,6 +469,7 @@ async def graph_qa_hybrid(request: GraphQAAdvancedRequest):
             scores=result.get("scores", {}),
             expanded_nodes=result.get("expanded_nodes", []),
             expanded_relationships=result.get("expanded_relationships", []),
+            sources=result.get("sources", []),
             chat_history_dict=result.get("chat_history_dict")
         )
     except RuntimeError as e:

@@ -721,30 +721,13 @@ class QdrantRepository(VectorStoreRepository):
                                                   parameters_scrape_type_4=item.parameters_scrape_type_4,
                                                   browser_headers=item.browser_headers,
                                                   chunk_regex=item.chunk_regex)
-                base_metadata = MetadataItem(
-                    id=item.id,
-                    source=item.source,
-                    type=item.type,
-                    embedding=str(item.embedding)
-                ).model_dump()
-
-                if item.tags:
-                    base_metadata["tags"] = item.tags
-
-                # Unisci i metadati del documento con i metadati base
-                chunks = [
-                    Document(
-                        page_content=document.page_content,
-                        metadata={**document.metadata, **base_metadata}  # Merge dei due dizionari
-                    )
-                    for document in documents
-                ]
+                chunks = self._build_regex_custom_chunks(item, documents)
             else:
                 # Direct text content — use auto-detection for format
                 metadata = MetadataItem(id=item.id,
                                         source=item.source,
                                         type=item.type,
-                                        embedding=item.embedding,
+                                        embedding=str(item.embedding),
                                         namespace=item.namespace).model_dump(exclude_none=True)
                 if item.tags:
                     metadata["tags"] = item.tags
@@ -889,32 +872,15 @@ class QdrantRepository(VectorStoreRepository):
                                                        parameters_scrape_type_4=item.parameters_scrape_type_4,
                                                        browser_headers=item.browser_headers,
                                                        chunk_regex=item.chunk_regex)
-                #chunks = documents
-                base_metadata = MetadataItem(
-                    id=item.id,
-                    source=item.source,
-                    type=item.type,
-                    embedding=str(item.embedding)
-                ).model_dump()
-
-                if item.tags:
-                    base_metadata["tags"] = item.tags
-
-                # Unisci i metadati del documento con i metadati base
-                chunks = [
-                    Document(
-                        page_content=document.page_content,
-                        metadata={**document.metadata, **base_metadata}  # Merge dei due dizionari
-                    )
-                    for document in documents
-                ]
+                chunks = self._build_regex_custom_chunks(item, documents)
 
             else:
                 # Direct text content — use auto-detection for format
                 metadata = MetadataItem(id=item.id,
                                         source=item.source,
                                         type=item.type,
-                                        embedding=str(item.embedding)).model_dump()
+                                        embedding=str(item.embedding),
+                                        namespace=item.namespace).model_dump(exclude_none=True)
                 if item.tags:
                     metadata["tags"] = item.tags
 
@@ -1086,6 +1052,7 @@ class QdrantRepository(VectorStoreRepository):
                                               namespace=question_answer.namespace,
                                               chunks=[chunk.page_content for chunk in results],
                                               metadata=[chunk.metadata for chunk in results],
+                                              chunk_ids=[str(chunk.id) for chunk in results],
                                               error_message=None,
                                               duration=duration
                                               )
@@ -1471,7 +1438,8 @@ class QdrantRepository(VectorStoreRepository):
                         metadata_source=str(metadata_source),
                         metadata_type=str(metadata_type),
                         date=str(metadata_date),
-                        text=text_content
+                        text=text_content,
+                        metadata=metadata,
                     ))
 
             res = RepositoryItems(matches=result)
@@ -1756,7 +1724,24 @@ class QdrantRepository(VectorStoreRepository):
         return vector_store
 
     @staticmethod
+    def _normalize_upsert_metadata(metadata: dict, namespace: str) -> dict:
+        """
+        Ensure namespace/tags are always correct and present before upsert,
+        regardless of how the ingestion branch built the chunk metadata
+        (e.g. regex_custom's MetadataItem omits namespace, defaulting to None
+        and clobbering it via the metadata merge; tags is only set when
+        truthy, leaving the key absent for untagged chunks). tags defaults to
+        an empty list rather than being omitted since it's used for metadata
+        filtering (build_tags_filter / build_filter).
+        """
+        metadata["namespace"] = namespace
+        metadata["tags"] = metadata.get("tags") or []
+        return metadata
+
+    @staticmethod
     async def upsert_vector_store(vector_store:QdrantVectorStore, chunks, metadata_id, namespace):
+        for chunk in chunks:
+            QdrantRepository._normalize_upsert_metadata(chunk.metadata, namespace)
         ids = [f"{uuid.uuid4().hex}" for _ in range(len(chunks))]
         returned_ids = await vector_store.aadd_documents(documents=chunks, ids=ids)
         logger.debug(f"Upserted {len(returned_ids)} documents into {namespace}")
@@ -1887,7 +1872,7 @@ class QdrantRepository(VectorStoreRepository):
             document.metadata["id"] = item.id
             document.metadata["source"] = item.source
             document.metadata["type"] = item.type
-            document.metadata["embedding"] = item.embedding
+            document.metadata["embedding"] = str(item.embedding)
             document.metadata["namespace"] = item.namespace
             if item.tags:
                 document.metadata["tags"] = item.tags
@@ -1916,6 +1901,36 @@ class QdrantRepository(VectorStoreRepository):
                 )
         #from pprint import pprint
         #pprint(chunks)
+        return chunks
+
+    @staticmethod
+    def _build_regex_custom_chunks(item, documents) -> List[Document]:
+        """
+        Build chunks for the regex_custom ingestion type. Shared by add_item and
+        add_item_hybrid so both paths stay consistent: same metadata fields
+        (namespace, tags, file_name, page) as the standard chunk_documents path.
+        """
+        base_metadata = MetadataItem(
+            id=item.id,
+            source=item.source,
+            type=item.type,
+            embedding=str(item.embedding),
+            namespace=item.namespace,
+        ).model_dump(exclude_none=True)
+
+        if item.tags:
+            base_metadata["tags"] = item.tags
+
+        chunks = []
+        for document in documents:
+            if not document.metadata.get("file_name"):
+                document.metadata["file_name"] = _extract_file_name(item.source or "")
+            if "page" not in document.metadata:
+                document.metadata["page"] = 1
+            chunks.append(Document(
+                page_content=document.page_content,
+                metadata={**document.metadata, **base_metadata}  # Unisci i metadati del documento con i metadati base
+            ))
         return chunks
 
     @staticmethod
@@ -1976,7 +1991,10 @@ class QdrantRepository(VectorStoreRepository):
         # batch_size: int = 32
 
         ids = [f"{uuid.uuid4().hex}" for _ in range(len(chunks))]
-        metadatas = [{**chunk.metadata, "namespace": namespace} for chunk in chunks]
+        metadatas = [
+            QdrantRepository._normalize_upsert_metadata({**chunk.metadata}, namespace)
+            for chunk in chunks
+        ]
 
 
         for i in range(0, len(contents), embedding_chunk_size):

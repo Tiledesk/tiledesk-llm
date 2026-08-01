@@ -186,6 +186,11 @@ class GraphQAAdvancedResponse(BaseModel):
     scores: Dict[str, Any]
     expanded_nodes: List[Dict[str, Any]]
     expanded_relationships: List[Dict[str, Any]]
+    sources: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Document provenance (source, file_name, page_number) for the "
+                    "local chunks retrieved — audit trail for the answer.",
+    )
     chat_history_dict: Optional[Dict[str, Any]] = None
 
 

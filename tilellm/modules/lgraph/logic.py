@@ -22,6 +22,7 @@ from .models.schemas import (
     LGraphCommunitySummarizationRequest,
     LGraphCommunitySummarizationResponse,
     LGraphDeleteResponse,
+    LGraphHybridRequest,
     LGraphLeidenRequest,
     LGraphLeidenResponse,
     LGraphNetworkResponse,
@@ -38,6 +39,7 @@ from .services.entity_extractor import (
 )
 from .services.graph_builder import build_light_graph, make_graph_name
 from .services.ppr_retriever import ppr_search
+from tilellm.shared.rrf import reciprocal_rank_fusion
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,22 @@ def _get_falkor_repo():
 # BUILD  (runs inside TaskIQ worker)
 # ---------------------------------------------------------------------------
 
+def _matches_to_chunks(matches) -> List[Dict[str, Any]]:
+    """Narrow RepositoryQueryResult matches to the chunk-dict shape build_light_graph
+    consumes. Pure/no-DI so it's testable without a live repo connection.
+    page_number comes from the generic RepositoryQueryResult.metadata passthrough."""
+    return [
+        {
+            "id": m.id,
+            "text": m.text or "",
+            "metadata_id": m.metadata_id or "",
+            "source": m.metadata_source or "",
+            "page_number": (m.metadata or {}).get("page_number"),
+        }
+        for m in matches
+    ]
+
+
 @inject_repo_async
 async def build_lgraph(
     request: LGraphBuildRequest,
@@ -77,15 +95,7 @@ async def build_lgraph(
         namespace=request.namespace,
         with_text=True,
     )
-    chunks = [
-        {
-            "id": m.id,
-            "text": m.text or "",
-            "metadata_id": m.metadata_id or "",
-            "source": m.metadata_source or "",
-        }
-        for m in items.matches
-    ]
+    chunks = _matches_to_chunks(items.matches)
 
     if not chunks:
         logger.warning(f"[lgraph] no chunks found in namespace='{request.namespace}'")
@@ -201,6 +211,7 @@ async def search_lgraph(request: LGraphSearchRequest) -> LGraphSearchResponse:
             metadata_id=c["metadata_id"],
             source=c["source"],
             ppr_score=c["ppr_score"],
+            page=c.get("page_number"),
         )
         for c in chunk_results
     ]
@@ -358,6 +369,7 @@ async def qa_lgraph(
             metadata_id=c["metadata_id"],
             source=c["source"],
             ppr_score=c["ppr_score"],
+            page=c.get("page_number"),
         )
         for c in chunk_results_raw
     ]
@@ -397,6 +409,143 @@ async def qa_lgraph(
         answer = _extract_llm_text(response)
     except Exception as e:
         logger.error(f"[lgraph/qa] LLM error: {e}", exc_info=True)
+        answer = f"[Errore LLM: {e}]"
+
+    return LGraphQAResponse(
+        answer=answer,
+        entities_found=entity_names,
+        graph_name=gname,
+        chunk_count=len(chunks),
+        chunks_used=chunks if request.debug else None,
+    )
+
+
+@inject_llm_chat_async
+@inject_repo_async
+async def qa_lgraph_hybrid(
+    request: LGraphHybridRequest,
+    repo=None,
+    llm=None,
+    llm_embeddings=None,
+    callback_handler=None,
+    **kwargs,
+) -> LGraphQAResponse:
+    """Public DI-wired entry point (mirrors ingest_md in the ingestion module):
+    both LLM and vector-store repo are injected here; the core stays plain/
+    testable without a live DB connection."""
+    return await _qa_lgraph_hybrid_core(request, repo=repo, llm=llm)
+
+
+async def _qa_lgraph_hybrid_core(request: LGraphHybridRequest, repo, llm) -> LGraphQAResponse:
+    """Vector-seeded PPR + RRF fusion for Italian PA documents.
+
+    A dense/sparse search on the namespace supplies seed_chunk_ids for the PPR
+    (ppr_search always had this parameter; plain /qa never fed it — always []).
+    Vector-rank and PPR-rank are combined with reciprocal_rank_fusion. Falls
+    back to entity-only PPR (identical to /qa) if the vector search finds
+    nothing or the namespace has no flat vector index yet.
+    """
+    from tilellm.models import QuestionAnswer
+
+    # ---- 1. Vector search seeds --------------------------------------------
+    vector_chunk_ids: List[str] = []
+    try:
+        qa = QuestionAnswer(
+            question=request.question,
+            namespace=request.namespace,
+            engine=request.engine,
+            gptkey=request.gptkey,
+            embedding=request.embedding,
+            sparse_encoder=request.sparse_encoder,
+            search_type=request.search_type,
+            top_k=request.vector_top_k,
+        )
+        vector_result = await repo.get_chunks_from_repo(qa)
+        vector_chunk_ids = vector_result.chunk_ids or []
+    except Exception as e:
+        logger.warning(f"[lgraph/hybrid] vector search seed failed, falling back to entity-only PPR: {e}")
+
+    # ---- 2. Entity seeds ----------------------------------------------------
+    query_entities = extract_entities(
+        text=request.question,
+        spacy_model=request.spacy_model,
+        include_types=request.include_entity_types,
+        use_noun_chunks=request.use_noun_chunks,
+    )
+    entity_names = _build_seed_entity_names(request.question, query_entities)
+
+    gname = make_graph_name(request.namespace, request.engine.index_name)
+    falkor = _get_falkor_repo()
+
+    # ---- 3. PPR retrieval, seeded by BOTH vector chunks and entities -------
+    chunk_results_raw = await ppr_search(
+        repo=falkor,
+        namespace=request.namespace,
+        index_name=request.engine.index_name,
+        seed_chunk_ids=vector_chunk_ids,
+        seed_entity_names=entity_names,
+        top_k=request.top_k,
+        alpha=request.ppr_alpha,
+        max_iter=request.ppr_max_iter,
+        graph_name=gname,
+    )
+
+    # ---- 4. RRF fusion: vector-rank vs PPR-rank ------------------------------
+    if vector_chunk_ids and chunk_results_raw:
+        ppr_chunk_ids = [c["chunk_id"] for c in chunk_results_raw]
+        fused = reciprocal_rank_fusion([vector_chunk_ids, ppr_chunk_ids], k=request.rrf_k)
+        by_id = {c["chunk_id"]: c for c in chunk_results_raw}
+        # vector-only ids never resolved as LChunk nodes (e.g. document not yet
+        # in the graph build) have no chunk data to show — skip them.
+        chunk_results_raw = [by_id[cid] for cid, _ in fused if cid in by_id][:request.top_k]
+
+    chunks = [
+        ChunkResult(
+            chunk_id=c["chunk_id"],
+            text=c["text"],
+            metadata_id=c["metadata_id"],
+            source=c["source"],
+            ppr_score=c["ppr_score"],
+            page=c.get("page_number"),
+        )
+        for c in chunk_results_raw
+    ]
+
+    # ---- 5. Optional temporal filter -----------------------------------------
+    if request.date_from or request.date_to:
+        chunks = await _filter_chunks_by_date(chunks, request.date_from, request.date_to)
+
+    # ---- 6. LLM call -----------------------------------------------------------
+    if not chunks:
+        return LGraphQAResponse(
+            answer=(
+                f"Nessun frammento rilevante trovato nel grafo '{gname}'. "
+                "Verifica che il grafo sia stato costruito con /api/lgraph/build."
+            ),
+            entities_found=entity_names,
+            graph_name=gname,
+            chunk_count=0,
+            chunks_used=[] if request.debug else None,
+        )
+
+    evidence = _build_evidence(chunks)
+    system_prompt = _QA_SYSTEM_PROMPT.format(
+        system_context=f"\n{request.system_context}" if request.system_context else ""
+    )
+    user_prompt = _QA_USER_TEMPLATE.format(
+        chunk_count=len(chunks),
+        evidence=evidence,
+        question=request.question,
+    )
+
+    try:
+        response = await llm.ainvoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt),
+        ])
+        answer = _extract_llm_text(response)
+    except Exception as e:
+        logger.error(f"[lgraph/hybrid] LLM error: {e}", exc_info=True)
         answer = f"[Errore LLM: {e}]"
 
     return LGraphQAResponse(

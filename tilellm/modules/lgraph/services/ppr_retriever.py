@@ -133,7 +133,7 @@ async def _load_subgraph(
     MATCH (c:LChunk)
     WHERE c.namespace = $ns AND c.index_name = $idx AND c.chunk_id IN $cids
     RETURN id(c) AS id, c.chunk_id AS chunk_id, c.text AS text,
-           c.metadata_id AS metadata_id, c.source AS source
+           c.metadata_id AS metadata_id, c.source AS source, c.page_number AS page_number
     """
     chunk_rows = await repo._execute_query(
         chunk_q,
@@ -147,6 +147,7 @@ async def _load_subgraph(
             "text": r.get("text") or "",
             "metadata_id": r.get("metadata_id") or "",
             "source": r.get("source") or "",
+            "page_number": r.get("page_number"),
         }
         for r in chunk_rows
     }
@@ -168,7 +169,8 @@ async def _load_subgraph(
         coalesce(n.chunk_id, n.name, '') AS n_key,
         coalesce(n.text, '')          AS n_text,
         coalesce(n.metadata_id, '')   AS n_metadata_id,
-        coalesce(n.source, '')        AS n_source
+        coalesce(n.source, '')        AS n_source,
+        n.page_number                 AS n_page_number
     """
     nb_rows = await repo._execute_query(
         nb_q, {"seed_ids": all_seed_fids}, graph_name=graph_name
@@ -176,16 +178,18 @@ async def _load_subgraph(
 
     G = nx.Graph()  # type: ignore
 
-    def _add_chunk_node(fid: int, key: str, text: str, metadata_id: str, source: str):
+    def _add_chunk_node(fid: int, key: str, text: str, metadata_id: str, source: str,
+                        page_number: Optional[int] = None):
         node_id = f"chunk::{key}"
         chunk_data_by_fid[fid] = {
             "chunk_id": key,
             "text": text,
             "metadata_id": metadata_id,
             "source": source,
+            "page_number": page_number,
         }
         G.add_node(node_id, ntype="chunk", fid=fid, chunk_id=key,
-                   text=text, metadata_id=metadata_id, source=source)
+                   text=text, metadata_id=metadata_id, source=source, page_number=page_number)
         return node_id
 
     def _add_entity_node(fid: int, key: str):
@@ -197,7 +201,8 @@ async def _load_subgraph(
     for r in chunk_rows:
         fid = int(r["id"])
         _add_chunk_node(fid, r["chunk_id"], r.get("text") or "",
-                        r.get("metadata_id") or "", r.get("source") or "")
+                        r.get("metadata_id") or "", r.get("source") or "",
+                        r.get("page_number"))
     for r in entity_rows:
         fid = int(r["id"])
         _add_entity_node(fid, r["name"])
@@ -224,7 +229,7 @@ async def _load_subgraph(
 
         if s_nid not in G:
             if s_is_chunk:
-                _add_chunk_node(s_fid, s_key, "", "", "")
+                _add_chunk_node(s_fid, s_key, "", "", "", None)
             else:
                 _add_entity_node(s_fid, s_key)
 
@@ -233,7 +238,8 @@ async def _load_subgraph(
                 _add_chunk_node(n_fid, n_key,
                                 row.get("n_text") or "",
                                 row.get("n_metadata_id") or "",
-                                row.get("n_source") or "")
+                                row.get("n_source") or "",
+                                row.get("n_page_number"))
             else:
                 _add_entity_node(n_fid, n_key)
 
@@ -319,6 +325,7 @@ async def ppr_search(
                 "text": ndata.get("text", ""),
                 "metadata_id": ndata.get("metadata_id", ""),
                 "source": ndata.get("source", ""),
+                "page_number": ndata.get("page_number"),
                 "ppr_score": score,
             }
         )
@@ -429,6 +436,7 @@ async def ppr_community_aware_search(
             "text": ndata.get("text", ""),
             "metadata_id": ndata.get("metadata_id", ""),
             "source": ndata.get("source", ""),
+            "page_number": ndata.get("page_number"),
             "ppr_score": final_score,
             "community_boost": boost,
         })

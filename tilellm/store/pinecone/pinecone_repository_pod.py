@@ -19,7 +19,8 @@ from tilellm.shared.tags_query_parser import build_tags_filter
 from tilellm.store.vector_store_repository import VectorStoreIndexingError
 from tilellm.tools.document_tools import (get_content_by_url,
                                           load_document,
-                                          handle_regex_custom_chunk
+                                          handle_regex_custom_chunk,
+                                          _extract_file_name,
                                           )
 
 from tilellm.store.pinecone.pinecone_repository_base import PineconeRepositoryBase
@@ -143,6 +144,10 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                     single_document.metadata["embedding"] = embedding_name
                     if item.tags:
                         single_document.metadata["tags"] = item.tags
+                    if not single_document.metadata.get("file_name"):
+                        single_document.metadata["file_name"] = _extract_file_name(source or "")
+                    if "page" not in single_document.metadata:
+                        single_document.metadata["page"] = 1
 
                     for key, value in single_document.metadata.items():
                         if isinstance(value, list) and all(item is None for item in value):
@@ -164,23 +169,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
 
             elif type_source == 'regex_custom':
                 documents = await handle_regex_custom_chunk(source, item.chunk_regex, item.browser_headers)
-                base_metadata = MetadataItem(
-                    id=item.id,
-                    source=item.source,
-                    type=item.type,
-                    embedding=str(item.embedding)
-                ).model_dump()
-
-                if item.tags:
-                    base_metadata["tags"] = item.tags
-
-                chunks = [
-                    Document(
-                        page_content=document.page_content,
-                        metadata={**document.metadata, **base_metadata}
-                    )
-                    for document in documents
-                ]
+                chunks = self._build_regex_custom_chunks(item, documents, embedding_name)
                 if len(chunks) == 0:
                     raise Exception("No chunks generated from source")
 
@@ -229,6 +218,8 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                     logger.warning(f"Situated context enrichment failed, continuing without: {sc_err}")
 
             total_tokens, cost = self.calc_embedding_cost(chunks, embedding_name)
+            for chunk in chunks:
+                self._normalize_upsert_metadata(chunk.metadata)
             ids = await vector_store.aadd_documents(chunks, namespace=namespace)
             logger.debug(f"ids: {ids}")
             logger.info(f"chunks: {len(chunks)}, total_tokens: {total_tokens}, cost: {cost:.6f}")
@@ -253,6 +244,33 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
 
             raise VectorStoreIndexingError(index_res.model_dump())
 
+    @staticmethod
+    def _build_regex_custom_chunks(item, documents, embedding_name) -> List[Document]:
+        """
+        Build chunks for the regex_custom ingestion type, matching the metadata
+        fields (tags, file_name, page) set by the standard url/pdf/etc branch.
+        """
+        base_metadata = MetadataItem(
+            id=item.id,
+            source=item.source,
+            type=item.type,
+            embedding=embedding_name
+        ).model_dump(exclude_none=True)
+
+        if item.tags:
+            base_metadata["tags"] = item.tags
+
+        chunks = []
+        for document in documents:
+            if not document.metadata.get("file_name"):
+                document.metadata["file_name"] = _extract_file_name(item.source or "")
+            if "page" not in document.metadata:
+                document.metadata["page"] = 1
+            chunks.append(Document(
+                page_content=document.page_content,
+                metadata={**document.metadata, **base_metadata}
+            ))
+        return chunks
 
     @inject_embedding_async_optimized()
     async def add_item_hybrid(self, item, embedding_obj=None, embedding_dimension=None):
@@ -399,6 +417,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                                               namespace=question_answer.namespace,
                                               chunks=[chunk.page_content for chunk in results],
                                               metadata=[chunk.metadata for chunk in results],
+                                              chunk_ids=[str(chunk.id) for chunk in results],
                                               error_message=None,
                                               duration=duration
                                               )

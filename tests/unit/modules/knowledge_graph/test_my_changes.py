@@ -3,7 +3,7 @@ import unittest
 from unittest.mock import MagicMock, patch
 from tilellm.modules.knowledge_graph.services.services import GraphService
 from tilellm.modules.knowledge_graph.repository.repository import GraphRepository
-from tilellm.modules.knowledge_graph.models.models import Node, Relationship
+from tilellm.models.graph import Node, Relationship
 
 class TestGraphService(unittest.TestCase):
     def setUp(self):
