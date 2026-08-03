@@ -10,10 +10,13 @@ retrieval is entirely via FalkorDB PPR).
 """
 
 import logging
+import time
 from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+import tilellm.analytics as analytics
+from tilellm.shared.token_tracking import TokenUsageCollector, emit_analytics, model_name_of
 from tilellm.shared.utility import inject_repo_async, inject_llm_chat_async
 
 from .models.schemas import (
@@ -83,70 +86,99 @@ async def build_lgraph(
     repo=None,
     **kwargs,
 ) -> Dict[str, Any]:
+    """Public DI-wired entry point; the core stays plain/testable without a
+    live repo connection (mirrors ingest_md/qa_lgraph_hybrid)."""
+    return await _build_lgraph_core(request, repo=repo)
+
+
+async def _build_lgraph_core(request: LGraphBuildRequest, repo) -> Dict[str, Any]:
     """Fetch all chunks from the vector store and build the light graph in FalkorDB."""
-    logger.info(
-        f"[lgraph] build started namespace='{request.namespace}' "
-        f"engine='{request.engine.name}' index='{request.engine.index_name}'"
-    )
+    t0 = time.monotonic()
+    error_msg: Optional[str] = None
+    chunks_processed = 0
+    try:
+        logger.info(
+            f"[lgraph] build started namespace='{request.namespace}' "
+            f"engine='{request.engine.name}' index='{request.engine.index_name}'"
+        )
 
-    from tilellm.models.schemas import RepositoryItems
-    items: RepositoryItems = await repo.get_all_obj_namespace(
-        engine=request.engine,
-        namespace=request.namespace,
-        with_text=True,
-    )
-    chunks = _matches_to_chunks(items.matches)
+        from tilellm.models.schemas import RepositoryItems
+        items: RepositoryItems = await repo.get_all_obj_namespace(
+            engine=request.engine,
+            namespace=request.namespace,
+            with_text=True,
+        )
+        chunks = _matches_to_chunks(items.matches)
 
-    if not chunks:
-        logger.warning(f"[lgraph] no chunks found in namespace='{request.namespace}'")
+        if not chunks:
+            logger.warning(f"[lgraph] no chunks found in namespace='{request.namespace}'")
+            return {
+                "status": "empty",
+                "namespace": request.namespace,
+                "graph_name": make_graph_name(request.namespace, request.engine.index_name),
+                "chunks_processed": 0,
+                "entities_created": 0,
+                "entity_chunk_edges": 0,
+                "entity_entity_edges": 0,
+                "message": "No chunks found in namespace",
+            }
+
+        logger.info(f"[lgraph] {len(chunks)} chunks fetched — extracting entities")
+
+        chunk_entities, entity_doc_freq = build_chunk_entity_matrix(
+            chunks=chunks,
+            spacy_model=request.spacy_model,
+            include_types=request.include_entity_types,
+            use_noun_chunks=request.use_noun_chunks,
+            sub_window_size=request.sub_window_size,
+            sub_window_overlap=request.sub_window_overlap,
+        )
+
+        falkor = _get_falkor_repo()
+        stats = await build_light_graph(
+            repo=falkor,
+            chunks=chunks,
+            chunk_entities=chunk_entities,
+            entity_doc_freq=entity_doc_freq,
+            namespace=request.namespace,
+            index_name=request.engine.index_name,
+            npmi_threshold=request.npmi_threshold,
+            npmi_min_count=request.npmi_min_count,
+            overwrite=request.overwrite,
+        )
+        chunks_processed = stats["chunks_processed"]
+
+        logger.info(
+            f"[lgraph] build complete — {stats['chunks_processed']} chunks, "
+            f"{stats['entities_created']} entities, "
+            f"{stats['entity_chunk_edges']} HAS_ENTITY edges, "
+            f"{stats['entity_entity_edges']} CO_OCCURS edges"
+        )
+
         return {
-            "status": "empty",
+            "status": "success",
             "namespace": request.namespace,
-            "graph_name": make_graph_name(request.namespace, request.engine.index_name),
-            "chunks_processed": 0,
-            "entities_created": 0,
-            "entity_chunk_edges": 0,
-            "entity_entity_edges": 0,
-            "message": "No chunks found in namespace",
+            **stats,
+            "message": "Light graph built successfully",
         }
-
-    logger.info(f"[lgraph] {len(chunks)} chunks fetched — extracting entities")
-
-    chunk_entities, entity_doc_freq = build_chunk_entity_matrix(
-        chunks=chunks,
-        spacy_model=request.spacy_model,
-        include_types=request.include_entity_types,
-        use_noun_chunks=request.use_noun_chunks,
-        sub_window_size=request.sub_window_size,
-        sub_window_overlap=request.sub_window_overlap,
-    )
-
-    falkor = _get_falkor_repo()
-    stats = await build_light_graph(
-        repo=falkor,
-        chunks=chunks,
-        chunk_entities=chunk_entities,
-        entity_doc_freq=entity_doc_freq,
-        namespace=request.namespace,
-        index_name=request.engine.index_name,
-        npmi_threshold=request.npmi_threshold,
-        npmi_min_count=request.npmi_min_count,
-        overwrite=request.overwrite,
-    )
-
-    logger.info(
-        f"[lgraph] build complete — {stats['chunks_processed']} chunks, "
-        f"{stats['entities_created']} entities, "
-        f"{stats['entity_chunk_edges']} HAS_ENTITY edges, "
-        f"{stats['entity_entity_edges']} CO_OCCURS edges"
-    )
-
-    return {
-        "status": "success",
-        "namespace": request.namespace,
-        **stats,
-        "message": "Light graph built successfully",
-    }
+    except Exception as exc:
+        error_msg = str(exc)
+        raise
+    finally:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        event_type, payload = analytics.events.content_indexed(
+            kb_id=request.namespace,
+            kb_name=request.namespace,
+            embedding_model="",
+            engine=analytics.events.get_engine_value(request.engine),
+            duration_ms=duration_ms,
+            success=error_msg is None,
+            source_type="lgraph_build",
+            chunks_indexed=chunks_processed,
+            error_message=error_msg,
+            request_id=request.request_id,
+        )
+        analytics.publish_nowait(event_type, request.id_project, payload)
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +213,7 @@ def _build_seed_entity_names(question: str, query_entities) -> List[str]:
 
 async def search_lgraph(request: LGraphSearchRequest) -> LGraphSearchResponse:
     """Query the light graph with PPR seeded by query entities."""
+    t0 = time.monotonic()
     query_entities = extract_entities(
         text=request.question,
         spacy_model=request.spacy_model,
@@ -215,6 +248,12 @@ async def search_lgraph(request: LGraphSearchRequest) -> LGraphSearchResponse:
         )
         for c in chunk_results
     ]
+
+    # No LLM synthesis on this endpoint — success=None, matching kb_query's
+    # convention for chunks_only-style retrieval (analytics/events.py docstring).
+    _emit_lgraph_kb_query(
+        request, chunks_retrieved=len(chunks), latency_ms=int((time.monotonic() - t0) * 1000), success=None,
+    )
 
     return LGraphSearchResponse(
         chunks=chunks,
@@ -328,6 +367,57 @@ async def _filter_chunks_by_date(
     return filtered if filtered else chunks
 
 
+def _emit_lgraph_kb_query(request, *, chunks_retrieved: int, latency_ms: int, success: Optional[bool]) -> None:
+    event_type, payload = analytics.events.kb_query(
+        kb_id=request.namespace,
+        kb_name=request.namespace,
+        query_text=request.question,
+        chunks_retrieved=chunks_retrieved,
+        reranking_applied=False,
+        latency_ms=latency_ms,
+        request_id=request.request_id,
+        success=success,
+    )
+    analytics.publish_nowait(event_type, request.id_project, payload)
+
+
+async def _llm_answer_with_analytics(llm, system_prompt: str, user_prompt: str, *, operation: str, request) -> tuple:
+    """Invoke the QA synthesis LLM call, emitting ai.token_usage + ai.model_call
+    regardless of outcome (single foreground call — unlike the community
+    summarizer's batch loop, this gets model_call too). Returns
+    (answer_text, success) — success=False means an inline error string was
+    returned instead of a real answer (matches prior qa_lgraph/_hybrid
+    handling)."""
+    model_str = model_name_of(request.model)
+    t0 = time.monotonic()
+    error_type: Optional[str] = None
+    response = None
+    try:
+        response = await llm.ainvoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_prompt),
+        ])
+        answer = _extract_llm_text(response)
+    except Exception as e:
+        logger.error(f"[{operation}] LLM error: {e}", exc_info=True)
+        answer = f"[Errore LLM: {e}]"
+        error_type = type(e).__name__
+    latency_ms = int((time.monotonic() - t0) * 1000)
+
+    if response is not None:
+        collector = TokenUsageCollector()
+        collector.record(response, operation=operation, model=model_str)
+        emit_analytics(collector, id_project=request.id_project, source="kb", provider=request.llm, request_id=request.request_id)
+
+    event_type, payload = analytics.events.model_call(
+        model=model_str, provider=request.llm, operation=operation,
+        latency_ms=latency_ms, success=error_type is None, error_type=error_type,
+        request_id=request.request_id,
+    )
+    analytics.publish_nowait(event_type, request.id_project, payload)
+    return answer, error_type is None
+
+
 @inject_llm_chat_async
 async def qa_lgraph(
     request: LGraphQARequest,
@@ -336,7 +426,14 @@ async def qa_lgraph(
     callback_handler=None,
     **kwargs,
 ) -> LGraphQAResponse:
+    """Public DI-wired entry point; the core stays plain/testable without a
+    live LLM connection (mirrors ingest_md/qa_lgraph_hybrid)."""
+    return await _qa_lgraph_core(request, llm=llm)
+
+
+async def _qa_lgraph_core(request: LGraphQARequest, llm) -> LGraphQAResponse:
     """PPR retrieval + LLM answer for Italian PA documents."""
+    t0 = time.monotonic()
     # ---- 1. Extract entities from question ---------------------------------
     query_entities = extract_entities(
         text=request.question,
@@ -379,7 +476,11 @@ async def qa_lgraph(
         chunks = await _filter_chunks_by_date(chunks, request.date_from, request.date_to)
 
     # ---- 4. LLM call -------------------------------------------------------
+    seeded_by = ["entity"] if entity_names else []
     if not chunks:
+        _emit_lgraph_kb_query(
+            request, chunks_retrieved=0, latency_ms=int((time.monotonic() - t0) * 1000), success=None,
+        )
         return LGraphQAResponse(
             answer=(
                 f"Nessun frammento rilevante trovato nel grafo '{gname}'. "
@@ -389,6 +490,7 @@ async def qa_lgraph(
             graph_name=gname,
             chunk_count=0,
             chunks_used=[] if request.debug else None,
+            seeded_by=seeded_by,
         )
 
     evidence = _build_evidence(chunks)
@@ -401,15 +503,14 @@ async def qa_lgraph(
         question=request.question,
     )
 
-    try:
-        response = await llm.ainvoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt),
-        ])
-        answer = _extract_llm_text(response)
-    except Exception as e:
-        logger.error(f"[lgraph/qa] LLM error: {e}", exc_info=True)
-        answer = f"[Errore LLM: {e}]"
+    answer, llm_success = await _llm_answer_with_analytics(
+        llm, system_prompt, user_prompt, operation="lgraph_qa", request=request,
+    )
+
+    _emit_lgraph_kb_query(
+        request, chunks_retrieved=len(chunks), latency_ms=int((time.monotonic() - t0) * 1000),
+        success=llm_success,
+    )
 
     return LGraphQAResponse(
         answer=answer,
@@ -417,6 +518,7 @@ async def qa_lgraph(
         graph_name=gname,
         chunk_count=len(chunks),
         chunks_used=chunks if request.debug else None,
+        seeded_by=seeded_by,
     )
 
 
@@ -447,6 +549,7 @@ async def _qa_lgraph_hybrid_core(request: LGraphHybridRequest, repo, llm) -> LGr
     """
     from tilellm.models import QuestionAnswer
 
+    t0 = time.monotonic()
     # ---- 1. Vector search seeds --------------------------------------------
     vector_chunk_ids: List[str] = []
     try:
@@ -516,7 +619,15 @@ async def _qa_lgraph_hybrid_core(request: LGraphHybridRequest, repo, llm) -> LGr
         chunks = await _filter_chunks_by_date(chunks, request.date_from, request.date_to)
 
     # ---- 6. LLM call -----------------------------------------------------------
+    # Reflects what actually fed ppr_search's seed lists (step 3), not what was
+    # merely attempted — so a silent fallback (vector search failing/finding
+    # nothing, step 1) shows up here as a missing "vector" instead of requiring
+    # debug=True + log-diving to notice.
+    seeded_by = (["vector"] if vector_chunk_ids else []) + (["entity"] if entity_names else [])
     if not chunks:
+        _emit_lgraph_kb_query(
+            request, chunks_retrieved=0, latency_ms=int((time.monotonic() - t0) * 1000), success=None,
+        )
         return LGraphQAResponse(
             answer=(
                 f"Nessun frammento rilevante trovato nel grafo '{gname}'. "
@@ -526,6 +637,7 @@ async def _qa_lgraph_hybrid_core(request: LGraphHybridRequest, repo, llm) -> LGr
             graph_name=gname,
             chunk_count=0,
             chunks_used=[] if request.debug else None,
+            seeded_by=seeded_by,
         )
 
     evidence = _build_evidence(chunks)
@@ -538,15 +650,14 @@ async def _qa_lgraph_hybrid_core(request: LGraphHybridRequest, repo, llm) -> LGr
         question=request.question,
     )
 
-    try:
-        response = await llm.ainvoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=user_prompt),
-        ])
-        answer = _extract_llm_text(response)
-    except Exception as e:
-        logger.error(f"[lgraph/hybrid] LLM error: {e}", exc_info=True)
-        answer = f"[Errore LLM: {e}]"
+    answer, llm_success = await _llm_answer_with_analytics(
+        llm, system_prompt, user_prompt, operation="lgraph_hybrid_qa", request=request,
+    )
+
+    _emit_lgraph_kb_query(
+        request, chunks_retrieved=len(chunks), latency_ms=int((time.monotonic() - t0) * 1000),
+        success=llm_success,
+    )
 
     return LGraphQAResponse(
         answer=answer,
@@ -554,6 +665,7 @@ async def _qa_lgraph_hybrid_core(request: LGraphHybridRequest, repo, llm) -> LGr
         graph_name=gname,
         chunk_count=len(chunks),
         chunks_used=chunks if request.debug else None,
+        seeded_by=seeded_by,
     )
 
 
@@ -611,35 +723,72 @@ async def summarize_communities_lgraph(
     llm_embeddings=None,
     **kwargs,
 ) -> LGraphCommunitySummarizationResponse:
+    """Public DI-wired entry point; the core stays plain/testable without a
+    live LLM connection (mirrors ingest_md/qa_lgraph_hybrid)."""
+    return await _summarize_communities_lgraph_core(request, llm=llm, llm_embeddings=llm_embeddings)
+
+
+async def _summarize_communities_lgraph_core(
+    request: LGraphCommunitySummarizationRequest, llm, llm_embeddings,
+) -> LGraphCommunitySummarizationResponse:
     """Generate LLM summaries for Leiden communities and index them in the vector store."""
     from .services.community_summarizer import generate_community_summaries
     from .services.graph_builder import make_graph_name
 
-    falkor = _get_falkor_repo()
-    vector_repo = await _get_vector_repo_for_engine(request.engine)
+    t0 = time.monotonic()
+    error_msg: Optional[str] = None
+    stats: Dict[str, Any] = {}
+    token_usage_collector = TokenUsageCollector()
+    try:
+        falkor = _get_falkor_repo()
+        vector_repo = await _get_vector_repo_for_engine(request.engine)
 
-    stats = await generate_community_summaries(
-        repo=falkor,
-        llm=llm,
-        llm_embeddings=llm_embeddings,
-        vector_repo=vector_repo,
-        engine=request.engine,
-        namespace=request.namespace,
-        index_name=request.engine.index_name,
-        min_community_size=request.min_community_size,
-        max_chunks_per_community=request.max_chunks_per_community,
-        overwrite=request.overwrite,
-    )
+        stats = await generate_community_summaries(
+            repo=falkor,
+            llm=llm,
+            llm_embeddings=llm_embeddings,
+            vector_repo=vector_repo,
+            engine=request.engine,
+            namespace=request.namespace,
+            index_name=request.engine.index_name,
+            min_community_size=request.min_community_size,
+            max_chunks_per_community=request.max_chunks_per_community,
+            overwrite=request.overwrite,
+            model_name=model_name_of(request.model),
+            token_usage_collector=token_usage_collector,
+        )
 
-    return LGraphCommunitySummarizationResponse(
-        status=stats["status"],
-        graph_name=stats.get("graph_name", make_graph_name(request.namespace, request.engine.index_name)),
-        community_ns=stats.get("community_ns", f"{request.namespace}__lgraph_communities"),
-        communities_processed=stats.get("communities_processed", 0),
-        communities_indexed=stats.get("communities_indexed", 0),
-        errors=stats.get("errors", 0),
-        message=stats.get("message", ""),
-    )
+        return LGraphCommunitySummarizationResponse(
+            status=stats["status"],
+            graph_name=stats.get("graph_name", make_graph_name(request.namespace, request.engine.index_name)),
+            community_ns=stats.get("community_ns", f"{request.namespace}__lgraph_communities"),
+            communities_processed=stats.get("communities_processed", 0),
+            communities_indexed=stats.get("communities_indexed", 0),
+            errors=stats.get("errors", 0),
+            message=stats.get("message", ""),
+        )
+    except Exception as exc:
+        error_msg = str(exc)
+        raise
+    finally:
+        emit_analytics(
+            token_usage_collector, id_project=request.id_project, source="kb",
+            provider=request.llm, request_id=request.request_id,
+        )
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        event_type, payload = analytics.events.content_indexed(
+            kb_id=request.namespace,
+            kb_name=f"{request.namespace}__lgraph_communities",
+            embedding_model=analytics.events.get_embedding_model_name(request.embedding),
+            engine=analytics.events.get_engine_value(request.engine),
+            duration_ms=duration_ms,
+            success=error_msg is None,
+            source_type="lgraph_community_summaries",
+            chunks_indexed=stats.get("communities_indexed", 0),
+            error_message=error_msg,
+            request_id=request.request_id,
+        )
+        analytics.publish_nowait(event_type, request.id_project, payload)
 
 
 # ---------------------------------------------------------------------------

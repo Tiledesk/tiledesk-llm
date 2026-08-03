@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 import traceback
 
 from fastapi import APIRouter, Depends
@@ -7,11 +8,13 @@ from fastapi.responses import JSONResponse
 from redis.asyncio import Redis
 from starlette.responses import JSONResponse as StarletteJSONResponse
 
+import tilellm.analytics as analytics
 from tilellm.agents.workflow import app, simple_app
 from tilellm.models import ItemSingle, QuestionAnswer
 from tilellm.models.schemas import IndexingResult, RetrievalResult
 from tilellm.modules.api_v2.dependencies import get_redis_client
 from tilellm.modules.api_v2.models import QASimpleRequest
+from tilellm.modules.api_v2.services.ingestion_v2_service import ingest_v2
 from tilellm.modules.api_v2.services.scrape_single_service import ScrapeSingleService
 from tilellm.modules.api_v2.services.scrape_status_service import ScrapeStatusService
 
@@ -21,6 +24,29 @@ router = APIRouter(
     prefix="/api/v2",
     tags=["Agentic API v2"],
 )
+
+
+def _emit_api_v2_kb_query(payload, response: JSONResponse, latency_ms: int) -> None:
+    """kb.query_executed for /query and /qa — mirrors /api/qa's own emission
+    in __main__.py. token_usage/model_call are NOT duplicated here: they
+    already fire inside rag_node -> ask_with_memory/ask_hybrid_with_memory
+    (controller.py), which both graphs route through."""
+    try:
+        body = json.loads(response.body.decode())
+    except Exception:
+        body = {}
+    question_text = payload.question if isinstance(payload.question, str) else str(payload.question)
+    event_type, evt_payload = analytics.events.kb_query(
+        kb_id=payload.namespace,
+        kb_name=payload.namespace,
+        query_text=question_text,
+        chunks_retrieved=len(body.get("content_chunks") or []),
+        reranking_applied=bool(getattr(payload, "reranking", False)),
+        latency_ms=latency_ms,
+        request_id=payload.request_id,
+        success=body.get("success") if response.status_code < 400 else False,
+    )
+    analytics.publish_nowait(event_type, payload.id_project, evt_payload)
 
 
 def _build_response(final_state: dict) -> JSONResponse:
@@ -67,8 +93,11 @@ async def ask_question_full(payload: QuestionAnswer):
             "trace": [],
         },
     }
+    t0 = time.monotonic()
     final_state = await app.ainvoke(initial_state)
-    return _build_response(final_state)
+    response = _build_response(final_state)
+    _emit_api_v2_kb_query(payload, response, int((time.monotonic() - t0) * 1000))
+    return response
 
 
 @router.post("/scrape/single", response_model=IndexingResult, tags=["Scrape v2"])
@@ -96,6 +125,27 @@ async def scrape_single_v2(
         return JSONResponse(status_code=400, content=e.args[0] if e.args else str(e))
 
 
+@router.post("/ingestion", tags=["Ingestion v2"])
+async def unified_ingestion_v2(item: ItemSingle):
+    """
+    Unified ingestion — canonical MD+frontmatter form for every document type.
+
+    Same request contract as the legacy ``/api/ingestion`` (ItemSingle): auto
+    type detection, ``hybrid``/``sparse_encoder`` for dense-only vs dense+sparse
+    indexing, ``situated_context`` for Contextual Retrieval. What changes is
+    the default path: instead of the legacy per-backend ``add_item``, content
+    goes through the same converters as ``/api/export/md`` and is written with
+    ``ingest.service.write_extracted_document`` — every chunk carries the same
+    baseline provenance metadata (document identity + page, when applicable)
+    regardless of source file type. ``use_ocr=True`` (pdf/docx) still routes to
+    the existing Docling/LLM-enrichment pipeline unchanged, for callers who
+    want generated image captions/table descriptions.
+
+    ``/api/ingestion`` (legacy, in production) is untouched by this endpoint.
+    """
+    return await ingest_v2(item)
+
+
 @router.post("/qa")
 async def ask_question_simple(payload: QASimpleRequest):
     """
@@ -120,5 +170,8 @@ async def ask_question_simple(payload: QASimpleRequest):
             "trace": [],
         },
     }
+    t0 = time.monotonic()
     final_state = await simple_app.ainvoke(initial_state)
-    return _build_response(final_state)
+    response = _build_response(final_state)
+    _emit_api_v2_kb_query(payload, response, int((time.monotonic() - t0) * 1000))
+    return response

@@ -19,12 +19,18 @@ from pathlib import Path
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage
 
-from tilellm.shared.llm_config import LLM_REQUEST_TIMEOUT_S
+from tilellm.shared.llm_config import LLM_REQUEST_TIMEOUT_S, strip_unsupported_anthropic_sampling_params
 
 if TYPE_CHECKING:
     from tilellm.models.llm import SituatedContextConfig
 
 logger = logging.getLogger(__name__)
+
+# Max concurrent LLM calls during situated-context enrichment. Multiplied by
+# TASKIQ_MAX_ASYNC_TASKS for the real concurrency hitting the LLM endpoint —
+# that combination saturated RunPod on 2026-07-27, hence configurable (same
+# pattern as PDF_MAX_CONCURRENT).
+SITUATED_CONTEXT_MAX_CONCURRENT = int(os.environ.get("SITUATED_CONTEXT_MAX_CONCURRENT", "5"))
 
 # Cache for loaded profiles to avoid repeated disk I/O
 _PROFILES_CACHE: Dict[str, Dict[str, Any]] = {}
@@ -261,7 +267,7 @@ async def enrich_chunks_with_situated_context(
     documents: List[Document],
     llm,
     doc_context: Optional[str] = None,
-    max_concurrent: int = 5,
+    max_concurrent: int = SITUATED_CONTEXT_MAX_CONCURRENT,
     custom_prompt: Optional[str] = None,
     profile: Optional[str] = None,
     metadata_extraction_prompt: Optional[str] = None,
@@ -277,7 +283,8 @@ async def enrich_chunks_with_situated_context(
         documents: List of chunks to enrich.
         llm: Async-capable LangChain LLM instance.
         doc_context: Brief overview of the document. Defaults to first ~800 chars.
-        max_concurrent: Max concurrent LLM calls to avoid rate limits.
+        max_concurrent: Max concurrent LLM calls to avoid rate limits. Defaults to
+            SITUATED_CONTEXT_MAX_CONCURRENT (env var, default 5).
         custom_prompt: Optional prompt override (plain-text situated context only).
         profile: Optional profile name loaded from YAML.
         metadata_extraction_prompt: When set, enables dual JSON output mode.
@@ -385,10 +392,12 @@ async def build_llm_from_config(config: "SituatedContextConfig", fallback_api_ke
 
         elif config.provider == 'anthropic':
             from langchain_anthropic import ChatAnthropic
+            anthropic_model = config.model or 'claude-haiku-4-5-20251001'
+            anthropic_kwargs = strip_unsupported_anthropic_sampling_params(anthropic_model, dict(kwargs))
             return ChatAnthropic(
-                model=config.model or 'claude-haiku-4-5-20251001',
+                model=anthropic_model,
                 anthropic_api_key=api_key,
-                **kwargs
+                **anthropic_kwargs
             )
 
         elif config.provider == 'google':

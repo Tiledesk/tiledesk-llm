@@ -2,6 +2,15 @@
 MinIO Storage Service for GraphRAG artifacts.
 Handles storage and retrieval of Parquet files (community reports, entities, relationships)
 from MinIO S3-compatible storage.
+
+Subclassed by knowledge_graph_falkor/services/minio_storage.py, which adds
+checkpoint/community-report/graph-snapshot operations on top of the base
+upload/download/list/delete methods here — read that module's docstring for
+the falkor-specific snapshot durability policy. Before 2026-08-02 that was a
+~1000-line byte-for-byte duplicate of this file (see docs/MIGLIORIE_DA_FARE.md
+P1#4); changes to the base methods here (upload_*, download_*, list_artifacts,
+delete_artifacts, the graceful-degradation client property) now apply to both
+call sites automatically — no more "which copy did I fix?".
 """
 
 import os
@@ -626,10 +635,10 @@ class MinIOStorageService:
         Delete artifacts for a namespace (or specific timestamp).
 
         PROTECTED — stored artifacts are a restore point, so deletion must be
-        deliberate: pass confirm_destroy=True. Same guard, same rationale as
-        knowledge_graph_falkor/services/minio_storage.py (see the "snapshot
-        durability policy" note at the top of that module); these two services
-        are diverged copies of one another and must not drift on this.
+        deliberate: pass confirm_destroy=True. Inherited unchanged by
+        knowledge_graph_falkor/services/minio_storage.py's MinIOStorageService
+        subclass (see the "snapshot durability policy" note at the top of that
+        module) — there is only one copy of this method now, so it can't drift.
 
         Args:
             namespace: Namespace/collection name

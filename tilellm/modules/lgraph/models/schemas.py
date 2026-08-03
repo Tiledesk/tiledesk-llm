@@ -35,6 +35,8 @@ class LGraphBuildRequest(BaseModel):
         description="Char overlap between consecutive sub-windows.",
     )
     webhook_url: Optional[str] = Field(default=None, description="Optional callback URL on completion")
+    id_project: Optional[str] = Field(default=None, description="Tiledesk project ID (used for analytics).")
+    request_id: Optional[str] = Field(default=None, description="Tiledesk conversation/request ID for analytics.")
 
 
 class LGraphBuildResponse(BaseModel):
@@ -66,6 +68,8 @@ class LGraphSearchRequest(BaseModel):
     ppr_alpha: float = Field(default=0.85, description="PageRank damping factor")
     ppr_seed_k: int = Field(default=10, description="Number of entity seeds from query")
     ppr_max_iter: int = Field(default=100)
+    id_project: Optional[str] = Field(default=None, description="Tiledesk project ID (used for analytics).")
+    request_id: Optional[str] = Field(default=None, description="Tiledesk conversation/request ID for analytics.")
 
 
 class ChunkResult(BaseModel):
@@ -119,6 +123,8 @@ class LGraphQARequest(BaseModel):
     date_to: Optional[str] = Field(default=None)
     system_context: str = Field(default="")
     debug: bool = Field(default=False)
+    id_project: Optional[str] = Field(default=None, description="Tiledesk project ID (used for analytics).")
+    request_id: Optional[str] = Field(default=None, description="Tiledesk conversation/request ID for analytics.")
 
 
 class LGraphHybridRequest(LGraphQARequest):
@@ -144,6 +150,14 @@ class LGraphQAResponse(BaseModel):
     graph_name: str
     chunk_count: int
     chunks_used: Optional[List[ChunkResult]] = Field(default=None, description="Populated when debug=True")
+    seeded_by: List[str] = Field(
+        default_factory=list,
+        description="Which seed sources actually fed the PPR with a non-empty "
+                     "seed list: 'vector' (only possible via /hybrid) and/or "
+                     "'entity'. Always populated (not gated by debug) so a "
+                     "silent fallback to entity-only seeding is visible without "
+                     "re-running with debug=True.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +233,8 @@ class LGraphCommunitySummarizationRequest(BaseModel):
         default=3,
         description="Skip communities with fewer entities than this threshold.",
     )
+    id_project: Optional[str] = Field(default=None, description="Tiledesk project ID (used for analytics).")
+    request_id: Optional[str] = Field(default=None, description="Tiledesk conversation/request ID for analytics.")
     max_chunks_per_community: int = Field(
         default=30,
         description="Maximum chunks to include in each community LLM context.",

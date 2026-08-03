@@ -504,6 +504,8 @@ class GraphOptimizer:
 
         logger.info(f"Restored {len(community_reports)} community reports")
 
+        await self.repository.ensure_indexes_for_graph(graph_name)
+
 
 def _as_list(value) -> List[str]:
     """

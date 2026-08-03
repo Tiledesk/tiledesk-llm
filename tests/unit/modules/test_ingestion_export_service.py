@@ -134,10 +134,33 @@ class TestPdfDocxDispatch:
         assert result == "CONVERTED_DOCX"
 
 
+class TestConvertUrlBranch:
+    @pytest.mark.asyncio
+    async def test_url_scrapes_then_converts(self):
+        with patch(
+            "tilellm.modules.ingestion.export.service.convert_url",
+            new=AsyncMock(return_value="CONVERTED_URL"),
+        ) as mock_convert:
+            req = ExportMdRequest(type=DocumentType.URL, source="https://example.com", scrape_type=1)
+            result = await export_document(req)
+
+        mock_convert.assert_called_once()
+        _, kwargs = mock_convert.call_args
+        assert kwargs["scrape_type"] == 1
+        assert result == "CONVERTED_URL"
+
+    @pytest.mark.asyncio
+    async def test_url_without_source_raises(self):
+        req = ExportMdRequest(type=DocumentType.URL, source=None)
+        with pytest.raises(ValueError):
+            await export_document(req)
+
+
 class TestUnsupportedType:
     @pytest.mark.asyncio
-    async def test_url_type_not_yet_supported(self):
-        # ponytail ceiling: web-page scraping into ExtractedDocument deferred to F1.1
-        req = ExportMdRequest(type=DocumentType.URL, source="https://example.com")
+    async def test_regex_custom_not_yet_supported(self):
+        # ponytail ceiling: regex-defined chunk boundaries don't map onto a
+        # single ExtractedDocument — add when a concrete use case needs it.
+        req = ExportMdRequest(type=DocumentType.REGEX_CUSTOM, source="https://example.com")
         with pytest.raises(ValueError):
             await export_document(req)

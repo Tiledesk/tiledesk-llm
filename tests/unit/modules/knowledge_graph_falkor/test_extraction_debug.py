@@ -4,6 +4,8 @@ Debug script to test GraphRAG extraction with relationship types
 import asyncio
 import logging
 
+import pytest
+
 # Setup logging
 logging.basicConfig(level=logging.DEBUG, format='%(name)s - %(levelname)s - %(message)s')
 
@@ -17,6 +19,7 @@ A partial payment of €15,000 was received on 2025-02-20.
 """
 
 
+@pytest.mark.asyncio
 async def test_extraction():
     """Test the extraction and see what comes out"""
     from tilellm.modules.knowledge_graph_falkor.tools.graphrag_extractor import (

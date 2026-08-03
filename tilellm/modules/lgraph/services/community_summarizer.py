@@ -56,6 +56,8 @@ async def generate_community_summaries(
     min_community_size: int = 3,
     max_chunks_per_community: int = 30,
     overwrite: bool = False,
+    model_name: str = "",
+    token_usage_collector=None,
 ) -> Dict[str, Any]:
     """
     Generate LLM summaries for each Leiden community and persist them in:
@@ -73,6 +75,14 @@ async def generate_community_summaries(
     min_community_size     : skip communities with fewer entities
     max_chunks_per_community : context budget per LLM call
     overwrite      : if True, regenerate summaries that already exist
+    model_name      : model name string for analytics (caller resolves it —
+                       cannot be introspected reliably from the LangChain
+                       instance across providers).
+    token_usage_collector : optional shared.token_tracking.TokenUsageCollector;
+                       one record appended per community LLM call when given
+                       (batch operation, many small calls — same
+                       token_usage-only convention as the compliance judge,
+                       see shared/token_tracking.py).
 
     Returns a stats dict.
     """
@@ -131,6 +141,8 @@ async def generate_community_summaries(
                 index_name=index_name,
                 comm_id=comm_id,
                 max_chunks=max_chunks_per_community,
+                model_name=model_name,
+                token_usage_collector=token_usage_collector,
             )
 
             # --- Store in FalkorDB ---
@@ -214,6 +226,8 @@ async def _summarize_community(
     index_name: str,
     comm_id: int,
     max_chunks: int,
+    model_name: str = "",
+    token_usage_collector=None,
 ) -> Tuple[str, str]:
     """Generate an LLM summary for one community. Returns (summary_text, label)."""
 
@@ -269,6 +283,8 @@ async def _summarize_community(
         SystemMessage(content=_SUMMARIZE_SYSTEM),
         HumanMessage(content=user_content),
     ])
+    if token_usage_collector is not None:
+        token_usage_collector.record(response, operation="lgraph_community_summary", model=model_name)
 
     summary_text = _extract_llm_text(response)
 

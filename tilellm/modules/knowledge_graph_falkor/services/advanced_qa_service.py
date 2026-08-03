@@ -71,7 +71,15 @@ class IntentClassifier:
         # Rule-based classification
         intent_scores = {}
         for intent, keywords in self.INTENT_PATTERNS.items():
-            score = sum(1 for keyword in keywords if keyword in question_lower)
+            # Match at a word start (not full word-boundary): plain substring matching
+            # let short keywords like "pec" (certified email) false-positive inside
+            # unrelated words (e.g. "specifiche"). A start-boundary-only prefix match
+            # still catches Italian inflections keyword lists rely on implicitly
+            # (e.g. "legal" matching "legali"/"legale").
+            score = sum(
+                1 for keyword in keywords
+                if re.search(rf"\b{re.escape(keyword)}", question_lower)
+            )
             if score > 0:
                 intent_scores[intent] = score
 

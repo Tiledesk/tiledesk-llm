@@ -17,7 +17,7 @@ from tilellm.models import LlmEmbeddingModel  # EmbeddingModel
 from tilellm.shared.embedding_factory import EmbeddingFactory, AsyncEmbeddingFactory
 from tilellm.shared.tiledesk_chatmodel_info import TiledeskAICallbackHandler
 from tilellm.shared.timed_cache import TimedCache
-from tilellm.shared.llm_config import get_llm_params
+from tilellm.shared.llm_config import get_llm_params, strip_unsupported_anthropic_sampling_params
 
 logger = logging.getLogger(__name__)
 
@@ -599,6 +599,7 @@ def inject_llm(func):
                 elif question.llm == "anthropic":
                     from langchain_anthropic import ChatAnthropic
                     inner_client_config["anthropic_api_key"] = inner_client_config.pop("api_key", None)
+                    strip_unsupported_anthropic_sampling_params(inner_client_config.get("model"), inner_client_config)
                     return ChatAnthropic(**inner_client_config)
 
                 elif question.llm == "cohere":
@@ -791,6 +792,7 @@ def inject_llm_chat(func):
                 elif question.llm == "anthropic":
                     from langchain_anthropic import ChatAnthropic
                     inner_client_config["anthropic_api_key"] = inner_client_config.pop("api_key", None)
+                    strip_unsupported_anthropic_sampling_params(inner_client_config.get("model"), inner_client_config)
                     return ChatAnthropic(**inner_client_config)
 
                 elif question.llm == "cohere":
@@ -945,6 +947,41 @@ def inject_llm_chat_async(func: Callable) -> Callable:
 
         except Exception as e:
             logger.error(f"Errore durante l'iniezione async del LLM per {func.__name__}: {e}", exc_info=True)
+            raise
+
+    return async_wrapper
+
+
+def inject_embeddings_async(func: Callable) -> Callable:
+    """
+    Decoratore async che inietta SOLO l'embedding model (via TimedCache), senza costruire
+    un chat LLM. Per endpoint plain-BaseModel (non QuestionAnswer-derived, es. ItemSingle/
+    IngestConfig) che consumano solo question.embedding/.gptkey — inject_llm_chat_async
+    accede a question.llm incondizionatamente e crasha con AttributeError su questi modelli.
+    """
+
+    @wraps(func)
+    async def async_wrapper(question, *args, **kwargs):
+        try:
+            embedding_cache_key = await _build_embedding_cache_key(question)
+
+            async def _embedding_creator():
+                logger.debug(f"Creazione nuovo oggetto Embedding in cache con chiave: {embedding_cache_key}")
+                return await _create_embedding_instance(question)
+
+            llm_embeddings = await TimedCache.async_get(
+                object_type="embedding",
+                key=embedding_cache_key,
+                constructor=_embedding_creator
+            )
+
+            kwargs['llm_embeddings'] = llm_embeddings
+            kwargs['embedding_config_key'] = embedding_cache_key
+
+            return await func(question, *args, **kwargs)
+
+        except Exception as e:
+            logger.error(f"Errore durante l'iniezione async dell'embedding per {func.__name__}: {e}", exc_info=True)
             raise
 
     return async_wrapper
@@ -1156,11 +1193,16 @@ async def _create_llm_instance(question):
         elif provider_param == "vllm":
             from langchain_openai import ChatOpenAI # vLLM uses OpenAI compatible API
             client_config["max_completion_tokens"] = client_config.pop("max_tokens", None)
+            # Disable thinking mode — required for Qwen3 and similar thinking models where
+            # thinking consumes all max_tokens leaving content empty. Non-thinking models
+            # served by vllm ignore this extra_body parameter.
+            client_config["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
             return ChatOpenAI(**client_config)
 
         elif provider_param == "anthropic":
             from langchain_anthropic import ChatAnthropic
             client_config["anthropic_api_key"] = client_config.pop("api_key", None)
+            strip_unsupported_anthropic_sampling_params(client_config.get("model"), client_config)
             return ChatAnthropic(**client_config)
 
         elif provider_param == "cohere":
@@ -1231,13 +1273,22 @@ async def _create_standard_llm_instance(question) -> Any:
             client_config["location"] = client_base_config["location"]
 
         # Now, adapt client_config for each specific provider
-        if question.llm == "openai" or question.llm == "vllm":
+        if question.llm == "openai":
             from langchain_openai import ChatOpenAI
+            return ChatOpenAI(**client_config)
+
+        elif question.llm == "vllm":
+            from langchain_openai import ChatOpenAI
+            # Disable thinking mode — required for Qwen3 and similar thinking models where
+            # thinking consumes all max_tokens leaving content empty. Non-thinking models
+            # served by vllm ignore this extra_body parameter.
+            client_config["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
             return ChatOpenAI(**client_config)
 
         elif question.llm == "anthropic":
             from langchain_anthropic import ChatAnthropic
             client_config["anthropic_api_key"] = client_config.pop("api_key", None)
+            strip_unsupported_anthropic_sampling_params(client_config.get("model"), client_config)
             return ChatAnthropic(**client_config)
 
         elif question.llm == "cohere":
@@ -1316,7 +1367,10 @@ def _create_callback_handler(question, llm):
     """Crea un nuovo callback handler (sempre nuovo per ogni richiesta)"""
     callback_handler = None
 
-    if question.debug:
+    # getattr, not question.debug: not every inject_llm_chat_async caller has a
+    # .debug field (e.g. LGraphCommunitySummarizationRequest) — a missing one just
+    # means "no debug callback", not a hard crash before the request even runs.
+    if getattr(question, 'debug', False):
         try:
             if question.llm == "openai":
                 from langchain_community.callbacks import OpenAICallbackHandler
@@ -1398,6 +1452,7 @@ def inject_reason_llm(func):
                     client_config["max_tokens"] = client_config.pop("max_tokens", None) # Anthropic uses max_tokens, not max_completion_tokens
                     if hasattr(question, 'thinking') and question.thinking is not None:
                         client_config["thinking"] = question.thinking
+                    strip_unsupported_anthropic_sampling_params(client_config.get("model"), client_config)
                     return ChatAnthropic(**client_config)
                 elif question.llm == "deepseek":
                     from langchain_deepseek import ChatDeepSeek
@@ -1564,6 +1619,7 @@ async def _create_reasoning_llm_instance(question) -> Any:
                 if thinking_dict:
                     client_config["thinking"] = thinking_dict
 
+            strip_unsupported_anthropic_sampling_params(client_config.get("model"), client_config)
             return ChatAnthropic(**client_config)
 
         elif question.llm == "google":

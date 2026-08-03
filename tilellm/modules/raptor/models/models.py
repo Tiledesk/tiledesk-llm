@@ -243,6 +243,9 @@ class RaptorRequest(BaseModel):
     # Optional: page count hint
     page_count: Optional[int] = Field(default=None, description="Number of pages in document")
 
+    id_project: Optional[str] = Field(default=None, description="Tiledesk project ID (used for analytics).")
+    request_id: Optional[str] = Field(default=None, description="Tiledesk conversation/request ID for analytics.")
+
 
 class RaptorResponse(BaseModel):
     """Response from RAPTOR tree building."""
@@ -300,6 +303,8 @@ class RaptorSummaryRequest(BaseModel):
     max_tokens: int = Field(default=512, ge=128, le=2048)
     debug: bool = Field(default=False)
     sparse_encoder: Union[str, TEIConfig, None] = Field(default=None)
+    id_project: Optional[str] = Field(default=None, description="Tiledesk project ID (used for analytics).")
+    request_id: Optional[str] = Field(default=None, description="Tiledesk conversation/request ID for analytics.")
 
 
 class RaptorSummaryResponse(BaseModel):
@@ -368,6 +373,8 @@ class RaptorRetrievalRequest(BaseModel):
         le=1.0,
         description="Hybrid weight: 1.0 = dense only, 0.0 = sparse only"
     )
+    id_project: Optional[str] = Field(default=None, description="Tiledesk project ID (used for analytics).")
+    request_id: Optional[str] = Field(default=None, description="Tiledesk conversation/request ID for analytics.")
 
 
 class RaptorRetrievalResult(BaseModel):
@@ -452,6 +459,8 @@ class RaptorQARequest(BaseModel):
     # Hybrid search
     use_hybrid: bool = Field(default=False, description="Use hybrid search (dense + sparse)")
     alpha: float = Field(default=0.7, ge=0.0, le=1.0, description="Hybrid weight")
+    id_project: Optional[str] = Field(default=None, description="Tiledesk project ID (used for analytics).")
+    request_id: Optional[str] = Field(default=None, description="Tiledesk conversation/request ID for analytics.")
 
 
 class RaptorQAResponse(BaseModel):

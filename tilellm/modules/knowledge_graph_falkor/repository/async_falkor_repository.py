@@ -186,7 +186,9 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
             if node_labels is None:
                 node_labels = ['Entity', 'Document', 'CommunityReport', 'Person', 'Organization']
 
-            # Create range indexes for searchable properties on each label
+            # Create range indexes for searchable properties on each label.
+            # Kept even though nothing queries CONTAINS on them today (P1#6) —
+            # left in place for future full-text search use cases, not removed.
             for label in node_labels:
                 for prop in self.SEARCHABLE_PROPERTIES:
                     # OpenCypher standard syntax for FalkorDB
@@ -197,6 +199,17 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
                     except Exception as e:
                         # Index might already exist or property doesn't exist yet
                         logger.debug(f"Index creation skipped for {label}.{prop}: {e}")
+
+            # Structured equality-lookup index actually used: the community report
+            # MERGE matches on (community_id, level), and search_community_reports'
+            # CONTAINS scan doesn't help there — see docs/MIGLIORIE_DA_FARE.md P1#6.
+            for prop in self.COMMUNITY_REPORT_INDEXED_PROPERTIES:
+                query = f"CREATE INDEX FOR (n:CommunityReport) ON (n.{prop})"
+                try:
+                    await self._execute_query(query, namespace=graph_name)
+                    logger.debug(f"Created index on CommunityReport.{prop} for graph '{graph_name}'")
+                except Exception as e:
+                    logger.debug(f"Index creation skipped for CommunityReport.{prop}: {e}")
 
             # Track indexed graphs
             AsyncFalkorGraphRepository._indexed_graphs.add(graph_name)
@@ -251,7 +264,12 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
             return records
 
         except Exception as e:
-            logger.error(f"Async query failed on graph '{graph.name}': {e}")
+            # "already indexed" is expected noise: _ensure_indexes_for_graph runs on every
+            # startup/reimport and re-issues CREATE INDEX for indexes that already exist.
+            if "already indexed" in str(e).lower():
+                logger.debug(f"Async query failed on graph '{graph.name}': {e}")
+            else:
+                logger.error(f"Async query failed on graph '{graph.name}': {e}")
             raise
 
     def _convert_database_value(self, value) -> Any:

@@ -36,6 +36,7 @@ class TestReimportWipe:
         repo.batch_create_nodes = AsyncMock(return_value={"banca abc": "new-1"})
         repo.batch_create_relationships = AsyncMock(return_value=1)
         repo.save_community_report = AsyncMock(return_value="r1")
+        repo.ensure_indexes_for_graph = AsyncMock(return_value=None)
         repo._normalize_name = lambda s: s.strip().lower()
         # delete_all_nodes must not be reached; a MagicMock would silently succeed,
         # so make any use of it an explicit failure.

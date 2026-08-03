@@ -8,11 +8,15 @@ heavy engines (docling seam from pdf_ocr, StructuredDocxLoader) and accept an
 injected engine for testability (dependency inversion — the real engine is
 lazy-imported so importing this module never requires docling/python-docx).
 """
+import asyncio
 import io
+import logging
 from typing import Any, Awaitable, Callable, List, Optional
 
 from tilellm.modules.ingestion.export.models import Block, ExtractedDocument
 from tilellm.modules.ingestion.export.serializers import from_md
+
+logger = logging.getLogger(__name__)
 
 
 def convert_txt(content: str, *, resource: Optional[str] = None) -> ExtractedDocument:
@@ -76,6 +80,7 @@ def convert_xlsx(content: bytes, *, resource: Optional[str] = None) -> Extracted
 
 
 PdfConverterFn = Callable[..., Awaitable[Any]]
+PdfClassifierFn = Callable[[str], dict]
 
 
 async def convert_pdf(
@@ -83,15 +88,30 @@ async def convert_pdf(
     doc_id: str,
     *,
     resource: Optional[str] = None,
-    skip_ocr: bool = True,
+    skip_ocr: Optional[bool] = None,
     converter: Optional[PdfConverterFn] = None,
+    classifier: Optional[PdfClassifierFn] = None,
 ) -> ExtractedDocument:
     """Delegate to the docling converter seam (pdf_ocr.converter_registry).
 
-    `skip_ocr=True` by default: export/md is the "just get me the text"
-    happy path, not the full OCR/LLM-enrichment pipeline (still available
-    separately via /api/ingestion with use_ocr=True).
+    Structure always comes from Docling; only OCR is decided per document.
+    `skip_ocr=None` (default) classifies the PDF (native/scanned/mixed, via
+    pdf_ocr.pdf_classifier) and skips OCR only for a fully native-digital
+    file — never a fixed default, which would silently drop scanned content
+    on non-native PDFs (see docs/MIGLIORIE_DA_FARE.md, "UPGRADE" section).
+    Pass skip_ocr explicitly to override the classifier.
     """
+    if skip_ocr is None:
+        if classifier is None:
+            from tilellm.modules.pdf_ocr.services.pdf_classifier import classify_pdf
+            classifier = classify_pdf
+        try:
+            classification = await asyncio.to_thread(classifier, file_path)
+            skip_ocr = classification["doc_type"] == "native"
+        except Exception as e:
+            logger.warning(f"PDF classification failed for {doc_id}, defaulting to OCR on: {e}")
+            skip_ocr = False
+
     if converter is None:
         from tilellm.modules.pdf_ocr.services.converter_registry import get_converter
         converter = get_converter("docling")
@@ -102,6 +122,33 @@ async def convert_pdf(
         for i, (page_no, md) in enumerate(result.page_bodies)
     ]
     return ExtractedDocument(type="PDF Document", resource=resource, blocks=blocks)
+
+
+async def convert_url(
+    source: str,
+    *,
+    scrape_type: int = 0,
+    parameters_scrape_type_4: Optional[Any] = None,
+    browser_headers: Optional[dict] = None,
+    resource: Optional[str] = None,
+    fetch: Optional[Callable[..., Awaitable[Any]]] = None,
+) -> ExtractedDocument:
+    """Delegate to the existing web-scraping engine (get_content_by_url) — same
+    Trafilatura/Playwright/Chromium strategies used by add_item's url branch."""
+    if fetch is None:
+        from tilellm.tools.document_tools import get_content_by_url
+        fetch = get_content_by_url
+
+    docs = await fetch(
+        source, scrape_type,
+        parameters_scrape_type_4=parameters_scrape_type_4,
+        browser_headers=browser_headers,
+    )
+    blocks = [
+        Block(content=d.page_content, block_type="text", order=i)
+        for i, d in enumerate(docs)
+    ]
+    return ExtractedDocument(type="Web Page", resource=resource or source, blocks=blocks)
 
 
 def convert_docx(

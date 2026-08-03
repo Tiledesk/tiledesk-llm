@@ -4,6 +4,7 @@ Tests Pydantic model validation and serialization.
 """
 import pytest
 from pydantic import ValidationError
+from tilellm.models import Engine
 from tilellm.modules.knowledge_graph_falkor.models import Node, NodeUpdate, Relationship, RelationshipUpdate
 from tilellm.modules.knowledge_graph_falkor.models.schemas import (
     GraphQARequest, GraphQAResponse, GraphCreateRequest, GraphCreateResponse,
@@ -129,40 +130,40 @@ class TestRelationshipUpdateModel:
 
 class TestGraphQARequestSchema:
     """Test GraphQARequest schema."""
-    
+
     def test_basic_request(self):
         """Test basic QA request creation."""
         request = GraphQARequest(
             question="What is GraphRAG?",
             namespace="test_ns",
-            llm_key="test-key"
+            engine=Engine(),
         )
-        
+
         assert request.question == "What is GraphRAG?"
         assert request.namespace == "test_ns"
         assert request.max_results == 10  # Default value
-    
+
     def test_request_with_index_name(self):
         """Test QA request with index name."""
         request = GraphQARequest(
             question="Query",
             namespace="ns",
             index_name="my_index",
-            llm_key="key"
+            engine=Engine(),
         )
-        
+
         assert request.index_name == "my_index"
-    
+
     def test_request_with_chat_history(self):
         """Test QA request with chat history."""
         request = GraphQARequest(
             question="Follow up",
             namespace="ns",
-            chat_history_dict={"messages": [{"role": "user", "content": "Hello"}]},
-            llm_key="key"
+            chat_history_dict={"0": {"question": "Hello", "answer": "Hi there"}},
+            engine=Engine(),
         )
-        
-        assert "messages" in request.chat_history_dict
+
+        assert "0" in request.chat_history_dict
 
 
 class TestGraphCreateRequestSchema:

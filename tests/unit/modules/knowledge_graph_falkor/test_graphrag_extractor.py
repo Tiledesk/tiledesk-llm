@@ -251,7 +251,7 @@ class TestGraphRAGExtractorExtractChunk:
         [COMPLETED]
         """
         mock_llm.chat = AsyncMock(return_value=mock_response)
-        mock_llm.ainvoke = None  # No ainvoke method
+        del mock_llm.ainvoke  # No ainvoke method — hasattr() must be False, not just None
         
         extractor = GraphRAGExtractor(mock_llm)
         entities, relationships, token_count = await extractor.extract_chunk(
@@ -263,16 +263,15 @@ class TestGraphRAGExtractorExtractChunk:
     
     @pytest.mark.asyncio
     async def test_extract_chunk_extraction_error(self):
-        """Test handling extraction error."""
+        """extract_chunk raises on permanent failure — extract() is the layer that
+        catches per-chunk and records failed_chunks, not extract_chunk itself."""
         mock_llm = Mock()
         mock_llm.ainvoke = AsyncMock(side_effect=Exception("LLM error"))
-        
+
         extractor = GraphRAGExtractor(mock_llm)
-        
-        entities, relationships, token_count = await extractor.extract_chunk("chunk_1", "Some text")
-        assert len(entities) == 0
-        assert len(relationships) == 0
-        assert token_count == 0
+
+        with pytest.raises(Exception, match="LLM error"):
+            await extractor.extract_chunk("chunk_1", "Some text")
 
 
 class TestGraphRAGExtractorExtract:
@@ -297,10 +296,11 @@ class TestGraphRAGExtractorExtract:
             {"id": "chunk_2", "text": "They are colleagues."}
         ]
         
-        entities, relationships = await extractor.extract("doc_1", chunks)
-        
+        entities, relationships, failed_chunks = await extractor.extract("doc_1", chunks)
+
         assert len(entities) > 0
         assert len(relationships) > 0
+        assert failed_chunks == []
     
     @pytest.mark.asyncio
     async def test_extract_with_empty_chunks(self):
@@ -308,10 +308,11 @@ class TestGraphRAGExtractorExtract:
         mock_llm = Mock()
         extractor = GraphRAGExtractor(mock_llm)
         
-        entities, relationships = await extractor.extract("doc_1", [])
-        
+        entities, relationships, failed_chunks = await extractor.extract("doc_1", [])
+
         assert len(entities) == 0
         assert len(relationships) == 0
+        assert failed_chunks == []
     
     @pytest.mark.asyncio
     async def test_extract_deduplication(self):
@@ -330,8 +331,8 @@ class TestGraphRAGExtractorExtract:
             {"id": "chunk_2", "text": "Alice is there."}
         ]
         
-        entities, relationships = await extractor.extract("doc_1", chunks)
-        
+        entities, relationships, failed_chunks = await extractor.extract("doc_1", chunks)
+
         # Should only have one Alice despite appearing in both chunks
         alice_entities = [e for e in entities if e["entity_name"] == "ALICE"]
         assert len(alice_entities) == 1

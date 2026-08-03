@@ -20,6 +20,12 @@ class BaseGraphRepository(ABC):
     
     SEARCHABLE_PROPERTIES = ['text', 'content', 'name', 'title', 'description', 'summary', 'label', 'type']
     SEARCHABLE_REL_PROPERTIES = ['type', 'weight', 'context', 'description', 'source', 'target']
+
+    # Structured (equality-lookup) properties on :CommunityReport, separate from
+    # SEARCHABLE_PROPERTIES above (full-text fields). The community report MERGE
+    # matches on exactly these two and had no index backing it — see
+    # docs/MIGLIORIE_DA_FARE.md P1#6.
+    COMMUNITY_REPORT_INDEXED_PROPERTIES = ['community_id', 'level']
     
     @abstractmethod
     def __init__(self):

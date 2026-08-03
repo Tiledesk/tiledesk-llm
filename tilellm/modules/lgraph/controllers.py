@@ -9,6 +9,7 @@ POST   /api/lgraph/search             PPR-based retrieval (sync)
 POST   /api/lgraph/qa                 PPR + LLM answer
 POST   /api/lgraph/hybrid             Vector-seeded PPR + RRF fusion + LLM answer
 POST   /api/lgraph/leiden             Leiden community detection (async TaskIQ)
+POST   /api/lgraph/community_summaries  Community summaries, LinearRAG-style (async TaskIQ)
 GET    /api/lgraph/network            Visualization data
 DELETE /api/lgraph/{namespace}        Delete graph for a namespace/index
 GET    /api/lgraph/health             Health check
@@ -23,7 +24,6 @@ from .models.schemas import (
     LGraphAsyncTaskResponse,
     LGraphBuildRequest,
     LGraphCommunitySummarizationRequest,
-    LGraphCommunitySummarizationResponse,
     LGraphDeleteResponse,
     LGraphHybridRequest,
     LGraphLeidenAsyncTaskResponse,
@@ -44,7 +44,11 @@ from . import logic as lgraph_logic
 
 # ---- TaskIQ wiring (optional — gracefully disabled if unavailable) --------
 try:
-    from tilellm.modules.task_executor.tasks import task_lgraph_build, task_lgraph_leiden
+    from tilellm.modules.task_executor.tasks import (
+        task_lgraph_build,
+        task_lgraph_community_summaries,
+        task_lgraph_leiden,
+    )
     from tilellm.modules.task_executor.broker import broker
     TASKIQ_AVAILABLE = True
 except Exception as e:
@@ -52,6 +56,7 @@ except Exception as e:
     TASKIQ_AVAILABLE = False
     task_lgraph_build = None
     task_lgraph_leiden = None
+    task_lgraph_community_summaries = None
     broker = None
 
 ENABLE_TASKIQ = os.environ.get("ENABLE_TASKIQ", "false").lower() == "true" and TASKIQ_AVAILABLE
@@ -204,10 +209,11 @@ async def leiden_cluster(request: LGraphLeidenRequest):
 
 # ---- Community summaries (LinearRAG-style) ----------------------------------
 
-@router.post("/community_summaries", response_model=LGraphCommunitySummarizationResponse)
+@router.post("/community_summaries", response_model=LGraphAsyncTaskResponse)
 async def generate_community_summaries(request: LGraphCommunitySummarizationRequest):
     """
-    Generate LLM summaries for each Leiden community and index them in the vector store.
+    Generate LLM summaries for each Leiden community and index them in the vector store
+    (async via TaskIQ — one LLM call per community, can run long on large graphs).
 
     **Requires**: Leiden clustering must have been run first (``POST /api/lgraph/leiden``).
 
@@ -218,14 +224,22 @@ async def generate_community_summaries(request: LGraphCommunitySummarizationRequ
     - **Vector store**: in the namespace ``{namespace}__lgraph_communities``, enabling
       dense + sparse retrieval via standard RAG endpoints.
 
-    Set ``overwrite=true`` to regenerate summaries that already exist.
+    Set ``overwrite=true`` to regenerate summaries that already exist. Poll
+    ``GET /api/lgraph/tasks/{task_id}`` for completion (result is the same payload
+    ``LGraphCommunitySummarizationResponse`` previously returned synchronously).
     """
+    if not ENABLE_TASKIQ:
+        raise HTTPException(
+            status_code=501,
+            detail="TaskIQ is required for community summaries (set ENABLE_TASKIQ=true and start a worker).",
+        )
     try:
-        return await lgraph_logic.summarize_communities_lgraph(request)
-    except ImportError as e:
-        raise HTTPException(status_code=501, detail=str(e))
+        payload = serialize_with_secrets(request.model_dump(mode="python"))
+        task = await task_lgraph_community_summaries.kiq(payload)
+        logger.info(f"[lgraph] community_summaries task queued task_id={task.task_id}")
+        return LGraphAsyncTaskResponse(task_id=task.task_id)
     except Exception as e:
-        logger.error(f"[lgraph] community_summaries error: {e}", exc_info=True)
+        logger.error(f"[lgraph] community_summaries dispatch error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

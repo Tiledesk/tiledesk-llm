@@ -707,7 +707,6 @@ class DigestService:
         date_to_str = (request.date_to or request.date_from).isoformat() if request.date_from else None
 
         qa = self._build_qa(request, question=request.question)
-        qa.top_k = 20
         qa._metadata_filter = {_DIGEST_TYPE_FIELD: {"$eq": _DIGEST_TYPE_VALUE}}
         if date_from_str:
             qa._metadata_filter["digest_date_from"] = {"$gte": date_from_str}

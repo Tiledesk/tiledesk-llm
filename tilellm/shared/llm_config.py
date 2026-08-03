@@ -167,6 +167,30 @@ def get_llm_params(
     return params
 
 
+# Claude models that reject an explicit temperature/top_p outright (HTTP 400
+# "temperature is deprecated for this model") regardless of value — Claude
+# Opus 5, Sonnet 5, Fable 5, Opus 4.8 and Opus 4.7 removed sampling params
+# from the API. PROVIDER_CONFIGS above is provider-level (all Anthropic models
+# supports_temperature=True), so this is a model-level override applied at
+# ChatAnthropic() construction time, once the resolved model string is known.
+ANTHROPIC_NO_SAMPLING_PARAMS_MODELS = frozenset({
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-fable-5",
+    "claude-mythos-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+})
+
+
+def strip_unsupported_anthropic_sampling_params(model: Optional[str], params: Dict[str, Any]) -> Dict[str, Any]:
+    """Drop temperature/top_p in place when `model` rejects them outright."""
+    if model in ANTHROPIC_NO_SAMPLING_PARAMS_MODELS:
+        params.pop("temperature", None)
+        params.pop("top_p", None)
+    return params
+
+
 def should_include_param(provider: str, param_name: str) -> bool:
     """
     Verifica se un parametro dovrebbe essere incluso per un dato provider.

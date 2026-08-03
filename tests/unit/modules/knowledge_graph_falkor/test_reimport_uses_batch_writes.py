@@ -32,6 +32,7 @@ def _repo():
     repo.batch_create_nodes = AsyncMock(return_value={"banca abc": "500", "mario bianchi": "501"})
     repo.batch_create_relationships = AsyncMock(return_value=1)
     repo.save_community_report = AsyncMock(return_value="r1")
+    repo.ensure_indexes_for_graph = AsyncMock(return_value=None)
     repo._normalize_name = lambda s: s.strip().lower()
     repo.create_node = AsyncMock(side_effect=AssertionError("must not create nodes one by one"))
     repo.create_relationship = AsyncMock(side_effect=AssertionError("must not create relationships one by one"))

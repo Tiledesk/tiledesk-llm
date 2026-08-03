@@ -47,7 +47,7 @@ class TestGraphService:
         result = await graph_service.create_node(node, namespace="test")
         
         assert result is not None
-        assert result.id == "123"
+        assert result.id == 123
         assert result.label == "Person"
         mock_repository.create_node.assert_called_once()
     
@@ -68,7 +68,7 @@ class TestGraphService:
         result = await graph_service.get_node("456")
         
         assert result is not None
-        assert result.id == "456"
+        assert result.id == 456
         assert result.label == "Organization"
     
     @pytest.mark.asyncio
@@ -176,8 +176,8 @@ class TestGraphService:
         
         assert result is not None
         assert result.type == "KNOWS"
-        assert result.source_id == "1"
-        assert result.target_id == "2"
+        assert result.source_id == 1
+        assert result.target_id == 2
     
     @pytest.mark.asyncio
     async def test_create_relationship_missing_source(self, graph_service, mock_repository):
@@ -209,7 +209,7 @@ class TestGraphService:
         result = await graph_service.get_relationship("5")
         
         assert result is not None
-        assert result.id == "5"
+        assert result.id == 5
         assert result.type == "WORKS_WITH"
     
     @pytest.mark.asyncio

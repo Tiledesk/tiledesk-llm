@@ -21,7 +21,10 @@ import pytest
 
 
 def _service():
-    with patch("tilellm.modules.knowledge_graph_falkor.services.minio_storage.Minio"):
+    # Minio is only referenced in the shared base class (_initialize, inherited
+    # unchanged) since the 2026-08-02 dedup refactor — this subclass no longer
+    # imports it itself.
+    with patch("tilellm.shared.minio_storage.Minio"):
         from tilellm.modules.knowledge_graph_falkor.services.minio_storage import MinIOStorageService
         svc = MinIOStorageService.__new__(MinIOStorageService)
         svc._client = MagicMock()
@@ -79,9 +82,12 @@ class TestDeleteCommunityReportsIsProtected:
 
 
 class TestTwinSharedServiceHasTheSameGuard:
-    """tilellm.shared.minio_storage is a diverged copy of this service and holds
-    the identical delete_artifacts. Guarding only one of the two recreates the
-    'which copy did I fix?' trap that already caused two wrong-module edits."""
+    """tilellm.shared.minio_storage.MinIOStorageService is the base class the
+    falkor subclass above inherits delete_artifacts from unchanged (dedup
+    refactor, 2026-08-02 — previously these were two diverged copies, which is
+    exactly the trap this test now guards against regressing into: instantiate
+    the base class directly and confirm the guard is still there, not just
+    reachable through the subclass."""
 
     def _shared_service(self):
         with patch("tilellm.shared.minio_storage.Minio"):

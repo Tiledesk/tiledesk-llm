@@ -7,6 +7,126 @@
 
 
 ---
+## [2026-08-03]
+### 0.12.1-rc1 fix: Claude Opus 5 / Sonnet 5 / Fable 5 / Opus 4.8 / Opus 4.7 rejected every request with "temperature is deprecated for this model"
+
+Not a `langchain-anthropic` version issue (already on 1.4.0) — these five models removed
+`temperature`/`top_p` from their API entirely and 400 on any explicit value. `get_llm_params()` in
+`shared/llm_config.py` included `temperature` for every Anthropic model regardless of which one, so
+all 7 `ChatAnthropic(...)` construction points across `shared/utility.py` (6) and
+`shared/situated_context.py` (1) sent a parameter these models reject outright. Fixed with a single
+model-aware choke point, `strip_unsupported_anthropic_sampling_params()`, called right before each
+`ChatAnthropic()` construction; older Claude models (e.g. `claude-opus-4-6`) keep
+`temperature`/`top_p` unchanged. Tests: `tests/unit/shared/test_anthropic_sampling_params.py`.
+ 
+
+### feat: `/api/lgraph/community_summaries` now runs async via TaskIQ (was synchronous)
+
+One LLM call per Leiden community blocked the HTTP request for graphs with many communities —
+inconsistent with `/build` and `/leiden`, which already queue via TaskIQ. Now dispatches
+`task_lgraph_community_summaries.kiq(...)` and returns `{task_id, status: "queued"}`, polled via
+the existing `GET /api/lgraph/tasks/{id}`; response payload unchanged, just delivered async.
+Tests: `tests/unit/modules/lgraph/test_community_summaries_async.py`.
+
+---
+## [2026-08-02]
+### feat: situated-context enrichment concurrency is now configurable (`SITUATED_CONTEXT_MAX_CONCURRENT`)
+
+Was hardcoded to 5 with no way to lower it; combined with TaskIQ's own concurrency this saturated
+a RunPod LLM endpoint once. New env var, default unchanged (5) — mirrors `PDF_MAX_CONCURRENT`.
+None of the 14 existing call sites passed `max_concurrent` explicitly, so they all inherit the new
+configurable default without code changes.
+Tests: `tests/unit/shared/test_situated_context_max_concurrent.py`.
+
+
+### fix: vllm "thinking" models could silently return empty content outside situated-context
+
+The `enable_thinking: False` workaround for thinking models (Qwen3 and similar spend all
+`max_tokens` reasoning, leaving content empty) only existed in the situated-context enrichment
+builder. Graph extraction/QA and other standard LLM calls routed through vllm had no such guard.
+Added the same `extra_body` flag to the two standard (non-reasoning) LLM builders in
+`shared/utility.py`; the dedicated reasoning builders used by `/api/thinking` are untouched on
+purpose. Tests: `tests/unit/shared/test_vllm_enable_thinking.py`.
+
+
+### chore: pin FalkorDB to v4.20.1 (was floating `:latest`)
+
+The in-use version predates v4.18.1, which fixed a corrupted/misaligned RDB buffer bug
+(use-after-free on release builds) matching the class of crash already documented for this
+deployment.
+
+---
+## [2026-08-02]
+### fix: `knowledge_graph_falkor/services/minio_storage.py` was a 1073-line byte-for-byte duplicate
+
+Now inherits from `tilellm/shared/minio_storage.py::MinIOStorageService` instead of duplicating
+it — 1073 → 432 lines, keeping only the 11 graph-specific methods (checkpoints, community
+reports, graph snapshots). The 17 base upload/download/list/delete methods, including the
+graceful-degradation `client` property, are now a single implementation instead of two that had
+to be patched identically by hand (confirmed: this already happened once for the `confirm_destroy`
+guard). Verified diff-clean before refactoring — the only real divergence was `delete_artifacts`'s
+error message text, unified onto the base class's wording (zero callers of that method anywhere in
+the codebase, so no behavior at risk). MinIO's optional-dependency behavior is unchanged: it lives
+in the callers (`docx_processor.py`, `pdf_ocr/logic.py`, `community_graph_service.__init__` all
+already catch unavailability and degrade gracefully), not in this class, and the constructor/
+`client` property are inherited unmodified. Tests: 45 unchanged/fixed (2 test files patched `Minio`
+at the old now-removed import location).
+
+---
+## [2026-08-02]
+### feat: analytics audit — kb.content_indexed / kb.query_executed / ai.token_usage across lgraph, falkor, raptor, temporal_digest, api_v2
+
+Every write endpoint now emits `kb.content_indexed` and every single-query read endpoint emits
+`kb.query_executed`, matching the convention already used by `/api/scrape/single` and `/api/qa`.
+Foreground LLM synthesis calls (one per request) also emit `ai.token_usage`/`ai.model_call`;
+batch loops (many small LLM calls per request) emit `ai.token_usage` only, no `ai.model_call` per
+item — same convention already established by the compliance judge.
+
+Deliberately deferred: `ai.token_usage`/`ai.model_call` for `knowledge_graph_falkor` and
+`temporal_digest`, whose LLM calls live several layers deep inside their service classes rather
+than in the thin `logic.py` entry points — tracked as a documented ceiling, not silently dropped.
+
+Found and fixed along the way: a dead `from cleo.ui import question` import in
+`knowledge_graph_falkor/logic.py` was breaking that module's import whenever `cleo` isn't
+installed — it had been silently blocking collection of the entire
+`tests/unit/modules/knowledge_graph_falkor/` suite (0 tests ever ran in this environment).
+Removing it surfaced 184 previously-uncollected tests, 28 of which fail on unrelated pre-existing
+issues (tracked separately, not touched here).
+
+Tests: new `test_analytics.py` in `lgraph`/`knowledge_graph_falkor`/`raptor`/`temporal_digest`
+plus `api_v2/test_qa_analytics.py` (~44 tests). Design: `docs/MIGLIORIE_DA_FARE.md` P1#14/#15.
+
+---
+## [2026-08-01]
+### feat: POST /api/v2/ingestion — unified ingestion, canonical MD+frontmatter form
+
+New endpoint (`api_v2/controllers.py` + `api_v2/services/ingestion_v2_service.py`), same request
+contract as the legacy `/api/ingestion` (untouched, still in production). Auto-detected type
+routes to: the existing OCR/LLM-enrichment pipeline unchanged when `use_ocr=True`; legacy
+`add_item`/`add_item_hybrid` for `regex_custom` (no canonical form defined for regex-delimited
+chunks yet); everything else through `export_document()` → `write_extracted_document()`, giving
+every chunk the same baseline provenance metadata (document identity + page/position/heading,
+including a `file_name` field previously missing on this path) regardless of source file type.
+PDF OCR is now decided per document (`classify_pdf`, previously wired but never called) instead
+of a fixed default that could silently drop scanned content. Added a `url` converter (previously
+unsupported by the canonical pipeline) and `situated_context` support on the write path (`ingest/
+service.py` didn't apply it before). Dense-only vs dense+sparse indexing preserved
+(`hybrid`/`sparse_encoder`). Emits `kb.content_indexed` analytics, matching every other indexing
+path. Tests: `tests/unit/modules/api_v2/test_ingestion_v2_service.py` (14) plus additions to the
+export/ingest converter and service test suites.
+
+---
+## [2026-08-01]
+### feat: /api/lgraph/hybrid reports which seeds actually fed the PPR (`seeded_by`)
+
+The vector-seeding step is wrapped in a try/except: on failure it silently falls back to
+entity-only PPR, becoming response-shape-identical to plain /qa.
+
+New `LGraphQAResponse.seeded_by: List[str]`, always populated (not gated by `debug`, unlike
+`chunks_used`): reflects which seed sources actually had a non-empty seed list, not merely
+attempted. Tests: `tests/unit/modules/lgraph/test_hybrid_search.py`.
+
+---
 ## [2026-07-31]
 ### 0.12.0-rc1 fix: /api/ingestion routed every PDF into a dead-letter legacy queue
 

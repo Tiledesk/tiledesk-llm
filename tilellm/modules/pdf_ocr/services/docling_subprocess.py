@@ -35,8 +35,10 @@ logger = logging.getLogger(__name__)
 SEGMENT_TIMEOUT_S = int(os.environ.get("PDF_OCR_SEGMENT_TIMEOUT_S", "1800"))
 
 # Optional hard memory cap (MB) for the child via RLIMIT_AS. Disabled by
-# default: RLIMIT_AS limits virtual address space, which breaks CUDA
-# (large VA reservations). Enable only on CPU-only deployments.
+# default. RLIMIT_AS limits virtual address space, not real RSS, so it only
+# makes sense on CPU-only deployments — _child_init() below auto-skips it
+# (with a warning) whenever a CUDA device is detected, since capping virtual
+# memory kills the child the instant it initializes a CUDA context.
 CHILD_MEM_LIMIT_MB = int(os.environ.get("PDF_OCR_CHILD_MEM_LIMIT_MB", "0"))
 
 
@@ -53,14 +55,43 @@ _child_converters: Dict[tuple, Any] = {}
 
 
 def _child_init() -> None:
-    """Pool initializer: optional memory cap, quiet logging."""
-    if CHILD_MEM_LIMIT_MB > 0:
-        try:
-            import resource
-            limit = CHILD_MEM_LIMIT_MB * 1024 * 1024
-            resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
-        except Exception:
-            pass
+    """Pool initializer: optional memory cap (CPU-only deployments), quiet logging.
+
+    RLIMIT_AS caps virtual address space, not real RSS — a CUDA context alone
+    reserves tens of GB of VA (measured: ~60 GB virtual vs ~5 GB real RSS on a
+    TEI process), so applying this on a GPU deployment kills the child the
+    instant it initializes CUDA. That failure looks identical to a real OOM
+    (ConversionProcessDied), so a misconfigured env var here silently breaks
+    every conversion — see docs/MIGLIORIE_DA_FARE.md P1#10. Guarded on
+    CUDA availability instead of trusting the "CPU-only" comment above to be
+    followed: the cap is skipped (with a warning) whenever CUDA is present.
+    """
+    if CHILD_MEM_LIMIT_MB <= 0:
+        return
+
+    cuda_available = _cuda_available()
+    if cuda_available:
+        logger.warning(
+            f"PDF_OCR_CHILD_MEM_LIMIT_MB={CHILD_MEM_LIMIT_MB} ignored: RLIMIT_AS caps "
+            f"virtual memory, which breaks CUDA context initialization. Only takes "
+            f"effect on CPU-only deployments (no CUDA device detected)."
+        )
+        return
+
+    try:
+        import resource
+        limit = CHILD_MEM_LIMIT_MB * 1024 * 1024
+        resource.setrlimit(resource.RLIMIT_AS, (limit, limit))
+    except Exception:
+        pass
+
+
+def _cuda_available() -> bool:
+    try:
+        import torch
+        return torch.cuda.is_available()
+    except Exception:
+        return False
 
 
 def _child_convert(file_path: str, do_table_structure: bool, do_ocr: bool) -> dict:

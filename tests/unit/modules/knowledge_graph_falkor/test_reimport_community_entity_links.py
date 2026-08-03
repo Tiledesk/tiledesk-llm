@@ -68,6 +68,7 @@ class TestReimportRemapsCommunityEntityIds:
         repo.delete_nodes_by_metadata = AsyncMock(return_value={"nodes_deleted": 0})
         repo.batch_create_relationships = AsyncMock(return_value=0)
         repo.save_community_report = AsyncMock(return_value="r1")
+        repo.ensure_indexes_for_graph = AsyncMock(return_value=None)
         repo._normalize_name = lambda s: s.strip().lower()
         # Old ids 7/8 in the snapshot; recreation assigns 500/501.
         repo.batch_create_nodes = AsyncMock(
@@ -100,6 +101,7 @@ class TestReimportRemapsCommunityEntityIds:
         repo.delete_nodes_by_metadata = AsyncMock(return_value={"nodes_deleted": 0})
         repo.batch_create_relationships = AsyncMock(return_value=0)
         repo.save_community_report = AsyncMock(return_value="r1")
+        repo.ensure_indexes_for_graph = AsyncMock(return_value=None)
         repo._normalize_name = lambda s: s.strip().lower()
         repo.batch_create_nodes = AsyncMock(return_value={"banca abc": "500"})
 

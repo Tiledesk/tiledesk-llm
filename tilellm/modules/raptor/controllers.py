@@ -16,6 +16,8 @@ from typing import Optional, Any, Union
 from fastapi import APIRouter, HTTPException
 from langchain_core.documents import Document
 
+import tilellm.analytics as analytics
+from tilellm.shared.token_tracking import TokenUsageCollector, emit_analytics, model_name_of
 from tilellm.models.schemas.general_schemas import AsyncTaskResponse
 from tilellm.modules.raptor.models.models import (
     RaptorRequest,
@@ -105,55 +107,86 @@ async def _build_raptor_tree_logic(
     llm_embeddings=None,
     **kwargs,
 ) -> RaptorResponse:
+    """Public DI-wired entry point; the core stays plain/testable without a
+    live LLM/repo connection (mirrors ingest_md/qa_lgraph_hybrid)."""
+    return await _build_raptor_tree_core(request, repo=repo, llm=llm, llm_embeddings=llm_embeddings)
+
+
+async def _build_raptor_tree_core(request: RaptorRequest, repo, llm, llm_embeddings) -> RaptorResponse:
     """Core logic for building RAPTOR tree, with injected LLM and repo."""
-    config = request.config or get_raptor_config_from_env()
+    t0 = time.time()
+    error_msg: Optional[str] = None
+    result: Optional[RaptorResponse] = None
+    try:
+        config = request.config or get_raptor_config_from_env()
 
-    if not should_use_raptor_for_document(
-        doc_type=request.doc_type,
-        page_count=request.page_count
-    ):
-        logger.info(
-            f"RAPTOR not activated for doc {request.doc_id} "
-            f"(type={request.doc_type}, pages={request.page_count})"
-        )
-        return RaptorResponse(
-            success=False,
-            error="Document does not meet RAPTOR activation criteria",
-        )
+        if not should_use_raptor_for_document(
+            doc_type=request.doc_type,
+            page_count=request.page_count
+        ):
+            logger.info(
+                f"RAPTOR not activated for doc {request.doc_id} "
+                f"(type={request.doc_type}, pages={request.page_count})"
+            )
+            result = RaptorResponse(
+                success=False,
+                error="Document does not meet RAPTOR activation criteria",
+            )
+            return result
 
-    # Retrieve chunks from vector store
-    chunks = await _retrieve_document_chunks(
-        namespace=request.namespace,
-        doc_id=request.doc_id,
-        chunk_ids=request.chunk_ids,
-        vector_repo=repo,
-        engine=request.engine,
-    )
-    
-    # Ensure chunks is a List[Document] (defensive programming)
-    if not isinstance(chunks, list):
-        chunks = _to_documents(chunks)
-
-    if not chunks:
-        return RaptorResponse(
-            success=False,
-            error=f"No chunks found for document {request.doc_id}",
-            total_chunks=0,
+        # Retrieve chunks from vector store
+        chunks = await _retrieve_document_chunks(
+            namespace=request.namespace,
+            doc_id=request.doc_id,
+            chunk_ids=request.chunk_ids,
+            vector_repo=repo,
+            engine=request.engine,
         )
 
-    raptor_repo = await get_raptor_repo()
-    service = RaptorService(repo=raptor_repo)
-    return await service.build_raptor_tree(
-        chunks=chunks,
-        namespace=request.namespace,
-        doc_id=request.doc_id,
-        llm=llm,
-        embeddings=llm_embeddings,
-        vector_repo=repo,
-        engine=request.engine,
-        config=config,
-        sparse_encoder=request.sparse_encoder,
-    )
+        # Ensure chunks is a List[Document] (defensive programming)
+        if not isinstance(chunks, list):
+            chunks = _to_documents(chunks)
+
+        if not chunks:
+            result = RaptorResponse(
+                success=False,
+                error=f"No chunks found for document {request.doc_id}",
+                total_chunks=0,
+            )
+            return result
+
+        raptor_repo = await get_raptor_repo()
+        service = RaptorService(repo=raptor_repo)
+        result = await service.build_raptor_tree(
+            chunks=chunks,
+            namespace=request.namespace,
+            doc_id=request.doc_id,
+            llm=llm,
+            embeddings=llm_embeddings,
+            vector_repo=repo,
+            engine=request.engine,
+            config=config,
+            sparse_encoder=request.sparse_encoder,
+        )
+        return result
+    except Exception as exc:
+        error_msg = str(exc)
+        raise
+    finally:
+        duration_ms = int((time.time() - t0) * 1000)
+        event_type, payload = analytics.events.content_indexed(
+            kb_id=request.namespace,
+            kb_name=request.namespace,
+            embedding_model=analytics.events.get_embedding_model_name(request.embedding),
+            engine=analytics.events.get_engine_value(request.engine),
+            duration_ms=duration_ms,
+            success=error_msg is None and bool(result and result.success),
+            source_type="raptor_build",
+            chunks_indexed=result.total_chunks if result else 0,
+            error_message=error_msg or (result.error if result else None),
+            request_id=request.request_id,
+        )
+        analytics.publish_nowait(event_type, request.id_project, payload)
 
 
 @inject_llm_chat_async
@@ -165,15 +198,44 @@ async def _retrieve_raptor_logic(
     llm_embeddings=None,
     **kwargs,
 ) -> RaptorRetrievalResult:
+    """Public DI-wired entry point; the core stays plain/testable without a
+    live LLM/repo connection (mirrors ingest_md/qa_lgraph_hybrid)."""
+    return await _retrieve_raptor_core(request, repo=repo, llm=llm, llm_embeddings=llm_embeddings)
+
+
+async def _retrieve_raptor_core(request: RaptorRetrievalRequest, repo, llm, llm_embeddings) -> RaptorRetrievalResult:
     """Core logic for RAPTOR retrieval, with injected LLM and repo."""
-    raptor_repo = await get_raptor_repo()
-    retriever = RaptorRetriever(repo=raptor_repo)
-    return await retriever.retrieve(
-        request=request,
-        llm=llm,
-        embeddings=llm_embeddings,
-        vector_repo=repo,
-    )
+    t0 = time.time()
+    error_msg: Optional[str] = None
+    result: Optional[RaptorRetrievalResult] = None
+    try:
+        raptor_repo = await get_raptor_repo()
+        retriever = RaptorRetriever(repo=raptor_repo)
+        result = await retriever.retrieve(
+            request=request,
+            llm=llm,
+            embeddings=llm_embeddings,
+            vector_repo=repo,
+        )
+        return result
+    except Exception as exc:
+        error_msg = str(exc)
+        raise
+    finally:
+        # No LLM synthesis on this endpoint — success=None, matching kb_query's
+        # convention for chunks_only-style retrieval (analytics/events.py docstring).
+        latency_ms = int((time.time() - t0) * 1000)
+        event_type, payload = analytics.events.kb_query(
+            kb_id=request.namespace,
+            kb_name=request.namespace,
+            query_text=request.question,
+            chunks_retrieved=len(result.results) if result else 0,
+            reranking_applied=False,
+            latency_ms=latency_ms,
+            request_id=request.request_id,
+            success=None if error_msg is None else False,
+        )
+        analytics.publish_nowait(event_type, request.id_project, payload)
 
 
 @inject_llm_chat_async
@@ -185,6 +247,12 @@ async def _summarize_logic(
     llm_embeddings=None,
     **kwargs,
 ) -> RaptorSummaryResponse:
+    """Public DI-wired entry point; the core stays plain/testable without a
+    live LLM/repo connection (mirrors ingest_md/qa_lgraph_hybrid)."""
+    return await _summarize_core(request, repo=repo, llm=llm, llm_embeddings=llm_embeddings)
+
+
+async def _summarize_core(request: RaptorSummaryRequest, repo, llm, llm_embeddings) -> RaptorSummaryResponse:
     """Core logic for chunk summarization, with injected LLM and repo."""
     start_time = time.time()
 
@@ -216,10 +284,14 @@ async def _summarize_logic(
 
     from tilellm.modules.raptor.prompts import RAPTOR_SUMMARY_PROMPT
 
+    model_str = model_name_of(request.model)
+    token_usage_collector = TokenUsageCollector()
+
     async def _summarize_group(group_idx: int, group: list) -> dict:
         context = "\n\n".join([c.page_content for c in group])
         prompt = RAPTOR_SUMMARY_PROMPT.format(context=context)
         response = await llm.ainvoke(prompt)
+        token_usage_collector.record(response, operation="raptor_summarize", model=model_str)
         return {
             "group_id": group_idx,
             "chunk_ids": [c.metadata.get("id") for c in group],
@@ -227,9 +299,17 @@ async def _summarize_logic(
             "num_chunks": len(group),
         }
 
-    summaries = list(await asyncio.gather(*[
-        _summarize_group(i, g) for i, g in enumerate(groups)
-    ]))
+    try:
+        summaries = list(await asyncio.gather(*[
+            _summarize_group(i, g) for i, g in enumerate(groups)
+        ]))
+    finally:
+        # Batch loop (many small LLM calls) — token_usage only, no model_call,
+        # same convention as lgraph's community summarizer / compliance judge.
+        emit_analytics(
+            token_usage_collector, id_project=request.id_project, source="kb",
+            provider=request.llm, request_id=request.request_id,
+        )
 
     return RaptorSummaryResponse(
         success=True,
@@ -248,72 +328,113 @@ async def _raptor_qa_logic(
     llm_embeddings=None,
     **kwargs,
 ) -> RaptorQAResponse:
+    """Public DI-wired entry point; the core stays plain/testable without a
+    live LLM/repo connection (mirrors ingest_md/qa_lgraph_hybrid)."""
+    return await _raptor_qa_core(request, repo=repo, llm=llm, llm_embeddings=llm_embeddings)
+
+
+async def _raptor_qa_core(request: RaptorQARequest, repo, llm, llm_embeddings) -> RaptorQAResponse:
     """Core logic for RAPTOR-based Q&A: retrieve + answer generation."""
     start_time = time.time()
-
-    if llm is None:
-        return RaptorQAResponse(
-            success=False,
-            answer="",
-            error="LLM service is not available",
-        )
-
-    # Step 1: Retrieve context using RAPTOR
-    retrieval_start = time.time()
-    retriever = RaptorRetriever(repo=await get_raptor_repo())
-    retrieval = await retriever.retrieve(
-        request=request,
-        llm=llm,
-        embeddings=llm_embeddings,
-        vector_repo=repo,
-    )
-    retrieval_time = time.time() - retrieval_start
-
-    if not retrieval.success or not retrieval.results:
-        return RaptorQAResponse(
-            success=False,
-            answer="",
-            error=retrieval.error or "No relevant context found",
-            strategy_used=retrieval.strategy_used,
-        )
-
-    # Step 2: Extract top-k chunks for answer generation
-    top_chunks = retrieval.results[:request.top_k]
-    context_text = "\n\n".join([
-        f"[Level {r.get('level', '?')}] {r.get('content', '')}"
-        for r in top_chunks
-    ])
-
-    # Step 3: Generate answer using LLM
-    answer_start = time.time()
-    from tilellm.modules.raptor.prompts import RAPTOR_QA_PROMPT
-
-    prompt = RAPTOR_QA_PROMPT.format(
-        context=context_text,
-        question=request.question
-    )
-
+    kb_query_t0 = time.monotonic()
+    llm_success: Optional[bool] = None
+    chunks_retrieved = 0
     try:
-        response = await llm.ainvoke(prompt)
-        answer = response.content.strip()
-    except Exception as e:
-        logger.error(f"Error generating answer: {e}")
-        answer = f"Could not generate answer: {str(e)}"
+        if llm is None:
+            return RaptorQAResponse(
+                success=False,
+                answer="",
+                error="LLM service is not available",
+            )
 
-    answer_time = time.time() - answer_start
+        # Step 1: Retrieve context using RAPTOR
+        retrieval_start = time.time()
+        retriever = RaptorRetriever(repo=await get_raptor_repo())
+        retrieval = await retriever.retrieve(
+            request=request,
+            llm=llm,
+            embeddings=llm_embeddings,
+            vector_repo=repo,
+        )
+        retrieval_time = time.time() - retrieval_start
+        chunks_retrieved = len(retrieval.results) if retrieval.results else 0
 
-    return RaptorQAResponse(
-        success=True,
-        answer=answer,
-        retrieved_chunks=top_chunks,
-        strategy_used=retrieval.strategy_used,
-        levels_searched=retrieval.levels_searched,
-        total_chunks_retrieved=len(retrieval.results),
-        processing_time_seconds=time.time() - start_time,
-        retrieval_time_seconds=retrieval_time,
-        answer_time_seconds=answer_time,
-        traversal_path=retrieval.traversal_path,
-    )
+        if not retrieval.success or not retrieval.results:
+            return RaptorQAResponse(
+                success=False,
+                answer="",
+                error=retrieval.error or "No relevant context found",
+                strategy_used=retrieval.strategy_used,
+            )
+
+        # Step 2: Extract top-k chunks for answer generation
+        top_chunks = retrieval.results[:request.top_k]
+        context_text = "\n\n".join([
+            f"[Level {r.get('level', '?')}] {r.get('content', '')}"
+            for r in top_chunks
+        ])
+
+        # Step 3: Generate answer using LLM
+        answer_start = time.time()
+        from tilellm.modules.raptor.prompts import RAPTOR_QA_PROMPT
+
+        prompt = RAPTOR_QA_PROMPT.format(
+            context=context_text,
+            question=request.question
+        )
+
+        model_str = model_name_of(request.model)
+        llm_t0 = time.monotonic()
+        error_type: Optional[str] = None
+        response = None
+        try:
+            response = await llm.ainvoke(prompt)
+            answer = response.content.strip()
+        except Exception as e:
+            logger.error(f"Error generating answer: {e}")
+            answer = f"Could not generate answer: {str(e)}"
+            error_type = type(e).__name__
+        llm_latency_ms = int((time.monotonic() - llm_t0) * 1000)
+        llm_success = error_type is None
+
+        if response is not None:
+            collector = TokenUsageCollector()
+            collector.record(response, operation="raptor_qa", model=model_str)
+            emit_analytics(collector, id_project=request.id_project, source="kb", provider=request.llm, request_id=request.request_id)
+
+        mc_event_type, mc_payload = analytics.events.model_call(
+            model=model_str, provider=request.llm, operation="raptor_qa",
+            latency_ms=llm_latency_ms, success=llm_success, error_type=error_type,
+            request_id=request.request_id,
+        )
+        analytics.publish_nowait(mc_event_type, request.id_project, mc_payload)
+
+        answer_time = time.time() - answer_start
+
+        return RaptorQAResponse(
+            success=True,
+            answer=answer,
+            retrieved_chunks=top_chunks,
+            strategy_used=retrieval.strategy_used,
+            levels_searched=retrieval.levels_searched,
+            total_chunks_retrieved=len(retrieval.results),
+            processing_time_seconds=time.time() - start_time,
+            retrieval_time_seconds=retrieval_time,
+            answer_time_seconds=answer_time,
+            traversal_path=retrieval.traversal_path,
+        )
+    finally:
+        kq_event_type, kq_payload = analytics.events.kb_query(
+            kb_id=request.namespace,
+            kb_name=request.namespace,
+            query_text=request.question,
+            chunks_retrieved=chunks_retrieved,
+            reranking_applied=False,
+            latency_ms=int((time.monotonic() - kb_query_t0) * 1000),
+            request_id=request.request_id,
+            success=llm_success,
+        )
+        analytics.publish_nowait(kq_event_type, request.id_project, kq_payload)
 
 
 # ---------------------------------------------------------------------------

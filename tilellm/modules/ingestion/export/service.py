@@ -20,6 +20,7 @@ from tilellm.modules.ingestion.export.converters import (
     convert_md,
     convert_pdf,
     convert_txt,
+    convert_url,
     convert_xlsx,
 )
 from tilellm.modules.ingestion.export.models import ExportMdRequest, ExtractedDocument
@@ -62,8 +63,18 @@ async def export_document(request: ExportMdRequest) -> ExtractedDocument:
     elif resolved == DocumentType.DOCX:
         path = await _download_to_temp_file(request, suffix=".docx")
         doc = convert_docx(path, resource=resource)
+    elif resolved == DocumentType.URL:
+        if not _is_http_url(request.source):
+            raise ValueError("Export type=url richiede un 'source' http/https.")
+        doc = await convert_url(
+            request.source,
+            scrape_type=request.scrape_type,
+            parameters_scrape_type_4=request.parameters_scrape_type_4,
+            browser_headers=request.browser_headers,
+            resource=resource,
+        )
     else:
-        # ponytail: url/regex_custom/xls-legacy-quirks deferred — add a converter
+        # ponytail: regex_custom/xls-legacy-quirks deferred — add a converter
         # here when a concrete use case needs it (see memory/ingestion_md_redesign).
         raise ValueError(f"Export non ancora supportato per il tipo '{resolved.value}'.")
 

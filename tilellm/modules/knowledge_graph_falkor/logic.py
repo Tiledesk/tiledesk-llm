@@ -5,10 +5,10 @@ Separated from controllers.py to keep routes clean.
 """
 
 import logging
+import time
 from typing import List, Dict, Any, Optional
 
-from cleo.ui import question
-
+import tilellm.analytics as analytics
 from tilellm.models.schemas import RepositoryEngine
 from tilellm.models.schemas.multimodal_content import TextContent
 from tilellm.shared.utility import inject_repo_async, inject_llm_chat_async, inject_llm_async, get_service_config
@@ -21,6 +21,116 @@ from .services import GraphService, GraphRAGService
 from .repository import AsyncFalkorGraphRepository  # Use ASYNC repository
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Analytics helpers
+#
+# All 5 QA-style endpoints below (query_graph, context_fusion_graph_search,
+# multimodal_search, advanced_qa_search, agentic_qa_search) are thin
+# validate-then-delegate wrappers around a services/community_graph_service.py
+# (or similar) method that does the actual retrieval + LLM synthesis — unlike
+# lgraph's qa_lgraph, the LLM call itself isn't visible here. kb_query is
+# wired at this outer layer (wall-clock + best-effort chunk count from the
+# heterogeneous result dict shapes); token_usage/model_call would require
+# instrumenting each service's internal llm.ainvoke call sites individually —
+# deferred, see docs/MIGLIORIE_DA_FARE.md P1#14.
+# ---------------------------------------------------------------------------
+
+def _extract_falkor_chunk_count(result: Any) -> int:
+    """Best-effort retrieved-item count across falkor's heterogeneous QA
+    result shapes (no single canonical field, unlike ChunkResult/
+    RetrievalResult elsewhere in the codebase)."""
+    if not isinstance(result, dict):
+        return 0
+    for key in ("chunks_retrieved", "reports_used", "chunks_used"):
+        value = result.get(key)
+        if isinstance(value, int):
+            return value
+    scores = result.get("scores")
+    if isinstance(scores, dict) and isinstance(scores.get("local_chunks"), int):
+        return scores["local_chunks"]
+    sources = result.get("sources")
+    if isinstance(sources, list):
+        return len(sources)
+    return 0
+
+
+def _falkor_question_text(request) -> str:
+    q = getattr(request, "question", "")
+    if isinstance(q, str):
+        return q
+    if isinstance(q, list) and q:
+        return getattr(q[0], "text", str(q[0]))
+    return str(q)
+
+
+def _extract_falkor_indexed_count(result: Any) -> int:
+    """Best-effort indexed/processed-item count for falkor's graph-write
+    endpoints (same heterogeneous-shape caveat as _extract_falkor_chunk_count)."""
+    if not isinstance(result, dict):
+        return 0
+    for key in ("chunks_processed", "nodes_created", "entities_created", "entities_extracted"):
+        value = result.get(key)
+        if isinstance(value, int):
+            return value
+    return 0
+
+
+async def _emit_falkor_content_indexed_wrapped(coro, request, *, source_type: str) -> Dict[str, Any]:
+    """Await `coro` (a graph-write service call already constructed by the
+    caller), emitting kb.content_indexed regardless of outcome."""
+    t0 = time.monotonic()
+    error_msg: Optional[str] = None
+    result: Dict[str, Any] = {}
+    try:
+        result = await coro
+        return result
+    except Exception as exc:
+        error_msg = str(exc)
+        raise
+    finally:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        event_type, payload = analytics.events.content_indexed(
+            kb_id=request.namespace,
+            kb_name=request.namespace,
+            embedding_model=analytics.events.get_embedding_model_name(getattr(request, "embedding", "")),
+            engine=analytics.events.get_engine_value(request.engine),
+            duration_ms=duration_ms,
+            success=error_msg is None and result.get("status") not in ("error", "failed"),
+            source_type=source_type,
+            chunks_indexed=_extract_falkor_indexed_count(result),
+            error_message=error_msg,
+            request_id=getattr(request, "request_id", None),
+        )
+        analytics.publish_nowait(event_type, getattr(request, "id_project", None), payload)
+
+
+async def _emit_falkor_kb_query_wrapped(coro, request, *, reranking_applied: bool = False) -> Dict[str, Any]:
+    """Await `coro` (a QA-service call already constructed by the caller),
+    emitting kb.query_executed regardless of outcome."""
+    t0 = time.monotonic()
+    error_msg: Optional[str] = None
+    result: Dict[str, Any] = {}
+    try:
+        result = await coro
+        return result
+    except Exception as exc:
+        error_msg = str(exc)
+        raise
+    finally:
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        event_type, payload = analytics.events.kb_query(
+            kb_id=request.namespace,
+            kb_name=request.namespace,
+            query_text=_falkor_question_text(request),
+            chunks_retrieved=_extract_falkor_chunk_count(result),
+            reranking_applied=reranking_applied,
+            latency_ms=latency_ms,
+            request_id=getattr(request, "request_id", None),
+            success=error_msg is None and result.get("status") != "error",
+        )
+        analytics.publish_nowait(event_type, getattr(request, "id_project", None), payload)
 
 
 # Try to import Community Graph Service
@@ -229,67 +339,95 @@ async def add_document_to_graph(
     llm_embeddings=None,
     **kwargs
 ) -> Dict[str, Any]:
+    """Public DI-wired entry point; the core stays plain/testable without a
+    live LLM/repo connection (mirrors ingest_md/qa_lgraph_hybrid)."""
+    return await _add_document_to_graph_core(request, repo=repo, llm=llm, llm_embeddings=llm_embeddings)
+
+
+async def _add_document_to_graph_core(request: AddDocumentRequest, repo, llm, llm_embeddings) -> Dict[str, Any]:
     """
     Add all chunks of a document to the knowledge graph by retrieving them from vector store.
 
     This enables incremental graph updates when a new document is added to the knowledge base,
     without regenerating the entire namespace graph.
     """
-    # Lazy initialization
-    await ensure_initialized()
+    t0 = time.monotonic()
+    error_msg: Optional[str] = None
+    result: Dict[str, Any] = {}
+    try:
+        # Lazy initialization
+        await ensure_initialized()
 
-    if llm is None:
-        raise ValueError("LLM configuration is required for entity extraction.")
+        if llm is None:
+            raise ValueError("LLM configuration is required for entity extraction.")
 
-    if repo is None:
-        raise RuntimeError("Vector store repository not injected")
+        if repo is None:
+            raise RuntimeError("Vector store repository not injected")
 
-    if request.engine is None:
-        raise ValueError("Engine configuration is required for vector store access")
+        if request.engine is None:
+            raise ValueError("Engine configuration is required for vector store access")
 
-    graph_name = request.graph_db_name
+        graph_name = request.graph_db_name
 
-    # Call GraphRAG service to add document
-    result = await graph_rag_service.add_document_to_graph(
-        metadata_id=request.metadata_id,
-        namespace=request.namespace,
-        engine=request.engine,
-        vector_store_repo=repo,
-        llm=llm,
-        deduplicate_entities=request.deduplicate_entities if request.deduplicate_entities is not None else True,
-        graph_name=graph_name
-    )
+        # Call GraphRAG service to add document
+        result = await graph_rag_service.add_document_to_graph(
+            metadata_id=request.metadata_id,
+            namespace=request.namespace,
+            engine=request.engine,
+            vector_store_repo=repo,
+            llm=llm,
+            deduplicate_entities=request.deduplicate_entities if request.deduplicate_entities is not None else True,
+            graph_name=graph_name
+        )
 
-    # If document added successfully, update community reports
-    if (result.get("status") == "success" and
-        COMMUNITY_GRAPH_AVAILABLE and
-        CommunityGraphService is not None and
-        repository is not None):
-        try:
-            community_service = CommunityGraphService(
-                graph_service=graph_service,
-                graph_rag_service=graph_rag_service
-            )
-            # Update community reports (overwrite existing)
-            report_stats = await community_service.generate_hierarchical_reports(
-                namespace=request.namespace,
-                index_name=request.engine.index_name if hasattr(request.engine, 'index_name') else None,
-                sparse_encoder=request.sparse_encoder,
-                llm=llm,
-                vector_store_repo=repo,
-                llm_embeddings=llm_embeddings,  # Could be injected separately
-                engine=request.engine,
-                overwrite=True,
-                graph_name=graph_name
-            )
-            result["community_reports_updated"] = True
-            result["report_stats"] = report_stats
-        except Exception as e:
-            logger.warning(f"Failed to update community reports after adding document: {e}")
-            result["community_reports_updated"] = False
-            result["report_error"] = str(e)
-    
-    return result
+        # If document added successfully, update community reports
+        if (result.get("status") == "success" and
+            COMMUNITY_GRAPH_AVAILABLE and
+            CommunityGraphService is not None and
+            repository is not None):
+            try:
+                community_service = CommunityGraphService(
+                    graph_service=graph_service,
+                    graph_rag_service=graph_rag_service
+                )
+                # Update community reports (overwrite existing)
+                report_stats = await community_service.generate_hierarchical_reports(
+                    namespace=request.namespace,
+                    index_name=request.engine.index_name if hasattr(request.engine, 'index_name') else None,
+                    sparse_encoder=request.sparse_encoder,
+                    llm=llm,
+                    vector_store_repo=repo,
+                    llm_embeddings=llm_embeddings,  # Could be injected separately
+                    engine=request.engine,
+                    overwrite=True,
+                    graph_name=graph_name
+                )
+                result["community_reports_updated"] = True
+                result["report_stats"] = report_stats
+            except Exception as e:
+                logger.warning(f"Failed to update community reports after adding document: {e}")
+                result["community_reports_updated"] = False
+                result["report_error"] = str(e)
+
+        return result
+    except Exception as exc:
+        error_msg = str(exc)
+        raise
+    finally:
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        event_type, payload = analytics.events.content_indexed(
+            kb_id=request.namespace,
+            kb_name=request.namespace,
+            embedding_model=analytics.events.get_embedding_model_name(getattr(request, "embedding", "")),
+            engine=analytics.events.get_engine_value(request.engine) if request.engine else "",
+            duration_ms=duration_ms,
+            success=error_msg is None and result.get("status") not in ("error", "failed"),
+            source_type="falkor_add_document",
+            chunks_indexed=_extract_falkor_indexed_count(result),
+            error_message=error_msg,
+            request_id=getattr(request, "request_id", None),
+        )
+        analytics.publish_nowait(event_type, getattr(request, "id_project", None), payload)
 
 
 # ==================== COMMUNITY GRAPH LOGIC ====================
@@ -326,22 +464,25 @@ async def create_graph(
     
     graph_name = request.graph_db_name
     
-    return await community_service.create_community_graph(
-        namespace=request.namespace,
-        engine=request.engine,
-        creation_prompt=request.creation_prompt,
-        vector_store_repo=repo,
-        llm=llm,
-        llm_embeddings=llm_embeddings,
-        sparse_encoder=request.sparse_encoder,
-        limit=request.limit or 100,
-        index_name=request.engine.index_name,
-        overwrite=request.overwrite or False,
-        import_to_graph=True,
-        graph_name=graph_name,
-        chunk_window_size=request.chunk_window_size,
-        batch_size=request.batch_size,
-        extraction_concurrency=request.extraction_concurrency,
+    return await _emit_falkor_content_indexed_wrapped(
+        community_service.create_community_graph(
+            namespace=request.namespace,
+            engine=request.engine,
+            creation_prompt=request.creation_prompt,
+            vector_store_repo=repo,
+            llm=llm,
+            llm_embeddings=llm_embeddings,
+            sparse_encoder=request.sparse_encoder,
+            limit=request.limit or 100,
+            index_name=request.engine.index_name,
+            overwrite=request.overwrite or False,
+            import_to_graph=True,
+            graph_name=graph_name,
+            chunk_window_size=request.chunk_window_size,
+            batch_size=request.batch_size,
+            extraction_concurrency=request.extraction_concurrency,
+        ),
+        request, source_type="falkor_create_graph",
     )
 
 @inject_llm_async
@@ -503,25 +644,28 @@ async def query_graph(
     if not question_text:
         raise ValueError("No valid question text provided.")
     
-    return await community_service.query_with_global_search(
-        question=question_text,
-        namespace=request.namespace,
-        sparse_encoder=request.sparse_encoder,
-        llm=llm,
-        vector_store_repo=repo,
-        llm_embeddings=llm_embeddings,
-        engine=request.engine,
-        chat_history_dict=request.chat_history_dict,
-        reranking_config=request.reranker_config,  # Pass reranking config
-        use_reranking=True,  # Enable reranking by default
-        top_k_initial=20,
-        top_k_reranked=5,
-        # New Hybrid History Flags
-        contextualize_prompt=request.contextualize_prompt,
-        include_history_in_prompt=request.include_history_in_prompt,
-        max_history_messages=request.max_history_messages,
-        conversation_summary=request.conversation_summary,
-        graph_name=request.graph_db_name
+    return await _emit_falkor_kb_query_wrapped(
+        community_service.query_with_global_search(
+            question=question_text,
+            namespace=request.namespace,
+            sparse_encoder=request.sparse_encoder,
+            llm=llm,
+            vector_store_repo=repo,
+            llm_embeddings=llm_embeddings,
+            engine=request.engine,
+            chat_history_dict=request.chat_history_dict,
+            reranking_config=request.reranker_config,  # Pass reranking config
+            use_reranking=True,  # Enable reranking by default
+            top_k_initial=20,
+            top_k_reranked=5,
+            # New Hybrid History Flags
+            contextualize_prompt=request.contextualize_prompt,
+            include_history_in_prompt=request.include_history_in_prompt,
+            max_history_messages=request.max_history_messages,
+            conversation_summary=request.conversation_summary,
+            graph_name=request.graph_db_name
+        ),
+        request, reranking_applied=True,
     )
 
 @inject_llm_chat_async
@@ -556,25 +700,28 @@ async def context_fusion_graph_search(
     #    reranking_model_config = request.reranker_model
     #else:
     #    reranking_model_config = request.reranking
-    return await community_service.context_fusion_search(
-        question=question_text,
-        namespace=request.namespace,
-        search_type=request.search_type,
-        sparse_encoder_injected=request.sparse_encoder,
-        reranking_injected=request.reranker_config,
-        engine=request.engine,
-        vector_store_repo=repo,
-        max_results=request.top_k if request.top_k else 15,
-        llm=llm,
-        llm_embeddings=llm_embeddings,
-        query_type=request.query_type,
-        chat_history_dict=request.chat_history_dict,
-        # New Hybrid History Flags
-        contextualize_prompt=request.contextualize_prompt,
-        include_history_in_prompt=request.include_history_in_prompt,
-        max_history_messages=request.max_history_messages,
-        conversation_summary=request.conversation_summary,
-        graph_name=request.graph_db_name
+    return await _emit_falkor_kb_query_wrapped(
+        community_service.context_fusion_search(
+            question=question_text,
+            namespace=request.namespace,
+            search_type=request.search_type,
+            sparse_encoder_injected=request.sparse_encoder,
+            reranking_injected=request.reranker_config,
+            engine=request.engine,
+            vector_store_repo=repo,
+            max_results=request.top_k if request.top_k else 15,
+            llm=llm,
+            llm_embeddings=llm_embeddings,
+            query_type=request.query_type,
+            chat_history_dict=request.chat_history_dict,
+            # New Hybrid History Flags
+            contextualize_prompt=request.contextualize_prompt,
+            include_history_in_prompt=request.include_history_in_prompt,
+            max_history_messages=request.max_history_messages,
+            conversation_summary=request.conversation_summary,
+            graph_name=request.graph_db_name
+        ),
+        request, reranking_applied=bool(request.reranker_config),
     )
 
 # ==================== MULTIMODAL & ANALYSIS LOGIC ====================
@@ -614,14 +761,17 @@ async def multimodal_search(
     search_types = ["text"] # Default
     # You might want to add a field to GraphQAAdvancedRequest for search_types
     
-    return await search_service.search(
-        query=question_text,
-        namespace=request.namespace,
-        engine=request.engine,
-        vector_store_repo=repo,
-        llm=llm,
-        llm_embeddings=llm_embeddings,
-        search_types=search_types
+    return await _emit_falkor_kb_query_wrapped(
+        search_service.search(
+            query=question_text,
+            namespace=request.namespace,
+            engine=request.engine,
+            vector_store_repo=repo,
+            llm=llm,
+            llm_embeddings=llm_embeddings,
+            search_types=search_types
+        ),
+        request,
     )
 
 @inject_llm_chat_async
@@ -814,23 +964,26 @@ async def advanced_qa_search(
     question_text = request.question if isinstance(request.question, str) else request.question[0].text
 
     # Process query through advanced pipeline
-    return await advanced_qa_service.process_query(
-        question=question_text,
-        namespace=request.namespace,
-        engine=request.engine,
-        vector_store_repo=repo,
-        llm_embeddings=llm_embeddings,
-        search_type=request.search_type if hasattr(request, 'search_type') else "hybrid",
-        sparse_encoder=request.sparse_encoder,
-        chat_history_dict=request.chat_history_dict,
-        max_community_reports=3,  # Always max 3 reports as requested
-        top_k=request.top_k if request.top_k else 10,
-        # New Hybrid History Flags
-        contextualize_prompt=request.contextualize_prompt,
-        include_history_in_prompt=request.include_history_in_prompt,
-        max_history_messages=request.max_history_messages,
-        conversation_summary=request.conversation_summary,
-        graph_name=request.graph_db_name
+    return await _emit_falkor_kb_query_wrapped(
+        advanced_qa_service.process_query(
+            question=question_text,
+            namespace=request.namespace,
+            engine=request.engine,
+            vector_store_repo=repo,
+            llm_embeddings=llm_embeddings,
+            search_type=request.search_type if hasattr(request, 'search_type') else "hybrid",
+            sparse_encoder=request.sparse_encoder,
+            chat_history_dict=request.chat_history_dict,
+            max_community_reports=3,  # Always max 3 reports as requested
+            top_k=request.top_k if request.top_k else 10,
+            # New Hybrid History Flags
+            contextualize_prompt=request.contextualize_prompt,
+            include_history_in_prompt=request.include_history_in_prompt,
+            max_history_messages=request.max_history_messages,
+            conversation_summary=request.conversation_summary,
+            graph_name=request.graph_db_name
+        ),
+        request,
     )
 
 
@@ -863,16 +1016,19 @@ async def agentic_qa_search(
 
     question_text = request.question if isinstance(request.question, str) else request.question[0].text
 
-    return await agent_service.process_query(
-        question=question_text,
-        namespace=request.namespace,
-        chat_history_dict=request.chat_history_dict,
-        creation_prompt=getattr(request, 'creation_prompt', None),
-        engine=request.engine,
-        # New Hybrid History Flags
-        contextualize_prompt=request.contextualize_prompt,
-        include_history_in_prompt=request.include_history_in_prompt,
-        max_history_messages=request.max_history_messages,
-        conversation_summary=request.conversation_summary,
-        graph_name=request.graph_db_name
+    return await _emit_falkor_kb_query_wrapped(
+        agent_service.process_query(
+            question=question_text,
+            namespace=request.namespace,
+            chat_history_dict=request.chat_history_dict,
+            creation_prompt=getattr(request, 'creation_prompt', None),
+            engine=request.engine,
+            # New Hybrid History Flags
+            contextualize_prompt=request.contextualize_prompt,
+            include_history_in_prompt=request.include_history_in_prompt,
+            max_history_messages=request.max_history_messages,
+            conversation_summary=request.conversation_summary,
+            graph_name=request.graph_db_name
+        ),
+        request,
     )

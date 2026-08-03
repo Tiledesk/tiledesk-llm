@@ -68,6 +68,11 @@ class ExportMdRequest(BaseModel):
     )
     format: str = Field(default="md", description="'md' (frontmatter+markdown) or 'json'.")
 
+    # type=url only — same scraping strategy knobs as ItemSingle/add_item
+    scrape_type: int = Field(default=0, description="Web-page scraping strategy (see ScrapeType).")
+    parameters_scrape_type_4: Optional[Any] = Field(default=None)
+    browser_headers: Optional[Dict[str, str]] = Field(default=None)
+
     # Frontmatter overrides applied after extraction (curated, doc-level)
     title: Optional[str] = None
     description: Optional[str] = None

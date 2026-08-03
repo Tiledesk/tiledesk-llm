@@ -11,7 +11,10 @@ from minio.error import S3Error
 
 
 def _service_with_mock_client():
-    with patch("tilellm.modules.knowledge_graph_falkor.services.minio_storage.Minio"):
+    # Minio is only referenced in the shared base class (_initialize, inherited
+    # unchanged) since the 2026-08-02 dedup refactor — this subclass no longer
+    # imports it itself.
+    with patch("tilellm.shared.minio_storage.Minio"):
         from tilellm.modules.knowledge_graph_falkor.services.minio_storage import MinIOStorageService
         svc = MinIOStorageService.__new__(MinIOStorageService)
         svc._client = MagicMock()

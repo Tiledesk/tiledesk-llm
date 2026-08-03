@@ -85,6 +85,8 @@ class DigestGenerationRequest(BaseModel):
             "Disable to reduce LLM cost on high-volume batches."
         ),
     )
+    id_project: Optional[str] = Field(default=None, description="Tiledesk project ID (used for analytics).")
+    request_id: Optional[str] = Field(default=None, description="Tiledesk conversation/request ID for analytics.")
 
 
 class DigestGenerationResult(BaseModel):
@@ -198,6 +200,8 @@ class DigestQueryRequest(BaseModel):
         description="Conversation history keyed by turn index. Each entry: {question, answer}.",
     )
     max_history_messages: int = Field(default=10)
+    id_project: Optional[str] = Field(default=None, description="Tiledesk project ID (used for analytics).")
+    request_id: Optional[str] = Field(default=None, description="Tiledesk conversation/request ID for analytics.")
 
 
 class DigestAgentRequest(BaseModel):
@@ -233,6 +237,8 @@ class DigestAgentRequest(BaseModel):
         default=None,
         description="Reference date for relative expressions ('ieri', 'la settimana scorsa'). Defaults to server date.",
     )
+    id_project: Optional[str] = Field(default=None, description="Tiledesk project ID (used for analytics).")
+    request_id: Optional[str] = Field(default=None, description="Tiledesk conversation/request ID for analytics.")
 
 
 class DigestQueryResponse(BaseModel):

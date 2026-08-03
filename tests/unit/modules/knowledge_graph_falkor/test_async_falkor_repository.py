@@ -342,11 +342,13 @@ class TestAsyncFalkorRepositoryUtilityOperations:
         repo, graph = await repo_with_mock.__anext__()
         
         node_result = Mock()
+        node_result.header = ["node_count"]
         node_result.result_set = [[100]]
-        
+
         rel_result = Mock()
+        rel_result.header = ["relationship_count"]
         rel_result.result_set = [[50]]
-        
+
         graph.query = AsyncMock(side_effect=[node_result, rel_result])
         
         result = await repo.get_database_info()
@@ -360,9 +362,16 @@ class TestAsyncFalkorRepositoryUtilityOperations:
         repo, graph = await repo_with_mock.__anext__()
         
         mock_result = Mock()
+        mock_result.header = ["deleted_count"]
         mock_result.result_set = [[5]]
-        graph.query = AsyncMock(return_value=mock_result)
-        
+
+        empty_result = Mock()
+        empty_result.header = ["deleted_count"]
+        empty_result.result_set = [[0]]
+
+        # delete_nodes_by_metadata loops until a batch returns 0 deleted
+        graph.query = AsyncMock(side_effect=[mock_result, empty_result])
+
         result = await repo.delete_nodes_by_metadata(
             namespace="test_ns",
             index_name="test_idx",

@@ -8,6 +8,7 @@ methods (mirrors docx_processor.py's established pattern).
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from langchain_core.documents import Document
 
 from tilellm.models.vector_store import Engine
 from tilellm.modules.ingestion.export.models import Block, ExtractedDocument
@@ -68,6 +69,18 @@ class TestBuildDocumentsMetadata:
         doc = ExtractedDocument(type="document", tags=["from-doc"], blocks=[Block(content="text")])
         docs = _build_documents(doc, _req())
         assert docs[0].metadata["tags"] == ["from-doc"]
+
+    def test_file_name_derived_from_resource(self):
+        """Minimum provenance guarantee (parity with add_item/chunk_documents):
+        citations read metadata['file_name'], not just 'source'/'resource'."""
+        doc = ExtractedDocument(type="PDF Document", resource="https://x/bando.pdf", blocks=[Block(content="t")])
+        docs = _build_documents(doc, _req())
+        assert docs[0].metadata["file_name"] == "bando.pdf"
+
+    def test_file_name_falls_back_to_id_when_no_resource(self):
+        doc = ExtractedDocument(type="document", blocks=[Block(content="t")])
+        docs = _build_documents(doc, _req(id="doc1"))
+        assert docs[0].metadata["file_name"] == "doc1"
 
 
 class TestBuildDocumentsChunking:
@@ -141,3 +154,76 @@ class TestIngestDocumentOrchestration:
 
         _, kwargs = repo.aadd_documents.call_args
         assert kwargs["metadata_id"] == "stable-id"
+
+
+class TestIngestDocumentSituatedContext:
+    @pytest.mark.asyncio
+    async def test_disabled_by_default_skips_enrichment(self):
+        repo = AsyncMock()
+        repo.aadd_documents = AsyncMock(return_value=["id1"])
+        with patch(
+            "tilellm.modules.ingestion.ingest.service._load_document",
+            new=AsyncMock(return_value=ExtractedDocument(type="document", blocks=[Block(content="x")])),
+        ), patch(
+            "tilellm.modules.ingestion.ingest.service._apply_situated_context",
+        ) as mock_sc:
+            await ingest_document(_req(), repo=repo, llm_embeddings="EMB")
+
+        mock_sc.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_enabled_enriches_chunks_before_upsert(self):
+        from tilellm.models.llm import SituatedContextConfig
+
+        repo = AsyncMock()
+        repo.aadd_documents = AsyncMock(return_value=["id1"])
+        enriched = [Document(page_content="CONTEXT\n\nx", metadata={"has_situated_context": True})]
+        with patch(
+            "tilellm.modules.ingestion.ingest.service._load_document",
+            new=AsyncMock(return_value=ExtractedDocument(type="document", blocks=[Block(content="x")])),
+        ), patch(
+            "tilellm.modules.ingestion.ingest.service._apply_situated_context",
+            new=AsyncMock(return_value=enriched),
+        ) as mock_sc:
+            await ingest_document(
+                _req(situated_context=SituatedContextConfig(enable=True)), repo=repo, llm_embeddings="EMB",
+            )
+
+        mock_sc.assert_called_once()
+        _, kwargs = repo.aadd_documents.call_args
+        assert kwargs["documents"] == enriched
+
+
+class TestIngestDocumentAnalytics:
+    @pytest.mark.asyncio
+    async def test_content_indexed_emitted_on_success(self):
+        repo = AsyncMock()
+        repo.aadd_documents = AsyncMock(return_value=["id1", "id2"])
+        with patch(
+            "tilellm.modules.ingestion.ingest.service._load_document",
+            new=AsyncMock(return_value=ExtractedDocument(type="document", blocks=[Block(content="x")])),
+        ), patch("tilellm.modules.ingestion.ingest.service.analytics") as mock_analytics:
+            mock_analytics.events.content_indexed.return_value = ("kb.content_indexed", {"fake": "payload"})
+            await ingest_document(_req(id_project="proj1"), repo=repo, llm_embeddings="EMB")
+
+        mock_analytics.events.content_indexed.assert_called_once()
+        _, kwargs = mock_analytics.events.content_indexed.call_args
+        assert kwargs["success"] is True
+        assert kwargs["chunks_indexed"] == 1
+        mock_analytics.publish_nowait.assert_called_once_with("kb.content_indexed", "proj1", {"fake": "payload"})
+
+    @pytest.mark.asyncio
+    async def test_content_indexed_emitted_on_failure(self):
+        repo = AsyncMock()
+        with patch(
+            "tilellm.modules.ingestion.ingest.service._load_document",
+            new=AsyncMock(side_effect=ValueError("boom")),
+        ), patch("tilellm.modules.ingestion.ingest.service.analytics") as mock_analytics:
+            mock_analytics.events.content_indexed.return_value = ("kb.content_indexed", {"fake": "payload"})
+            with pytest.raises(ValueError):
+                await ingest_document(_req(), repo=repo, llm_embeddings="EMB")
+
+        _, kwargs = mock_analytics.events.content_indexed.call_args
+        assert kwargs["success"] is False
+        assert kwargs["error_message"] == "boom"
+        assert kwargs["chunks_indexed"] == 0

@@ -7,7 +7,7 @@ parameter ppr_search already had but nobody fed); the vector-rank and PPR-rank
 orderings are combined with reciprocal_rank_fusion (already generic/reusable
 in knowledge_graph/utils/rrf.py).
 """
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -16,6 +16,19 @@ from tilellm.models.vector_store import Engine
 
 def _engine():
     return Engine(name="qdrant", deployment="local", host="localhost", port=6333, index_name="idx")
+
+
+def _llm_response(content: str) -> Mock:
+    """A real AIMessage shape (plain Mock, not AsyncMock — attribute access on
+    AsyncMock auto-creates async coroutines, which breaks token_tracking's
+    synchronous usage_metadata.get(...) reads)."""
+    return Mock(content=content, usage_metadata=None)
+
+
+def _mock_llm(content: str = "answer text") -> AsyncMock:
+    llm = AsyncMock()
+    llm.ainvoke = AsyncMock(return_value=_llm_response(content))
+    return llm
 
 
 class TestLGraphHybridRequestModel:
@@ -51,16 +64,17 @@ class TestQaLgraphHybrid:
         request = LGraphHybridRequest(question="chi ha firmato?", namespace="ns", engine=_engine())
 
         with patch("tilellm.modules.lgraph.logic._get_falkor_repo") as mock_falkor, \
-             patch("tilellm.modules.lgraph.logic.extract_entities", return_value=[]), \
+             patch("tilellm.modules.lgraph.logic.extract_entities", return_value=[("acme", "ORG")]), \
              patch("tilellm.modules.lgraph.logic.ppr_search", new=AsyncMock(return_value=[
                  {"chunk_id": "v1", "text": "t1", "metadata_id": "d1", "source": "s1",
                   "page_number": 3, "ppr_score": 0.5},
              ])) as mock_ppr:
             mock_falkor.return_value = AsyncMock()
-            await _qa_lgraph_hybrid_core(request, repo=repo, llm=AsyncMock())
+            result = await _qa_lgraph_hybrid_core(request, repo=repo, llm=_mock_llm())
 
         _, kwargs = mock_ppr.call_args
         assert kwargs["seed_chunk_ids"] == ["v1", "v2"]
+        assert result.seeded_by == ["vector", "entity"]
 
     @pytest.mark.asyncio
     async def test_rrf_fuses_vector_and_ppr_rankings(self):
@@ -84,9 +98,7 @@ class TestQaLgraphHybrid:
              patch("tilellm.modules.lgraph.logic.extract_entities", return_value=[]), \
              patch("tilellm.modules.lgraph.logic.ppr_search", new=AsyncMock(return_value=ppr_raw)):
             mock_falkor.return_value = AsyncMock()
-            mock_llm = AsyncMock()
-            mock_llm.ainvoke = AsyncMock(return_value=AsyncMock(content="answer text"))
-            result = await _qa_lgraph_hybrid_core(request, repo=repo, llm=mock_llm)
+            result = await _qa_lgraph_hybrid_core(request, repo=repo, llm=_mock_llm())
 
         # v2 leads vector rank (pos 0) and trails PPR rank (pos 1); v1 trails vector (pos 1)
         # and leads PPR (pos 0) — symmetric, so RRF ties them; either order is a valid fusion.
@@ -116,6 +128,30 @@ class TestQaLgraphHybrid:
         assert kwargs["seed_chunk_ids"] == []
         assert "acme" in kwargs["seed_entity_names"]
         assert result.chunk_count == 0
+        assert result.seeded_by == ["entity"]
+
+    @pytest.mark.asyncio
+    async def test_seeded_by_empty_when_neither_source_yields_seeds(self):
+        """No vector hits and no entities/keywords at all → seeded_by == []
+        (distinct from a real 'entity' seed with zero PPR results)."""
+        from tilellm.modules.lgraph.logic import _qa_lgraph_hybrid_core
+        from tilellm.modules.lgraph.models.schemas import LGraphHybridRequest
+
+        repo = AsyncMock()
+        repo.get_chunks_from_repo = AsyncMock(return_value=_retrieval_result(
+            chunk_ids=[], chunks=[], metadata=[],
+        ))
+        request = LGraphHybridRequest(question="", namespace="ns", engine=_engine())
+
+        with patch("tilellm.modules.lgraph.logic._get_falkor_repo") as mock_falkor, \
+             patch("tilellm.modules.lgraph.logic.extract_entities", return_value=[]), \
+             patch("tilellm.modules.lgraph.logic.expand_date_references", return_value=[]), \
+             patch("tilellm.modules.lgraph.logic.extract_query_keywords", return_value=[]), \
+             patch("tilellm.modules.lgraph.logic.ppr_search", new=AsyncMock(return_value=[])):
+            mock_falkor.return_value = AsyncMock()
+            result = await _qa_lgraph_hybrid_core(request, repo=repo, llm=AsyncMock())
+
+        assert result.seeded_by == []
 
 
 def _retrieval_result(chunk_ids, chunks, metadata):

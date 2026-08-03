@@ -18,6 +18,7 @@ from tilellm.modules.ingestion.export.converters import (
     convert_md,
     convert_pdf,
     convert_txt,
+    convert_url,
     convert_xlsx,
 )
 
@@ -115,6 +116,87 @@ class TestConvertPdf:
 
         await convert_pdf("/tmp/f.pdf", "doc1", converter=fake_converter, skip_ocr=True)
         assert calls["options"] == {"skip_ocr": True}
+
+    @pytest.mark.asyncio
+    async def test_skip_ocr_none_classifies_native_as_ocr_off(self):
+        """skip_ocr omitted (None) -> per-document classification decides, not a
+        fixed default (docs/MIGLIORIE_DA_FARE.md UPGRADE trap: a fixed True would
+        silently drop scanned content on non-native PDFs)."""
+        fake_result = Mock(page_bodies=[])
+        calls = {}
+
+        async def fake_converter(file_path, doc_id, attempt=1, options=None):
+            calls["options"] = options
+            return fake_result
+
+        fake_classifier = Mock(return_value={"doc_type": "native"})
+        await convert_pdf("/tmp/f.pdf", "doc1", converter=fake_converter, classifier=fake_classifier)
+
+        fake_classifier.assert_called_once_with("/tmp/f.pdf")
+        assert calls["options"] == {"skip_ocr": True}
+
+    @pytest.mark.asyncio
+    async def test_skip_ocr_none_classifies_scanned_as_ocr_on(self):
+        fake_result = Mock(page_bodies=[])
+        calls = {}
+
+        async def fake_converter(file_path, doc_id, attempt=1, options=None):
+            calls["options"] = options
+            return fake_result
+
+        fake_classifier = Mock(return_value={"doc_type": "scanned"})
+        await convert_pdf("/tmp/f.pdf", "doc1", converter=fake_converter, classifier=fake_classifier)
+
+        assert calls["options"] == {"skip_ocr": False}
+
+    @pytest.mark.asyncio
+    async def test_classifier_failure_defaults_to_ocr_on(self):
+        """Unknown classification -> never assume native; OCR stays on."""
+        fake_result = Mock(page_bodies=[])
+        calls = {}
+
+        async def fake_converter(file_path, doc_id, attempt=1, options=None):
+            calls["options"] = options
+            return fake_result
+
+        def broken_classifier(path):
+            raise RuntimeError("boom")
+
+        await convert_pdf("/tmp/f.pdf", "doc1", converter=fake_converter, classifier=broken_classifier)
+
+        assert calls["options"] == {"skip_ocr": False}
+
+
+class TestConvertUrl:
+    @pytest.mark.asyncio
+    async def test_documents_become_text_blocks(self):
+        from langchain_core.documents import Document
+
+        fake_docs = [Document(page_content="Pagina scrapata")]
+
+        async def fake_fetch(source, scrape_type, parameters_scrape_type_4=None, browser_headers=None):
+            return fake_docs
+
+        doc = await convert_url("https://example.com", fetch=fake_fetch)
+
+        assert doc.type == "Web Page"
+        assert doc.resource == "https://example.com"
+        assert [b.content for b in doc.blocks] == ["Pagina scrapata"]
+        assert doc.blocks[0].block_type == "text"
+
+    @pytest.mark.asyncio
+    async def test_scrape_params_forwarded(self):
+        calls = {}
+
+        async def fake_fetch(source, scrape_type, parameters_scrape_type_4=None, browser_headers=None):
+            calls["scrape_type"] = scrape_type
+            calls["browser_headers"] = browser_headers
+            return []
+
+        await convert_url("https://x", scrape_type=2, browser_headers={"h": "v"}, fetch=fake_fetch)
+
+        assert calls["scrape_type"] == 2
+        assert calls["browser_headers"] == {"h": "v"}
 
 
 class TestConvertDocx:

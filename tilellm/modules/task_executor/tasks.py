@@ -903,6 +903,29 @@ async def task_lgraph_leiden(request_dict: dict) -> dict:
         raise
 
 
+@broker.task(retry_on_error=False, labels={"task_type": "lgraph_community_summaries"})
+async def task_lgraph_community_summaries(request_dict: dict) -> dict:
+    """Generate LLM summaries for each Leiden community and index them (LinearRAG-style)."""
+    from tilellm.modules.lgraph.models.schemas import LGraphCommunitySummarizationRequest
+    from tilellm.modules.lgraph.logic import summarize_communities_lgraph
+
+    webhook_url = request_dict.get("webhook_url")
+    try:
+        request = LGraphCommunitySummarizationRequest(**request_dict)
+        logger.info(f"[lgraph_community_summaries] Starting namespace={request.namespace} index={request.engine.index_name}")
+        result = await summarize_communities_lgraph(request)
+        payload = result.model_dump(mode="json")
+        logger.info(f"[lgraph_community_summaries] Done: {payload}")
+        if webhook_url:
+            await send_webhook(webhook_url, payload)
+        return payload
+    except Exception as e:
+        logger.error(f"[lgraph_community_summaries] Failed namespace={request_dict.get('namespace')}: {e}", exc_info=True)
+        if webhook_url:
+            await send_webhook(webhook_url, {"error": str(e), "status": "failed"})
+        raise
+
+
 @broker.task(retry_on_error=False, labels={"task_type": "lgraph_build"})
 async def task_lgraph_build(request_dict: dict) -> dict:
     """Build the Light GraphRAG graph (spaCy + NPMI + FalkorDB) for a namespace."""
