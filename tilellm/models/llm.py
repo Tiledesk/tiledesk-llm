@@ -63,6 +63,16 @@ class SituatedContextConfig(BaseModel):
             "The extracted metadata is merged directly into each chunk's doc.metadata."
         ),
     )
+    metadata_only: bool = Field(
+        default=False,
+        description=(
+            "When True, keep extracting/merging metadata (act_type, topics, ...) but do NOT "
+            "prepend the situating sentence to each chunk's page_content. Same single LLM call, "
+            "no cost change — only useful together with 'profile'/'metadata_extraction_prompt'. "
+            "Use when a downstream pipeline reads page_content directly (e.g. lgraph entity "
+            "extraction) and the prepended sentence would pollute it."
+        ),
+    )
 
 
 class TableOptions(BaseModel):

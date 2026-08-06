@@ -4,7 +4,12 @@ IngestMdRequest -> real vector-store write, via `repo.aadd_documents` (not
 the standard add_item "direct content" branch never applies
 `additional_metadata`, so frontmatter would be silently dropped there).
 
-Metadata is built by us per chunk (no gap to work around). hybrid is a single
+Metadata is built by us per chunk. `IngestConfig.additional_metadata` (added
+2026-08-06, see docs/GRAPHRAG_COST_QUALITY_PLAN.md A2) closes the gap this
+docstring used to claim didn't exist here: `/api/v2/ingestion`'s canonical
+path built `IngestConfig` from `ItemSingle` without ever passing
+`additional_metadata` through, so callers relying on it (same field, same
+semantics as the legacy pdf_ocr path) had it silently dropped. hybrid is a single
 `sparse_encoder` parameter forwarded to `aadd_documents`, mirroring the
 existing docx_processor.py pattern — including its known per-backend
 inconsistency (Pinecone always embeds hybrid regardless of this parameter;
@@ -26,7 +31,7 @@ from tilellm.modules.ingestion.export.serializers import from_json, from_md
 from tilellm.modules.ingestion.ingest.models import IngestConfig, IngestMdRequest, IngestMdResult
 from tilellm.modules.ingestion.table_chunker import split_table_document
 from tilellm.shared.utility import inject_embeddings_async, inject_repo_async
-from tilellm.tools.document_tools import _extract_file_name
+from tilellm.tools.document_tools import _apply_additional_metadata, _extract_file_name
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +139,7 @@ async def _apply_situated_context(documents: List[Document], config: IngestConfi
         profile=config.situated_context.profile,
         custom_prompt=config.situated_context.custom_prompt,
         metadata_extraction_prompt=config.situated_context.metadata_extraction_prompt,
+        metadata_only=config.situated_context.metadata_only,
     )
     return result.documents
 
@@ -193,6 +199,8 @@ def _base_metadata(doc: ExtractedDocument, config: IngestConfig) -> dict:
     tags = config.tags or doc.tags
     if tags:
         meta["tags"] = tags
+
+    meta = _apply_additional_metadata(meta, getattr(config, "additional_metadata", None))
     return meta
 
 

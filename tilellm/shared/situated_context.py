@@ -271,6 +271,7 @@ async def enrich_chunks_with_situated_context(
     custom_prompt: Optional[str] = None,
     profile: Optional[str] = None,
     metadata_extraction_prompt: Optional[str] = None,
+    metadata_only: bool = False,
 ) -> "SituatedContextResult":
     """Enrich a list of Document chunks by prepending a situated context sentence.
 
@@ -290,6 +291,12 @@ async def enrich_chunks_with_situated_context(
         metadata_extraction_prompt: When set, enables dual JSON output mode.
             The LLM returns {\"context\": \"...\", \"metadata\": {...}} and the
             metadata fields are merged into each chunk's doc.metadata.
+        metadata_only: When True, keep the metadata merge but do NOT prepend the
+            situating sentence to page_content — same single LLM call (no cost
+            change, see docs/GRAPHRAG_COST_QUALITY_PLAN.md A0bis), only the
+            downstream use of its output changes. Use when a separate pipeline
+            reads page_content directly and the prepended sentence would pollute
+            it (e.g. lgraph's entity extraction, see docs/GRAPHRAG_COST_QUALITY_PLAN.md §6b).
 
     Returns:
         SituatedContextResult with enriched documents and cumulative token_usage.
@@ -319,7 +326,8 @@ async def enrich_chunks_with_situated_context(
                 metadata_extraction_prompt=metadata_extraction_prompt,
             )
             if ctx:
-                doc.page_content = f"{ctx}\n\n{doc.page_content}"
+                if not metadata_only:
+                    doc.page_content = f"{ctx}\n\n{doc.page_content}"
                 doc.metadata["has_situated_context"] = True
             if extracted_meta:
                 # Merge extracted fields; prefix sc_ to avoid collisions with
@@ -332,6 +340,12 @@ async def enrich_chunks_with_situated_context(
                     "key_entities", "sentiment",
                 }
                 for k, v in extracted_meta.items():
+                    if v is None:
+                        # "not found in this chunk" -> omit the key. Pinecone
+                        # rejects a literal null in metadata outright (400:
+                        # "Metadata value must be a string, number, boolean
+                        # or list of strings, got 'null'").
+                        continue
                     target_key = k if k in _DIRECT_FIELDS else f"sc_{k}"
                     doc.metadata[target_key] = v
         return doc, usage

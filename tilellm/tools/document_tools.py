@@ -26,6 +26,34 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 logger = logging.getLogger(__name__)
 
 
+def _normalize_date_str(val: str) -> str:
+    """Convert DD/MM/YYYY to ISO YYYY-MM-DD; return unchanged for other formats."""
+    if isinstance(val, str) and re.match(r'^\d{2}/\d{2}/\d{4}$', val):
+        d, m, y = val.split('/')
+        return f"{y}-{m}-{d}"
+    return val
+
+
+def _apply_additional_metadata(base: dict, additional) -> dict:
+    """Merge additional_metadata dict into base, normalizing the 'date' key if present.
+
+    Shared by every ingestion path that accepts ItemSingle.additional_metadata
+    (pdf_ocr, ingestion v2 canonical) — one normalization rule, not one per caller.
+    None values are dropped, not stored: Pinecone rejects a literal null in
+    metadata ("Metadata value must be a string, number, boolean or list of
+    strings, got 'null'") and None here only ever means "not extracted".
+    """
+    if not additional:
+        return base
+    for k, v in additional.items():
+        if v is None:
+            continue
+        if k == 'date' and isinstance(v, str):
+            v = _normalize_date_str(v)
+        base[k] = v
+    return base
+
+
 def _extract_file_name(source: str) -> str:
     """Extract a clean file name from a URL or local path.
 

@@ -43,7 +43,7 @@ def _emit_pdf_sc_tokens(question, sc_tokens) -> Optional[dict]:
         logging.getLogger(__name__).debug("pdf_ocr token tracking skipped: %s", _te)
         return None
 from tilellm.modules.pdf_ocr.models.pdf_scraping import PDFScrapingRequest
-from tilellm.tools.document_tools import _extract_file_name
+from tilellm.tools.document_tools import _extract_file_name, _normalize_date_str, _apply_additional_metadata  # noqa: F401 — _normalize_date_str re-exported for any external import site
 from tilellm.models.chunk_metadata import CommonChunkMetadata
 from tilellm.shared.situated_context import enrich_chunks_with_situated_context
 from .services.docling_processor import get_or_create_processor, DocumentType
@@ -145,26 +145,6 @@ def _upload_images_to_object_storage(doc_id: str, images: list) -> None:
         except Exception as e:
             logger.warning(f"upload_images: failed to upload {image_id} for {doc_id}: {e}")
             img.setdefault("path", "")
-
-
-def _normalize_date_str(val: str) -> str:
-    """Convert DD/MM/YYYY to ISO YYYY-MM-DD; return unchanged for other formats."""
-    import re as _re
-    if isinstance(val, str) and _re.match(r'^\d{2}/\d{2}/\d{4}$', val):
-        d, m, y = val.split('/')
-        return f"{y}-{m}-{d}"
-    return val
-
-
-def _apply_additional_metadata(base: dict, additional) -> dict:
-    """Merge additional_metadata dict into base, normalizing the 'date' key if present."""
-    if not additional:
-        return base
-    for k, v in additional.items():
-        if k == 'date' and isinstance(v, str):
-            v = _normalize_date_str(v)
-        base[k] = v
-    return base
 
 
 def _sc_needs_metadata_extraction(sc_config) -> bool:

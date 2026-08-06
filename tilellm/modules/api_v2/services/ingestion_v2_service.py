@@ -122,6 +122,7 @@ async def _route_canonical(item: ItemSingle, resolved_type: DocumentType, repo, 
         tags=item.tags, chunk_size=item.chunk_size, chunk_overlap=item.chunk_overlap,
         situated_context=item.situated_context, gptkey=item.gptkey,
         id_project=item.id_project, request_id=item.request_id, debug=item.debug,
+        additional_metadata=item.additional_metadata,
     )
     return await write_extracted_document(
         doc, config, repo, llm_embeddings,

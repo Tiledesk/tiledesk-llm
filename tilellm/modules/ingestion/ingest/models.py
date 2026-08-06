@@ -12,7 +12,7 @@ See memory/ingestion_md_redesign.md for the `aadd_documents` vs `add_item`
 decision (additional_metadata gap on the standard path) and the per-backend
 hybrid-behavior caveat.
 """
-from typing import List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, Field, SecretStr, model_validator
 
@@ -37,6 +37,14 @@ class IngestConfig(BaseModel):
     tags: Optional[List[str]] = Field(
         default=None,
         description="Overrides the frontmatter 'tags' when provided; otherwise the document's own tags are used.",
+    )
+    additional_metadata: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Arbitrary key-value pairs merged into every chunk's metadata, same semantics as "
+            "ItemSingle.additional_metadata. A 'date' value in DD/MM/YYYY format is "
+            "auto-converted to ISO YYYY-MM-DD."
+        ),
     )
     chunk_size: int = Field(default=1000)
     chunk_overlap: int = Field(default=400)

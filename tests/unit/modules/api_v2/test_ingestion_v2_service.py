@@ -224,6 +224,28 @@ class TestRouteCanonical:
         args, _ = mock_write.call_args
         assert args[1].situated_context is sc
 
+    @pytest.mark.asyncio
+    async def test_additional_metadata_forwarded_to_ingest_config(self):
+        """Was silently dropped before docs/GRAPHRAG_COST_QUALITY_PLAN.md A2 (IngestConfig
+        had no additional_metadata field at all — see test_ingestion_ingest_service.py for
+        the matching _base_metadata-level test)."""
+        from tilellm.modules.api_v2.services.ingestion_v2_service import _route_canonical
+        from tilellm.modules.ingestion.export.models import Block, ExtractedDocument
+
+        doc = ExtractedDocument(type="document", blocks=[Block(content="x")])
+        extra = {"numero_determina": "6800", "ente": "ASL Bari"}
+        with patch(
+            "tilellm.modules.api_v2.services.ingestion_v2_service.export_document",
+            new=AsyncMock(return_value=doc),
+        ), patch(
+            "tilellm.modules.api_v2.services.ingestion_v2_service.write_extracted_document",
+            new=AsyncMock(return_value=IngestMdResult(id="doc1", namespace="ns", chunks_indexed=0)),
+        ) as mock_write:
+            await _route_canonical(_item(additional_metadata=extra), DocumentType.TXT, repo="REPO", llm_embeddings="EMB")
+
+        args, _ = mock_write.call_args
+        assert args[1].additional_metadata == extra
+
 
 class TestIngestionV2EndpointRegistered:
     def test_route_exists(self):

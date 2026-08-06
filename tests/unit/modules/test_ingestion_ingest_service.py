@@ -82,6 +82,39 @@ class TestBuildDocumentsMetadata:
         docs = _build_documents(doc, _req(id="doc1"))
         assert docs[0].metadata["file_name"] == "doc1"
 
+    def test_additional_metadata_merged_into_every_chunk(self):
+        """Closes the additional_metadata gap this module's docstring used to claim
+        didn't exist here — it did (see docs/GRAPHRAG_COST_QUALITY_PLAN.md A2): IngestConfig
+        had no such field, so ItemSingle.additional_metadata was silently dropped on the
+        /api/v2/ingestion canonical path."""
+        doc = ExtractedDocument(type="document", blocks=[Block(content="a"), Block(content="b", order=1)])
+        docs = _build_documents(doc, _req(additional_metadata={"numero_determina": "6800", "ente": "ASL Bari"}))
+        assert len(docs) == 2
+        for d in docs:
+            assert d.metadata["numero_determina"] == "6800"
+            assert d.metadata["ente"] == "ASL Bari"
+
+    def test_additional_metadata_date_field_normalized_to_iso(self):
+        doc = ExtractedDocument(type="document", blocks=[Block(content="t")])
+        docs = _build_documents(doc, _req(additional_metadata={"date": "27/07/2026"}))
+        assert docs[0].metadata["date"] == "2026-07-27"
+
+    def test_additional_metadata_absent_is_a_noop(self):
+        doc = ExtractedDocument(type="document", blocks=[Block(content="t")])
+        docs = _build_documents(doc, _req())
+        assert "numero_determina" not in docs[0].metadata
+
+    def test_additional_metadata_none_values_dropped(self):
+        """Real production bug (2026-08-06): send_regione_v2.py sets cig/cup to
+        None when the CSV row has none, and Pinecone's aadd_documents rejects
+        any metadata value of 'null' with a 400 ("Metadata value must be a
+        string, number, boolean or list of strings, got 'null'"). None means
+        "not extracted" — omit the key entirely, don't store null."""
+        doc = ExtractedDocument(type="document", blocks=[Block(content="t")])
+        docs = _build_documents(doc, _req(additional_metadata={"cig": None, "ente": "ASL Bari"}))
+        assert "cig" not in docs[0].metadata
+        assert docs[0].metadata["ente"] == "ASL Bari"
+
 
 class TestBuildDocumentsChunking:
     def test_text_block_chunked_by_size(self):

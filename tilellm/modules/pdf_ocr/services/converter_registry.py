@@ -48,6 +48,16 @@ def register_converter(name: str, converter: PdfConverter) -> None:
 
 
 def get_converter(name: str) -> PdfConverter:
+    if name == "docling" and name not in _REGISTRY:
+        # "docling" registers itself as an import side effect of
+        # markdown_extraction_agent.py. Callers outside pdf_ocr's own module
+        # tree (e.g. /api/v2/ingestion's canonical PDF path) have no reason
+        # to import that module explicitly, and pdf_ocr itself is a separate
+        # feature independently gated by TILELLM_PROFILE (shared/utility.py)
+        # — it may never load in this process. Self-heal for the one engine
+        # every caller assumes is always there, instead of a KeyError whose
+        # real cause is "an unrelated feature flag was off".
+        import tilellm.modules.pdf_ocr.services.markdown_extraction_agent  # noqa: F401
     try:
         return _REGISTRY[name]
     except KeyError:

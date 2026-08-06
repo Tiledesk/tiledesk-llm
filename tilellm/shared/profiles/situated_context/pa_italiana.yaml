@@ -35,8 +35,14 @@ prompt: |
      - "act_type": una delle categorie seguenti (scegli la più pertinente):
          "acquisto_beni", "acquisto_farmaci", "acquisto_dispositivi_medici",
          "acquisto_servizi", "appalto", "concessione",
-         "assunzione_personale", "incarico_professionale",
-         "liquidazione", "rimborso", "autorizzazione", "altro"
+         "assunzione_personale", "variazione_personale", "incarico_professionale",
+         "liquidazione", "rimborso", "rimborso_spese_sanitarie",
+         "autorizzazione", "gara_deserta", "altro"
+         Nota: "variazione_personale" copre congedi, quiescenza/pensionamenti,
+         proroghe di contratto, permessi (es. legge 104) — tutto ciò che
+         riguarda il personale ma NON è una nuova assunzione.
+         "rimborso_spese_sanitarie" è specifico per rimborsi a pazienti/utenti
+         (trasporto, vitto, soggiorno per patologie) — non amministrativi generici.
      - "topics": lista di stringhe con i principali argomenti del frammento
          (es. ["antibiotici", "gara d'appalto", "reparto oncologia"])
      - "amount": importo in euro come numero (float) se presente, altrimenti null

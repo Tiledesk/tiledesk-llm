@@ -427,6 +427,19 @@ async def redis_consumer(app: FastAPI):
         # Pulisci cache
         await TimedCache.async_clear_cache("vector_store_wrapper")
 
+        # Chiudi il pool ProcessPoolExecutor di docling_subprocess, se mai creato:
+        # senza questo, un pool 'spawn' lazy-inizializzato non viene mai chiuso
+        # esplicitamente e il child (+ il resource_tracker di multiprocessing)
+        # può restare orfano oltre lo shutdown del processo padre.
+        try:
+            from tilellm.modules.pdf_ocr.services import docling_subprocess
+
+            if docling_subprocess._pool is not None:
+                docling_subprocess._kill_pool()
+                logger.info("Docling subprocess pool shut down")
+        except Exception as e:
+            logger.debug(f"Docling subprocess pool cleanup skipped: {e}")
+
 
 app = FastAPI(lifespan=redis_consumer)
 

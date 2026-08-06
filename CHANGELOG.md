@@ -5,6 +5,11 @@
     * Andrea Sponziello
 ### **Copyright**: Tiledesk SRL
 
+---
+## [2026-08-03]
+### 0.12.1-rc2 fix: pinned  mcp==1.26.0
+
+
 
 ---
 ## [2026-08-03]
