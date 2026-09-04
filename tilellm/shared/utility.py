@@ -21,6 +21,8 @@ from tilellm.shared.llm_config import (
     get_llm_params,
     strip_unsupported_anthropic_sampling_params,
     build_openrouter_extra_body,
+    build_openrouter_reasoning,
+    merge_openrouter_extra_body,
     OPENROUTER_BASE_URL,
 )
 
@@ -257,7 +259,6 @@ async def _get_llm_config_for_client(question, llm_params: Dict[str, Any]) -> Di
     base_url_param = None
     project_param = None
     location_param = None
-    provider_routing_param = None
     #provider_param = None
 
     # Determine API key, model name, base URL, and custom headers
@@ -268,7 +269,6 @@ async def _get_llm_config_for_client(question, llm_params: Dict[str, Any]) -> Di
         base_url_param = question.model.url
         project_param = question.model.project
         location_param = question.model.location
-        provider_routing_param = question.model.provider_routing
         #provider_param = question.model.provider
     else:
         # Fallback for when question.model is a string or other object
@@ -290,11 +290,11 @@ async def _get_llm_config_for_client(question, llm_params: Dict[str, Any]) -> Di
     if question.llm == "openrouter" and not base_url_param:
         base_url_param = OPENROUTER_BASE_URL
 
-    # Il routing verso i provider a monte viaggia nel body della richiesta,
-    # non nei parametri del client: e' None quando non c'e' nulla da instradare.
+    # Routing e reasoning viaggiano nel body della richiesta, non nei parametri
+    # del client: e' None quando non c'e' ne' l'uno ne' l'altro.
     extra_body_param = None
     if question.llm == "openrouter":
-        extra_body_param = build_openrouter_extra_body(provider_routing_param)
+        extra_body_param = openrouter_extra_body(question)
 
     # Consolidate all parameters for the client
     client_config = {
@@ -321,6 +321,24 @@ async def _get_llm_config_for_client(question, llm_params: Dict[str, Any]) -> Di
         del client_config["extra_body"]
 
     return client_config
+
+
+def openrouter_extra_body(question) -> Optional[Dict[str, Any]]:
+    """
+    Tutto cio' che OpenRouter riceve nel body oltre ai parametri standard:
+    il routing verso i provider a monte e il reasoning.
+
+    Un posto solo, usato sia per costruire il client sia per le chiavi di
+    cache: se le due cose divergessero, due configurazioni diverse
+    finirebbero per condividere lo stesso client.
+    """
+    model = getattr(question, 'model', None)
+    provider_routing = getattr(model, 'provider_routing', None) if model is not None else None
+
+    return merge_openrouter_extra_body(
+        build_openrouter_extra_body(provider_routing),
+        build_openrouter_reasoning(getattr(question, 'thinking', None)),
+    )
 
 
 def _routing_cache_fragment(client_base_config: Dict[str, Any]) -> Optional[str]:
@@ -755,10 +773,10 @@ async def _build_standard_llm_cache_key(question) -> Tuple:
     if question.llm in ["vllm", "ollama"] and hasattr(question.model, 'url'):
         cache_key_parts.append(question.model.url)  # type: ignore
 
-    # OpenRouter: il routing verso i provider a monte distingue due client
-    # altrimenti identici (stesso modello, stessa chiave API).
+    # OpenRouter: routing e reasoning distinguono due client altrimenti
+    # identici (stesso modello, stessa chiave API).
     if question.llm == "openrouter":
-        extra_body = build_openrouter_extra_body(getattr(question.model, 'provider_routing', None))
+        extra_body = openrouter_extra_body(question)
         if extra_body:
             cache_key_parts.append(
                 hashlib.sha256(json.dumps(extra_body, sort_keys=True).encode('utf-8')).hexdigest()
@@ -1147,6 +1165,15 @@ async def _build_llm_cache_key(question) -> tuple:
             "api_key": _hash_api_key(str(question.gptkey.get_secret_value())),
             "legacy_mode": True
         }
+
+    # OpenRouter: routing e reasoning distinguono due client altrimenti
+    # identici (stesso modello, stessa chiave API).
+    if question.llm == "openrouter":
+        extra_body = openrouter_extra_body(question)
+        if extra_body:
+            cache_key_parts_dic["openrouter_body"] = hashlib.sha256(
+                json.dumps(extra_body, sort_keys=True).encode('utf-8')
+            ).hexdigest()
 
     sorted_params = tuple(
         (k, str(v)) for k, v in sorted(cache_key_parts_dic.items())
@@ -1622,10 +1649,10 @@ async def _build_reasoning_llm_cache_key(question) -> Tuple:
     if question.llm in ["vllm", "ollama"] and hasattr(question.model, 'url'):
         cache_key_parts.append(question.model.url)  # type: ignore
 
-    # OpenRouter: il routing verso i provider a monte distingue due client
-    # altrimenti identici (stesso modello, stessa chiave API).
+    # OpenRouter: routing e reasoning distinguono due client altrimenti
+    # identici (stesso modello, stessa chiave API).
     if question.llm == "openrouter":
-        extra_body = build_openrouter_extra_body(getattr(question.model, 'provider_routing', None))
+        extra_body = openrouter_extra_body(question)
         if extra_body:
             cache_key_parts.append(
                 hashlib.sha256(json.dumps(extra_body, sort_keys=True).encode('utf-8')).hexdigest()

@@ -154,6 +154,76 @@ def build_openrouter_extra_body(provider_routing: Optional[Dict[str, Any]]) -> O
     return {"provider": routing}
 
 
+_OPENROUTER_EFFORT_VALUES = ("minimal", "low", "medium", "high")
+
+
+def build_openrouter_reasoning(thinking: Optional[Any]) -> Optional[Dict[str, Any]]:
+    """
+    Traduce ReasoningConfig nel parametro "reasoning" unificato di OpenRouter.
+
+    ReasoningConfig ha un campo per ciascun provider (OpenAI reasoning_effort,
+    Anthropic budget_tokens, Gemini thinkingBudget/thinkingLevel) perche' di
+    solito si parla con un provider solo. OpenRouter invece sta DAVANTI a tutti:
+    lo stesso account puo' servire openai/o3 e anthropic/claude nello stesso
+    progetto. La sua API di reasoning e' gia' unificata, quindi qui i campi
+    specifici confluiscono nei due che OpenRouter capisce -- effort e
+    max_tokens -- ed e' OpenRouter a ritradurli per il provider a monte.
+
+    Restituisce None quando non c'e' reasoning da chiedere.
+    """
+    if thinking is None:
+        return None
+
+    reasoning: Dict[str, Any] = {}
+
+    # effort: OpenAI lo esprime cosi', Gemini 3 con thinkingLevel (stessa scala).
+    effort = getattr(thinking, "reasoning_effort", None) or getattr(thinking, "thinkingLevel", None)
+    if effort:
+        effort = str(effort).strip().lower()
+        if effort in _OPENROUTER_EFFORT_VALUES:
+            reasoning["effort"] = effort
+
+    # max_tokens: il budget di thinking, sotto qualunque nome sia arrivato.
+    budget = getattr(thinking, "budget_tokens", None)
+    if budget is None:
+        gemini_budget = getattr(thinking, "thinkingBudget", None)
+        # -1 = dinamico e 0 = disabilitato sono convenzioni Gemini, non budget.
+        if gemini_budget is not None and gemini_budget > 0:
+            budget = gemini_budget
+        elif gemini_budget == 0:
+            return {"reasoning": {"enabled": False}}
+    if isinstance(budget, int) and budget > 0:
+        reasoning["max_tokens"] = budget
+
+    # type: Anthropic accende/spegne esplicitamente il thinking.
+    thinking_type = getattr(thinking, "type", None)
+    if thinking_type == "disabled":
+        return {"reasoning": {"enabled": False}}
+    if thinking_type == "enabled" and not reasoning:
+        reasoning["enabled"] = True
+
+    if not reasoning:
+        return None
+
+    return {"reasoning": reasoning}
+
+
+def merge_openrouter_extra_body(*blocks: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """
+    Fonde i blocchi che viaggiano in extra_body (provider routing, reasoning).
+
+    Sono chiavi diverse dello stesso oggetto: assegnarle una alla volta
+    sovrascriverebbe la precedente e il routing sparirebbe appena si chiede
+    del reasoning.
+    """
+    merged: Dict[str, Any] = {}
+    for block in blocks:
+        if block:
+            merged.update(block)
+
+    return merged or None
+
+
 def get_llm_params(
     provider: str,
     temperature: Optional[float],
