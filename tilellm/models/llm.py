@@ -28,7 +28,7 @@ class SituatedContextConfig(BaseModel):
     """Configuration for the dedicated LLM used by Contextual Retrieval (situated context).
     Allows using a different/cheaper LLM for context generation than the main indexing LLM.
 
-    Example providers: openai, anthropic, google, groq, vllm (local), ollama (local)
+    Example providers: openai, anthropic, google, groq, openrouter, vllm (local), ollama (local)
     """
 
     enable: bool = Field(
@@ -36,7 +36,7 @@ class SituatedContextConfig(BaseModel):
     )
     provider: str = Field(
         default="openai",
-        description="LLM provider: openai|anthropic|google|groq|vllm|ollama",
+        description="LLM provider: openai|anthropic|google|groq|openrouter|vllm|ollama",
     )
     model: Optional[str] = Field(
         default=None, description="Chat model name (e.g. gpt-4o-mini, claude-haiku)"
@@ -47,6 +47,14 @@ class SituatedContextConfig(BaseModel):
     url: Optional[str] = Field(
         default=None,
         description="Custom endpoint URL (for vLLM / Ollama local deployments)",
+    )
+    provider_routing: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "OpenRouter only: which upstream providers may serve this model and in what "
+            "order, e.g. {\"order\": [\"azure\", \"openai\"], \"allow_fallbacks\": true, "
+            "\"sort\": \"price\"}. Forwarded as the request's \"provider\" block."
+        ),
     )
     temperature: float = Field(default=0.0)
     max_tokens: int = Field(default=256)

@@ -93,7 +93,65 @@ PROVIDER_CONFIGS = {
         supports_top_p=True,
         temperature_top_p_exclusive=False
     ),
+    # OpenRouter espone un'API OpenAI-compatibile: stessi parametri di sampling.
+    # Il routing verso i provider a monte viaggia separatamente, in extra_body.
+    "openrouter": LLMProviderConfig(
+        name="openrouter",
+        supports_temperature=True,
+        supports_top_p=True,
+        temperature_top_p_exclusive=False
+    ),
 }
+
+
+# OpenRouter e' raggiunto tramite il client OpenAI: serve solo cambiare base_url.
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+# Chiavi accettate dal blocco "provider" di OpenRouter che questa integrazione
+# configura. Tutto il resto viene scartato: il valore arriva dal database, non
+# dal codice, e non vogliamo inoltrare campi arbitrari all'API.
+_OPENROUTER_ROUTING_KEYS = ("order", "allow_fallbacks", "sort", "only", "ignore")
+
+_OPENROUTER_SORT_VALUES = ("price", "throughput", "latency")
+
+
+def build_openrouter_extra_body(provider_routing: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """
+    Traduce il provider_routing salvato nell'integrazione nel corpo che
+    OpenRouter si aspetta: {"provider": {...}}.
+
+    Restituisce None quando non c'e' niente da instradare, cosi' il modello si
+    comporta esattamente come un qualunque provider OpenAI-compatibile.
+    """
+    if not provider_routing or not isinstance(provider_routing, dict):
+        return None
+
+    routing: Dict[str, Any] = {}
+
+    for key in _OPENROUTER_ROUTING_KEYS:
+        if key not in provider_routing:
+            continue
+        value = provider_routing[key]
+        if value is None:
+            continue
+
+        if key in ("order", "only", "ignore"):
+            if not isinstance(value, (list, tuple)):
+                continue
+            slugs = [str(item).strip() for item in value if str(item or "").strip()]
+            if slugs:
+                routing[key] = slugs
+        elif key == "allow_fallbacks":
+            routing[key] = bool(value)
+        elif key == "sort":
+            sort = str(value).strip().lower()
+            if sort in _OPENROUTER_SORT_VALUES:
+                routing[key] = sort
+
+    if not routing:
+        return None
+
+    return {"provider": routing}
 
 
 def get_llm_params(
