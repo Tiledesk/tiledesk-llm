@@ -107,19 +107,47 @@ def extract_entities(
     spacy_model: str,
     include_types: List[str],
     use_noun_chunks: bool,
+    ner_backend: str = "spacy",
 ) -> List[Tuple[str, str]]:
     """Return (normalized_name, entity_type) pairs extracted from text.
 
-    Pipeline:
+    Pipeline (ner_backend="spacy", the default):
       1. spaCy NER  →  PER, ORG, LOC, MISC (and whatever the model supports)
       2. noun chunks  →  CONCEPT  (if use_noun_chunks and model supports it)
       3. Italian PA regex  →  CIG, CUP, DATE_IT, MONEY, QUANTITY
 
+    ner_backend="gliner" (A6, docs/GRAPHRAG_COST_QUALITY_PLAN.md §4a) swaps step
+    1 for gliner_extractor's zero-shot model (PER/ORG/LOC/MISC, same type
+    vocabulary) — noun_chunks has no GLiNER equivalent and is skipped for this
+    backend — but step 3 (regex) is identical and shared either way.
+
     include_types: if non-empty, only these labels are kept.
-    Deduplicates by normalized form across all three steps.
+    Deduplicates by normalized form across all steps; first writer wins.
     """
+    if ner_backend not in ("spacy", "gliner"):
+        raise NotImplementedError(
+            f"ner_backend={ner_backend!r} is not implemented (only 'spacy'/'gliner' are). "
+            f"See docs/GRAPHRAG_COST_QUALITY_PLAN.md §8."
+        )
     if not text or not text.strip():
         return []
+
+    if ner_backend == "gliner":
+        from tilellm.modules.lgraph.services.gliner_extractor import extract_entities_gliner
+
+        seen_g: Set[str] = set()
+        entities_g: List[Tuple[str, str]] = []
+        for norm, etype in extract_entities_gliner(text, include_types):
+            if norm not in seen_g:
+                seen_g.add(norm)
+                entities_g.append((norm, etype))
+        for norm, label in _extract_pa_entities(text):
+            if include_types and label not in include_types:
+                continue
+            if norm not in seen_g:
+                seen_g.add(norm)
+                entities_g.append((norm, label))
+        return entities_g
 
     nlp = _get_nlp(spacy_model)
     doc = nlp(text)  # type: ignore
@@ -247,6 +275,7 @@ def build_chunk_entity_matrix(
     use_noun_chunks: bool,
     sub_window_size: int = 0,
     sub_window_overlap: int = 50,
+    ner_backend: str = "spacy",
 ) -> Tuple[Dict[str, List[Tuple[str, str]]], Dict[Tuple[str, str], int]]:
     """Process all chunks in batch and return entity occurrence data.
 
@@ -277,7 +306,9 @@ def build_chunk_entity_matrix(
         seen: Set[str] = set()
         entities: List[Tuple[str, str]] = []
         for window in windows:
-            for norm, etype in extract_entities(window, spacy_model, include_types, use_noun_chunks):
+            for norm, etype in extract_entities(
+                window, spacy_model, include_types, use_noun_chunks, ner_backend=ner_backend,
+            ):
                 if norm not in seen:
                     seen.add(norm)
                     entities.append((norm, etype))

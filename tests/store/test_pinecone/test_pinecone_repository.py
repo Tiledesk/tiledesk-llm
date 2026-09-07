@@ -248,16 +248,15 @@ async def test_get_all_obj_namespace_passes_through_full_metadata(mocker):
     mock_index_async.__aenter__.return_value = mock_index_in_block
     mock_index_async.__aexit__.return_value = False
 
-    mock_index_in_block.describe_index_stats = AsyncMock(
-        return_value=MockIndexStatsResponse(namespaces_data={namespace: {"vector_count": 1}})
-    )
     raw_metadata = {
         "id": "doc1", "source": "src1", "type": "regex_custom",
         "date": "2026-07-23", "page_number": 7, "doc_type": "delibera",
     }
-    mock_index_in_block.query = AsyncMock(return_value={
-        'matches': [{'id': 'chunk1', 'metadata': raw_metadata}]
-    })
+    mock_index_in_block.list = MagicMock(return_value=_async_id_pages([["chunk1"]]))
+    mock_vector = MagicMock(metadata=raw_metadata)
+    mock_index_in_block.fetch = AsyncMock(
+        return_value=MagicMock(vectors={"chunk1": mock_vector})
+    )
 
     mocker.patch('pinecone.Pinecone', return_value=mock_pinecone_client)
     mock_pinecone_client.IndexAsyncio.return_value = mock_index_async
@@ -268,6 +267,54 @@ async def test_get_all_obj_namespace_passes_through_full_metadata(mocker):
     result = await repo.get_all_obj_namespace(mock_engine, namespace)
 
     assert result.matches[0].metadata == raw_metadata
+
+
+async def _async_id_pages(pages):
+    """Mimics IndexAsyncio.list()'s auto-paginating async-generator contract:
+    yields one list of ids per page."""
+    for page in pages:
+        yield page
+
+
+@pytest.mark.asyncio
+async def test_get_all_obj_namespace_not_capped_at_1000(mocker):
+    """Real production bug (2026-08-06): get_all_obj_namespace used a single
+    index.query(top_k=min(total_vectors, 1000)) call to dump 'all' objects in
+    a namespace — silently truncating any namespace over 1000 vectors. Caught
+    on the ASL Bari lgraph build: 208 PDFs / ~6800 chunks expected, only 1000
+    chunks_processed. Must paginate via list()+fetch(), no cap."""
+    namespace = "big-namespace"
+    mock_engine = Engine(
+        name="pinecone", type="serverless", apikey="fake-api-key",
+        index_name="test-index", text_key="text",
+    )
+
+    mock_pinecone_client = MagicMock()
+    mock_index_async = AsyncMock()
+    mock_index_in_block = MagicMock()
+    mock_index_async.__aenter__.return_value = mock_index_in_block
+    mock_index_async.__aexit__.return_value = False
+
+    total = 2500
+    all_ids = [f"chunk{i}" for i in range(total)]
+    pages = [all_ids[i:i + 1000] for i in range(0, total, 1000)]  # list() pages internally
+    mock_index_in_block.list = MagicMock(return_value=_async_id_pages(pages))
+
+    async def fake_fetch(ids, namespace=None, **kwargs):
+        vectors = {i: MagicMock(metadata={"id": i}) for i in ids}
+        return MagicMock(vectors=vectors)
+
+    mock_index_in_block.fetch = AsyncMock(side_effect=fake_fetch)
+
+    mocker.patch('pinecone.Pinecone', return_value=mock_pinecone_client)
+    mock_pinecone_client.IndexAsyncio.return_value = mock_index_async
+    mock_pinecone_client.describe_index.return_value.host = "dummy-host"
+    mock_pinecone_client.describe_index.return_value.dimension = 1536
+
+    repo = PineconeRepositoryServerless()
+    result = await repo.get_all_obj_namespace(mock_engine, namespace)
+
+    assert len(result.matches) == total
 
 
 @pytest.mark.asyncio

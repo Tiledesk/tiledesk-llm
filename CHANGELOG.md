@@ -5,10 +5,21 @@
     * Andrea Sponziello
 ### **Copyright**: Tiledesk SRL
 
+
+---
+## [2026-09-07]
+### 0.12.2-rc1 fix: `/api/ask` returned 400 with `gemini-3.5-flash` — `ChatEntry.answer`
+
+Gemini with Automatic Function Calling returns `AIMessage.content` as a list of text blocks
+instead of a plain string; `ChatEntry.answer` only accepted `str`, so `ask_to_llm` crashed
+with a pydantic `ValidationError` while updating chat history. Same normalization already
+existed inline in `ask_reason_llm` for OpenAI's responses/v1 format but was never reused.
+Fixed with a single shared helper, `_normalize_answer_content()`, applied at both call
+sites. Tests: `tests/unit/controller/test_controller.py` (6 new tests).
+
 ---
 ## [2026-08-03]
 ### 0.12.1-rc2 fix: pinned  mcp==1.26.0
-
 
 
 ---

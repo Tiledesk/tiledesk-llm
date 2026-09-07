@@ -20,6 +20,11 @@ class LGraphBuildRequest(BaseModel):
         default=["PER", "ORG", "LOC", "MISC", "CIG", "CUP", "CF", "DATE_IT", "MONEY", "QUANTITY"],
         description="NER entity types to include (empty = all types).",
     )
+    ner_backend: str = Field(
+        default="spacy",
+        description="NER backend: 'spacy' (default, unchanged) or 'gliner' (selectable "
+                     "backend, not spaCy replacement — see docs/GRAPHRAG_COST_QUALITY_PLAN.md §4a).",
+    )
     npmi_threshold: float = Field(default=0.1, description="Minimum NPMI for entity co-occurrence edges")
     npmi_min_count: int = Field(default=2, description="Minimum co-occurrence count before NPMI is computed")
     overwrite: bool = Field(default=True, description="Delete existing graph before rebuilding")
@@ -63,6 +68,10 @@ class LGraphSearchRequest(BaseModel):
     use_noun_chunks: bool = Field(default=True)
     include_entity_types: List[str] = Field(
         default=["PER", "ORG", "LOC", "MISC", "CIG", "CUP", "CF", "DATE_IT", "MONEY", "QUANTITY"],
+    )
+    ner_backend: str = Field(
+        default="spacy",
+        description="NER backend matching the build phase: 'spacy' (default) or 'gliner'.",
     )
     top_k: int = Field(default=5, ge=1, le=50)
     ppr_alpha: float = Field(default=0.85, description="PageRank damping factor")
@@ -113,6 +122,10 @@ class LGraphQARequest(BaseModel):
     use_noun_chunks: bool = Field(default=True)
     include_entity_types: List[str] = Field(
         default=["PER", "ORG", "LOC", "MISC", "CIG", "CUP", "CF", "DATE_IT", "MONEY", "QUANTITY"],
+    )
+    ner_backend: str = Field(
+        default="spacy",
+        description="NER backend matching the build phase: 'spacy' (default) or 'gliner'.",
     )
     top_k: int = Field(default=10, ge=1, le=100)
     ppr_alpha: float = Field(default=0.85)
@@ -170,6 +183,10 @@ class LGraphLeidenRequest(BaseModel):
     engine: Engine
     resolution: float = Field(default=1.0, description="Leiden resolution (higher → more, smaller communities)")
     min_community_size: int = Field(default=3, description="Skip communities smaller than this")
+    ner_backend: str = Field(
+        default="spacy",
+        description="Must match the backend the target graph was built with ('spacy' or 'gliner') — Leiden doesn't do NER, it just needs to find the right graph.",
+    )
     webhook_url: Optional[str] = Field(default=None)
 
 
@@ -232,6 +249,10 @@ class LGraphCommunitySummarizationRequest(BaseModel):
     min_community_size: int = Field(
         default=3,
         description="Skip communities with fewer entities than this threshold.",
+    )
+    ner_backend: str = Field(
+        default="spacy",
+        description="Must match the backend the target graph was built with ('spacy' or 'gliner') — this endpoint doesn't do NER, it just needs to find the right graph.",
     )
     id_project: Optional[str] = Field(default=None, description="Tiledesk project ID (used for analytics).")
     request_id: Optional[str] = Field(default=None, description="Tiledesk conversation/request ID for analytics.")

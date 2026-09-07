@@ -251,6 +251,7 @@ async def get_network(
     index_name: str = Query(..., description="Vector store index / collection name"),
     node_limit: int = Query(500, ge=1, le=5000),
     edge_limit: int = Query(2000, ge=1, le=20000),
+    ner_backend: str = Query("spacy", description="Must match the backend the target graph was built with."),
 ):
     """Return the lgraph nodes and edges for visualization."""
     try:
@@ -259,6 +260,7 @@ async def get_network(
             index_name=index_name,
             node_limit=node_limit,
             edge_limit=edge_limit,
+            ner_backend=ner_backend,
         )
     except Exception as e:
         logger.error(f"[lgraph] network error: {e}")
@@ -271,10 +273,11 @@ async def get_network(
 async def delete_graph(
     namespace: str,
     index_name: str = Query(..., description="Vector store index / collection name"),
+    ner_backend: str = Query("spacy", description="Must match the backend the target graph was built with."),
 ):
     """Delete the light graph for a namespace+index pair."""
     try:
-        return await lgraph_logic.delete_lgraph(namespace=namespace, index_name=index_name)
+        return await lgraph_logic.delete_lgraph(namespace=namespace, index_name=index_name, ner_backend=ner_backend)
     except Exception as e:
         logger.error(f"[lgraph] delete error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

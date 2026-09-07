@@ -58,6 +58,7 @@ async def generate_community_summaries(
     overwrite: bool = False,
     model_name: str = "",
     token_usage_collector=None,
+    ner_backend: str = "spacy",
 ) -> Dict[str, Any]:
     """
     Generate LLM summaries for each Leiden community and persist them in:
@@ -88,7 +89,7 @@ async def generate_community_summaries(
     """
     from .graph_builder import make_graph_name
 
-    graph_name = make_graph_name(namespace, index_name)
+    graph_name = make_graph_name(namespace, index_name, ner_backend)
     community_ns = f"{namespace}{_COMMUNITY_NS_SUFFIX}"
 
     # ---- 1. Discover communities ----------------------------------------

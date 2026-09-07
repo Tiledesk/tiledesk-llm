@@ -25,10 +25,15 @@ async def run_leiden(
     index_name: str,
     resolution: float = 1.0,
     min_community_size: int = 3,
+    ner_backend: str = "spacy",
 ) -> Dict[str, Any]:
     """
     Run Leiden clustering on LEntity nodes (CO_OCCURS graph) and persist
     community_id as a property on each LEntity.
+
+    ner_backend must match whichever backend built the graph being clustered
+    (see graph_builder.make_graph_name) — Leiden doesn't do NER itself, it
+    just needs to find the right graph.
 
     Returns a stats dict: graph_name, community_count, entities_updated.
     """
@@ -38,7 +43,7 @@ async def run_leiden(
             "Install with: pip install igraph"
         )
 
-    graph_name = make_graph_name(namespace, index_name)
+    graph_name = make_graph_name(namespace, index_name, ner_backend)
 
     # ---- 1. Load LEntity nodes --------------------------------------------
     node_rows = await repo._execute_query(

@@ -433,19 +433,9 @@ async def ask_reason_llm(question, chat_model=None):
             # Estrai content e reasoning content
             _, content, reasoning_content = get_reasoning_content(result, question.llm)
 
-            # Converti content in stringa se è una lista (formato responses/v1 di OpenAI)
-            if isinstance(content, list):
-                # Estrai il testo dalle risposte
-                content_parts = []
-                for item in content:
-                    if isinstance(item, dict):
-                        if "text" in item:
-                            content_parts.append(item["text"])
-                        elif "content" in item:
-                            content_parts.append(item["content"])
-                content = "".join(content_parts) if content_parts else str(content)
-            elif not isinstance(content, str):
-                content = str(content)
+            # Normalizza content in stringa (alcuni provider, es. formato responses/v1
+            # di OpenAI o Gemini con AFC, restituiscono una lista di content-block)
+            content = _normalize_answer_content(content)
 
             # Aggiorna history usando il metodo centralizzato
             updated_history = _update_history(
@@ -651,9 +641,12 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None):
             result_message = await chat_model.ainvoke(messages)
             _latency_ms = int((time.monotonic() - _llm_t0) * 1000)
 
+            # Normalizza content (Gemini con AFC restituisce una lista di content-block)
+            answer_text = _normalize_answer_content(result_message.content)
+
             # Aggiorna history
             updated_history = _update_history(
-                question.chat_history_dict, question.question, result_message.content
+                question.chat_history_dict, question.question, answer_text
             )
 
             # Estrai token info
@@ -688,7 +681,7 @@ async def ask_to_llm(question: QuestionToLLM, chat_model=None):
 
             return JSONResponse(
                 content=SimpleAnswer(
-                    answer=result_message.content,
+                    answer=answer_text,
                     chat_history_dict=updated_history,
                     prompt_token_info=prompt_token_info,
                 ).model_dump()
@@ -841,6 +834,32 @@ def _format_history_as_text(chat_history: dict) -> str:
         history_lines.append(f"Assistant: {entry.answer}")
 
     return "\n".join(history_lines)
+
+
+def _normalize_answer_content(content) -> str:
+    """
+    Normalizza AIMessage.content in una stringa piatta.
+
+    La maggior parte dei provider restituisce una stringa, ma alcuni (es. Gemini
+    con AFC abilitato, o il formato responses/v1 di OpenAI) restituiscono una lista
+    di content-block (es. [{'type': 'text', 'text': '...'}]). ChatEntry.answer
+    richiede una stringa, quindi ogni chiamante che passa AIMessage.content a
+    ChatEntry/_update_history deve prima passare da qui.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                if "text" in item:
+                    parts.append(item["text"])
+                elif "content" in item:
+                    parts.append(item["content"])
+        return "".join(parts)
+    return str(content)
 
 
 def _update_history(current_history: dict, new_question, new_answer) -> dict:

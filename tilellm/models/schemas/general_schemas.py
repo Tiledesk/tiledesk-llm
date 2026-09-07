@@ -27,9 +27,10 @@ class ReasoningConfig(BaseModel):
     )
 
     # OpenAI GPT-5 specific
-    reasoning_effort: Optional[Literal["low", "medium", "high"]] = Field(
+    reasoning_effort: Optional[Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]] = Field(
         default=None,
-        description="OpenAI GPT-5: Effort level for reasoning (low, medium, high)"
+        description="OpenAI GPT-5: Effort level for reasoning (none, minimal, low, medium, high, xhigh, max). "
+                     "Not every model supports every value; unsupported combos are rejected by the API."
     )
     reasoning_summary: Optional[Literal["auto", "always", "never"]] = Field(
         default=None,

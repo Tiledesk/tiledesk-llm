@@ -398,7 +398,12 @@ class QuestionAnswer(BaseModel):
                 pass
 
         if is_gpt_5_plus:
-            self.temperature = 1.0
+            # ponytail: forcing temperature=1.0 was needed on the old chat-completions
+            # gpt-5 API (only accepted value). On the current Responses API, reasoning
+            # models reject temperature/top_p outright (400) unless reasoning.effort
+            # == "none" — and we always default effort to "low"/"medium" below. So the
+            # only correct move now is to omit them, not force a value.
+            self.temperature = None
             self.top_p = None
 
             if self.thinking is None:
@@ -602,7 +607,10 @@ class QuestionToLLM(BaseModel):
                 pass
 
         if is_gpt_5_plus:
-            self.temperature = 1.0
+            # ponytail: see twin validator above — gpt-5.x reasoning models reject
+            # temperature/top_p outright unless reasoning.effort == "none", which we
+            # never default to, so omit rather than force temperature=1.0.
+            self.temperature = None
             self.top_p = None
 
             if self.thinking is None:

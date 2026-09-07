@@ -530,7 +530,16 @@ class PineconeRepositoryBase(VectorStoreRepository):
 
     async def get_all_obj_namespace(self, engine: Engine, namespace: str, with_text:bool=False) -> RepositoryItems:
         """
-        Query Pinecone to get all object
+        Get every object in a namespace, no size ceiling.
+
+        Was a single index.query(top_k=min(total_vectors, 1000)) — a zero-vector
+        probe hack that silently truncated any namespace over 1000 vectors (found
+        2026-08-06 on the ASL Bari lgraph build: 208 PDFs / ~6800 chunks expected,
+        only 1000 chunks_processed — every caller of this method, not just lgraph,
+        was getting a silently partial namespace). index.list() is Pinecone's own
+        auto-paginating id enumerator (no cap, yields batches via pagination_token
+        internally); fetch() then pulls metadata for each batch of ids.
+
         :param engine: Engine
         :param namespace:
         :param with_text:
@@ -546,53 +555,31 @@ class PineconeRepositoryBase(VectorStoreRepository):
             host = pc.describe_index(engine.index_name).host
             index = pc.IndexAsyncio(name=engine.index_name, host=host)
 
-            async with index as index:
-                # vector_store = Pinecone.from_existing_index(const.PINECONE_INDEX, )
-                describe = await index.describe_index_stats()
-
-                logger.debug(describe)
-                namespaces = describe.namespaces
-                total_vectors = 1
-
-                if namespaces:
-                    if namespace in namespaces.keys():
-                        total_vectors = namespaces.get(namespace).vector_count
-
-                logger.debug(f"pinecone total vector in {namespace}: {total_vectors}")
-
-                batch_size = min([total_vectors, 1000])
-                
-                # Get index dimension from Pinecone API
-                index_info = pc.describe_index(engine.index_name)
-                dimension = index_info.dimension
-                logger.debug(f"Index dimension: {dimension}")
-
-                pc_res = await index.query(
-                    vector=[0] * dimension,  # Zero vector matching index dimension
-                    top_k=batch_size,
-                    # filter={"id": {"$eq": id}},
-                    namespace=namespace,
-                    include_values=False,
-                    include_metadata=True
-                )
-            matches = pc_res.get('matches')
-            # from pprint import pprint
-            # pprint(matches)
-            # ids = [obj.get('id') for obj in matches]
-            # print(type(matches[0].get('id')))
             result = []
+            fetch_batch_size = 100  # Pinecone fetch() recommended max ids/call
 
-            for obj in matches:
-                obj_metadata = obj.get('metadata') or {}
-                result.append(RepositoryQueryResult(id=obj.get('id', ""),
-                                                    metadata_id=obj_metadata.get('id'),
-                                                    metadata_source=obj_metadata.get('source'),
-                                                    metadata_type=obj_metadata.get('type'),
-                                                    date=obj_metadata.get('date', 'Date not defined'),
-                                                    text=obj_metadata.get(engine.text_key) if with_text else None,  # su pod content, su Serverless text
-                                                    metadata=obj_metadata,
-                                                    )
-                              )
+            async with index as index:
+                all_ids: List[str] = []
+                async for id_batch in index.list(namespace=namespace):
+                    all_ids.extend(id_batch)
+
+                logger.debug(f"pinecone total vector in {namespace}: {len(all_ids)}")
+
+                for i in range(0, len(all_ids), fetch_batch_size):
+                    batch_ids = all_ids[i:i + fetch_batch_size]
+                    fetched = await index.fetch(ids=batch_ids, namespace=namespace)
+                    for vec_id, vector in fetched.vectors.items():
+                        obj_metadata = vector.metadata or {}
+                        result.append(RepositoryQueryResult(
+                            id=vec_id,
+                            metadata_id=obj_metadata.get('id'),
+                            metadata_source=obj_metadata.get('source'),
+                            metadata_type=obj_metadata.get('type'),
+                            date=obj_metadata.get('date', 'Date not defined'),
+                            text=obj_metadata.get(engine.text_key) if with_text else None,  # su pod content, su Serverless text
+                            metadata=obj_metadata,
+                        ))
+
             res = RepositoryItems(matches=result)
             logger.debug(res)
             return res

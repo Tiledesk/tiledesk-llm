@@ -20,7 +20,8 @@ from tilellm.controller.controller import (
     _build_message_list,
     _format_history_as_text,
     _update_history,
-    _extract_token_info
+    _extract_token_info,
+    _normalize_answer_content
 )
 from tilellm.models import ChatEntry, QuestionToLLM, QuestionAnswer
 from tilellm.models.schemas import PromptTokenInfo
@@ -76,7 +77,32 @@ class TestControllerFunctions:
         assert len(result) == 3
         assert result["2"].question == "Q3"
         assert result["2"].answer == "A3"
-    
+
+    def test_normalize_answer_content_string_passthrough(self):
+        """Plain string content (OpenAI/Anthropic style) is returned unchanged."""
+        assert _normalize_answer_content("Plain answer") == "Plain answer"
+
+    def test_normalize_answer_content_gemini_text_blocks(self):
+        """Gemini/AFC-style list of text blocks is flattened to a plain string."""
+        content = [{"type": "text", "text": "Hello "}, {"type": "text", "text": "world"}]
+        assert _normalize_answer_content(content) == "Hello world"
+
+    def test_normalize_answer_content_list_with_non_text_blocks(self):
+        """Non-text blocks (e.g. thought signatures) are skipped, not concatenated raw."""
+        content = [
+            {"type": "text", "text": "Answer"},
+            {"type": "thought_signature", "signature": "abc123"},
+        ]
+        assert _normalize_answer_content(content) == "Answer"
+
+    def test_normalize_answer_content_empty_list(self):
+        """An empty content list normalizes to an empty string, not a crash."""
+        assert _normalize_answer_content([]) == ""
+
+    def test_normalize_answer_content_unknown_type_fallback(self):
+        """Unexpected shapes fall back to str() instead of raising."""
+        assert _normalize_answer_content(42) == "42"
+
     def test_extract_token_info_with_metadata(self):
         """Test extracting token info from message with metadata."""
         mock_message = Mock()
@@ -176,6 +202,34 @@ class TestAskToLLM:
             # History should be updated
             assert len(content['chat_history_dict']) == 2
     
+    @pytest.mark.asyncio
+    async def test_ask_to_llm_gemini_list_content(self):
+        """Regression: Gemini (AFC enabled) returns AIMessage.content as a list of
+        text blocks instead of a plain string. Must not blow up ChatEntry(answer=str)
+        with a pydantic ValidationError (see /api/ask 400 with gemini-3.5-flash)."""
+        question = QuestionToLLM(
+            question="Test question",
+            llm="google",
+            llm_key="test-key",
+            model="gemini-3.5-flash",
+            stream=False
+        )
+
+        mock_chat_model = AsyncMock()
+        mock_message = Mock()
+        mock_message.content = [{"type": "text", "text": "Gemini answer"}]
+        mock_message.usage_metadata = {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+        mock_chat_model.ainvoke = AsyncMock(return_value=mock_message)
+
+        with patch('tilellm.shared.utility.TimedCache.async_get', AsyncMock(return_value=mock_chat_model)):
+            result = await ask_to_llm(question)
+
+            assert isinstance(result, JSONResponse)
+            assert result.status_code == 200
+            content = json.loads(result.body.decode('utf-8'))
+            assert content['answer'] == "Gemini answer"
+            assert content['chat_history_dict']['0']['answer'] == "Gemini answer"
+
     @pytest.mark.asyncio
     async def test_ask_to_llm_streaming(self):
         """Test ask_to_llm with streaming."""

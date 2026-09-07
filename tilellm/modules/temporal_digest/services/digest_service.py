@@ -52,6 +52,7 @@ _DIGEST_TYPE_VALUE = "digest"
 _COMMUNITY_NS_SUFFIX = "__lgraph_communities"
 _MAX_CHUNK_CHARS = 900
 _MAX_EVIDENCE_CHARS = 140_000
+_MAX_OGGETTO_CHARS = 220
 
 
 def _format_chat_history(chat_history_dict: dict, max_messages: int = 10) -> str:
@@ -143,6 +144,71 @@ def _build_evidence_block(chunks: List[str], metadatas: List[dict]) -> str:
     return "\n".join(lines)
 
 
+def _build_document_evidence_block(chunks: List[str], metadatas: List[dict]) -> str:
+    """One evidence line per source *document* (grouped by metadata_id), not
+    per chunk. A busy day can have dozens of chunks per document (~30 avg on
+    the ASL Bari corpus) — dumping raw chunk text via _build_evidence_block
+    hits the char budget after a handful of documents, truncating mid-document
+    in arbitrary order (real bug found 2026-08-08, see
+    docs/ASL_BARI_DEMO_RESULTS.md: 54 real acts in a day, only 2 "clearly
+    readable" in the resulting digest).
+
+    A document's facts don't need its raw chunk text repeated 30 times —
+    additional_metadata (numero/data/oggetto/CIG/CUP) and situated_context's
+    direct fields (act_type/amount) are already extracted once per document
+    at ingestion time. One compact line per document lets the same budget
+    cover the whole day instead of ~5 documents.
+
+    _build_evidence_block (raw chunk snippets) stays the right tool for
+    targeted single-document lookups (_query_semantic) — this is specifically
+    for a *daily overview* where completeness across documents matters more
+    than verbatim chunk text.
+    """
+    documents = _dedupe_by_document(metadatas)
+
+    lines: List[str] = []
+    total = 0
+    for i, doc in enumerate(documents, 1):
+        doc_id = doc.get("metadata_id") or doc.get("id") or "documento_sconosciuto"
+        numero = doc.get("numero_determina") or doc_id
+        parts = [f"[{i}] {numero}"]
+
+        data = doc.get("data_determina")
+        if data:
+            parts.append(data)
+
+        oggetto = doc.get("oggetto")
+        if oggetto:
+            parts.append(oggetto[:_MAX_OGGETTO_CHARS])
+
+        if doc.get("act_type"):
+            parts.append(doc["act_type"])
+
+        amount = doc.get("amount")
+        if amount is not None:
+            try:
+                parts.append(f"€{float(amount):,.2f}")
+            except (ValueError, TypeError):
+                pass
+
+        cig = doc.get("cig")
+        if cig:
+            parts.append(f"CIG:{cig}")
+        cup = doc.get("cup")
+        if cup:
+            parts.append(f"CUP:{cup}")
+
+        entry = " | ".join(parts)
+        if total + len(entry) + 1 > _MAX_EVIDENCE_CHARS:
+            remaining = len(documents) - i + 1
+            lines.append(f"[…] {remaining} atti aggiuntivi omessi per limiti di contesto.")
+            break
+        lines.append(entry)
+        total += len(entry) + 1
+
+    return "\n".join(lines)
+
+
 def _extract_llm_text(response) -> str:
     content = getattr(response, "content", response)
     if isinstance(content, list):
@@ -152,12 +218,43 @@ def _extract_llm_text(response) -> str:
     return str(content).strip()
 
 
+def _dedupe_by_document(metadatas: List[dict]) -> List[dict]:
+    """Collapse chunk-level metadata to one representative dict per source
+    document (grouped by metadata_id/id) — a document ingested at ~30
+    chunks/doc average (this corpus) otherwise gets its act_type counted once
+    per chunk and its amount summed once per chunk (double/triple-counted
+    across overlapping chunks, chunk_overlap=400 in the real splitter).
+    act_type: most common non-null value across the document's chunks.
+    amount: first non-null value found (avoids summing the same total
+    mentioned in more than one chunk of the same document).
+    All other fields come from the first chunk seen (additional_metadata is
+    identical across a document's chunks — merged once in _base_metadata).
+    """
+    order: List[str] = []
+    groups: Dict[str, List[dict]] = {}
+    for meta in metadatas:
+        doc_id = meta.get("metadata_id") or meta.get("id") or id(meta)
+        if doc_id not in groups:
+            groups[doc_id] = []
+            order.append(doc_id)
+        groups[doc_id].append(meta)
+
+    result = []
+    for doc_id in order:
+        metas = groups[doc_id]
+        act_types_in_doc = [m.get("act_type") for m in metas if m.get("act_type")]
+        act_type = Counter(act_types_in_doc).most_common(1)[0][0] if act_types_in_doc else None
+        amount = next((m.get("amount") for m in metas if m.get("amount") is not None), None)
+        result.append({**metas[0], "act_type": act_type, "amount": amount})
+    return result
+
+
 def _aggregate_metadata(metadatas: List[dict]) -> Tuple[Dict[str, int], Optional[float]]:
     act_counter: Counter = Counter()
     total_amount = 0.0
     has_amount = False
 
-    for meta in metadatas:
+    for meta in _dedupe_by_document(metadatas):
         at = meta.get("act_type")
         if at:
             act_counter[at] += 1
@@ -562,6 +659,10 @@ class DigestService:
             metadatas = await _classify_act_types(chunks, metadatas, llm)
 
         act_types, total_amount = _aggregate_metadata(metadatas)
+        # Rollup chunks are already one-per-period; raw chunks need collapsing
+        # to one-per-document (~30 chunks/document average on this corpus) so
+        # the prompt/response report "N atti", not "N chunk".
+        document_count = len(chunks) if used_rollup else len(_dedupe_by_document(metadatas))
 
         # --- Community context injection (Fase C) ---------------------------
         community_context = ""
@@ -571,14 +672,22 @@ class DigestService:
             )
 
         # --- Build evidence + LLM call --------------------------------------
-        evidence = _build_evidence_block(chunks, metadatas)
+        # Raw source chunks -> group per document (metadata already has
+        # numero/oggetto/CIG/CUP/act_type/amount, no need to spend the budget
+        # on ~30 chunks/document of raw text — see _build_document_evidence_block).
+        # Rollup chunks are already one-per-period digest text, not raw
+        # per-document chunks -> the per-document grouping doesn't apply.
+        evidence = (
+            _build_evidence_block(chunks, metadatas) if used_rollup
+            else _build_document_evidence_block(chunks, metadatas)
+        )
         if community_context:
             evidence = community_context + "\n\n---\n\n" + evidence
 
         domain_prompts = get_domain_prompts(request.domain)
         system_prompt = request.system_prompt or domain_prompts["system"]
         user_prompt = domain_prompts["user_template"].format(
-            chunk_count=len(chunks),
+            chunk_count=document_count,
             namespace=request.namespace,
             date_from=ds,
             date_to=de,
@@ -599,7 +708,7 @@ class DigestService:
             repo=repo, llm_embeddings=llm_embeddings,
             request=request, digest_text=digest_text,
             win_start=win_start, win_end=win_end,
-            chunk_count=len(chunks), act_types=act_types,
+            chunk_count=document_count, act_types=act_types,
             total_amount=total_amount,
         )
 
@@ -608,25 +717,72 @@ class DigestService:
             date_from=ds, date_to=de,
             granularity=request.granularity,
             content=digest_text,
-            chunk_count=len(chunks),
+            chunk_count=document_count,
             act_types=act_types,
             total_amount=total_amount,
             digest_vector_id=vector_id,
         )
 
     async def _fetch_source_chunks(self, repo, request, date_from_str, date_to_str):
-        qa = self._build_qa(request, question=f"atti amministrativi {date_from_str} {date_to_str}")
-        qa.top_k = request.top_k
-        qa._metadata_filter = {
-            request.date_metadata_field: {"$gte": date_from_str, "$lte": date_to_str},
-            _DIGEST_TYPE_FIELD: {"$ne": _DIGEST_TYPE_VALUE},
-        }
+        """Fetch the whole namespace and filter by date in Python instead of a
+        vector-store range query. Two real bugs made the old $gte/$lte filter
+        unusable (2026-08-08, ASL Bari corpus on Pinecone):
+
+        1. Pinecone's $gte/$lte require a *number* operand — a plain ISO date
+           string 400s outright ("the $gte operator must be followed by a
+           number, got string instead"). Never worked on Pinecone at all.
+        2. The date lives under whatever field name/format the tenant's
+           ingestion actually used (this corpus: "data_determina", DD/MM/YYYY
+           — the default date_metadata_field="date" matches nothing here).
+
+        Client-side filtering sidesteps both: works on any backend, any field
+        format (ISO or DD/MM/YYYY, via _normalize_date_str), the caller just
+        has to point date_metadata_field at the field that actually exists.
+
+        ponytail: O(namespace size) per call — get_all_obj_namespace has no
+        cap (fixed 2026-08-06) but still fetches everything; fine at the
+        single-namespace/per-digest scale this module targets. A namespace of
+        tens of thousands of chunks would want a real server-side date index.
+        """
+        from tilellm.models.schemas import RepositoryItems, RetrievalChunksResult
+        from tilellm.tools.document_tools import _normalize_date_str
+
+        def _parse(value) -> Optional[date]:
+            if not isinstance(value, str) or not value:
+                return None
+            try:
+                return date.fromisoformat(_normalize_date_str(value))
+            except ValueError:
+                return None
+
         try:
-            return await repo.get_chunks_from_repo(qa)
+            date_from = date.fromisoformat(date_from_str)
+            date_to = date.fromisoformat(date_to_str)
+            items: RepositoryItems = await repo.get_all_obj_namespace(
+                engine=request.engine, namespace=request.namespace, with_text=True,
+            )
         except Exception as e:
             logger.warning(f"Chunk retrieval failed: {e}")
-            from tilellm.models.schemas import RetrievalChunksResult
-            return RetrievalChunksResult(chunks=[], metadata=[], namespace=qa.namespace)
+            return RetrievalChunksResult(chunks=[], metadata=[], namespace=request.namespace)
+
+        chunks: List[str] = []
+        metadatas: List[dict] = []
+        chunk_ids: List[str] = []
+        for m in items.matches:
+            meta = m.metadata or {}
+            if meta.get(_DIGEST_TYPE_FIELD) == _DIGEST_TYPE_VALUE:
+                continue
+            parsed = _parse(meta.get(request.date_metadata_field))
+            if parsed is None or not (date_from <= parsed <= date_to):
+                continue
+            chunks.append(m.text or "")
+            metadatas.append(meta)
+            chunk_ids.append(m.id)
+
+        return RetrievalChunksResult(
+            success=True, namespace=request.namespace,
+            chunks=chunks, metadata=metadatas, chunk_ids=chunk_ids,
+        )
 
     async def _fetch_digests(self, repo, request, date_from_str, date_to_str, top_k=20):
         qa = self._build_qa(request, question=f"rapporto {date_from_str} {date_to_str}")

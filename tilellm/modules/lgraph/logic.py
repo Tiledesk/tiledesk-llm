@@ -115,7 +115,7 @@ async def _build_lgraph_core(request: LGraphBuildRequest, repo) -> Dict[str, Any
             return {
                 "status": "empty",
                 "namespace": request.namespace,
-                "graph_name": make_graph_name(request.namespace, request.engine.index_name),
+                "graph_name": make_graph_name(request.namespace, request.engine.index_name, request.ner_backend),
                 "chunks_processed": 0,
                 "entities_created": 0,
                 "entity_chunk_edges": 0,
@@ -132,6 +132,7 @@ async def _build_lgraph_core(request: LGraphBuildRequest, repo) -> Dict[str, Any
             use_noun_chunks=request.use_noun_chunks,
             sub_window_size=request.sub_window_size,
             sub_window_overlap=request.sub_window_overlap,
+            ner_backend=request.ner_backend,
         )
 
         falkor = _get_falkor_repo()
@@ -145,6 +146,7 @@ async def _build_lgraph_core(request: LGraphBuildRequest, repo) -> Dict[str, Any
             npmi_threshold=request.npmi_threshold,
             npmi_min_count=request.npmi_min_count,
             overwrite=request.overwrite,
+            ner_backend=request.ner_backend,
         )
         chunks_processed = stats["chunks_processed"]
 
@@ -219,10 +221,11 @@ async def search_lgraph(request: LGraphSearchRequest) -> LGraphSearchResponse:
         spacy_model=request.spacy_model,
         include_types=request.include_entity_types,
         use_noun_chunks=request.use_noun_chunks,
+        ner_backend=request.ner_backend,
     )
     entity_names = _build_seed_entity_names(request.question, query_entities)
 
-    gname = make_graph_name(request.namespace, request.engine.index_name)
+    gname = make_graph_name(request.namespace, request.engine.index_name, request.ner_backend)
     falkor = _get_falkor_repo()
 
     chunk_results = await ppr_search(
@@ -440,10 +443,11 @@ async def _qa_lgraph_core(request: LGraphQARequest, llm) -> LGraphQAResponse:
         spacy_model=request.spacy_model,
         include_types=request.include_entity_types,
         use_noun_chunks=request.use_noun_chunks,
+        ner_backend=request.ner_backend,
     )
     entity_names = _build_seed_entity_names(request.question, query_entities)
 
-    gname = make_graph_name(request.namespace, request.engine.index_name)
+    gname = make_graph_name(request.namespace, request.engine.index_name, request.ner_backend)
     falkor = _get_falkor_repo()
 
     # ---- 2. PPR retrieval --------------------------------------------------
@@ -574,10 +578,11 @@ async def _qa_lgraph_hybrid_core(request: LGraphHybridRequest, repo, llm) -> LGr
         spacy_model=request.spacy_model,
         include_types=request.include_entity_types,
         use_noun_chunks=request.use_noun_chunks,
+        ner_backend=request.ner_backend,
     )
     entity_names = _build_seed_entity_names(request.question, query_entities)
 
-    gname = make_graph_name(request.namespace, request.engine.index_name)
+    gname = make_graph_name(request.namespace, request.engine.index_name, request.ner_backend)
     falkor = _get_falkor_repo()
 
     # ---- 3. PPR retrieval, seeded by BOTH vector chunks and entities -------
@@ -683,6 +688,7 @@ async def leiden_lgraph(request: LGraphLeidenRequest) -> LGraphLeidenResponse:
         index_name=request.engine.index_name,
         resolution=request.resolution,
         min_community_size=request.min_community_size,
+        ner_backend=request.ner_backend,
     )
     return LGraphLeidenResponse(
         status=stats["status"],
@@ -756,11 +762,12 @@ async def _summarize_communities_lgraph_core(
             overwrite=request.overwrite,
             model_name=model_name_of(request.model),
             token_usage_collector=token_usage_collector,
+            ner_backend=request.ner_backend,
         )
 
         return LGraphCommunitySummarizationResponse(
             status=stats["status"],
-            graph_name=stats.get("graph_name", make_graph_name(request.namespace, request.engine.index_name)),
+            graph_name=stats.get("graph_name", make_graph_name(request.namespace, request.engine.index_name, request.ner_backend)),
             community_ns=stats.get("community_ns", f"{request.namespace}__lgraph_communities"),
             communities_processed=stats.get("communities_processed", 0),
             communities_indexed=stats.get("communities_indexed", 0),
@@ -795,8 +802,8 @@ async def _summarize_communities_lgraph_core(
 # DELETE
 # ---------------------------------------------------------------------------
 
-async def delete_lgraph(namespace: str, index_name: str) -> LGraphDeleteResponse:
-    gname = make_graph_name(namespace, index_name)
+async def delete_lgraph(namespace: str, index_name: str, ner_backend: str = "spacy") -> LGraphDeleteResponse:
+    gname = make_graph_name(namespace, index_name, ner_backend)
     falkor = _get_falkor_repo()
     ok = await falkor.delete_graph(gname)
     return LGraphDeleteResponse(
@@ -815,8 +822,9 @@ async def get_lgraph_network(
     index_name: str,
     node_limit: int = 500,
     edge_limit: int = 2000,
+    ner_backend: str = "spacy",
 ) -> LGraphNetworkResponse:
-    gname = make_graph_name(namespace, index_name)
+    gname = make_graph_name(namespace, index_name, ner_backend)
     falkor = _get_falkor_repo()
 
     node_rows = await falkor._execute_query(

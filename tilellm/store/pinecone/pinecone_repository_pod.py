@@ -24,6 +24,7 @@ from tilellm.tools.document_tools import (get_content_by_url,
                                           )
 
 from tilellm.store.pinecone.pinecone_repository_base import PineconeRepositoryBase
+from tilellm.store.pinecone.pinecone_repository_serverless import _sanitize_metadata
 
 
 from langchain_core.documents import Document
@@ -339,11 +340,10 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
                 # 4. Upsert to Pinecone
                 vectors_to_upsert = []
                 for j, content in enumerate(batch_contents):
-                    combined_metadata = {
-                        **batch_metadatas[j],
-                        engine.text_key: content,
-                        "namespace": namespace
-                    }
+                    combined_metadata = _sanitize_metadata(
+                        {**batch_metadatas[j], engine.text_key: content, "namespace": namespace},
+                        text_key=engine.text_key,
+                    )
                     vector = {
                         "id": batch_ids[j],
                         "values": dense_embeds[j],

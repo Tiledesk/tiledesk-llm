@@ -26,10 +26,17 @@ _TEXT_SNIPPET_LEN = 1500  # chars stored in LChunk.text
 _BATCH_SIZE = 200          # UNWIND batch size for FalkorDB queries
 
 
-def make_graph_name(namespace: str, index_name: str) -> str:
+def make_graph_name(namespace: str, index_name: str, ner_backend: str = "spacy") -> str:
+    """ner_backend is part of the graph identity for every backend except the
+    default "spacy" — appending nothing there keeps every pre-A5 graph name
+    unchanged (backward compatibility). Without this, a build+overwrite=False
+    with a different backend on the same namespace/index MERGEs onto the same
+    LEntity nodes (keyed on name, not type) and silently retypes them — see
+    tests/unit/modules/lgraph/test_graph_builder_naming.py."""
     safe_ns = namespace.replace(" ", "_")
     safe_idx = index_name.replace(" ", "_")
-    return f"{_LGRAPH_PREFIX}_{safe_ns}_{safe_idx}"
+    base = f"{_LGRAPH_PREFIX}_{safe_ns}_{safe_idx}"
+    return base if ner_backend == "spacy" else f"{base}_{ner_backend}"
 
 
 async def build_light_graph(
@@ -42,6 +49,7 @@ async def build_light_graph(
     npmi_threshold: float,
     npmi_min_count: int,
     overwrite: bool = True,
+    ner_backend: str = "spacy",
 ) -> Dict[str, Any]:
     """Persist the light graph into FalkorDB.
 
@@ -55,7 +63,7 @@ async def build_light_graph(
 
     Returns a stats dict consumed by the caller.
     """
-    graph_name = make_graph_name(namespace, index_name)
+    graph_name = make_graph_name(namespace, index_name, ner_backend)
     n_chunks = len(chunks)
 
     if overwrite:

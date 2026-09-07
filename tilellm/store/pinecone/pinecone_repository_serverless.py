@@ -50,12 +50,18 @@ _PINECONE_METADATA_MAX_BYTES = 40960  # Pinecone hard limit: 40 KB per vector
 
 
 def _sanitize_metadata(metadata: dict, text_key: str = "text") -> dict:
-    """Enforce Pinecone's 40 KB per-vector metadata limit.
+    """Enforce Pinecone's metadata constraints — the one choke point every
+    vector passes through in aadd_documents, so every caller is protected
+    without having to remember to sanitize its own metadata dict.
 
     Steps (in order):
     1. Drop `file_content` — never used for retrieval filtering.
-    2. Truncate/drop non-essential fields (surrounding_text, answerable_questions, …).
-    3. Last resort: truncate the chunk text itself so the vector is still indexed.
+    2. Drop `None` values — Pinecone rejects a literal null outright ("Metadata
+       value must be a string, number, boolean or list of strings, got
+       'null'"); None here only ever means "not extracted/not applicable",
+       so omitting the key is the correct representation, not an error.
+    3. Truncate/drop non-essential fields (surrounding_text, answerable_questions, …).
+    4. Last resort: truncate the chunk text itself so the vector is still indexed.
     """
     def _size(d: dict) -> int:
         try:
@@ -63,7 +69,7 @@ def _sanitize_metadata(metadata: dict, text_key: str = "text") -> dict:
         except (TypeError, ValueError):
             return _PINECONE_METADATA_MAX_BYTES + 1
 
-    cleaned = {k: v for k, v in metadata.items() if k != "file_content"}
+    cleaned = {k: v for k, v in metadata.items() if k != "file_content" and v is not None}
 
     if _size(cleaned) <= _PINECONE_METADATA_MAX_BYTES:
         return cleaned

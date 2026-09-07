@@ -824,6 +824,7 @@ def inject_llm_chat(func):
                     inner_client_config["num_predict"] = inner_client_config.pop("max_tokens", None)
                     return ChatOllama(**inner_client_config)
 
+
                 else:  # Fallback a OpenAI
                     from langchain_openai import ChatOpenAI
                     logger.warning(f"Unknown LLM provider '{question.llm}', falling back to OpenAI")
