@@ -8,7 +8,7 @@
 
 ---
 ## [2026-09-07]
-### 0.12.2-rc1 fix: `/api/ask` returned 400 with `gemini-3.5-flash` — `ChatEntry.answer`
+### 0.12.3-rc1 fix: `/api/ask` returned 400 with `gemini-3.5-flash` — `ChatEntry.answer`
 
 Gemini with Automatic Function Calling returns `AIMessage.content` as a list of text blocks
 instead of a plain string; `ChatEntry.answer` only accepted `str`, so `ask_to_llm` crashed
