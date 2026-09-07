@@ -43,6 +43,10 @@ class LlmEmbeddingModel(BaseModel):
     custom_headers: Optional[Dict[str, Any]] = None
     project: Optional[str] = None  # GCP project id, routes google provider to Vertex AI
     location: Optional[str] = None  # GCP region for Vertex AI (e.g. europe-west8)
+    # OpenRouter only: which upstream providers may serve this model, and in what order.
+    # Shape: {"order": ["azure", "openai"], "allow_fallbacks": true, "sort": "price"}.
+    # Passed through to the OpenRouter API as the request's "provider" block.
+    provider_routing: Optional[Dict[str, Any]] = None
 
     @model_validator(mode='after')
     def validate_model(self):

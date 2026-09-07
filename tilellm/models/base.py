@@ -15,6 +15,7 @@ class LLMEmbeddingProviders(str, Enum):
     GROQ = "groq"
     TEI = "tei"
     DEEPSEEK="deepseek"
+    OPENROUTER="openrouter"
 
 class AWSAuthentication(BaseModel):
     aws_access_key_id: str

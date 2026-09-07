@@ -17,7 +17,14 @@ from tilellm.models import LlmEmbeddingModel  # EmbeddingModel
 from tilellm.shared.embedding_factory import EmbeddingFactory, AsyncEmbeddingFactory
 from tilellm.shared.tiledesk_chatmodel_info import TiledeskAICallbackHandler
 from tilellm.shared.timed_cache import TimedCache
-from tilellm.shared.llm_config import get_llm_params, strip_unsupported_anthropic_sampling_params
+from tilellm.shared.llm_config import (
+    get_llm_params,
+    strip_unsupported_anthropic_sampling_params,
+    build_openrouter_extra_body,
+    build_openrouter_reasoning,
+    merge_openrouter_extra_body,
+    OPENROUTER_BASE_URL,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -279,6 +286,16 @@ async def _get_llm_config_for_client(question, llm_params: Dict[str, Any]) -> Di
     if question.llm == "vllm" and not base_url_param:
         base_url_param = "http://localhost:8001"
 
+    # OpenRouter parla il protocollo OpenAI: cambia solo l'endpoint.
+    if question.llm == "openrouter" and not base_url_param:
+        base_url_param = OPENROUTER_BASE_URL
+
+    # Routing e reasoning viaggiano nel body della richiesta, non nei parametri
+    # del client: e' None quando non c'e' ne' l'uno ne' l'altro.
+    extra_body_param = None
+    if question.llm == "openrouter":
+        extra_body_param = openrouter_extra_body(question)
+
     # Consolidate all parameters for the client
     client_config = {
         #"provider" : provider_param,
@@ -288,6 +305,7 @@ async def _get_llm_config_for_client(question, llm_params: Dict[str, Any]) -> Di
         "default_headers": custom_headers_to_use,
         "project": project_param,
         "location": location_param,
+        "extra_body": extra_body_param,
         **llm_params # Include generic LLM parameters
     }
 
@@ -299,8 +317,42 @@ async def _get_llm_config_for_client(question, llm_params: Dict[str, Any]) -> Di
         del client_config["project"]
     if client_config.get("location") is None:
         del client_config["location"]
+    if client_config.get("extra_body") is None:
+        del client_config["extra_body"]
 
     return client_config
+
+
+def openrouter_extra_body(question) -> Optional[Dict[str, Any]]:
+    """
+    Tutto cio' che OpenRouter riceve nel body oltre ai parametri standard:
+    il routing verso i provider a monte e il reasoning.
+
+    Un posto solo, usato sia per costruire il client sia per le chiavi di
+    cache: se le due cose divergessero, due configurazioni diverse
+    finirebbero per condividere lo stesso client.
+    """
+    model = getattr(question, 'model', None)
+    provider_routing = getattr(model, 'provider_routing', None) if model is not None else None
+
+    return merge_openrouter_extra_body(
+        build_openrouter_extra_body(provider_routing),
+        build_openrouter_reasoning(getattr(question, 'thinking', None)),
+    )
+
+
+def _routing_cache_fragment(client_base_config: Dict[str, Any]) -> Optional[str]:
+    """
+    Hash del routing che viaggia nel body (blocco "provider" di OpenRouter).
+
+    Serve nella chiave di cache: stesso modello e stessa chiave API ma provider
+    a monte diversi sono due client diversi, e senza questo frammento il secondo
+    riuserebbe il client del primo, instradando verso i provider sbagliati.
+    """
+    extra_body = client_base_config.get("extra_body")
+    if not extra_body:
+        return None
+    return hashlib.sha256(json.dumps(extra_body, sort_keys=True).encode('utf-8')).hexdigest()
 
 
 def _apply_google_vertex_flag(client_config: Dict[str, Any]) -> Dict[str, Any]:
@@ -563,6 +615,9 @@ def inject_llm(func):
                 # Hash of headers to ensure cache key uniqueness
                 headers_hash = hashlib.sha256(json.dumps(temp_client_base_config["default_headers"], sort_keys=True).encode('utf-8')).hexdigest()
                 cache_key_parts.append(headers_hash)
+            routing_hash = _routing_cache_fragment(temp_client_base_config)
+            if routing_hash:
+                cache_key_parts.append(routing_hash)
             
             cache_key = tuple(cache_key_parts)
 
@@ -591,8 +646,10 @@ def inject_llm(func):
                     inner_client_config["project"] = inner_client_base_config["project"]
                 if inner_client_base_config.get("location"):
                     inner_client_config["location"] = inner_client_base_config["location"]
+                if inner_client_base_config.get("extra_body"):
+                    inner_client_config["extra_body"] = inner_client_base_config["extra_body"]
 
-                if question.llm == "openai" or question.llm == "vllm":
+                if question.llm == "openai" or question.llm == "vllm" or question.llm == "openrouter":
                     from langchain_openai import ChatOpenAI
                     return ChatOpenAI(**inner_client_config)
 
@@ -716,6 +773,15 @@ async def _build_standard_llm_cache_key(question) -> Tuple:
     if question.llm in ["vllm", "ollama"] and hasattr(question.model, 'url'):
         cache_key_parts.append(question.model.url)  # type: ignore
 
+    # OpenRouter: routing e reasoning distinguono due client altrimenti
+    # identici (stesso modello, stessa chiave API).
+    if question.llm == "openrouter":
+        extra_body = openrouter_extra_body(question)
+        if extra_body:
+            cache_key_parts.append(
+                hashlib.sha256(json.dumps(extra_body, sort_keys=True).encode('utf-8')).hexdigest()
+            )
+
     return tuple(cache_key_parts)
 
 
@@ -753,6 +819,9 @@ def inject_llm_chat(func):
                 # Hash of headers to ensure cache key uniqueness
                 headers_hash = hashlib.sha256(json.dumps(temp_client_base_config["default_headers"], sort_keys=True).encode('utf-8')).hexdigest()
                 llm_cache_key_parts.append(headers_hash)
+            routing_hash = _routing_cache_fragment(temp_client_base_config)
+            if routing_hash:
+                llm_cache_key_parts.append(routing_hash)
             
             llm_cache_key = tuple(llm_cache_key_parts)
 
@@ -783,9 +852,11 @@ def inject_llm_chat(func):
                     inner_client_config["project"] = inner_client_base_config["project"]
                 if inner_client_base_config.get("location"):
                     inner_client_config["location"] = inner_client_base_config["location"]
+                if inner_client_base_config.get("extra_body"):
+                    inner_client_config["extra_body"] = inner_client_base_config["extra_body"]
 
 
-                if question.llm == "openai" or question.llm == "vllm":
+                if question.llm == "openai" or question.llm == "vllm" or question.llm == "openrouter":
                     from langchain_openai import ChatOpenAI
                     return ChatOpenAI(**inner_client_config)
 
@@ -1096,6 +1167,15 @@ async def _build_llm_cache_key(question) -> tuple:
             "legacy_mode": True
         }
 
+    # OpenRouter: routing e reasoning distinguono due client altrimenti
+    # identici (stesso modello, stessa chiave API).
+    if question.llm == "openrouter":
+        extra_body = openrouter_extra_body(question)
+        if extra_body:
+            cache_key_parts_dic["openrouter_body"] = hashlib.sha256(
+                json.dumps(extra_body, sort_keys=True).encode('utf-8')
+            ).hexdigest()
+
     sorted_params = tuple(
         (k, str(v)) for k, v in sorted(cache_key_parts_dic.items())
         if v is not None
@@ -1168,6 +1248,8 @@ async def _create_llm_instance(question):
             client_config["project"] = client_base_config["project"]
         if client_base_config.get("location"):
             client_config["location"] = client_base_config["location"]
+        if client_base_config.get("extra_body"):
+            client_config["extra_body"] = client_base_config["extra_body"]
 
         thinking_config = question.thinking if hasattr(question, 'thinking') and question.thinking else None
         if provider_param == "openai":
@@ -1189,6 +1271,10 @@ async def _create_llm_instance(question):
                     client_config["reasoning"] = reasoning_dict
                     # Usa il nuovo formato response per reasoning models
                     client_config["output_version"] = "responses/v1"
+            return ChatOpenAI(**client_config)
+
+        elif provider_param == "openrouter":
+            from langchain_openai import ChatOpenAI  # OpenRouter espone un'API OpenAI-compatibile
             return ChatOpenAI(**client_config)
 
         elif provider_param == "vllm":
@@ -1272,9 +1358,11 @@ async def _create_standard_llm_instance(question) -> Any:
             client_config["project"] = client_base_config["project"]
         if client_base_config.get("location"):
             client_config["location"] = client_base_config["location"]
+        if client_base_config.get("extra_body"):
+            client_config["extra_body"] = client_base_config["extra_body"]
 
         # Now, adapt client_config for each specific provider
-        if question.llm == "openai":
+        if question.llm == "openai" or question.llm == "openrouter":
             from langchain_openai import ChatOpenAI
             return ChatOpenAI(**client_config)
 
@@ -1418,6 +1506,9 @@ def inject_reason_llm(func):
             if temp_client_base_config.get("default_headers"):
                 headers_hash = hashlib.sha256(json.dumps(temp_client_base_config["default_headers"], sort_keys=True).encode('utf-8')).hexdigest()
                 cache_key_parts.append(headers_hash)
+            routing_hash = _routing_cache_fragment(temp_client_base_config)
+            if routing_hash:
+                cache_key_parts.append(routing_hash)
             
             cache_key = tuple(cache_key_parts)
 
@@ -1441,10 +1532,16 @@ def inject_reason_llm(func):
                     client_config["base_url"] = inner_client_base_config["base_url"]
                 if inner_client_base_config.get("default_headers"):
                     client_config["default_headers"] = inner_client_base_config["default_headers"]
+                if inner_client_base_config.get("extra_body"):
+                    client_config["extra_body"] = inner_client_base_config["extra_body"]
 
                 if question.llm == "openai":
                     from langchain_openai import ChatOpenAI
                     # Use max_completion_tokens for reasoning context
+                    client_config["max_completion_tokens"] = client_config.pop("max_tokens", None)
+                    return ChatOpenAI(**client_config)
+                elif question.llm == "openrouter":
+                    from langchain_openai import ChatOpenAI  # OpenRouter espone un'API OpenAI-compatibile
                     client_config["max_completion_tokens"] = client_config.pop("max_tokens", None)
                     return ChatOpenAI(**client_config)
                 elif question.llm == "anthropic":
@@ -1553,6 +1650,15 @@ async def _build_reasoning_llm_cache_key(question) -> Tuple:
     if question.llm in ["vllm", "ollama"] and hasattr(question.model, 'url'):
         cache_key_parts.append(question.model.url)  # type: ignore
 
+    # OpenRouter: routing e reasoning distinguono due client altrimenti
+    # identici (stesso modello, stessa chiave API).
+    if question.llm == "openrouter":
+        extra_body = openrouter_extra_body(question)
+        if extra_body:
+            cache_key_parts.append(
+                hashlib.sha256(json.dumps(extra_body, sort_keys=True).encode('utf-8')).hexdigest()
+            )
+
     return tuple(cache_key_parts)
 
 
@@ -1581,6 +1687,8 @@ async def _create_reasoning_llm_instance(question) -> Any:
             client_config["project"] = client_base_config["project"]
         if client_base_config.get("location"):
             client_config["location"] = client_base_config["location"]
+        if client_base_config.get("extra_body"):
+            client_config["extra_body"] = client_base_config["extra_body"]
 
         # Estrai la configurazione reasoning se presente
         thinking_config = question.thinking if hasattr(question, 'thinking') and question.thinking else None
@@ -1643,6 +1751,11 @@ async def _create_reasoning_llm_instance(question) -> Any:
             from langchain_deepseek import ChatDeepSeek
             # DeepSeek non ha parametri specifici per reasoning, è automatico
             return ChatDeepSeek(**client_config)
+
+        elif question.llm == "openrouter":
+            from langchain_openai import ChatOpenAI  # OpenRouter espone un'API OpenAI-compatibile
+            client_config["max_completion_tokens"] = client_config.pop("max_tokens", None)
+            return ChatOpenAI(**client_config)
 
         elif question.llm == "vllm":
             from langchain_openai import ChatOpenAI # vLLM uses OpenAI compatible API

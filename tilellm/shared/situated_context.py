@@ -19,7 +19,12 @@ from pathlib import Path
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage
 
-from tilellm.shared.llm_config import LLM_REQUEST_TIMEOUT_S, strip_unsupported_anthropic_sampling_params
+from tilellm.shared.llm_config import (
+    LLM_REQUEST_TIMEOUT_S,
+    strip_unsupported_anthropic_sampling_params,
+    build_openrouter_extra_body,
+    OPENROUTER_BASE_URL,
+)
 
 if TYPE_CHECKING:
     from tilellm.models.llm import SituatedContextConfig
@@ -368,7 +373,7 @@ async def build_llm_from_config(config: "SituatedContextConfig", fallback_api_ke
     Build LLM instance from SituatedContextConfig.
     Returns None if disabled or api_key is missing/invalid.
 
-    Supports: openai, anthropic, google, groq, vllm (with custom url), ollama (with custom url)
+    Supports: openai, anthropic, google, groq, openrouter, vllm (with custom url), ollama (with custom url)
     """
     if not config or not config.enable:
         return None
@@ -402,6 +407,19 @@ async def build_llm_from_config(config: "SituatedContextConfig", fallback_api_ke
                 # models where thinking consumes all max_tokens leaving content empty.
                 # Non-thinking models served by vllm ignore this extra_body parameter.
                 init_kwargs['extra_body'] = {"chat_template_kwargs": {"enable_thinking": False}}
+            return ChatOpenAI(**init_kwargs)
+
+        elif config.provider == 'openrouter':
+            from langchain_openai import ChatOpenAI  # OpenRouter espone un'API OpenAI-compatibile
+            init_kwargs = dict(
+                model=config.model or 'openai/gpt-4o-mini',
+                api_key=api_key,
+                base_url=config.url or OPENROUTER_BASE_URL,
+                **kwargs
+            )
+            extra_body = build_openrouter_extra_body(config.provider_routing)
+            if extra_body:
+                init_kwargs['extra_body'] = extra_body
             return ChatOpenAI(**init_kwargs)
 
         elif config.provider == 'anthropic':

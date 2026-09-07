@@ -17,6 +17,13 @@ existed inline in `ask_reason_llm` for OpenAI's responses/v1 format but was neve
 Fixed with a single shared helper, `_normalize_answer_content()`, applied at both call
 sites. Tests: `tests/unit/controller/test_controller.py` (6 new tests).
 
+### 0.12.3-rc1 feat: OpenRouter as an LLM provider
+
+Merged from `feature/openrouter-integration` (tag `0.12.2-rc1`). OpenRouter reuses
+`ChatOpenAI` with a different `base_url`; per-model provider routing and the unified
+reasoning block travel as `extra_body` and are folded into the LLM cache key so routing
+never leaks across clients. Tests: `tests/test_openrouter_routing.py`.
+
 ---
 ## [2026-08-03]
 ### 0.12.1-rc2 fix: pinned  mcp==1.26.0
