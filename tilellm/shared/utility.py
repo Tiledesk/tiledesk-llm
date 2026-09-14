@@ -1218,6 +1218,21 @@ async def _build_embedding_cache_key(question) -> tuple:
     return tuple(sorted(embedding_config.items()))
 
 
+def _apply_vllm_extra_body(client_config):
+    """Send chat_template_kwargs to vLLM only when VLLM_CHAT_TEMPLATE_KWARGS is set.
+
+    Thinking models such as Qwen3 served by vLLM need chat_template_kwargs
+    (for example {"enable_thinking": false}), otherwise thinking consumes every
+    token and the content comes back empty. But the vllm provider is also how
+    OpenAI-compatible gateways are registered, and strict gateways reject unknown
+    parameters with 400 ("Unknown parameter: 'chat_template_kwargs'"). The extra
+    body is therefore opt-in: set the variable to a JSON object to send it.
+    """
+    kwargs = os.environ.get("VLLM_CHAT_TEMPLATE_KWARGS", "").strip()
+    if kwargs:
+        client_config["extra_body"] = {"chat_template_kwargs": json.loads(kwargs)}
+
+
 async def _create_llm_instance(question):
     """Crea una nuova istanza del modello LLM usando configurazione centralizzata"""
 
@@ -1280,10 +1295,7 @@ async def _create_llm_instance(question):
         elif provider_param == "vllm":
             from langchain_openai import ChatOpenAI # vLLM uses OpenAI compatible API
             client_config["max_completion_tokens"] = client_config.pop("max_tokens", None)
-            # Disable thinking mode — required for Qwen3 and similar thinking models where
-            # thinking consumes all max_tokens leaving content empty. Non-thinking models
-            # served by vllm ignore this extra_body parameter.
-            client_config["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+            _apply_vllm_extra_body(client_config)
             return ChatOpenAI(**client_config)
 
         elif provider_param == "anthropic":
@@ -1368,10 +1380,7 @@ async def _create_standard_llm_instance(question) -> Any:
 
         elif question.llm == "vllm":
             from langchain_openai import ChatOpenAI
-            # Disable thinking mode — required for Qwen3 and similar thinking models where
-            # thinking consumes all max_tokens leaving content empty. Non-thinking models
-            # served by vllm ignore this extra_body parameter.
-            client_config["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+            _apply_vllm_extra_body(client_config)
             return ChatOpenAI(**client_config)
 
         elif question.llm == "anthropic":
