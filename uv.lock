@@ -4727,7 +4727,7 @@ requires-dist = [
     { name = "langchain-xai", specifier = ">=1.2.2,<2.0.0" },
     { name = "langgraph", specifier = ">=1.1.6,<2.0.0" },
     { name = "markdown", specifier = ">=3.10.2,<4.0.0" },
-    { name = "mcp", specifier = ">=1.26.0,<2.0.0" },
+    { name = "mcp", specifier = "==1.30.0" },
     { name = "mineru", marker = "extra == 'all'", specifier = ">=2.0.0" },
     { name = "mineru", marker = "extra == 'mineru'", specifier = ">=2.0.0" },
     { name = "minio", marker = "extra == 'all'", specifier = ">=7.2.0,<8.0.0" },
