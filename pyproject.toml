@@ -70,6 +70,12 @@ dependencies = [
     "pdf2image>=1.17.0,<2.0.0",
     "python-docx>=1.2.0,<2.0.0",
     "reportlab>=4.2.0,<5.0.0",
+    # was installed unpinned directly in every Dockerfile RUN line (never
+    # tracked in pyproject.toml/uv.lock) — floated 23.0.0 -> 26.2.0 (3 majors)
+    # on a plain rebuild, unnoticed, same risk class as the old mcp incident.
+    # Verified working here: full app boot + HTTP smoke test with gunicorn
+    # 26.2.0 + uvicorn 0.38.0 + UvicornWorker on Python 3.13 (2026-09-15).
+    "gunicorn>=26.2.0,<27.0.0",
     "uvicorn[standard]>=0.38.0,<0.39.0",
 ]
 

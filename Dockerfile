@@ -11,9 +11,9 @@ COPY ./tilellm ./tilellm
 # Installazione ultra-rapida con uv
 # Usiamo --no-cache per non sprecare spazio nel layer del builder
 RUN if [ -z "$EXTRAS" ]; then \
-    uv pip install --system --no-cache . uvicorn[standard] gunicorn; \
+    uv pip install --system --no-cache .; \
     else \
-    uv pip install --system --no-cache ".[$EXTRAS]" uvicorn[standard] gunicorn; \
+    uv pip install --system --no-cache ".[$EXTRAS]"; \
     fi
 
 # --- STAGE 2: Builder (Node.js) ---

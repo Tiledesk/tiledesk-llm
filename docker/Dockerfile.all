@@ -12,8 +12,7 @@ COPY ./tilellm ./tilellm
 # Install 'all' optional dependencies into an in-project venv (mirrors the
 # old POETRY_VIRTUALENVS_IN_PROJECT=true layout so stage 3 can COPY it as-is)
 RUN uv venv .venv && \
-    uv pip install --python .venv/bin/python --no-cache \
-        ".[all]" "uvicorn[standard]" gunicorn playwright
+    uv pip install --python .venv/bin/python --no-cache ".[all]"
 
 # --- STAGE 2: Builder (Node.js) ---
 FROM node:16-slim AS node-builder
