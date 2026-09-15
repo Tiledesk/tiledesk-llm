@@ -1,5 +1,5 @@
 # --- STAGE 1: Builder (Python with uv) ---
-FROM python:3.12-slim AS python-builder
+FROM python:3.13-slim AS python-builder
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
@@ -25,7 +25,7 @@ RUN npm install --production && rm -f .npmrc
 COPY ./worker .
 
 # --- STAGE 3: Final Runtime ---
-FROM python:3.12-slim
+FROM python:3.13-slim
 
 # Variabili d'ambiente
 ENV REDIS_HOST=redis \
