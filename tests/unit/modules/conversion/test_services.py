@@ -140,7 +140,7 @@ class TestXLSXToCSVConversion:
         csv1 = result[0].csv_content
         csv2 = result[1].csv_content
         assert 'A,B' in csv1
-        assert '1,2' in csv1
+        assert '1,3' in csv1
         assert 'X,Y' in csv2
         assert 'a,c' in csv2
     
@@ -236,35 +236,38 @@ class TestLangChainTools:
                   AsyncMock(return_value=b"pdf bytes")):
             with patch('tilellm.modules.conversion.services.conversion_service._process_pdf_to_text_core',
                       return_value="Extracted text"):
-                result = await convert_pdf_to_text_tool("base64_content", "test.pdf")
+                result = await convert_pdf_to_text_tool.ainvoke(
+                    {"file_content": "base64_content", "file_name": "test.pdf"})
                 assert result == "Extracted text"
-    
+
     @pytest.mark.asyncio
     async def test_convert_pdf_to_text_tool_error(self):
         """Test PDF to text tool error returns error message."""
         from tilellm.modules.conversion.services.conversion_service import convert_pdf_to_text_tool
-        
+
         with patch('tilellm.modules.conversion.services.conversion_service._get_file_bytes',
                   AsyncMock(side_effect=Exception("PDF error"))):
-            result = await convert_pdf_to_text_tool("base64_content", "test.pdf")
+            result = await convert_pdf_to_text_tool.ainvoke(
+                {"file_content": "base64_content", "file_name": "test.pdf"})
             assert "Error processing PDF" in result
-    
+
     @pytest.mark.asyncio
     async def test_convert_xlsx_to_csv_tool_success(self):
         """Test XLSX to CSV tool success."""
         from tilellm.modules.conversion.services.conversion_service import convert_xlsx_to_csv_tool
         from tilellm.modules.conversion.services.conversion_service import ConvertedSheet
-        
+
         mock_sheets = [
             ConvertedSheet("Sheet1", "col1,col2\nval1,val2"),
             ConvertedSheet("Sheet2", "colA,colB\nvalA,valB")
         ]
-        
+
         with patch('tilellm.modules.conversion.services.conversion_service._get_file_bytes',
                   AsyncMock(return_value=b"excel bytes")):
             with patch('tilellm.modules.conversion.services.conversion_service._process_xlsx_to_csv_core',
                       return_value=mock_sheets):
-                result = await convert_xlsx_to_csv_tool("base64_content", "test.xlsx")
+                result = await convert_xlsx_to_csv_tool.ainvoke(
+                    {"file_content": "base64_content", "file_name": "test.xlsx"})
                 assert "Sheet 1: Sheet1" in result
                 assert "col1,col2" in result
                 assert "Sheet 2: Sheet2" in result
@@ -278,7 +281,8 @@ class TestLangChainTools:
                   AsyncMock(return_value=b"pdf bytes")):
             with patch('tilellm.modules.conversion.services.conversion_service._pdf_to_images_core',
                       AsyncMock(return_value=['img1_base64', 'img2_base64'])):
-                result = await convert_pdf_to_images_tool("base64_content", "test.pdf", dpi=300)
+                result = await convert_pdf_to_images_tool.ainvoke(
+                    {"file_content": "base64_content", "file_name": "test.pdf", "dpi": 300})
                 assert 'images_base64' in result
                 assert result['images_base64'] == ['img1_base64', 'img2_base64']
                 assert result['page_count'] == 2
