@@ -22,9 +22,9 @@ from tilellm.modules.pdf_ocr.services.conversion_pipeline import (
 
 @pytest.fixture
 def small_pdf(tmp_path):
-    import fitz
+    import pymupdf
     path = str(tmp_path / "small.pdf")
-    doc = fitz.open()
+    doc = pymupdf.open()
     for i in range(5):
         page = doc.new_page()
         page.insert_text((50, 72), f"Page {i + 1} content. " * 10)
@@ -35,9 +35,9 @@ def small_pdf(tmp_path):
 
 @pytest.fixture
 def heavy_pdf(tmp_path):
-    import fitz
+    import pymupdf
     path = str(tmp_path / "heavy.pdf")
-    doc = fitz.open()
+    doc = pymupdf.open()
     for i in range(45):
         page = doc.new_page()
         y = 40
@@ -69,14 +69,14 @@ class TestPdfProfiler:
 
 class TestPdfSegmenter:
     def test_split_covers_all_pages_without_overlap(self, heavy_pdf):
-        import fitz
+        import pymupdf
         segments = split_pdf(heavy_pdf, pages_per_segment=20)
         try:
             assert [(s.start_page, s.end_page) for s in segments] == [
                 (0, 19), (20, 39), (40, 44),
             ]
             for seg in segments:
-                d = fitz.open(seg.path)
+                d = pymupdf.open(seg.path)
                 assert len(d) == seg.end_page - seg.start_page + 1
                 d.close()
         finally:

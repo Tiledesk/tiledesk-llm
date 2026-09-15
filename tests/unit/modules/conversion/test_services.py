@@ -158,29 +158,25 @@ class TestPDFToTextConversion:
     
     def test_process_pdf_to_text_core_success(self):
         """Test successful PDF text extraction."""
-        mock_fitz = Mock()
         mock_document = Mock()
         mock_page = Mock()
-        
-        # Mock fitz.open
-        mock_fitz.open = Mock(return_value=mock_document)
+
         mock_document.__len__ = Mock(return_value=1)
         mock_document.load_page = Mock(return_value=mock_page)
         mock_page.get_text = Mock(return_value="Extracted text content")
         mock_document.close = Mock()
-        
-        with patch.dict('sys.modules', {'fitz': mock_fitz}):
+
+        with patch('tilellm.modules.conversion.services.conversion_service.pymupdf.open',
+                   return_value=mock_document):
             result = _process_pdf_to_text_core("test.pdf", b"pdf bytes")
-            
+
             assert result == "Extracted text content"
             mock_document.close.assert_called_once()
-    
+
     def test_process_pdf_to_text_core_error(self):
         """Test PDF text extraction error raises HTTPException."""
-        mock_fitz = Mock()
-        mock_fitz.open = Mock(side_effect=Exception("PDF error"))
-        
-        with patch.dict('sys.modules', {'fitz': mock_fitz}):
+        with patch('tilellm.modules.conversion.services.conversion_service.pymupdf.open',
+                   side_effect=Exception("PDF error")):
             with pytest.raises(HTTPException) as exc:
                 _process_pdf_to_text_core("test.pdf", b"pdf bytes")
             assert exc.value.status_code == 400

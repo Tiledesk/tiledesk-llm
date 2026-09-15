@@ -31,15 +31,15 @@ def split_pdf(file_path: str, pages_per_segment: int) -> List[PdfSegment]:
 
     The caller owns the returned temp files: call cleanup_segments() when done.
     """
-    import fitz
+    import pymupdf
 
-    src = fitz.open(file_path)
+    src = pymupdf.open(file_path)
     num_pages = len(src)
     segments: List[PdfSegment] = []
     try:
         for start in range(0, num_pages, pages_per_segment):
             end = min(start + pages_per_segment - 1, num_pages - 1)
-            out = fitz.open()
+            out = pymupdf.open()
             out.insert_pdf(src, from_page=start, to_page=end)
             with tempfile.NamedTemporaryFile(
                 delete=False, suffix=f"_seg{start}-{end}.pdf"

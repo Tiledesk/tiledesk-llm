@@ -41,14 +41,14 @@ async def process_pdf_native(file_path: str, doc_id: str) -> Dict[str, Any]:
 
 def _extract_native(file_path: str, doc_id: str) -> Dict[str, Any]:
     try:
-        import fitz
+        import pymupdf
     except ImportError as e:
         raise ImportError(
-            "PyMuPDF (fitz) is required for the fast PDF path. "
+            "PyMuPDF is required for the fast PDF path. "
             "Install with: pip install pymupdf"
         ) from e
 
-    doc = fitz.open(file_path)
+    doc = pymupdf.open(file_path)
     num_pages = len(doc)
 
     text_elements: List[Dict] = []
@@ -60,7 +60,7 @@ def _extract_native(file_path: str, doc_id: str) -> Dict[str, Any]:
         # ---- Text blocks -------------------------------------------------------
         try:
             blocks = page.get_text(
-                "dict", flags=fitz.TEXT_PRESERVE_WHITESPACE
+                "dict", flags=pymupdf.TEXT_PRESERVE_WHITESPACE
             ).get("blocks", [])
         except Exception as exc:
             logger.warning("[pdf_native] get_text failed on page %d: %s", page_no, exc)

@@ -7,9 +7,9 @@ from typing import List, Optional
 
 import pandas as pd
 try:
-    import fitz  # PyMuPDF
+    import pymupdf  # PyMuPDF — `fitz` is the deprecated alias, avoid it
 except ImportError:
-    fitz = None
+    pymupdf = None
 import aiohttp
 from fastapi import HTTPException
 from langchain_core.tools import tool
@@ -161,7 +161,7 @@ def _process_pdf_to_text_core(file_name: str, file_bytes: bytes) -> str:
     """
     try:
         # Apre il PDF dai byte in memoria usando PyMuPDF
-        pdf_document = fitz.open(stream=file_bytes, filetype="pdf")
+        pdf_document = pymupdf.open(stream=file_bytes, filetype="pdf")
         full_text = ""
 
         # Estrae il testo da ogni pagina

@@ -78,20 +78,20 @@ class LightOnOCRConverter:
 
     @staticmethod
     def _rasterize_pages(file_path: str, dpi: int = DEFAULT_DPI) -> List[bytes]:
-        """Render each PDF page to PNG bytes via PyMuPDF (fitz)."""
+        """Render each PDF page to PNG bytes via PyMuPDF."""
         try:
-            import fitz
+            import pymupdf
         except ImportError as e:
             raise ImportError(
-                "PyMuPDF (fitz) is required for the LightOnOCR converter. "
+                "PyMuPDF is required for the LightOnOCR converter. "
                 "Install with: pip install pymupdf"
             ) from e
 
         pages: List[bytes] = []
-        doc = fitz.open(file_path)
+        doc = pymupdf.open(file_path)
         try:
             zoom = dpi / 72.0
-            matrix = fitz.Matrix(zoom, zoom)
+            matrix = pymupdf.Matrix(zoom, zoom)
             for page in doc:
                 pix = page.get_pixmap(matrix=matrix)
                 pages.append(pix.tobytes("png"))

@@ -35,14 +35,14 @@ def classify_pdf(path: str) -> Dict:
         ImportError: if PyMuPDF is not installed.
     """
     try:
-        import fitz  # PyMuPDF
+        import pymupdf
     except ImportError as e:
         raise ImportError(
-            "PyMuPDF (fitz) is required for PDF classification. "
+            "PyMuPDF is required for PDF classification. "
             "Install with: pip install pymupdf"
         ) from e
 
-    doc = fitz.open(path)
+    doc = pymupdf.open(path)
     total = len(doc)
     pages: List[Dict] = []
 

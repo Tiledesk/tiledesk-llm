@@ -51,8 +51,8 @@ def profile_pdf(file_path: str) -> PdfProfile:
         return profile
 
     try:
-        import fitz
-        doc = fitz.open(file_path)
+        import pymupdf
+        doc = pymupdf.open(file_path)
         profile.num_pages = len(doc)
         for page_no in range(profile.num_pages):
             try:
