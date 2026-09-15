@@ -74,11 +74,11 @@ neo4j:
 
 ### 2. Install Optional Dependencies
 ```bash
-# Install with Poetry extras
-poetry install --extras "graph"
+# Install with uv extras
+uv sync --extra graph
 
 # Or install all modules
-poetry install --extras "all"
+uv sync --extra all
 ```
 
 ### 3. Docker Deployment

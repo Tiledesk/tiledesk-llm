@@ -109,12 +109,12 @@ Embedding models can be specified in API requests via the `embedding` parameter.
 
 ## Installation
 
-This project uses [Poetry](https://python-poetry.org/) for dependency management.
+This project uses [uv](https://docs.astral.sh/uv/) for dependency management.
 
-1.  **Install Poetry:** If you don't have it, follow the [official instructions](https://python-poetry.org/docs/#installation).
+1.  **Install uv:** If you don't have it, follow the [official instructions](https://docs.astral.sh/uv/getting-started/installation/).
 2.  **Install Dependencies:** From the project root directory, run:
     ```bash
-    poetry install
+    uv sync --all-extras
     ```
 
 ---
@@ -147,7 +147,7 @@ The application is configured via environment variables.
 Once you have installed the dependencies and set up the environment variables, you can start the server using the following command:
 
 ```bash
-poetry run tilellm
+uv run tilellm
 ```
 
 The server will be available at `http://localhost:8000` by default.
@@ -475,14 +475,14 @@ Modules can be enabled/disabled via environment variables (e.g., `TILELLM_PROFIL
 
 ### Optional Dependencies
 
-Install optional dependencies via Poetry extras:
+Install optional dependencies via uv extras:
 ```bash
 # Install all modules
-poetry install --extras "all"
+uv sync --extra all
 
 # Install specific modules
-poetry install --extras "graph"     # Knowledge Graph
-poetry install --extras "ocr"       # PDF OCR
+uv sync --extra graph     # Knowledge Graph
+uv sync --extra ocr       # PDF OCR
 ```
 
 ## Docker Compose Profiles

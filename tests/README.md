@@ -41,61 +41,61 @@ tests/
 
 Ensure all dependencies are installed:
 ```bash
-poetry install
+uv sync
 ```
 
 ### Running All Tests
 
 ```bash
 # Using pytest (recommended)
-poetry run pytest tests/
+uv run pytest tests/
 
 # Using the test script (configured in pyproject.toml)
-poetry run test
+uv run pytest tests/
 
 # With verbose output
-poetry run pytest tests/ -v
+uv run pytest tests/ -v
 
 # With coverage report
-poetry run pytest tests/ --cov=tilellm --cov-report=html
+uv run pytest tests/ --cov=tilellm --cov-report=html
 ```
 
 ### Running Specific Test Categories
 
 ```bash
 # Unit tests only
-poetry run pytest tests/unit/
+uv run pytest tests/unit/
 
 # Integration tests only
-poetry run pytest tests/integration/
+uv run pytest tests/integration/
 
 # E2E tests only
-poetry run pytest tests/e2e/
+uv run pytest tests/e2e/
 
 # Specific test module
-poetry run pytest tests/unit/modules/conversion/test_services.py
+uv run pytest tests/unit/modules/conversion/test_services.py
 
 # Specific test class
-poetry run pytest tests/unit/modules/conversion/test_services.py::TestConversionServiceCore
+uv run pytest tests/unit/modules/conversion/test_services.py::TestConversionServiceCore
 
 # Specific test method
-poetry run pytest tests/unit/modules/conversion/test_services.py::TestConversionServiceCore::test_encode_image_to_base64
+uv run pytest tests/unit/modules/conversion/test_services.py::TestConversionServiceCore::test_encode_image_to_base64
 ```
 
 ### Running with Different Output Formats
 
 ```bash
 # Detailed output
-poetry run pytest tests/ -v
+uv run pytest tests/ -v
 
 # Quiet mode
-poetry run pytest tests/ -q
+uv run pytest tests/ -q
 
 # Show test durations
-poetry run pytest tests/ --durations=5
+uv run pytest tests/ --durations=5
 
 # Generate JUnit XML report (for CI/CD)
-poetry run pytest tests/ --junitxml=test-results.xml
+uv run pytest tests/ --junitxml=test-results.xml
 ```
 
 ## Test Payloads
@@ -262,17 +262,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       
-      - name: Install Poetry
-        run: pip install poetry
+      - name: Install uv
+        run: pip install uv
       
       - name: Install dependencies
-        run: poetry install
+        run: uv sync --all-extras
       
       - name: Run unit tests
-        run: poetry run pytest tests/unit/ --junitxml=unit-test-results.xml
+        run: uv run pytest tests/unit/ --junitxml=unit-test-results.xml
       
       - name: Run integration tests
-        run: poetry run pytest tests/integration/ --junitxml=integration-test-results.xml
+        run: uv run pytest tests/integration/ --junitxml=integration-test-results.xml
       
       - name: Upload test results
         uses: actions/upload-artifact@v4
@@ -290,7 +290,7 @@ jobs:
 
 ```bash
 export LOG_LEVEL=DEBUG
-poetry run pytest tests/ -v
+uv run pytest tests/ -v
 ```
 
 ### Run with Python Debugger
@@ -302,7 +302,7 @@ python -m pdb -m pytest tests/unit/modules/conversion/test_services.py
 ### Check Test Coverage
 
 ```bash
-poetry run pytest tests/ --cov=tilellm --cov-report=term-missing
+uv run pytest tests/ --cov=tilellm --cov-report=term-missing
 ```
 
 ## Best Practices
@@ -354,8 +354,8 @@ poetry run pytest tests/ --cov=tilellm --cov-report=term-missing
 ## Next Steps
 
 After verifying tests pass:
-1. Run the full test suite: `poetry run test`
-2. Check coverage: `poetry run pytest --cov=tilellm --cov-report=html`
+1. Run the full test suite: `uv run pytest tests/`
+2. Check coverage: `uv run pytest --cov=tilellm --cov-report=html`
 3. Update tests when adding new features
 4. Add integration tests for new API endpoints
 5. Create E2E tests for new user workflows

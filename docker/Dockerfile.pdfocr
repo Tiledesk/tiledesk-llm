@@ -1,22 +1,19 @@
-# --- STAGE 1: Builder (Python with Poetry) ---
+# --- STAGE 1: Builder (Python with uv) ---
 FROM python:3.12-slim AS python-builder
 
-# Install poetry
-ENV POETRY_VERSION=2.2.1 \
-    POETRY_VIRTUALENVS_IN_PROJECT=true \
-    POETRY_NO_INTERACTION=1
-
-RUN pip install "poetry==$POETRY_VERSION"
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
 WORKDIR /build
 
 # Copy dependency definition files
-COPY pyproject.toml poetry.lock ./
+COPY pyproject.toml ./
+COPY ./tilellm ./tilellm
 
-# Install 'graph' optional dependencies
-RUN poetry install --no-root --no-interaction --no-ansi --without dev --only main --extras ocr
-RUN poetry run pip install "uvicorn[standard]" gunicorn
-RUN poetry run pip install playwright
+# Install 'ocr' optional dependencies into an in-project venv (mirrors the
+# old POETRY_VIRTUALENVS_IN_PROJECT=true layout so stage 3 can COPY it as-is)
+RUN uv venv .venv && \
+    uv pip install --python .venv/bin/python --no-cache \
+        ".[ocr]" "uvicorn[standard]" gunicorn playwright
 
 # --- STAGE 2: Builder (Node.js) ---
 FROM node:16-slim AS node-builder
