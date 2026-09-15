@@ -4,7 +4,7 @@ version = "0.12.4-rc1"
 description = "tiledesk for RAG"
 authors = [{ name = "Gianluca Lorenzo", email = "gianluca.lorenzo@gmail.com" }]
 license = "MIT"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     "fastapi>=0.123.4,<0.124.0",
     "fastapi-cprofile>=0.0.2,<0.0.3",
