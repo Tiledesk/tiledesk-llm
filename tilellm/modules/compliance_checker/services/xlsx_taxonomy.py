@@ -22,6 +22,7 @@ from typing import Optional, Tuple
 
 from tilellm.modules.compliance_checker.models_v2 import (
     DiscretionaryCriterion,
+    DiscretionaryDirection,
     DiscretionaryMode,
     TabularRequirementV2,
 )
@@ -53,6 +54,27 @@ def normalize_type(value) -> Optional[str]:
     if norm.startswith("discrezional"):
         return TYPE_DISCREZIONALE
     return None
+
+
+def normalize_type_and_mode_hint(value) -> Tuple[Optional[str], Optional[DiscretionaryMode]]:
+    """Like `normalize_type`, but also recognizes a real-world 4-way variant of the
+    market template where "Tipo criterio" carries the mode DIRECTLY — 'Proporzionale',
+    'ON/OFF', 'ON-OFF' — instead of the standard 'Tabellare' + a separate 'Modalità'
+    column. Returns (canonical_type, mode_hint); mode_hint is only set for this variant
+    (None for the standard 3-way Conformità/Tabellare/Discrezionale values, which carry
+    no mode information of their own).
+    """
+    canonical = normalize_type(value)
+    if canonical is not None or value is None:
+        return canonical, None
+    norm = _strip_accents(str(value).strip().lower()).translate(
+        {ord(c): None for c in "/-_ "}
+    )
+    if norm == "proporzionale":
+        return TYPE_TABELLARE, DiscretionaryMode.PROPORZIONALE
+    if norm == "onoff":
+        return TYPE_TABELLARE, DiscretionaryMode.ON_OFF
+    return None, None
 
 
 def model_type(item) -> str:
@@ -110,6 +132,43 @@ def resolve_mode(
         f"Modalità non specificata e non deducibile dal testo — impostata a "
         f"'{default.value}', verificare manualmente."
     )
+
+
+# Words that hint a criterion is "inverso" (lower value wins) — e.g. "minor
+# temperatura", "tempo di miscelazione più basso". Advisory only: it never
+# overrides an unset direction, it only warns the reviewer to check.
+_INVERSE_HINT_RE = re.compile(
+    r"\bminor[ei]?\b|\bpiu\s+bass[oa]\b|\binferior[ei]\b|\bpiu\s+breve\b|\bpiu\s+piccol[oa]\b|\bminim[oa]\b"
+)
+
+
+def resolve_direction(
+    explicit_direction, criterion_text: str, *,
+    default: DiscretionaryDirection = DiscretionaryDirection.DIRETTO,
+) -> Tuple[DiscretionaryDirection, Optional[str]]:
+    """
+    Resolve a DiscretionaryDirection from an explicit cell value.
+
+    Unlike `resolve_mode`, the direction is NEVER inferred from the criterion text
+    and silently applied — it must be declared by whoever compiles the criteria
+    table (see `DiscretionaryCriterion.direction`). If the cell is blank but the
+    text hints at an inverse criterion ("minor...", "più basso", ...), a warning
+    is returned so the gap surfaces in review; the resolved value still falls
+    back to *default* ('diretto').
+    """
+    raw = (str(explicit_direction or "")).strip().lower()
+    valid = {d.value for d in DiscretionaryDirection}
+    if raw in valid:
+        return DiscretionaryDirection(raw), None
+    if default == DiscretionaryDirection.DIRETTO and _INVERSE_HINT_RE.search(
+        _strip_accents(str(criterion_text or "").lower())
+    ):
+        return default, (
+            "Direzione non specificata e il testo sembra indicare un criterio "
+            "'inverso' (vince il valore più basso, es. minor temperatura/tempo) — "
+            "verificare e impostare esplicitamente 'diretto' o 'inverso'."
+        )
+    return default, None
 
 
 def cell_to_bool(value, *, default: bool) -> bool:

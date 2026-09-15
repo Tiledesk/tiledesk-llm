@@ -17,6 +17,7 @@ from tilellm.modules.compliance_checker.models_v2 import (
     ComplianceRequestV2,
     ComplianceSummaryV2,
     DiscretionaryCriterion,
+    DiscretionaryDirection,
     DiscretionaryMode,
     DiscretionaryResult,
     ExtractRequirementsRequest,
@@ -384,6 +385,10 @@ class TestComplianceRequestV2:
         assert req.requirements_yaml == MINIMAL_YAML
         assert req.requirements_yaml_url is None
 
+    def test_capitolato_namespace_defaults_to_none(self):
+        req = ComplianceRequestV2(requirements_yaml=MINIMAL_YAML, namespace="ns", engine=self._ENGINE)
+        assert req.capitolato_namespace is None
+
     def test_yaml_url_only(self):
         req = ComplianceRequestV2(
             requirements_yaml_url="https://example.com/lot6.yaml",
@@ -491,6 +496,10 @@ class TestDiscretionaryResult:
             human_review_reason="Criterio soggettivo, non gestibile da IA.",
         )
         assert r.human_review_reason is not None
+
+    def test_capitolato_discrepancy_defaults_to_none(self):
+        r = _make_discretionary_result(coefficient=0.75, score=6.0)
+        assert r.capitolato_discrepancy is None
 
     def test_on_off_result_full_score(self):
         r = _make_discretionary_result(
@@ -971,6 +980,7 @@ def _make_judge_response(
     source_chunk_index=1,
     evidence_text="Il prodotto è sterile",
     measured_value=None,
+    capitolato_discrepancy=None,
 ):
     resp = MagicMock()
     resp.content = json.dumps({
@@ -980,6 +990,7 @@ def _make_judge_response(
         "confidence": confidence,
         "source_chunk_index": source_chunk_index,
         "evidence_text": evidence_text,
+        "capitolato_discrepancy": capitolato_discrepancy,
     })
     return resp
 
@@ -1280,6 +1291,256 @@ requirements:
         assert rerank_kwargs.args[4] == 8  # final top_k
 
     @pytest.mark.asyncio
+    async def test_exclude_chiarimenti_default_sets_metadata_filter(self):
+        """Default (exclude_chiarimenti=True): retrieval excludes doc_type='chiarimento'."""
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
+        lot = self._lot_with_discretionary(
+            {"id": "P1", "text": "plasticità", "mode": "variabile", "max_points": 8}
+        )
+        repo = _make_repo_mock()
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=_make_judge_response(coefficient=0.75))
+        request = _make_request_v2()  # exclude_chiarimenti defaults to True
+        with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc:
+            from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
+            mock_cc.return_value = ComplianceReport(domain="e_procurement", namespace="ns", summary=ComplianceSummary(total=0), results=[])
+            svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
+            await svc.evaluate_lot(lot)
+        qa_arg = repo.get_chunks_from_repo.call_args.args[0]
+        assert qa_arg._metadata_filter == {"doc_type": {"$ne": "chiarimento"}}
+
+    @pytest.mark.asyncio
+    async def test_exclude_chiarimenti_false_sets_no_filter(self):
+        """Opt-out: exclude_chiarimenti=False leaves retrieval unfiltered."""
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
+        lot = self._lot_with_discretionary(
+            {"id": "P1", "text": "plasticità", "mode": "variabile", "max_points": 8}
+        )
+        repo = _make_repo_mock()
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=_make_judge_response(coefficient=0.75))
+        request = _make_request_v2()
+        request.exclude_chiarimenti = False
+        with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc:
+            from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
+            mock_cc.return_value = ComplianceReport(domain="e_procurement", namespace="ns", summary=ComplianceSummary(total=0), results=[])
+            svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
+            await svc.evaluate_lot(lot)
+        qa_arg = repo.get_chunks_from_repo.call_args.args[0]
+        assert getattr(qa_arg, "_metadata_filter", None) is None
+
+    @pytest.mark.asyncio
+    async def test_capitolato_namespace_absent_no_extra_retrieval(self):
+        """Default (capitolato_namespace=None): unchanged behavior, one retrieval only."""
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
+        lot = self._lot_with_discretionary(
+            {"id": "P1", "text": "plasticità", "mode": "variabile", "max_points": 8}
+        )
+        repo = _make_repo_mock()
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=_make_judge_response(coefficient=0.75))
+        request = _make_request_v2()
+        with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc:
+            from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
+            mock_cc.return_value = ComplianceReport(domain="e_procurement", namespace="ns", summary=ComplianceSummary(total=0), results=[])
+            svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
+            report = await svc.evaluate_lot(lot)
+        assert repo.get_chunks_from_repo.call_count == 1
+        user_prompt = llm.ainvoke.call_args.args[0][1].content
+        assert "<capitolato_evidence>" not in user_prompt
+        assert report.discretionary_results[0].capitolato_discrepancy is None
+
+    @pytest.mark.asyncio
+    async def test_capitolato_namespace_present_fetches_both(self):
+        """capitolato_namespace set: retrieves from BOTH namespaces, prompt carries [CAP-N]."""
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
+        lot = self._lot_with_discretionary(
+            {"id": "P1", "text": "plasticità", "mode": "variabile", "max_points": 8}
+        )
+        repo = _make_repo_mock()
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=_make_judge_response(
+            coefficient=0.75, capitolato_discrepancy="Il capitolato richiede X, l'offerta indica Y."
+        ))
+        request = _make_request_v2()
+        request.capitolato_namespace = "capitolato-lotto-6"
+        with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc, \
+             patch("tilellm.modules.compliance_checker.services.discretionary_check_service.SemanticCache") as mock_cache:
+            mock_cache.lookup = AsyncMock(return_value=None)
+            mock_cache.store = AsyncMock()
+            from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
+            mock_cc.return_value = ComplianceReport(domain="e_procurement", namespace="ns", summary=ComplianceSummary(total=0), results=[])
+            svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
+            report = await svc.evaluate_lot(lot)
+        assert repo.get_chunks_from_repo.call_count == 2
+        namespaces = {c.args[0].namespace for c in repo.get_chunks_from_repo.call_args_list}
+        assert namespaces == {"ns-op1", "capitolato-lotto-6"}
+        user_prompt = llm.ainvoke.call_args.args[0][1].content
+        assert "<capitolato_evidence>" in user_prompt and "[CAP-1]" in user_prompt
+        result = report.discretionary_results[0]
+        assert result.capitolato_discrepancy == "Il capitolato richiede X, l'offerta indica Y."
+
+    @pytest.mark.asyncio
+    async def test_capitolato_cache_hit_skips_second_retrieval(self):
+        """Two operators evaluating the same criterion reuse the cached capitolato retrieval."""
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
+        lot = self._lot_with_discretionary(
+            {"id": "P1", "text": "plasticità", "mode": "variabile", "max_points": 8}
+        )
+        repo = _make_repo_mock()
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=_make_judge_response(coefficient=0.75))
+        request = _make_request_v2()
+        request.capitolato_namespace = "capitolato-lotto-6"
+
+        cache_store: dict = {}
+
+        async def fake_lookup(ns, question, embedding=None, **kw):
+            return cache_store.get((ns, question))
+
+        async def fake_store(ns, question, embedding=None, body=None, **kw):
+            cache_store[(ns, question)] = body
+
+        with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc, \
+             patch("tilellm.modules.compliance_checker.services.discretionary_check_service.SemanticCache") as mock_cache:
+            mock_cache.lookup = AsyncMock(side_effect=fake_lookup)
+            mock_cache.store = AsyncMock(side_effect=fake_store)
+            from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
+            mock_cc.return_value = ComplianceReport(domain="e_procurement", namespace="ns", summary=ComplianceSummary(total=0), results=[])
+            # Operator 1
+            svc1 = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
+            await svc1.evaluate_lot(lot)
+            calls_after_op1 = repo.get_chunks_from_repo.call_count
+            # Operator 2 — same criterion text, same capitolato namespace
+            request2 = _make_request_v2()
+            request2.namespace = "ns-op2"
+            request2.capitolato_namespace = "capitolato-lotto-6"
+            svc2 = DiscretionaryCheckService(repo=repo, llm=llm, request=request2)
+            await svc2.evaluate_lot(lot)
+
+        # op1: 2 calls (offerta + capitolato). op2: only 1 more (offerta) — capitolato cached.
+        assert calls_after_op1 == 2
+        assert repo.get_chunks_from_repo.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_capitolato_retrieval_failure_degrades_gracefully(self):
+        """A broken capitolato namespace must not break the check — just no capitolato evidence."""
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
+        lot = self._lot_with_discretionary(
+            {"id": "P1", "text": "plasticità", "mode": "variabile", "max_points": 8}
+        )
+        repo = _make_repo_mock()
+        repo.get_chunks_from_repo = AsyncMock(side_effect=[
+            repo.get_chunks_from_repo.return_value,  # offerta: ok
+            Exception("namespace not found"),          # capitolato: fails
+        ])
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=_make_judge_response(coefficient=0.75))
+        request = _make_request_v2()
+        request.capitolato_namespace = "capitolato-inesistente"
+        with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc:
+            from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
+            mock_cc.return_value = ComplianceReport(domain="e_procurement", namespace="ns", summary=ComplianceSummary(total=0), results=[])
+            svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
+            report = await svc.evaluate_lot(lot)  # must not raise
+        assert report.discretionary_results[0].capitolato_discrepancy is None
+        assert report.discretionary_results[0].score == 6.0  # 0.75 × 8, unaffected
+
+    @pytest.mark.asyncio
+    async def test_incoherent_positive_result_without_citation_forces_review(self):
+        """Real-review regression r.59: judge reports a positive result but anchors it to no real
+        chunk (source_chunk_index=0, evidence_text="") — self-contradictory, must be
+        forced to human review even if confidence and mode alone wouldn't flag it."""
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
+        lot = self._lot_with_discretionary(
+            {"id": "P1", "text": "plasticità", "mode": "variabile", "max_points": 8}
+        )
+        repo = _make_repo_mock()
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=_make_judge_response(
+            coefficient=0.75, confidence=0.9, source_chunk_index=0, evidence_text="",
+        ))
+        request = _make_request_v2()
+        with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc:
+            from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
+            mock_cc.return_value = ComplianceReport(domain="e_procurement", namespace="ns", summary=ComplianceSummary(total=0), results=[])
+            svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
+            report = await svc.evaluate_lot(lot)
+        result = report.discretionary_results[0]
+        assert result.score == 6.0  # score still computed, not discarded
+        assert result.human_review_required is True
+        assert "Incoerenza" in result.human_review_reason
+
+    @pytest.mark.asyncio
+    async def test_coherent_positive_result_with_citation_not_flagged(self):
+        """Sanity: a normal, well-anchored positive result is NOT flagged by the guard."""
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
+        lot = self._lot_with_discretionary(
+            {"id": "P1", "text": "plasticità", "mode": "variabile", "max_points": 8}
+        )
+        repo = _make_repo_mock()  # default chunk: "Il prodotto è sterile e latex free."
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=_make_judge_response(
+            coefficient=0.75, confidence=0.9, source_chunk_index=1,
+            evidence_text="Il prodotto è sterile",
+        ))
+        request = _make_request_v2()
+        with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc:
+            from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
+            mock_cc.return_value = ComplianceReport(domain="e_procurement", namespace="ns", summary=ComplianceSummary(total=0), results=[])
+            svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
+            report = await svc.evaluate_lot(lot)
+        result = report.discretionary_results[0]
+        assert result.human_review_required is False
+
+    @pytest.mark.asyncio
+    async def test_coherent_absent_result_without_citation_not_flagged(self):
+        """A genuinely absent requirement (coefficient=0, no evidence) is the CORRECT
+        shape per the judge's own rules — must NOT be treated as incoherent."""
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
+        lot = self._lot_with_discretionary(
+            {"id": "P1", "text": "plasticità", "mode": "variabile", "max_points": 8}
+        )
+        repo = _make_repo_mock()
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=_make_judge_response(
+            coefficient=0.0, confidence=0.9, source_chunk_index=0, evidence_text="",
+        ))
+        request = _make_request_v2()
+        with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc:
+            from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
+            mock_cc.return_value = ComplianceReport(domain="e_procurement", namespace="ns", summary=ComplianceSummary(total=0), results=[])
+            svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
+            report = await svc.evaluate_lot(lot)
+        result = report.discretionary_results[0]
+        assert result.human_review_required is False
+
+    @pytest.mark.asyncio
+    async def test_incoherent_proporzionale_appends_to_existing_reason(self):
+        """Proporzionale is already always human_review_required (D2) — the coherence
+        note must APPEND to that reason, not silently replace it."""
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
+        lot = self._lot_with_discretionary(
+            {"id": "P2", "text": "ampiezza gamma", "mode": "proporzionale", "max_points": 10}
+        )
+        repo = _make_repo_mock()
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=_make_judge_response(
+            coefficient=None, confidence=0.9, source_chunk_index=0, evidence_text="",
+            measured_value="4 misure",
+        ))
+        request = _make_request_v2()
+        with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc:
+            from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
+            mock_cc.return_value = ComplianceReport(domain="e_procurement", namespace="ns", summary=ComplianceSummary(total=0), results=[])
+            svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
+            report = await svc.evaluate_lot(lot)
+        result = report.discretionary_results[0]
+        assert result.human_review_required is True
+        assert "confronto tra tutti gli operatori" in result.human_review_reason  # original reason kept
+        assert "Incoerenza" in result.human_review_reason  # coherence note appended
+
+    @pytest.mark.asyncio
     async def test_reranking_failure_falls_back_gracefully(self):
         """If the reranker raises, fall back to un-reranked chunks (still judged)."""
         from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
@@ -1305,6 +1566,112 @@ requirements:
         result = report.discretionary_results[0]
         assert result.score == pytest.approx(6.0)
         llm.ainvoke.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_judge_provider_error_flags_human_review_distinct_reason(self):
+        """A provider failure (e.g. deepseek's 900s-queue ValueError) must never
+        look like 'nessuna evidenza trovata' — distinct, explicit reason."""
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
+        lot = self._lot_with_discretionary(
+            {"id": "P1", "text": "plasticità", "mode": "variabile", "max_points": 8}
+        )
+        repo = _make_repo_mock()
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(side_effect=ValueError(
+            "We were unable to start processing your request within the 900-second timeout limit."
+        ))
+        request = _make_request_v2()
+        with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc:
+            from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
+            mock_cc.return_value = ComplianceReport(domain="e_procurement", namespace="ns", summary=ComplianceSummary(total=0), results=[])
+            svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
+            report = await svc.evaluate_lot(lot)  # must not raise
+        result = report.discretionary_results[0]
+        assert result.human_review_required is True
+        assert "provider" in result.human_review_reason.lower()
+        assert result.motivation != "Nessuna evidenza disponibile nel knowledge base."
+        assert result.score is None
+
+    @pytest.mark.asyncio
+    async def test_judge_retries_and_succeeds_on_second_attempt(self):
+        """Transient failure on attempt 1, success on attempt 2 — no error surfaced."""
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
+        lot = self._lot_with_discretionary(
+            {"id": "P1", "text": "plasticità", "mode": "variabile", "max_points": 8}
+        )
+        repo = _make_repo_mock()
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(side_effect=[
+            ValueError("temporary provider hiccup"),
+            _make_judge_response(coefficient=0.75, confidence=0.9),
+        ])
+        request = _make_request_v2()
+        with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc, \
+             patch("tilellm.modules.compliance_checker.services.discretionary_check_service.asyncio.sleep", new_callable=AsyncMock):
+            from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
+            mock_cc.return_value = ComplianceReport(domain="e_procurement", namespace="ns", summary=ComplianceSummary(total=0), results=[])
+            svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
+            report = await svc.evaluate_lot(lot)
+        result = report.discretionary_results[0]
+        assert result.score == pytest.approx(6.0)
+        assert result.human_review_required is False
+        assert llm.ainvoke.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_judge_empty_response_is_provider_error_not_no_evidence(self):
+        """Empty content (HTTP 200, nothing to parse — deepseek-under-load shape)
+        must be treated as a provider failure, not a legitimate empty verdict."""
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
+        lot = self._lot_with_discretionary(
+            {"id": "P1", "text": "plasticità", "mode": "variabile", "max_points": 8}
+        )
+        repo = _make_repo_mock()
+        empty_resp = MagicMock()
+        empty_resp.content = ""
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=empty_resp)
+        request = _make_request_v2()
+        with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc, \
+             patch("tilellm.modules.compliance_checker.services.discretionary_check_service.asyncio.sleep", new_callable=AsyncMock):
+            from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
+            mock_cc.return_value = ComplianceReport(domain="e_procurement", namespace="ns", summary=ComplianceSummary(total=0), results=[])
+            svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
+            report = await svc.evaluate_lot(lot)
+        result = report.discretionary_results[0]
+        assert result.human_review_required is True
+        assert "provider" in result.human_review_reason.lower()
+
+    @pytest.mark.asyncio
+    async def test_one_criterion_failure_does_not_abort_the_others(self):
+        """One criterion's judge failing every retry must not take down the whole
+        operator's check — the other criterion is still evaluated normally."""
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
+        lot = self._lot_with_discretionary(
+            {"id": "P1", "text": "criterio che fallisce", "mode": "variabile", "max_points": 8},
+            {"id": "P2", "text": "criterio che riesce", "mode": "variabile", "max_points": 5},
+        )
+        repo = _make_repo_mock()
+        llm = AsyncMock()
+
+        async def _ainvoke(messages):
+            # Fail whenever the failing criterion's text is in the prompt, succeed otherwise.
+            prompt = messages[-1].content
+            if "criterio che fallisce" in prompt:
+                raise ValueError("provider down for this one")
+            return _make_judge_response(coefficient=0.6, confidence=0.9)
+
+        llm.ainvoke = AsyncMock(side_effect=_ainvoke)
+        request = _make_request_v2()
+        with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc, \
+             patch("tilellm.modules.compliance_checker.services.discretionary_check_service.asyncio.sleep", new_callable=AsyncMock):
+            from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
+            mock_cc.return_value = ComplianceReport(domain="e_procurement", namespace="ns", summary=ComplianceSummary(total=0), results=[])
+            svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
+            report = await svc.evaluate_lot(lot)  # must not raise
+        by_id = {r.criterion_id: r for r in report.discretionary_results}
+        assert by_id["P1"].human_review_required is True
+        assert "provider" in by_id["P1"].human_review_reason.lower()
+        assert by_id["P2"].score == pytest.approx(3.0)  # 0.6 × 5, unaffected
 
     @pytest.mark.asyncio
     async def test_citation_attributed_true_when_judge_grounds_evidence(self):
@@ -1760,6 +2127,55 @@ class TestXlsxTaxonomy:
         mode, warn = _tax.resolve_mode("", "nessun indizio", default=DiscretionaryMode.ON_OFF)
         assert mode == DiscretionaryMode.ON_OFF and warn is not None
 
+    def test_normalize_type_and_mode_hint_standard_3_way_unaffected(self):
+        # Conformità/Tabellare/Discrezionale carry no mode hint of their own.
+        assert _tax.normalize_type_and_mode_hint("Conformità") == (_tax.TYPE_CONFORMITA, None)
+        assert _tax.normalize_type_and_mode_hint("Tabellare") == (_tax.TYPE_TABELLARE, None)
+        assert _tax.normalize_type_and_mode_hint("Discrezionale") == (_tax.TYPE_DISCREZIONALE, None)
+
+    def test_normalize_type_and_mode_hint_4way_proporzionale(self):
+        # Real-world variant: "Tipo criterio" IS the mode, no separate Modalità column.
+        tipo, hint = _tax.normalize_type_and_mode_hint("Proporzionale")
+        assert tipo == _tax.TYPE_TABELLARE and hint == DiscretionaryMode.PROPORZIONALE
+
+    def test_normalize_type_and_mode_hint_4way_on_off_variants(self):
+        for raw in ("ON/OFF", "ON-OFF", "ON_OFF", "on off"):
+            tipo, hint = _tax.normalize_type_and_mode_hint(raw)
+            assert tipo == _tax.TYPE_TABELLARE and hint == DiscretionaryMode.ON_OFF, raw
+
+    def test_normalize_type_and_mode_hint_unrecognized(self):
+        assert _tax.normalize_type_and_mode_hint("boh") == (None, None)
+        assert _tax.normalize_type_and_mode_hint(None) == (None, None)
+
+    def test_criterion_direction_defaults_to_diretto(self):
+        c = DiscretionaryCriterion(id="P", text="x", mode=DiscretionaryMode.PROPORZIONALE, max_points=5)
+        assert c.direction == DiscretionaryDirection.DIRETTO
+
+    def test_resolve_direction_explicit_wins(self):
+        direction, warn = _tax.resolve_direction("inverso", "ampiezza gamma")
+        assert direction == DiscretionaryDirection.INVERSO and warn is None
+
+    def test_resolve_direction_explicit_diretto(self):
+        direction, warn = _tax.resolve_direction("diretto", "minor temperatura di fusione")
+        assert direction == DiscretionaryDirection.DIRETTO and warn is None
+
+    def test_resolve_direction_blank_defaults_to_diretto_no_hint(self):
+        direction, warn = _tax.resolve_direction("", "maggior ampiezza gamma misure a listino")
+        assert direction == DiscretionaryDirection.DIRETTO and warn is None
+
+    def test_resolve_direction_blank_with_inverse_hint_warns(self):
+        # r.75 (real-review regression): "Minor temperatura di polimerizzazione..." left direction blank.
+        direction, warn = _tax.resolve_direction(
+            "", "Minor temperatura di polimerizzazione. Il punteggio massimo..."
+        )
+        assert direction == DiscretionaryDirection.DIRETTO  # still the safe default
+        assert warn is not None and "inverso" in warn
+
+    def test_resolve_direction_blank_with_tempo_hint_warns(self):
+        # r.112-115 (real-review regression): "Tempo di miscelazione <= 5 min" scored in the wrong direction.
+        direction, warn = _tax.resolve_direction("", "Tempo di miscelazione più basso possibile")
+        assert warn is not None
+
 
 class TestExtractRequirementsOutputFormat:
 
@@ -1846,6 +2262,36 @@ class TestRequirementsXlsxRoundTrip:
         assert modes["T2"] == DiscretionaryMode.PROPORZIONALE
         assert modes["D1"] == DiscretionaryMode.VARIABILE
 
+    def test_parse_real_world_4way_taxonomy_with_leading_operator_column(self):
+        # Real client format (cementi ossei gara, criteri.xlsx): column A is
+        # "Operatore Economico" (blank on a criteria-only sheet, not "Criterio"),
+        # and "Tipo criterio" carries the mode directly — Proporzionale/ON/OFF —
+        # instead of "Tabellare" + a separate Modalità column (always blank here).
+        wb = _openpyxl.Workbook()
+        ws = wb.active
+        headers = ["Operatore Economico", "Criterio", "Tipo criterio", "Modalità", "Punteggio previsto"]
+        for col, h in enumerate(headers, start=1):
+            ws.cell(row=1, column=col, value=h)
+        rows = [
+            (None, "Prodotto sterile a norma", "Conformità", None, 0),
+            (None, "Maggior resistenza alla compressione", "Proporzionale", None, 15),
+            (None, "Possibilità di lavorazione sottovuoto", "ON/OFF", None, 2),
+            (None, "Chiarezza etichettatura", "Discrezionale", None, 5),
+        ]
+        for r, row in enumerate(rows, start=2):
+            for c, value in enumerate(row, start=1):
+                ws.cell(row=r, column=c, value=value)
+        buf = io.BytesIO(); wb.save(buf)
+
+        lots = RequirementsXlsxService().parse_workbook(buf.getvalue())
+        assert len(lots) == 1
+        lot = lots[0]
+        assert len(lot.requirements.tabular) == 1
+        modes = {c.id: c.mode for c in lot.requirements.discretionary}
+        assert modes["T1"] == DiscretionaryMode.PROPORZIONALE
+        assert modes["T2"] == DiscretionaryMode.ON_OFF
+        assert modes["D1"] == DiscretionaryMode.VARIABILE
+
     def test_parse_rejects_missing_punteggio_previsto(self):
         svc = RequirementsXlsxService()
         wb = _openpyxl.load_workbook(io.BytesIO(svc.build_workbook([_make_lot()])))
@@ -1881,6 +2327,18 @@ class TestRequirementsXlsxRoundTrip:
         p4 = next(c for c in parsed.requirements.discretionary if c.id == "P4")
         assert p4.human_only is True
         assert p4.notes == "Criterio soggettivo, non gestibile da IA"
+
+    def test_direction_roundtrip(self):
+        svc = RequirementsXlsxService()
+        lot = _make_lot()
+        p2 = next(c for c in lot.requirements.discretionary if c.id == "P2")
+        p2.direction = DiscretionaryDirection.INVERSO
+        parsed = svc.parse_workbook(svc.build_workbook([lot]))[0]
+        parsed_p2 = next(c for c in parsed.requirements.discretionary if c.id == "P2")
+        assert parsed_p2.direction == DiscretionaryDirection.INVERSO
+        # Untouched criteria keep the 'diretto' default.
+        p1 = next(c for c in parsed.requirements.discretionary if c.id == "P1")
+        assert p1.direction == DiscretionaryDirection.DIRETTO
 
 
 class TestSelectLot:
@@ -2081,6 +2539,7 @@ from tilellm.modules.compliance_checker.models_v2 import (  # noqa: E402
     BulkComplianceReport,
     BulkComplianceRequestV2,
     BulkOperatorReport,
+    DiscretionaryDirection,
     OperatorRef,
 )
 from tilellm.modules.compliance_checker.services.bulk_check_service import (  # noqa: E402
@@ -2089,11 +2548,12 @@ from tilellm.modules.compliance_checker.services.bulk_check_service import (  # 
 )
 
 
-def _prop_report(ns, q, cid="P2", max_points=10.0) -> ComplianceReportV2:
+def _prop_report(ns, q, cid="P2", max_points=10.0, direction=DiscretionaryDirection.DIRETTO) -> ComplianceReportV2:
     d = DiscretionaryResult(
         criterion_id=cid, criterion_text="ampiezza gamma",
         mode=DiscretionaryMode.PROPORZIONALE, max_points=max_points, score=None,
         measured_value=(f"{q} misure" if q is not None else None), measured_quantity=q,
+        direction=direction,
         motivation="m", confidence=0.7, human_review_required=True,
         human_review_reason="Confronto tra operatori richiesto.",
     )
@@ -2147,6 +2607,16 @@ class TestBulkModels:
         assert op_req.top_k == 11
         assert op_req.min_confidence == 0.7
 
+    def test_exclude_chiarimenti_defaults_true_and_propagates(self):
+        assert _bulk_request().exclude_chiarimenti is True
+        req = _bulk_request(exclude_chiarimenti=False)
+        assert req.to_operator_request("ns-x").exclude_chiarimenti is False
+
+    def test_capitolato_namespace_defaults_none_and_propagates(self):
+        assert _bulk_request().capitolato_namespace is None
+        req = _bulk_request(capitolato_namespace="capitolato-lotto-6")
+        assert req.to_operator_request("ns-x").capitolato_namespace == "capitolato-lotto-6"
+
 
 class TestResolveProportional:
 
@@ -2179,6 +2649,54 @@ class TestResolveProportional:
         reports = [_prop_report("ns-a", 3.0, max_points=8.0), _prop_report("ns-b", 12.0, max_points=8.0)]
         resolve_proportional(reports)
         assert reports[1].discretionary_results[0].score == 8.0
+
+    def test_default_direction_is_diretto(self):
+        assert _prop_report("ns-a", 10.0).discretionary_results[0].direction == DiscretionaryDirection.DIRETTO
+
+
+class TestResolveProportionalInverso:
+    """Regression: real-review testing found the system always scored 'higher wins' even
+    for criteria where the LOWEST value should win (r.75/76 'minor temperatura di
+    polimerizzazione', r.112-115 'tempo di miscelazione minore')."""
+
+    def test_min_operator_gets_full_points(self):
+        # "minor tempo di miscelazione": 3 min beats 8 min.
+        reports = [
+            _prop_report("ns-a", 3.0, max_points=10.0, direction=DiscretionaryDirection.INVERSO),
+            _prop_report("ns-b", 8.0, max_points=10.0, direction=DiscretionaryDirection.INVERSO),
+        ]
+        resolve_proportional(reports)
+        by_ns = {r.namespace: r.discretionary_results[0] for r in reports}
+        assert by_ns["ns-a"].score == 10.0                    # min → full points
+        assert by_ns["ns-b"].score == round((3.0 / 8.0) * 10.0, 2)  # 3.75
+        assert all(d.direction == DiscretionaryDirection.INVERSO for d in by_ns.values())
+
+    def test_reason_mentions_direction(self):
+        reports = [
+            _prop_report("ns-a", 90.0, direction=DiscretionaryDirection.INVERSO),
+            _prop_report("ns-b", 95.0, direction=DiscretionaryDirection.INVERSO),
+        ]
+        resolve_proportional(reports)
+        assert "inverso" in reports[1].discretionary_results[0].human_review_reason
+
+    def test_missing_quantity_left_unscored(self):
+        reports = [
+            _prop_report("ns-a", 90.0, direction=DiscretionaryDirection.INVERSO),
+            _prop_report("ns-b", None, direction=DiscretionaryDirection.INVERSO),
+        ]
+        resolve_proportional(reports)
+        b = reports[1].discretionary_results[0]
+        assert b.score is None and b.proportional_auto is False
+
+    def test_score_never_exceeds_max_points(self):
+        # Guards the min/reference clamp: no operator can score above max_points
+        # even if a measurement is (erroneously) below the reference minimum.
+        reports = [
+            _prop_report("ns-a", 5.0, max_points=10.0, direction=DiscretionaryDirection.INVERSO),
+            _prop_report("ns-b", 5.0, max_points=10.0, direction=DiscretionaryDirection.INVERSO),
+        ]
+        resolve_proportional(reports)
+        assert all(r.discretionary_results[0].score <= 10.0 for r in reports)
 
 
 class TestBulkOrchestration:

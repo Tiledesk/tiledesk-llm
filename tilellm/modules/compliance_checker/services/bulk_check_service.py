@@ -20,6 +20,7 @@ from tilellm.modules.compliance_checker.models_v2 import (
     BulkComplianceRequestV2,
     BulkOperatorReport,
     ComplianceReportV2,
+    DiscretionaryDirection,
     DiscretionaryMode,
 )
 from tilellm.modules.compliance_checker.services.discretionary_check_service import (
@@ -35,10 +36,13 @@ def resolve_proportional(reports: List[ComplianceReportV2]) -> None:
     Resolve `proporzionale` scores across operators, mutating the DiscretionaryResult
     objects in place.
 
-    For each proportional criterion: qmax = max measured_quantity across operators;
-    each operator's proposed score = (q / qmax) × max_points. Operators without a
-    measurable quantity are left unscored (human review). If no operator has a usable
-    quantity the criterion is left untouched.
+    For each proportional criterion: **diretto** (default) — qmax = max measured_quantity
+    across operators, each operator's proposed score = (q / qmax) × max_points (the
+    largest quantity wins). **inverso** — qmin = min measured_quantity across operators,
+    score = (qmin / q) × max_points (the smallest quantity wins, e.g. "minor temperatura
+    di polimerizzazione", "minor tempo di miscelazione"). Operators without a measurable
+    quantity are left unscored (human review). If no operator has a usable quantity the
+    criterion is left untouched.
     """
     by_criterion: dict = {}
     for rep in reports:
@@ -47,23 +51,37 @@ def resolve_proportional(reports: List[ComplianceReportV2]) -> None:
                 by_criterion.setdefault(d.criterion_id, []).append(d)
 
     for criterion_id, results in by_criterion.items():
+        # All results for the same criterion_id carry the same direction (it's a
+        # per-criterion, not per-operator, property) — any one is representative.
+        direction = results[0].direction
         quantities = [d.measured_quantity for d in results if d.measured_quantity is not None]
-        qmax = max(quantities) if quantities else None
-        if not qmax or qmax <= 0:
+        if direction == DiscretionaryDirection.INVERSO:
+            positive = [q for q in quantities if q > 0]
+            reference = min(positive) if positive else None
+        else:
+            reference = max(quantities) if quantities else None
+        if not reference or reference <= 0:
             logger.info(
-                "Proporzionale '%s': nessuna quantità confrontabile tra gli operatori — "
-                "lasciato in revisione umana.", criterion_id,
+                "Proporzionale '%s' (%s): nessuna quantità confrontabile tra gli operatori — "
+                "lasciato in revisione umana.", criterion_id, direction.value,
             )
             continue
         for d in results:
             if d.measured_quantity is None:
                 continue
-            d.score = round((d.measured_quantity / qmax) * d.max_points, 2)
+            if direction == DiscretionaryDirection.INVERSO:
+                if d.measured_quantity <= 0:
+                    continue  # can't divide by a non-positive quantity
+                d.score = round(min(reference / d.measured_quantity, 1.0) * d.max_points, 2)
+                comparison = f"valore {d.measured_quantity:g} su minimo {reference:g}"
+            else:
+                d.score = round((d.measured_quantity / reference) * d.max_points, 2)
+                comparison = f"valore {d.measured_quantity:g} su massimo {reference:g}"
             d.proportional_auto = True
             d.human_review_required = True
             d.human_review_reason = (
-                f"Punteggio proporzionale calcolato sul confronto tra operatori "
-                f"(valore {d.measured_quantity:g} su massimo {qmax:g}): proposta da confermare."
+                f"Punteggio proporzionale ({direction.value}) calcolato sul confronto tra "
+                f"operatori ({comparison}): proposta da confermare."
             )
 
 

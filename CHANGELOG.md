@@ -7,6 +7,14 @@
 
 
 ---
+## [2026-09-15]
+### 0.12.4-rc1 feat: `/api/compliance/v2/check/bulk` now accepts the client's real xlsx — no more bridge scripts
+
+`requirements_xlsx_url` the end user directly provide the xlsx of the tender criteria,
+making the transformation into YAML fully transparent (via requirements_xlsx_url,
+deterministic, zero LLM) instead of a hand-maintained Python conversion script
+
+---
 ## [2026-09-07]
 ### 0.12.3-rc1 fix: `/api/ask` returned 400 with `gemini-3.5-flash` — `ChatEntry.answer`
 

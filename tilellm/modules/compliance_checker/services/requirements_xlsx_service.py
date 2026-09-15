@@ -38,6 +38,7 @@ from openpyxl.worksheet.datavalidation import DataValidation
 
 from tilellm.modules.compliance_checker.models_v2 import (
     DiscretionaryCriterion,
+    DiscretionaryDirection,
     DiscretionaryMode,
     TenderInfo,
     TenderLotRequirements,
@@ -67,15 +68,19 @@ _COL_NOTES = "Note e/o descrizione aggiuntiva"
 _COL_MANDATORY = "Obbligatorio"
 _COL_HUMAN_ONLY = "Solo revisione umana"
 _COL_ID = "ID"  # optional — honored if present, else auto-generated
+_COL_DIRECTION = "Direzione"  # only meaningful for mode=proporzionale — see resolve_direction
 
+# Appended at the end (not interleaved) so column numbers of the original 8
+# headers never shift for files written before this column existed.
 _HEADERS = [
     _COL_CRITERIO, _COL_TIPO, _COL_MODE, _COL_MAX_POINTS,
-    _COL_NOTES, _COL_MANDATORY, _COL_HUMAN_ONLY, _COL_ID,
+    _COL_NOTES, _COL_MANDATORY, _COL_HUMAN_ONLY, _COL_ID, _COL_DIRECTION,
 ]
 
 _HEADER_FILL = PatternFill(start_color="FFD9E1F2", end_color="FFD9E1F2", fill_type="solid")
 _META_FONT = Font(bold=True)
 _VALID_MODES = ",".join(sorted(m.value for m in DiscretionaryMode))
+_VALID_DIRECTIONS = ",".join(sorted(d.value for d in DiscretionaryDirection))
 
 
 class RequirementsXlsxService:
@@ -165,12 +170,13 @@ class RequirementsXlsxService:
             ws.cell(row=row, column=5, value=c.notes or "")
             ws.cell(row=row, column=7, value=tax.bool_to_cell(c.human_only))
             ws.cell(row=row, column=8, value=c.id)
+            ws.cell(row=row, column=9, value=c.direction.value)
             row += 1
 
         self._apply_formatting(ws, header_row, last_row=row - 1)
 
     def _apply_formatting(self, ws, header_row: int, last_row: int) -> None:
-        widths = [60, 16, 16, 18, 40, 14, 20, 12]
+        widths = [60, 16, 16, 18, 40, 14, 20, 12, 14]
         for i, w in enumerate(widths, start=1):
             ws.column_dimensions[get_column_letter(i)].width = w
         ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
@@ -192,6 +198,9 @@ class RequirementsXlsxService:
         ws.add_data_validation(dv_bool)
         dv_bool.add(f"F{first}:F{last_row}")
         dv_bool.add(f"G{first}:G{last_row}")
+        dv_direction = DataValidation(type="list", formula1=f'"{_VALID_DIRECTIONS}"', allow_blank=True)
+        ws.add_data_validation(dv_direction)
+        dv_direction.add(f"I{first}:I{last_row}")
 
     # ------------------------------------------------------------------
     # Parse
@@ -230,7 +239,11 @@ class RequirementsXlsxService:
         for idx, raw in enumerate(rows):
             cells = list(raw)
             first = (str(cells[0]).strip() if cells and cells[0] is not None else "")
-            if first == _COL_CRITERIO:
+            # "Criterio" is usually column A, but some real-world market variants
+            # prepend an "Operatore Economico" column (blank on a criteria-only
+            # sheet) — scan the whole row so the header is still found.
+            row_values = [str(c).strip() if c is not None else "" for c in cells]
+            if _COL_CRITERIO in row_values:
                 header_idx = idx
                 for col, value in enumerate(cells):
                     key = (str(value).strip() if value is not None else "")
@@ -264,7 +277,7 @@ class RequirementsXlsxService:
             cells = list(raw)
             text = _get(cells, _COL_CRITERIO)
             text = str(text).strip() if text is not None else ""
-            tipo = tax.normalize_type(_get(cells, _COL_TIPO))
+            tipo, mode_hint = tax.normalize_type_and_mode_hint(_get(cells, _COL_TIPO))
             if not text and tipo is None:
                 continue  # blank / trailing row
             if tipo is None:
@@ -290,11 +303,20 @@ class RequirementsXlsxService:
                     if tipo == tax.TYPE_DISCREZIONALE
                     else DiscretionaryMode.ON_OFF
                 )
+                # A blank "Modalità" column falls back to the mode hint carried by
+                # "Tipo criterio" itself (e.g. 'Proporzionale'/'ON/OFF' as the type,
+                # the 4-way market variant), before resolve_mode's own text-derivation.
+                explicit_mode_cell = _get(cells, _COL_MODE)
+                if not explicit_mode_cell and mode_hint is not None:
+                    explicit_mode_cell = mode_hint.value
                 mode, warn = tax.resolve_mode(
-                    _get(cells, _COL_MODE), text, default=default_mode
+                    explicit_mode_cell, text, default=default_mode
                 )
                 if warn:
                     logger.warning("Criterio '%s' (%s): %s", rid, ws.title, warn)
+                direction, dir_warn = tax.resolve_direction(_get(cells, _COL_DIRECTION), text)
+                if dir_warn:
+                    logger.warning("Criterio '%s' (%s): %s", rid, ws.title, dir_warn)
                 max_points = tax.parse_float(_get(cells, _COL_MAX_POINTS), row_id=rid)
                 human_only = tax.cell_to_bool(_get(cells, _COL_HUMAN_ONLY), default=False)
                 notes = _get(cells, _COL_NOTES)
@@ -302,7 +324,7 @@ class RequirementsXlsxService:
                 discretionary.append(
                     DiscretionaryCriterion(
                         id=rid, text=text, mode=mode, max_points=max_points,
-                        human_only=human_only, notes=notes,
+                        human_only=human_only, notes=notes, direction=direction,
                     )
                 )
 
