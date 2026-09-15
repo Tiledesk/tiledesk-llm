@@ -459,7 +459,7 @@ async def build_llm_from_config(config: "SituatedContextConfig", fallback_api_ke
         elif config.provider == 'deepseek':
             from langchain_deepseek import ChatDeepSeek
             return ChatDeepSeek(
-                model=config.model or 'deepseek-chat',
+                model=config.model or 'deepseek-v4-pro',
                 api_key=api_key,
                 **kwargs
             )

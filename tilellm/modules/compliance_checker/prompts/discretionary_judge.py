@@ -67,6 +67,14 @@ class DiscretionaryJudgeOutput(BaseModel):
         default="",
         description="Citazione verbatim dal chunk selezionato (max 300 caratteri). Stringa vuota se assente.",
     )
+    capitolato_discrepancy: Optional[str] = Field(
+        default=None,
+        description=(
+            "SOLO se è presente una sezione <capitolato_evidence>: difformità individuata tra "
+            "il vincolo del capitolato e quanto offerto (2-3 frasi in italiano). Null se non è "
+            "stata fornita evidenza di capitolato, o se è fornita ma non emerge alcuna difformità."
+        ),
+    )
 
     @field_validator("coefficient")
     @classmethod
@@ -136,6 +144,17 @@ da tutte le evidenze (coefficient = 0.0, confidence bassa).
 3. `evidence_text` deve essere una porzione esatta del blocco citato, non una parafrasi né un riassunto. \
 Non inventare testo non presente nelle evidenze.
 
+## Capitolato (se presente)
+
+Se il messaggio utente contiene una sezione `<capitolato_evidence>` (blocchi etichettati `[CAP-N]`, \
+distinti dai blocchi `[N]` dell'offerta), quei blocchi sono il vincolo UFFICIALE di gara per questo \
+criterio — non fanno parte delle evidenze dell'offerta e non vanno MAI citati in `source_chunk_index`/ \
+`evidence_text` (che restano riservati ai blocchi `[N]`). Confronta il vincolo del capitolato con \
+l'evidenza dell'offerta e, SOLO se noti una difformità concreta (es. soglia numerica diversa, requisito \
+del capitolato non coperto dall'offerta, verso del criterio opposto a quanto dichiarato), descrivila in \
+`capitolato_discrepancy`. Se non c'è sezione `<capitolato_evidence>` nel messaggio, oppure c'è ma non \
+emerge alcuna difformità, imposta `capitolato_discrepancy: null`. Non usarlo per ripetere la motivazione.
+
 ## Regole operative
 
 1. Basa la valutazione ESCLUSIVAMENTE sulle evidenze recuperate e fornite. Non usare conoscenze pregresse.
@@ -157,7 +176,8 @@ con esattamente queste chiavi:
   "motivation"         : stringa (2–4 frasi in italiano)
   "confidence"         : float 0.0–1.0
   "source_chunk_index" : intero 1-based del blocco [N] citato (0 SOLO se requisito assente)
-  "evidence_text"      : citazione verbatim dal blocco [N] (max 300 char; "" SOLO se requisito assente)\
+  "evidence_text"      : citazione verbatim dal blocco [N] (max 300 char; "" SOLO se requisito assente)
+  "capitolato_discrepancy" : stringa con la difformità rilevata, oppure null (vedi sezione "Capitolato")\
 """
 
 
@@ -172,7 +192,7 @@ Testo: {criterion_text}
 Modalità: {mode}
 Punteggio massimo: {max_points}
 </criterion>
-
+{capitolato_section}
 <retrieved_evidence>
 {evidence_block}
 </retrieved_evidence>
@@ -212,14 +232,27 @@ def build_judge_user_prompt(
     mode: str,
     max_points: float,
     evidence_block: str,
+    capitolato_evidence_block: Optional[str] = None,
 ) -> str:
-    """Costruisce il messaggio utente per il judge LLM."""
+    """Costruisce il messaggio utente per il judge LLM.
+
+    ``capitolato_evidence_block`` è opzionale: quando assente (default, comportamento
+    invariato) il template si rende esattamente come prima. Quando presente, aggiunge
+    una sezione ``<capitolato_evidence>`` — separata e mai numerata come i blocchi
+    ``[N]`` dell'offerta, per non essere mai scambiata per una citazione dell'offerta.
+    """
     mode_instruction = _MODE_INSTRUCTIONS.get(mode, "")
+    capitolato_section = (
+        f"<capitolato_evidence>\n{capitolato_evidence_block}\n</capitolato_evidence>\n"
+        if capitolato_evidence_block
+        else ""
+    )
     return DISCRETIONARY_JUDGE_USER_TEMPLATE.format(
         criterion_id=criterion_id,
         criterion_text=criterion_text,
         mode=mode,
         max_points=max_points,
         evidence_block=evidence_block,
+        capitolato_section=capitolato_section,
         mode_specific_instruction=mode_instruction,
     )

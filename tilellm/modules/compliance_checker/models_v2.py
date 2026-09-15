@@ -35,6 +35,18 @@ class DiscretionaryMode(StrEnum):
     ON_OFF = "on_off"
 
 
+class DiscretionaryDirection(StrEnum):
+    """Verso del criterio `proporzionale`: quale estremo vince il punteggio pieno.
+
+    Es. "maggiore ampiezza gamma" è DIRETTO (il valore più alto vince), "minor
+    temperatura di polimerizzazione" o "tempo di miscelazione minore" sono INVERSO
+    (il valore più basso vince). Va dichiarato dall'utente in tabella — non viene
+    mai inferito automaticamente dal testo del criterio (solo segnalato, vedi
+    `xlsx_taxonomy.resolve_direction`)."""
+    DIRETTO = "diretto"
+    INVERSO = "inverso"
+
+
 # ---------------------------------------------------------------------------
 # 1.2 — TabularRequirementV2
 # ---------------------------------------------------------------------------
@@ -61,6 +73,15 @@ class DiscretionaryCriterion(BaseModel):
         description="Se True il criterio non viene mai valutato dall'IA (es. criteri soggettivi).",
     )
     notes: Optional[str] = None
+    direction: DiscretionaryDirection = Field(
+        default=DiscretionaryDirection.DIRETTO,
+        description=(
+            "Solo per mode=proporzionale: 'diretto' se il valore misurato più alto vince "
+            "il punteggio pieno (es. ampiezza gamma), 'inverso' se vince il più basso "
+            "(es. minor temperatura, minor tempo di miscelazione). Va dichiarato "
+            "esplicitamente in tabella dall'utente."
+        ),
+    )
     quantity_from_l01: bool = Field(
         default=False,
         description=(
@@ -292,6 +313,32 @@ class ComplianceRequestV2(BaseModel):
         description="Soglia minima di confidenza: sotto questa soglia il risultato viene flaggato per revisione umana.",
     )
 
+    exclude_chiarimenti: bool = Field(
+        default=True,
+        description=(
+            "Se True (default), esclude dal retrieval dei criteri discrezionali/tabellari i "
+            "chunk con metadata.doc_type='chiarimento' — le risposte ai chiarimenti di gara non "
+            "possono integrare la documentazione di offerta, solo rimandare a pagine esistenti. "
+            "Richiede che il chunk sia stato taggato in ingestion (additional_metadata={'doc_type': "
+            "'chiarimento'}); non ha effetto sui chunk non taggati. NON si applica al path "
+            "Conformità (delegato a v1, fuori scope per non toccare logic.py)."
+        ),
+    )
+
+    capitolato_namespace: Optional[str] = Field(
+        default=None,
+        description=(
+            "Namespace CONDIVISO (uno per lotto/gara, non per operatore) con capitolato "
+            "tecnico/disciplinare ufficiali. Se fornito, per ogni criterio discrezionale/"
+            "tabellare viene recuperata evidenza anche da qui — oltre a quella dell'offerta — "
+            "così il giudice può segnalare difformità tra richiesto e offerto in "
+            "'capitolato_discrepancy'. La tabella criteri resta l'unica fonte di punteggio: "
+            "il capitolato è un vincolo di verifica aggiuntivo, mai un sostituto. Se assente, "
+            "comportamento identico a prima (nessuna retrieval né prompt aggiuntivi). NON si "
+            "applica al path Conformità (stesso motivo di exclude_chiarimenti)."
+        ),
+    )
+
     # Vector store / retrieval
     namespace: str
     engine: Engine
@@ -424,6 +471,10 @@ class DiscretionaryResult(BaseModel):
         default=None,
         description="Grandezza numerica confrontabile per il proporzionale (normalizzazione cross-operatore).",
     )
+    direction: DiscretionaryDirection = Field(
+        default=DiscretionaryDirection.DIRETTO,
+        description="Copiato dal criterio (`DiscretionaryCriterion.direction`): verso usato da resolve_proportional.",
+    )
     proportional_auto: bool = Field(
         default=False,
         description=(
@@ -434,6 +485,15 @@ class DiscretionaryResult(BaseModel):
 
     motivation: str
     confidence: float
+
+    capitolato_discrepancy: Optional[str] = Field(
+        default=None,
+        description=(
+            "Difformità rilevata dal giudice tra il vincolo del capitolato (quando "
+            "ComplianceRequestV2.capitolato_namespace è fornito) e quanto offerto. "
+            "Null se non è stato fornito un capitolato o se nessuna difformità è emersa."
+        ),
+    )
 
     human_review_required: bool = False
     human_review_reason: Optional[str] = Field(
@@ -866,6 +926,14 @@ class BulkComplianceRequestV2(BaseModel):
     )
 
     min_confidence: float = Field(default=0.6)
+    exclude_chiarimenti: bool = Field(default=True)
+    capitolato_namespace: Optional[str] = Field(
+        default=None,
+        description=(
+            "Namespace condiviso con capitolato/disciplinare, applicato a TUTTI gli operatori "
+            "del lotto (stesso capitolato per tutti). Vedi ComplianceRequestV2.capitolato_namespace."
+        ),
+    )
 
     # Retrieval / engine (namespace arriva da ciascun operatore)
     engine: Engine
@@ -938,6 +1006,8 @@ class BulkComplianceRequestV2(BaseModel):
             requirements_lot_id=self.requirements_lot_id,
             l01_xlsx_url=l01_xlsx_url,
             min_confidence=self.min_confidence,
+            exclude_chiarimenti=self.exclude_chiarimenti,
+            capitolato_namespace=self.capitolato_namespace,
             namespace=namespace,
             engine=self.engine,
             embedding=self.embedding,

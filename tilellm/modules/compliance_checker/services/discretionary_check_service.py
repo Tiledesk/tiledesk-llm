@@ -42,6 +42,7 @@ from tilellm.modules.compliance_checker.prompts import (
 from tilellm.modules.compliance_checker.prompts.xlsx_extraction import _LLMLotExtractionResult
 from tilellm.modules.compliance_checker.services.yaml_requirements_loader import YamlRequirementsLoader
 from tilellm.modules.compliance_checker.services.l01_service import run_l01_check
+from tilellm.shared.cache.semantic_cache import SemanticCache
 from tilellm.shared.utility import inject_llm_chat_async, inject_repo_async
 from tilellm.shared import token_tracking
 from tilellm.shared.token_tracking import TokenUsageCollector, model_name_of
@@ -49,6 +50,18 @@ from tilellm.shared.token_tracking import TokenUsageCollector, model_name_of
 logger = logging.getLogger(__name__)
 
 _E_PROCUREMENT_DOMAIN = "e_procurement"
+
+# Judge invocation: transient provider failures (timeout, overload, empty/malformed
+# response) are common enough in practice — see docs/COMPLIANCE_V2_IMPLEMENTATION_PLAN.md
+# §7.9 — to warrant a short bounded retry before giving up on a single criterion.
+_MAX_JUDGE_ATTEMPTS = 2
+_JUDGE_RETRY_DELAY_S = 1.0
+
+
+class JudgeInvocationError(Exception):
+    """Raised when the judge LLM call fails (provider error, or unparseable response)
+    after all retries. Distinct from a genuine "no evidence" judgment — the caller
+    must never silently treat this the same as an empty-but-valid verdict."""
 
 
 def _apply_l01_quantity(
@@ -75,6 +88,20 @@ def _apply_l01_quantity(
                 "Criterio '%s': measured_quantity=%s dal conteggio prodotti L01.",
                 r.criterion_id, r.measured_quantity,
             )
+
+
+def _build_capitolato_evidence_block(chunks: List[str], metadata: List[dict]) -> str:
+    """Format capitolato chunks with a [CAP-N] prefix — deliberately distinct from the
+    offer's [N] blocks (_build_evidence_block, logic.py) so the judge never confuses a
+    capitolato citation with an offer citation in source_chunk_index/evidence_text."""
+    lines = []
+    for i, (chunk, meta) in enumerate(zip(chunks, metadata), 1):
+        file_name = meta.get("file_name", meta.get("source", "unknown"))
+        page = meta.get("page", "?")
+        lines.append(f"[CAP-{i}] {file_name} | page {page}")
+        lines.append(chunk[:1500])
+        lines.append("")
+    return "\n".join(lines)
 
 
 class DiscretionaryCheckService:
@@ -190,7 +217,82 @@ class DiscretionaryCheckService:
             async with semaphore:
                 return await self._evaluate_criterion(criterion)
 
-        return list(await asyncio.gather(*[_process(c) for c in criteria]))
+        # return_exceptions=True: _evaluate_criterion already turns judge failures
+        # into a flagged DiscretionaryResult (see JudgeInvocationError handling
+        # above), but this is the safety net — one unexpected bug on one criterion
+        # must never abort every other already-evaluated criterion for this operator.
+        raw_results = await asyncio.gather(
+            *[_process(c) for c in criteria], return_exceptions=True
+        )
+        results: List[DiscretionaryResult] = []
+        for criterion, r in zip(criteria, raw_results):
+            if isinstance(r, BaseException):
+                logger.error(
+                    "Criterio '%s': eccezione non gestita durante la valutazione — %s",
+                    criterion.id, r,
+                )
+                results.append(DiscretionaryResult(
+                    criterion_id=criterion.id,
+                    criterion_text=criterion.text,
+                    mode=criterion.mode,
+                    max_points=criterion.max_points,
+                    direction=criterion.direction,
+                    human_review_required=True,
+                    human_review_reason=f"Errore imprevisto durante la valutazione: {r}",
+                    motivation="Valutazione non completata per un errore interno "
+                               "(non un giudizio di merito sul criterio).",
+                    confidence=0.0,
+                ))
+            else:
+                results.append(r)
+        return results
+
+    async def _fetch_capitolato_evidence(self, criterion: DiscretionaryCriterion) -> Optional[str]:
+        """Retrieve evidence for *criterion* from the shared capitolato_namespace, if any.
+
+        The same criterion text is queried once per operator in a bulk check (the
+        capitolato is shared across operators of the same lot) — cached via the
+        existing Redis-backed SemanticCache (L1 exact match only: criterion text is
+        byte-identical across operators, no need for the L2 embedding cost). Any
+        failure (bad namespace, Redis down, retrieval error) degrades to "no
+        capitolato evidence for this criterion" rather than breaking the check.
+        """
+        ns = self._request.capitolato_namespace
+        if not ns:
+            return None
+        try:
+            cached = await SemanticCache.lookup(ns, criterion.text, embedding=None, check_l2=False)
+            if cached is not None:
+                chunks, metadata = cached.get("chunks", []), cached.get("metadata", [])
+            else:
+                qa = QuestionAnswer(
+                    question=criterion.text,
+                    namespace=ns,
+                    engine=self._request.engine,
+                    embedding=self._request.embedding,
+                    sparse_encoder=self._request.sparse_encoder,
+                    gptkey=self._request.gptkey,
+                    model=self._request.model,
+                    temperature=self._request.temperature,
+                    max_tokens=self._request.max_tokens,
+                    top_k=self._request.top_k,
+                    search_type=self._request.search_type,
+                )
+                retrieval = await self._repo.get_chunks_from_repo(qa)
+                chunks, metadata = retrieval.chunks or [], retrieval.metadata or []
+                await SemanticCache.store(
+                    ns, criterion.text, embedding=None,
+                    body={"chunks": chunks, "metadata": metadata}, store_l2=False,
+                )
+            if not chunks:
+                return None
+            return _build_capitolato_evidence_block(chunks, metadata)
+        except Exception as e:
+            logger.warning(
+                "Capitolato retrieval failed for criterion '%s' (namespace=%r): %s — "
+                "proceeding without capitolato evidence.", criterion.id, ns, e,
+            )
+            return None
 
     async def _evaluate_criterion(self, criterion: DiscretionaryCriterion) -> DiscretionaryResult:
         # human_only → no LLM call, flag immediately
@@ -200,6 +302,7 @@ class DiscretionaryCheckService:
                 criterion_text=criterion.text,
                 mode=criterion.mode,
                 max_points=criterion.max_points,
+                direction=criterion.direction,
                 human_review_required=True,
                 human_review_reason="Criterio marcato human_only: richiede valutazione soggettiva non automatizzabile.",
                 motivation="Valutazione delegata alla commissione.",
@@ -228,6 +331,12 @@ class DiscretionaryCheckService:
             top_k=search_top_k,
             search_type=self._request.search_type,
         )
+        if self._request.exclude_chiarimenti:
+            # Clarification-response documents can only point back to existing offer
+            # pages, never add new content — so they must never be judged as evidence
+            # (see docs/COMPLIANCE_V2_IMPLEMENTATION_PLAN.md §7, pattern E). No-op on
+            # chunks that were never tagged with doc_type (backward compatible).
+            qa._metadata_filter = {"doc_type": {"$ne": "chiarimento"}}
         try:
             retrieval = await self._repo.get_chunks_from_repo(qa)
             chunks = retrieval.chunks or []
@@ -255,6 +364,7 @@ class DiscretionaryCheckService:
                 criterion_text=criterion.text,
                 mode=criterion.mode,
                 max_points=criterion.max_points,
+                direction=criterion.direction,
                 human_review_required=True,
                 human_review_reason="Nessuna evidenza trovata nel namespace: impossibile valutare automaticamente.",
                 motivation="Nessuna evidenza disponibile nel knowledge base.",
@@ -262,14 +372,34 @@ class DiscretionaryCheckService:
             )
 
         evidence_block = _build_evidence_block(chunks, metadata)
+        capitolato_evidence_block = await self._fetch_capitolato_evidence(criterion)
         user_prompt = build_judge_user_prompt(
             criterion_id=criterion.id,
             criterion_text=criterion.text,
             mode=criterion.mode.value,
             max_points=criterion.max_points,
             evidence_block=evidence_block,
+            capitolato_evidence_block=capitolato_evidence_block,
         )
-        raw_output = await self._invoke_judge(user_prompt)
+        try:
+            raw_output = await self._invoke_judge(user_prompt)
+        except JudgeInvocationError as e:
+            # Never let a provider failure masquerade as "nessuna evidenza trovata"
+            # (see docs/COMPLIANCE_V2_IMPLEMENTATION_PLAN.md §7.9) — distinct reason,
+            # always flagged for human review regardless of confidence/mode.
+            logger.error("Criterio '%s': giudice LLM non disponibile — %s", criterion.id, e)
+            return DiscretionaryResult(
+                criterion_id=criterion.id,
+                criterion_text=criterion.text,
+                mode=criterion.mode,
+                max_points=criterion.max_points,
+                direction=criterion.direction,
+                human_review_required=True,
+                human_review_reason=f"Errore del provider LLM durante la valutazione: {e}",
+                motivation="Valutazione non completata per un errore del provider LLM "
+                           "(non un giudizio di merito sul criterio).",
+                confidence=0.0,
+            )
 
         coefficient = raw_output.get("coefficient")
         if coefficient is not None:
@@ -285,6 +415,7 @@ class DiscretionaryCheckService:
         confidence = max(0.0, min(1.0, float(raw_output.get("confidence", 0.0))))
         source_index = int(raw_output.get("source_chunk_index") or 0)
         evidence_text = str(raw_output.get("evidence_text", ""))
+        capitolato_discrepancy = raw_output.get("capitolato_discrepancy") or None
 
         evidence_doc, evidence_page, evidence_section, matched_idx = _pick_best_source(
             chunks, metadata, evidence_text, source_index
@@ -329,17 +460,43 @@ class DiscretionaryCheckService:
                 f"({self._request.min_confidence:.2f}): revisione umana raccomandata."
             )
 
+        # Coherence guard: the judge reported a positive result (score/measured value)
+        # but did NOT anchor it to any real chunk — self-contradictory (see docs/
+        # COMPLIANCE_V2_IMPLEMENTATION_PLAN.md §7, pattern F / Santucci r.59: "dice che
+        # non trova niente" in one field, then reports a value in another). Legitimate
+        # negative/absent results (coefficient=0, no evidence) are NOT flagged here —
+        # that is the correct, expected shape for "requirement genuinely absent".
+        claims_positive_result = (
+            criterion.mode in (DiscretionaryMode.VARIABILE, DiscretionaryMode.ON_OFF)
+            and coefficient is not None and coefficient > 0
+        ) or (
+            criterion.mode == DiscretionaryMode.PROPORZIONALE
+            and (measured_value or measured_quantity is not None)
+        )
+        if not citation_attributed and claims_positive_result:
+            human_review_required = True
+            coherence_note = (
+                "Incoerenza rilevata: risultato positivo riportato (punteggio/valore "
+                "misurato) senza una citazione ancorabile a un chunk recuperato — "
+                "verificare manualmente."
+            )
+            human_review_reason = (
+                f"{human_review_reason} {coherence_note}" if human_review_reason else coherence_note
+            )
+
         return DiscretionaryResult(
             criterion_id=criterion.id,
             criterion_text=criterion.text,
             mode=criterion.mode,
             max_points=criterion.max_points,
+            direction=criterion.direction,
             coefficient=coefficient,
             score=score,
             measured_value=measured_value,
             measured_quantity=measured_quantity,
             motivation=motivation,
             confidence=confidence,
+            capitolato_discrepancy=capitolato_discrepancy,
             human_review_required=human_review_required,
             human_review_reason=human_review_reason,
             citation_attributed=citation_attributed,
@@ -350,8 +507,13 @@ class DiscretionaryCheckService:
             evidence_chunk_index=matched_idx,
         )
 
-    async def _invoke_judge(self, user_prompt: str) -> dict:
-        """Call the judge LLM and return a parsed dict."""
+    async def _invoke_judge_once(self, user_prompt: str) -> dict:
+        """Single attempt: call the judge LLM and parse its JSON response.
+
+        Raises on any failure — provider error (ainvoke) or empty/unparseable
+        content. Never swallows: the caller (_invoke_judge) decides whether to
+        retry or give up, and giving up must never look like "no evidence".
+        """
         response = await self._llm.ainvoke([
             SystemMessage(content=DISCRETIONARY_JUDGE_SYSTEM_PROMPT),
             HumanMessage(content=user_prompt),
@@ -378,11 +540,36 @@ class DiscretionaryCheckService:
             raw = raw.split("```")[1]
             if raw.lower().startswith("json"):
                 raw = raw[4:]
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError as e:
-            logger.warning("Judge LLM returned non-JSON for criterion: %s", e)
-            return {}
+        if not raw:
+            # Empirically what an overloaded provider looks like (e.g. deepseek
+            # dropping a queued request): HTTP 200, empty content — no exception
+            # to catch, just nothing to parse.
+            raise JudgeInvocationError("Risposta vuota dal modello giudice.")
+        return json.loads(raw)  # json.JSONDecodeError propagates, caught by the retry loop
+
+    async def _invoke_judge(self, user_prompt: str) -> dict:
+        """Call the judge LLM, retrying a bounded number of times on transient
+        failures (provider error, timeout, empty/malformed response) before
+        giving up. Raises JudgeInvocationError — never returns a fake empty
+        verdict, which the caller could otherwise mistake for a genuine
+        "no evidence found" judgment.
+        """
+        last_error: Exception = JudgeInvocationError("nessun tentativo eseguito")
+        for attempt in range(1, _MAX_JUDGE_ATTEMPTS + 1):
+            try:
+                return await self._invoke_judge_once(user_prompt)
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "Judge LLM invocation failed (tentativo %d/%d): %s",
+                    attempt, _MAX_JUDGE_ATTEMPTS, e,
+                )
+                if attempt < _MAX_JUDGE_ATTEMPTS:
+                    await asyncio.sleep(_JUDGE_RETRY_DELAY_S)
+        raise JudgeInvocationError(
+            f"Il giudice LLM non ha risposto correttamente dopo {_MAX_JUDGE_ATTEMPTS} "
+            f"tentativi: {last_error}"
+        ) from last_error
 
 
 # ---------------------------------------------------------------------------
