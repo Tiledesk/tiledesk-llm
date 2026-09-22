@@ -1378,17 +1378,35 @@ Vector store configuration.
 ---
 
 ### LlmEmbeddingModel
-Embedding model configuration.
+Chat or embedding model configuration (dual-purpose — used for both `model` and
+`embedding` fields across request bodies).
 
 ```python
 {
-  "provider": "openai" | "huggingface" | "ollama" | "google" | "cohere" | "voyage" | "vllm",
+  "provider": "openai" | "huggingface" | "ollama" | "google" | "cohere" | "voyage" | "vllm" | "anthropic" | "groq" | "tei" | "deepseek" | "openrouter",
   "name": "text-embedding-ada-002",
   "api_key": "string (optional)",
   "url": "string (optional)",
-  "dimension": 1024
+  "dimension": 1024,
+  "custom_headers": {"header-name": "value"},  # optional
+  "project": "string (optional, GCP project id — routes google provider to Vertex AI)",
+  "location": "string (optional, GCP region for Vertex AI, e.g. europe-west8)",
+  "provider_routing": {"order": ["azure", "openai"], "allow_fallbacks": true, "sort": "price"},  # optional, OpenRouter only
+  "disable_thinking_mode": false  # optional, provider "vllm" only, default null (auto-inject)
 }
 ```
+
+`disable_thinking_mode` (provider `"vllm"` only): the `"vllm"` provider slot is used for
+any custom OpenAI-compatible endpoint (self-hosted vLLM, but also e.g. Cerebras via a
+custom `url`), not just genuine vLLM. By default (`null`/unset) every `"vllm"` request
+gets `extra_body={"chat_template_kwargs": {"enable_thinking": False}}` auto-injected —
+required for Qwen3/thinking models actually served by vLLM (otherwise thinking consumes
+all `max_tokens` and the response comes back empty). Some strict OpenAI-compatible
+backends reject this as an unrecognized field with a 400 instead of ignoring it. **This
+now self-heals automatically**: on that specific rejection the client retries once
+without the field and remembers not to send it again, no config needed. Setting
+`disable_thinking_mode: false` explicitly is only useful to skip that first failed
+round-trip when you already know a given backend will reject it.
 
 ---
 

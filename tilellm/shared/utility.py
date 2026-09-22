@@ -8,7 +8,9 @@ import hashlib
 import logging
 from typing import Dict, Any, Callable, Tuple, Optional
 
+import openai
 from langchain_community.callbacks.openai_info import OpenAICallbackHandler
+from langchain_openai import ChatOpenAI
 
 from tilellm.models import LlmEmbeddingModel  # EmbeddingModel
 
@@ -1229,6 +1231,57 @@ async def _build_embedding_cache_key(question) -> tuple:
     return tuple(sorted(embedding_config.items()))
 
 
+# Substrings that identify a request rejected specifically because of the vLLM-only
+# extra_body we auto-inject for the "vllm" provider slot (see _VllmChatOpenAI below).
+# Extend this tuple if another strict OpenAI-compatible backend rejects it with a
+# differently-worded error.
+_EXTRA_BODY_REJECTED_ERROR_MARKERS = (
+    "chat_template_kwargs",  # Cerebras: "property 'chat_template_kwargs' is unsupported"
+)
+
+
+def _rejected_because_of_extra_body(exc: BaseException) -> bool:
+    text = str(exc)
+    return any(marker in text for marker in _EXTRA_BODY_REJECTED_ERROR_MARKERS)
+
+
+class _VllmChatOpenAI(ChatOpenAI):
+    """ChatOpenAI for the "vllm" provider slot, which is also used for any custom
+    OpenAI-compatible endpoint (e.g. Cerebras via a custom base_url), not just genuine
+    self-hosted vLLM. We auto-inject extra_body={"chat_template_kwargs": {...}} by
+    default (needed for Qwen3/thinking models actually served by vLLM — otherwise
+    thinking consumes all max_tokens and content comes back empty). A strict backend
+    that doesn't recognize this field 400s instead of ignoring it; on that specific
+    error we drop extra_body and retry once. The instance then keeps it dropped, so a
+    client reused from TimedCache doesn't repeat the failing round-trip on every
+    subsequent request. `disable_thinking_mode=False` on the model config still skips
+    the injection upfront for callers who already know a backend will reject it."""
+
+    async def _agenerate(self, *args, **kwargs):
+        try:
+            return await super()._agenerate(*args, **kwargs)
+        except openai.BadRequestError as e:
+            if not self.extra_body or not _rejected_because_of_extra_body(e):
+                raise
+            logger.warning(f"'{self.model_name}' rejected extra_body, retrying without it: {e}")
+            self.extra_body = None
+            return await super()._agenerate(*args, **kwargs)
+
+    async def _astream(self, *args, **kwargs):
+        yielded_any = False
+        try:
+            async for chunk in super()._astream(*args, **kwargs):
+                yielded_any = True
+                yield chunk
+        except openai.BadRequestError as e:
+            if yielded_any or not self.extra_body or not _rejected_because_of_extra_body(e):
+                raise
+            logger.warning(f"'{self.model_name}' rejected extra_body, retrying without it: {e}")
+            self.extra_body = None
+            async for chunk in super()._astream(*args, **kwargs):
+                yield chunk
+
+
 async def _create_llm_instance(question):
     """Crea una nuova istanza del modello LLM usando configurazione centralizzata"""
 
@@ -1289,16 +1342,16 @@ async def _create_llm_instance(question):
             return ChatOpenAI(**client_config)
 
         elif provider_param == "vllm":
-            from langchain_openai import ChatOpenAI # vLLM uses OpenAI compatible API
             client_config["max_completion_tokens"] = client_config.pop("max_tokens", None)
             # Disable thinking mode — required for Qwen3 and similar thinking models where
             # thinking consumes all max_tokens leaving content empty. Non-thinking models
             # served by vllm ignore this extra_body parameter. Some strict OpenAI-compatible
             # backends routed through this same "vllm" slot (e.g. Cerebras) reject unknown
-            # body fields with a 400 instead — opt out via model.disable_thinking_mode=False.
+            # body fields with a 400 instead — opt out upfront via
+            # model.disable_thinking_mode=False, or let _VllmChatOpenAI retry without it.
             if getattr(question.model, "disable_thinking_mode", None) is not False:
                 client_config["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
-            return ChatOpenAI(**client_config)
+            return _VllmChatOpenAI(**client_config)
 
         elif provider_param == "anthropic":
             from langchain_anthropic import ChatAnthropic
@@ -1381,15 +1434,15 @@ async def _create_standard_llm_instance(question) -> Any:
             return ChatOpenAI(**client_config)
 
         elif question.llm == "vllm":
-            from langchain_openai import ChatOpenAI
             # Disable thinking mode — required for Qwen3 and similar thinking models where
             # thinking consumes all max_tokens leaving content empty. Non-thinking models
             # served by vllm ignore this extra_body parameter. Some strict OpenAI-compatible
             # backends routed through this same "vllm" slot (e.g. Cerebras) reject unknown
-            # body fields with a 400 instead — opt out via model.disable_thinking_mode=False.
+            # body fields with a 400 instead — opt out upfront via
+            # model.disable_thinking_mode=False, or let _VllmChatOpenAI retry without it.
             if getattr(question.model, "disable_thinking_mode", None) is not False:
                 client_config["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
-            return ChatOpenAI(**client_config)
+            return _VllmChatOpenAI(**client_config)
 
         elif question.llm == "anthropic":
             from langchain_anthropic import ChatAnthropic
