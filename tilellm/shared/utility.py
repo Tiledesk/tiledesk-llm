@@ -1282,8 +1282,11 @@ async def _create_llm_instance(question):
             client_config["max_completion_tokens"] = client_config.pop("max_tokens", None)
             # Disable thinking mode — required for Qwen3 and similar thinking models where
             # thinking consumes all max_tokens leaving content empty. Non-thinking models
-            # served by vllm ignore this extra_body parameter.
-            client_config["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+            # served by vllm ignore this extra_body parameter. Some strict OpenAI-compatible
+            # backends routed through this same "vllm" slot (e.g. Cerebras) reject unknown
+            # body fields with a 400 instead — opt out via model.disable_thinking_mode=False.
+            if getattr(question.model, "disable_thinking_mode", None) is not False:
+                client_config["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
             return ChatOpenAI(**client_config)
 
         elif provider_param == "anthropic":
@@ -1370,8 +1373,11 @@ async def _create_standard_llm_instance(question) -> Any:
             from langchain_openai import ChatOpenAI
             # Disable thinking mode — required for Qwen3 and similar thinking models where
             # thinking consumes all max_tokens leaving content empty. Non-thinking models
-            # served by vllm ignore this extra_body parameter.
-            client_config["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
+            # served by vllm ignore this extra_body parameter. Some strict OpenAI-compatible
+            # backends routed through this same "vllm" slot (e.g. Cerebras) reject unknown
+            # body fields with a 400 instead — opt out via model.disable_thinking_mode=False.
+            if getattr(question.model, "disable_thinking_mode", None) is not False:
+                client_config["extra_body"] = {"chat_template_kwargs": {"enable_thinking": False}}
             return ChatOpenAI(**client_config)
 
         elif question.llm == "anthropic":

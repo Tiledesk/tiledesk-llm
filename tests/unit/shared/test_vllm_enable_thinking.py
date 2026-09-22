@@ -66,3 +66,34 @@ async def test_create_llm_instance_leaves_openai_untouched():
 
     _, kwargs = mock_chat.call_args
     assert "extra_body" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_create_llm_instance_honors_disable_thinking_mode_false():
+    """Cerebras and similar strict OpenAI-compatible backends reject unknown
+    body fields (400 on chat_template_kwargs) — model.disable_thinking_mode=False
+    must skip the extra_body injection even though provider is still "vllm"."""
+    q = _vllm_question()
+    q.model.disable_thinking_mode = False
+
+    with patch("tilellm.shared.utility.get_llm_params", return_value={}), \
+         patch("tilellm.shared.utility._get_llm_config_for_client", AsyncMock(return_value={"api_key": "k", "model": "cerebras-model"})), \
+         patch("langchain_openai.ChatOpenAI") as mock_chat:
+        await _create_llm_instance(q)
+
+    _, kwargs = mock_chat.call_args
+    assert "extra_body" not in kwargs
+
+
+@pytest.mark.asyncio
+async def test_create_standard_llm_instance_honors_disable_thinking_mode_false():
+    q = _vllm_question()
+    q.model.disable_thinking_mode = False
+
+    with patch("tilellm.shared.utility.get_llm_params", return_value={}), \
+         patch("tilellm.shared.utility._get_llm_config_for_client", AsyncMock(return_value={"api_key": "k", "model": "cerebras-model"})), \
+         patch("langchain_openai.ChatOpenAI") as mock_chat:
+        await _create_standard_llm_instance(q)
+
+    _, kwargs = mock_chat.call_args
+    assert "extra_body" not in kwargs

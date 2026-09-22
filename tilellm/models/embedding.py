@@ -47,6 +47,16 @@ class LlmEmbeddingModel(BaseModel):
     # Shape: {"order": ["azure", "openai"], "allow_fallbacks": true, "sort": "price"}.
     # Passed through to the OpenRouter API as the request's "provider" block.
     provider_routing: Optional[Dict[str, Any]] = None
+    # vllm provider only: the "vllm" slot is also used for any custom OpenAI-compatible
+    # endpoint (e.g. Cerebras via a custom base_url), not just genuine self-hosted vLLM.
+    # utility.py auto-sends extra_body={"chat_template_kwargs": {"enable_thinking": False}}
+    # to every "vllm" request by default — needed for Qwen3/thinking models actually
+    # served by vLLM (otherwise thinking eats max_tokens and the response comes back
+    # empty), but some strict OpenAI-compatible backends (Cerebras confirmed 2026-09-22)
+    # reject any unrecognized body field with a 400 instead of ignoring it. Default None
+    # preserves that existing auto-apply behavior; set False to opt out for a backend that
+    # rejects it, True to force it on (same as default, for explicitness in configs).
+    disable_thinking_mode: Optional[bool] = None
 
     @model_validator(mode='after')
     def validate_model(self):
