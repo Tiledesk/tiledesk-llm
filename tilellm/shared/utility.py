@@ -773,6 +773,13 @@ async def _build_standard_llm_cache_key(question) -> Tuple:
     if question.llm in ["vllm", "ollama"] and hasattr(question.model, 'url'):
         cache_key_parts.append(question.model.url)  # type: ignore
 
+    # Affects ChatOpenAI construction for the "vllm" slot (extra_body opt-out) —
+    # must be in the key or a cached client built before this was set stays stale.
+    if question.llm == "vllm":
+        disable_thinking_mode = getattr(question.model, "disable_thinking_mode", None)
+        if disable_thinking_mode is not None:
+            cache_key_parts.append(f"disable_thinking_mode={disable_thinking_mode}")
+
     # OpenRouter: routing e reasoning distinguono due client altrimenti
     # identici (stesso modello, stessa chiave API).
     if question.llm == "openrouter":
@@ -1157,6 +1164,10 @@ async def _build_llm_cache_key(question) -> tuple:
         }
         if question.model.url is not None:
             cache_key_parts_dic["base_url"] = question.model.url
+        # Affects ChatOpenAI construction for the "vllm" slot (extra_body opt-out) —
+        # must be in the key or a cached client built before this was set stays stale.
+        if question.model.disable_thinking_mode is not None:
+            cache_key_parts_dic["disable_thinking_mode"] = question.model.disable_thinking_mode
 
     else:  # Modalità legacy con stringa
         cache_key_parts_dic = {

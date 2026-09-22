@@ -13,11 +13,19 @@ vllm without this flag. Fixed by adding the same extra_body there. The
 reasoning-dedicated builders (inject_reason_llm_async's vllm branch) are left
 untouched on purpose — thinking must stay on for /api/thinking.
 """
+import asyncio
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from pydantic import SecretStr
 
-from tilellm.shared.utility import _create_llm_instance, _create_standard_llm_instance
+from tilellm.models.embedding import LlmEmbeddingModel
+from tilellm.shared.utility import (
+    _build_llm_cache_key,
+    _build_standard_llm_cache_key,
+    _create_llm_instance,
+    _create_standard_llm_instance,
+)
 
 
 def _vllm_question():
@@ -97,3 +105,50 @@ async def test_create_standard_llm_instance_honors_disable_thinking_mode_false()
 
     _, kwargs = mock_chat.call_args
     assert "extra_body" not in kwargs
+
+
+def _vllm_model(**overrides):
+    kwargs = dict(
+        provider="vllm",
+        name="qwen3",
+        api_key=SecretStr("sk-test"),
+        url="https://api.cerebras.ai/v1",
+    )
+    kwargs.update(overrides)
+    return LlmEmbeddingModel(**kwargs)
+
+
+class _ChatCacheKeyQuestion:
+    """Stand-in for inject_llm_chat_async's question (LlmEmbeddingModel path)."""
+
+    def __init__(self, model):
+        self.llm = "vllm"
+        self.model = model
+
+
+class _StandardCacheKeyQuestion:
+    """Stand-in for inject_llm_async's question (has llm_key, not gptkey)."""
+
+    def __init__(self, model):
+        self.llm = "vllm"
+        self.model = model
+        self.llm_key = SecretStr("sk-test")
+
+
+def test_llm_cache_key_differs_by_disable_thinking_mode():
+    """A cached ChatOpenAI built before disable_thinking_mode=False was set must
+    not be silently reused once the caller opts out — same TimedCache staleness
+    bug class that let a broken client survive a Cerebras 400 fix."""
+    default_key = asyncio.run(_build_llm_cache_key(_ChatCacheKeyQuestion(_vllm_model())))
+    opted_out_key = asyncio.run(
+        _build_llm_cache_key(_ChatCacheKeyQuestion(_vllm_model(disable_thinking_mode=False)))
+    )
+    assert default_key != opted_out_key
+
+
+def test_standard_llm_cache_key_differs_by_disable_thinking_mode():
+    default_key = asyncio.run(_build_standard_llm_cache_key(_StandardCacheKeyQuestion(_vllm_model())))
+    opted_out_key = asyncio.run(
+        _build_standard_llm_cache_key(_StandardCacheKeyQuestion(_vllm_model(disable_thinking_mode=False)))
+    )
+    assert default_key != opted_out_key
