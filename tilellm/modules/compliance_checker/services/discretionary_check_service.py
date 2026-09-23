@@ -9,7 +9,7 @@ Entry point: check_compliance_v2 (decorated with @inject_llm_chat_async @inject_
 import asyncio
 import json
 import logging
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -57,6 +57,30 @@ _E_PROCUREMENT_DOMAIN = "e_procurement"
 _MAX_JUDGE_ATTEMPTS = 2
 _JUDGE_RETRY_DELAY_S = 1.0
 
+# HyDE fallback (§7.11-7.12): when a criterion's normal retrieval comes back
+# with nothing usable, retry once with a hypothetical-document query instead
+# of the discursive criterion text. Verified empirically on a real tender
+# (2026-09-16) that an unguided paraphrase does not help — the passage has to
+# read like the source document, repeating terms rather than explaining them.
+# Deliberately domain-agnostic (§7.12): this service evaluates whatever
+# tender is configured per request, not one specific gara — the prompt must
+# never bake in a particular sector's vocabulary, units, or document
+# conventions. It grounds itself in real excerpts of THIS tender's own
+# documents when the caller supplies them (see _generate_hyde_passage),
+# falling back to the generic instruction below only when none are available.
+_HYDE_SYSTEM_PROMPT = """\
+Data una clausola di un capitolato di gara, scrivi un breve passaggio ipotetico \
+(1-3 righe) — NON la risposta alla clausola, ma un testo che assomigli il più \
+possibile a come il dato richiesto apparirebbe davvero in un documento reale di \
+questa gara (scheda tecnica, dichiarazione, certificato — qualunque sia il \
+settore o il tipo di gara, non presumere nulla). Se ti vengono forniti estratti \
+reali dai documenti della gara, usa lo STESSO stile, formato, lingua, eventuali \
+codici o sigle di quegli estratti — non inventarne di nuovi. Se non ti vengono \
+forniti estratti, usa comunque uno stile terso da scheda tecnica: formato \
+etichetta/valore, ripeti i termini chiave della clausola invece di parafrasarli \
+o spiegarli. Niente linguaggio discorsivo da bando di gara, niente \
+introduzioni, solo il passaggio ipotetico."""
+
 
 class JudgeInvocationError(Exception):
     """Raised when the judge LLM call fails (provider error, or unparseable response)
@@ -99,7 +123,10 @@ def _build_capitolato_evidence_block(chunks: List[str], metadata: List[dict]) ->
         file_name = meta.get("file_name", meta.get("source", "unknown"))
         page = meta.get("page", "?")
         lines.append(f"[CAP-{i}] {file_name} | page {page}")
-        lines.append(chunk[:1500])
+        # No truncation — see _build_evidence_block (logic.py) for why: a fixed-length
+        # cut silently drops table rows past it, exactly the content a capitolato
+        # comparison most needs (see docs/COMPLIANCE_V2_IMPLEMENTATION_PLAN.md §7.10).
+        lines.append(chunk)
         lines.append("")
     return "\n".join(lines)
 
@@ -295,7 +322,8 @@ class DiscretionaryCheckService:
             return None
 
     async def _evaluate_criterion(self, criterion: DiscretionaryCriterion) -> DiscretionaryResult:
-        # human_only → no LLM call, flag immediately
+        # human_only → no LLM call, flag immediately, never subject to the HyDE
+        # fallback below (this is a deliberate design choice, not a retrieval gap).
         if criterion.human_only:
             return DiscretionaryResult(
                 criterion_id=criterion.id,
@@ -309,53 +337,193 @@ class DiscretionaryCheckService:
                 confidence=0.0,
             )
 
-        # Retrieve evidence from vector store.
-        # When reranking is enabled, oversample (top_k × multiplier) then rerank
-        # down to top_k — mirrors the v1 tabular path (logic.py).
-        reranker_config = self._request.reranker_config
-        search_top_k = (
-            self._request.top_k * self._request.reranking_multiplier
-            if reranker_config
-            else self._request.top_k
-        )
-        qa = QuestionAnswer(
-            question=criterion.text,
-            namespace=self._request.namespace,
-            engine=self._request.engine,
-            embedding=self._request.embedding,
-            sparse_encoder=self._request.sparse_encoder,
-            gptkey=self._request.gptkey,
-            model=self._request.model,
-            temperature=self._request.temperature,
-            max_tokens=self._request.max_tokens,
-            top_k=search_top_k,
-            search_type=self._request.search_type,
-        )
-        if self._request.exclude_chiarimenti:
-            # Clarification-response documents can only point back to existing offer
-            # pages, never add new content — so they must never be judged as evidence
-            # (see docs/COMPLIANCE_V2_IMPLEMENTATION_PLAN.md §7, pattern E). No-op on
-            # chunks that were never tagged with doc_type (backward compatible).
-            qa._metadata_filter = {"doc_type": {"$ne": "chiarimento"}}
-        try:
-            retrieval = await self._repo.get_chunks_from_repo(qa)
-            chunks = retrieval.chunks or []
-            metadata = retrieval.metadata or []
-        except Exception as e:
-            logger.warning("Retrieval failed for criterion '%s': %s", criterion.id, e)
-            chunks = []
-            metadata = []
+        result = await self._evaluate_criterion_once(criterion)
 
-        if reranker_config and chunks:
+        if not self._should_retry_with_hyde(result):
+            return result
+
+        # Ground the hypothetical passage in real text from this tender's own
+        # documents when we have any — even chunks the first retrieval judged
+        # irrelevant still show the real formatting/register/vocabulary of
+        # whatever this tender's paperwork actually looks like, without us
+        # hardcoding anything tender- or domain-specific (see docs/
+        # COMPLIANCE_V2_IMPLEMENTATION_PLAN.md §7.12).
+        style_reference = self._select_style_reference(
+            getattr(result, "_retrieved_chunks", None) or [],
+            getattr(result, "_retrieved_metadata", None) or [],
+        )
+        hyde_passage = await self._generate_hyde_passage(criterion.text, style_reference)
+        if not hyde_passage:
+            return result
+
+        retry_result = await self._evaluate_criterion_once(criterion, retrieval_query=hyde_passage)
+        if not self._is_evidence_empty(retry_result):
+            note = (
+                "Evidenza recuperata tramite una riformulazione della query di ricerca "
+                "(HyDE) — il testo discorsivo del criterio non recuperava evidenza "
+                "sufficiente al primo tentativo."
+            )
+            retry_result.motivation = (
+                f"{retry_result.motivation} [{note}]" if retry_result.motivation else note
+            )
+            retry_result.hyde_used = True
+            return retry_result
+
+        fallback_note = (
+            "Tentato un secondo recupero con una riformulazione della query (HyDE): "
+            "nessuna evidenza aggiuntiva trovata."
+        )
+        result.human_review_reason = (
+            f"{result.human_review_reason} {fallback_note}"
+            if result.human_review_reason else fallback_note
+        )
+        return result
+
+    def _is_evidence_empty(self, result: DiscretionaryResult) -> bool:
+        """True when the judge extracted nothing usable at all — the signal that a
+        HyDE retrieval retry might help, distinct from every other reason a
+        criterion can land in human review (proportional mode by design, low
+        confidence on a real extraction, an unattributed-citation coherence
+        flag — none of those mean retrieval came back empty-handed)."""
+        return (
+            result.coefficient is None
+            and result.measured_value is None
+            and result.measured_quantity is None
+        )
+
+    @staticmethod
+    def _select_style_reference(chunks: List[str], metadata: List[dict], limit: int = 2) -> List[str]:
+        """Pick which of the first attempt's chunks to show the HyDE generator as
+        a style example — prefer ones carrying tabular content over prose.
+
+        Verified empirically on a real tender (2026-09-19, real LLM call): handed
+        two prose excerpts, the model wrote a plausible-but-wrong heading+list
+        passage instead of the table-row format the actual source document uses
+        for this kind of spec — missing the target chunk's real shape. A table
+        row is a far more useful style example than a paragraph for criteria
+        whose answer lives in a data table, which is the common case here.
+        Falls back to the first `limit` chunks in retrieval order when none of
+        them carry a table (nothing tabular to prefer — no worse than before)."""
+        if not chunks:
+            return []
+        tabular = [c for c, m in zip(chunks, metadata) if m.get("has_tables")]
+        pool = tabular if tabular else chunks
+        return pool[:limit]
+
+    def _should_retry_with_hyde(self, result: DiscretionaryResult) -> bool:
+        if not result.human_review_required:
+            return False
+        # A provider failure isn't an evidence problem — retrying immediately with
+        # another LLM call would likely just fail again, piling up cost/latency.
+        if result.human_review_reason and "Errore del provider LLM" in result.human_review_reason:
+            return False
+        return self._is_evidence_empty(result)
+
+    async def _generate_hyde_passage(
+        self, criterion_text: str, style_reference_chunks: Optional[List[str]] = None,
+    ) -> Optional[str]:
+        """HyDE: ask the LLM for a short hypothetical passage written the way the
+        answer would actually appear in this tender's own paperwork, to use as
+        the retrieval query instead of the discursive tender-criterion text.
+
+        Domain-agnostic by construction (§7.12) — this module serves whatever
+        tender is configured at request time, not just one gara, so nothing
+        here may assume bone cement, ME-CC-style codes, or any other
+        tender-specific convention. Instead of hardcoding a style, it grounds
+        the LLM in a couple of REAL excerpts from this tender's own retrieval
+        (even chunks the first attempt judged irrelevant still show the actual
+        register/format/vocabulary of this tender's documents) when available,
+        and falls back to a generic terse-datasheet instruction otherwise.
+
+        Empirically, on a real tender (2026-09-16): an unguided paraphrase does not
+        help at all — what closes the retrieval gap is text that reads like the
+        source table, repeating key terms instead of explaining them. Grounding
+        in real excerpts (2026-09-19) is the domain-agnostic way to reach that
+        same effect for any tender's own formatting conventions, without
+        hardcoding this one's. Best-effort: any failure here just skips the
+        fallback, never breaks the check.
+        """
+        human_message = f"Clausola del capitolato:\n{criterion_text}"
+        if style_reference_chunks:
+            excerpts = "\n---\n".join(c[:250] for c in style_reference_chunks[:2] if c)
+            if excerpts:
+                human_message += (
+                    "\n\nEstratti reali dai documenti di questa gara (il contenuto può "
+                    "essere non pertinente alla clausola — servono solo come riferimento "
+                    f"di stile/formato):\n{excerpts}"
+                )
+        try:
+            response = await self._llm.ainvoke([
+                SystemMessage(content=_HYDE_SYSTEM_PROMPT),
+                HumanMessage(content=human_message),
+            ])
+            passage = self._extract_response_text(response).strip()
+            return passage or None
+        except Exception as e:
+            logger.warning("HyDE passage generation failed for criterion (non-fatal): %s", e)
+            return None
+
+    async def _evaluate_criterion_once(
+        self, criterion: DiscretionaryCriterion, retrieval_query: Optional[str] = None,
+        pre_fetched: Optional[Tuple[List[str], List[dict]]] = None,
+    ) -> DiscretionaryResult:
+        if pre_fetched is not None:
+            # Evidence already retrieved (and reranked, if applicable) by a
+            # caller that wants to judge specific evidence without a fresh
+            # retrieval — e.g. agentic_compliance_checker's evidence_ref flow,
+            # where retrieval and judging are two separate agent tool calls.
+            # retrieval_query is meaningless here (there is no retrieval to
+            # steer) and is ignored.
+            chunks, metadata = pre_fetched
+        else:
+            # Retrieve evidence from vector store.
+            # When reranking is enabled, oversample (top_k × multiplier) then rerank
+            # down to top_k — mirrors the v1 tabular path (logic.py).
+            reranker_config = self._request.reranker_config
+            search_top_k = (
+                self._request.top_k * self._request.reranking_multiplier
+                if reranker_config
+                else self._request.top_k
+            )
+            qa = QuestionAnswer(
+                question=criterion.text,
+                retrieval_query=retrieval_query,
+                namespace=self._request.namespace,
+                engine=self._request.engine,
+                embedding=self._request.embedding,
+                sparse_encoder=self._request.sparse_encoder,
+                gptkey=self._request.gptkey,
+                model=self._request.model,
+                temperature=self._request.temperature,
+                max_tokens=self._request.max_tokens,
+                top_k=search_top_k,
+                search_type=self._request.search_type,
+            )
+            if self._request.exclude_chiarimenti:
+                # Clarification-response documents can only point back to existing offer
+                # pages, never add new content — so they must never be judged as evidence
+                # (see docs/COMPLIANCE_V2_IMPLEMENTATION_PLAN.md §7, pattern E). No-op on
+                # chunks that were never tagged with doc_type (backward compatible).
+                qa._metadata_filter = {"doc_type": {"$ne": "chiarimento"}}
             try:
-                chunks, metadata = await _rerank_chunks(
-                    criterion.text, chunks, metadata, reranker_config, self._request.top_k
-                )
+                retrieval = await self._repo.get_chunks_from_repo(qa)
+                chunks = retrieval.chunks or []
+                metadata = retrieval.metadata or []
             except Exception as e:
-                logger.warning(
-                    "Reranking failed for criterion '%s': %s — proceeding without reranking",
-                    criterion.id, e,
-                )
+                logger.warning("Retrieval failed for criterion '%s': %s", criterion.id, e)
+                chunks = []
+                metadata = []
+
+            if reranker_config and chunks:
+                try:
+                    chunks, metadata = await _rerank_chunks(
+                        criterion.text, chunks, metadata, reranker_config, self._request.top_k
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "Reranking failed for criterion '%s': %s — proceeding without reranking",
+                        criterion.id, e,
+                    )
 
         # No evidence → flag without calling LLM
         if not chunks:
@@ -462,8 +630,9 @@ class DiscretionaryCheckService:
 
         # Coherence guard: the judge reported a positive result (score/measured value)
         # but did NOT anchor it to any real chunk — self-contradictory (see docs/
-        # COMPLIANCE_V2_IMPLEMENTATION_PLAN.md §7, pattern F / real-review regression r.59: "dice che
-        # non trova niente" in one field, then reports a value in another). Legitimate
+        # COMPLIANCE_V2_IMPLEMENTATION_PLAN.md §7, pattern F: a real review found
+        # cases saying "dice che non trova niente" in one field, then reporting a
+        # value in another). Legitimate
         # negative/absent results (coefficient=0, no evidence) are NOT flagged here —
         # that is the correct, expected shape for "requirement genuinely absent".
         claims_positive_result = (
@@ -484,7 +653,7 @@ class DiscretionaryCheckService:
                 f"{human_review_reason} {coherence_note}" if human_review_reason else coherence_note
             )
 
-        return DiscretionaryResult(
+        result = DiscretionaryResult(
             criterion_id=criterion.id,
             criterion_text=criterion.text,
             mode=criterion.mode,
@@ -506,6 +675,35 @@ class DiscretionaryCheckService:
             evidence_text=evidence_text,
             evidence_chunk_index=matched_idx,
         )
+        # Transient, not schema fields: let the caller (_evaluate_criterion)
+        # ground a HyDE retry in this tender's own real document text when the
+        # judge found nothing usable — see _generate_hyde_passage and
+        # _select_style_reference (metadata carries has_tables, used to prefer
+        # a table row over prose as the style example). Same ad hoc
+        # private-attribute idiom already used for QuestionAnswer._metadata_filter.
+        result._retrieved_chunks = chunks
+        result._retrieved_metadata = metadata
+        return result
+
+    @staticmethod
+    def _extract_response_text(response) -> str:
+        """Flatten an LLM response's .content into plain text — handles both a
+        plain string and the list-of-blocks shape some providers return
+        (e.g. Gemini AFC; see controller.py::_normalize_answer_content for the
+        same issue on the main /api/ask path)."""
+        content = response.content
+        if isinstance(content, list):
+            text_parts = []
+            for part in content:
+                if isinstance(part, dict):
+                    if part.get("type") == "text":
+                        text_parts.append(part.get("text", ""))
+                    elif "text" in part:
+                        text_parts.append(part["text"])
+                elif isinstance(part, str):
+                    text_parts.append(part)
+            return "\n".join(text_parts).strip()
+        return str(content).strip()
 
     async def _invoke_judge_once(self, user_prompt: str) -> dict:
         """Single attempt: call the judge LLM and parse its JSON response.
@@ -521,20 +719,7 @@ class DiscretionaryCheckService:
         self.tokens.record(
             response, operation="discretionary_judge", model=model_name_of(self._request.model)
         )
-        content = response.content
-        if isinstance(content, list):
-            text_parts = []
-            for part in content:
-                if isinstance(part, dict):
-                    if part.get("type") == "text":
-                        text_parts.append(part.get("text", ""))
-                    elif "text" in part:
-                        text_parts.append(part["text"])
-                elif isinstance(part, str):
-                    text_parts.append(part)
-            raw = "\n".join(text_parts).strip()
-        else:
-            raw = str(content).strip()
+        raw = self._extract_response_text(response)
 
         if raw.startswith("```"):
             raw = raw.split("```")[1]

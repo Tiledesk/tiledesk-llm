@@ -1185,6 +1185,11 @@ requirements:
 
     @pytest.mark.asyncio
     async def test_no_evidence_flags_not_verifiable(self):
+        """Zero chunks on both the normal try AND the HyDE fallback retry (§7.11:
+        the repo mock always returns empty, regardless of retrieval_query) — still
+        ends in human review. Unlike before §7.11, the LLM IS now invoked once,
+        for the HyDE passage-generation attempt (never for judging — there's
+        nothing to judge with zero chunks either time)."""
         from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
         lot = self._lot_with_discretionary(
             {"id": "P1", "text": "x", "mode": "variabile", "max_points": 8}
@@ -1194,7 +1199,10 @@ requirements:
         repo.get_chunks_from_repo = AsyncMock(
             return_value=RetrievalChunksResult(namespace="ns", chunks=[], metadata=[])
         )
+        hyde_resp = MagicMock()
+        hyde_resp.content = "passaggio ipotetico"
         llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=hyde_resp)
         request = _make_request_v2()
         with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc:
             from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
@@ -1203,7 +1211,212 @@ requirements:
             report = await svc.evaluate_lot(lot)
         result = report.discretionary_results[0]
         assert result.human_review_required is True
-        llm.ainvoke.assert_not_called()
+        assert llm.ainvoke.await_count == 1  # HyDE attempt only, never the judge
+        assert repo.get_chunks_from_repo.await_count == 2  # normal try + HyDE retry
+
+    @pytest.mark.asyncio
+    async def test_hyde_fallback_finds_evidence_on_retry(self):
+        """§7.11: the discursive criterion text finds nothing; the HyDE
+        hypothetical-document query (built to look like a datasheet row) finds
+        real evidence on the retry — that result is used, with an audit note."""
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
+        from tilellm.models.schemas.retrieval_schemas import RetrievalChunksResult
+        lot = self._lot_with_discretionary(
+            {"id": "P1", "text": "Minor temperatura di polimerizzazione", "mode": "variabile", "max_points": 8}
+        )
+        empty = RetrievalChunksResult(namespace="ns", chunks=[], metadata=[])
+        found = RetrievalChunksResult(
+            namespace="ns", chunks=["ME-CC-011 Temperatura massima Temperatura massima 90°C"],
+            metadata=[{"file_name": "scheda.pdf", "page": 29}],
+        )
+        repo = AsyncMock()
+        repo.get_chunks_from_repo = AsyncMock(side_effect=[empty, found])
+
+        hyde_resp = MagicMock()
+        hyde_resp.content = "ME-CC-011 Temperatura massima Temperatura massima 90°C"
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(side_effect=[
+            hyde_resp,
+            _make_judge_response(coefficient=0.9, measured_value="90°C", confidence=0.9),
+        ])
+        request = _make_request_v2()
+        with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc:
+            from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
+            mock_cc.return_value = ComplianceReport(domain="e_procurement", namespace="ns", summary=ComplianceSummary(total=0), results=[])
+            svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
+            report = await svc.evaluate_lot(lot)
+
+        result = report.discretionary_results[0]
+        assert result.coefficient == 0.9
+        assert "HyDE" in result.motivation
+        assert result.hyde_used is True
+        assert repo.get_chunks_from_repo.await_count == 2
+        second_call_qa = repo.get_chunks_from_repo.call_args_list[1].args[0]
+        assert second_call_qa.retrieval_query == "ME-CC-011 Temperatura massima Temperatura massima 90°C"
+
+    @pytest.mark.asyncio
+    async def test_hyde_passage_grounded_in_real_chunks_when_available(self):
+        """§7.12: the HyDE prompt must stay domain-agnostic (this service serves
+        whatever tender is configured, not one specific gara) — so instead of
+        hardcoding a style, it grounds the hypothetical passage in real excerpts
+        from THIS tender's own (even judged-irrelevant) first-attempt chunks,
+        when there are any. Covers the real BIOCOMPOSITE scenario: retrieval
+        finds 1+ chunks, the judge still extracts nothing from them."""
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
+        from tilellm.models.schemas.retrieval_schemas import RetrievalChunksResult
+        from langchain_core.messages import HumanMessage, SystemMessage
+        lot = self._lot_with_discretionary(
+            {"id": "P1", "text": "Minor temperatura di polimerizzazione", "mode": "variabile", "max_points": 8}
+        )
+        irrelevant = RetrievalChunksResult(
+            namespace="ns",
+            chunks=["Confezionamento e trasporto del prodotto in blister sterili."],
+            metadata=[{"file_name": "scheda.pdf", "page": 5}],
+        )
+        empty_retry = RetrievalChunksResult(namespace="ns", chunks=[], metadata=[])
+        repo = AsyncMock()
+        repo.get_chunks_from_repo = AsyncMock(side_effect=[irrelevant, empty_retry])
+
+        no_data_resp = _make_judge_response(coefficient=None, measured_value=None, confidence=0.1)
+        hyde_resp = MagicMock()
+        hyde_resp.content = "passaggio ipotetico"
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(side_effect=[no_data_resp, hyde_resp])
+        request = _make_request_v2()
+        with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc:
+            from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
+            mock_cc.return_value = ComplianceReport(domain="e_procurement", namespace="ns", summary=ComplianceSummary(total=0), results=[])
+            svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
+            await svc.evaluate_lot(lot)
+
+        # Second llm.ainvoke call is the HyDE generation — its HumanMessage must
+        # carry the real (irrelevant-but-real) chunk text as a style reference.
+        hyde_call_messages = llm.ainvoke.call_args_list[1].args[0]
+        human_msg = next(m for m in hyde_call_messages if isinstance(m, HumanMessage))
+        assert "Confezionamento e trasporto del prodotto in blister sterili." in human_msg.content
+        # And the prompt must never hardcode a specific tender's domain vocabulary.
+        system_msg = next(m for m in hyde_call_messages if isinstance(m, SystemMessage))
+        for banned in ("ME-CC", "cemento", "MPa", "bone"):
+            assert banned not in system_msg.content
+
+    def test_select_style_reference_prefers_tabular_chunks(self):
+        """Unit-level: given a mix of prose and tabular chunks from the first
+        attempt, the style reference must prefer the tabular ones — verified
+        with a real LLM (2026-09-19) that prose excerpts make the HyDE model
+        write a plausible-but-wrong heading+list passage instead of matching
+        the table-row format most spec answers actually live in."""
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
+        svc = DiscretionaryCheckService(repo=AsyncMock(), llm=AsyncMock(), request=_make_request_v2())
+
+        chunks = ["prosa introduttiva", "| Codice | Valore |\n|---|---|\n| X | 90 |", "altra prosa"]
+        metadata = [{"has_tables": False}, {"has_tables": True}, {"has_tables": False}]
+
+        selected = svc._select_style_reference(chunks, metadata)
+
+        assert selected == ["| Codice | Valore |\n|---|---|\n| X | 90 |"]
+
+    def test_select_style_reference_falls_back_to_first_n_without_tables(self):
+        """No tabular chunk available → falls back to the first `limit` chunks
+        in retrieval order (no worse than before this refinement)."""
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
+        svc = DiscretionaryCheckService(repo=AsyncMock(), llm=AsyncMock(), request=_make_request_v2())
+
+        chunks = ["prosa uno", "prosa due", "prosa tre"]
+        metadata = [{"has_tables": False}, {"has_tables": False}, {"has_tables": False}]
+
+        selected = svc._select_style_reference(chunks, metadata)
+
+        assert selected == ["prosa uno", "prosa due"]
+
+    @pytest.mark.asyncio
+    async def test_hyde_fallback_not_triggered_when_evidence_found_first_try(self):
+        """The common case must stay cheap: no HyDE call, no second retrieval,
+        when the normal retrieval+judge already produced a real result."""
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
+        lot = self._lot_with_discretionary(
+            {"id": "P1", "text": "plasticità", "mode": "variabile", "max_points": 8}
+        )
+        repo = _make_repo_mock()
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=_make_judge_response(coefficient=0.75, confidence=0.9))
+        request = _make_request_v2()
+        with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc:
+            from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
+            mock_cc.return_value = ComplianceReport(domain="e_procurement", namespace="ns", summary=ComplianceSummary(total=0), results=[])
+            svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
+            report = await svc.evaluate_lot(lot)
+        result = report.discretionary_results[0]
+        assert result.human_review_required is False
+        assert result.hyde_used is False
+        assert llm.ainvoke.await_count == 1  # judge only, no HyDE attempt
+        assert repo.get_chunks_from_repo.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_hyde_fallback_not_triggered_on_provider_error(self):
+        """A provider failure is not an evidence problem — must not trigger a
+        third LLM call (HyDE) piling onto an already-failing provider."""
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import (
+            DiscretionaryCheckService, _MAX_JUDGE_ATTEMPTS,
+        )
+        lot = self._lot_with_discretionary(
+            {"id": "P1", "text": "plasticità", "mode": "variabile", "max_points": 8}
+        )
+        repo = _make_repo_mock()
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(side_effect=ValueError("900-second timeout"))
+        request = _make_request_v2()
+        with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc, \
+             patch("tilellm.modules.compliance_checker.services.discretionary_check_service.asyncio.sleep", new_callable=AsyncMock):
+            from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
+            mock_cc.return_value = ComplianceReport(domain="e_procurement", namespace="ns", summary=ComplianceSummary(total=0), results=[])
+            svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
+            report = await svc.evaluate_lot(lot)
+        result = report.discretionary_results[0]
+        assert result.human_review_required is True
+        assert "provider" in result.human_review_reason.lower()
+        assert llm.ainvoke.await_count == _MAX_JUDGE_ATTEMPTS  # retries only, no HyDE call
+        assert repo.get_chunks_from_repo.await_count == 1  # no second retrieval either
+
+    @pytest.mark.asyncio
+    async def test_evaluate_criterion_once_with_pre_fetched_skips_retrieval(self):
+        """agentic_compliance_checker's evidence_ref flow: retrieval and judging
+        happen in two separate tool calls, so the judge must be able to run on
+        evidence already fetched earlier without a fresh retrieval."""
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
+        lot = self._lot_with_discretionary(
+            {"id": "P1", "text": "plasticità", "mode": "variabile", "max_points": 8}
+        )
+        criterion = lot.requirements.discretionary[0]
+        repo = _make_repo_mock()
+        llm = AsyncMock()
+        llm.ainvoke = AsyncMock(return_value=_make_judge_response(coefficient=0.8, confidence=0.9))
+        request = _make_request_v2()
+        svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
+
+        result = await svc._evaluate_criterion_once(
+            criterion, pre_fetched=(["evidenza pre-recuperata"], [{"file_name": "offerta.pdf", "page": 3}]),
+        )
+
+        assert result.coefficient == 0.8
+        repo.get_chunks_from_repo.assert_not_awaited()  # no retrieval — pre_fetched was used
+
+    @pytest.mark.asyncio
+    async def test_evaluate_criterion_once_with_empty_pre_fetched_flags_without_judge_call(self):
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
+        lot = self._lot_with_discretionary(
+            {"id": "P1", "text": "plasticità", "mode": "variabile", "max_points": 8}
+        )
+        criterion = lot.requirements.discretionary[0]
+        repo = _make_repo_mock()
+        llm = AsyncMock()
+        request = _make_request_v2()
+        svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
+
+        result = await svc._evaluate_criterion_once(criterion, pre_fetched=([], []))
+
+        assert result.human_review_required is True
+        llm.ainvoke.assert_not_awaited()
+        repo.get_chunks_from_repo.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_summary_aggregates_correctly(self):
@@ -1448,7 +1661,7 @@ requirements:
 
     @pytest.mark.asyncio
     async def test_incoherent_positive_result_without_citation_forces_review(self):
-        """Real-review regression r.59: judge reports a positive result but anchors it to no real
+        """Real-review regression: judge reports a positive result but anchors it to no real
         chunk (source_chunk_index=0, evidence_text="") — self-contradictory, must be
         forced to human review even if confidence and mode alone wouldn't flag it."""
         from tilellm.modules.compliance_checker.services.discretionary_check_service import DiscretionaryCheckService
@@ -1776,6 +1989,37 @@ def _make_report_v2(
         namespace=namespace, summary=summary,
         tabular_results=[], discretionary_results=disc,
     )
+
+
+class TestEvidenceBlockNoTruncation:
+    """Fase 7.10: la tabella RC12 mostrava il bug reale a valle del retrieval — non
+    era il retrieval a scartare il chunk corretto (rank #1 dopo reranking), era
+    l'evidence block che lo tagliava a 1500 caratteri prima di mostrarlo al giudice,
+    esattamente a metà della cella con il valore numerico. I chunk sono già delimitati
+    a monte dal chunking table-aware; troncarli di nuovo qui perde contenuto
+    semanticamente rilevante ai fini della gara — non va fatto."""
+
+    def test_build_evidence_block_does_not_truncate_long_chunks(self):
+        from tilellm.modules.compliance_checker.logic import _build_evidence_block
+
+        long_chunk = ("premessa " * 300) + "VALORE-CERCATO: 70 MPa"
+        assert len(long_chunk) > 1500
+
+        block = _build_evidence_block([long_chunk], [{"file_name": "f.pdf", "page": 29}])
+
+        assert "VALORE-CERCATO: 70 MPa" in block
+
+    def test_build_capitolato_evidence_block_does_not_truncate_long_chunks(self):
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import (
+            _build_capitolato_evidence_block,
+        )
+
+        long_chunk = ("premessa " * 300) + "VALORE-CERCATO: 70 MPa"
+        assert len(long_chunk) > 1500
+
+        block = _build_capitolato_evidence_block([long_chunk], [{"file_name": "f.pdf", "page": 29}])
+
+        assert "VALORE-CERCATO: 70 MPa" in block
 
 
 class TestAggregateReportModels:
@@ -2164,7 +2408,7 @@ class TestXlsxTaxonomy:
         assert direction == DiscretionaryDirection.DIRETTO and warn is None
 
     def test_resolve_direction_blank_with_inverse_hint_warns(self):
-        # r.75 (real-review regression): "Minor temperatura di polimerizzazione..." left direction blank.
+        # r.75, real review: "Minor temperatura di polimerizzazione..." left direction blank.
         direction, warn = _tax.resolve_direction(
             "", "Minor temperatura di polimerizzazione. Il punteggio massimo..."
         )
@@ -2172,7 +2416,7 @@ class TestXlsxTaxonomy:
         assert warn is not None and "inverso" in warn
 
     def test_resolve_direction_blank_with_tempo_hint_warns(self):
-        # r.112-115 (real-review regression): "Tempo di miscelazione <= 5 min" scored in the wrong direction.
+        # r.112-115, real review: "Tempo di miscelazione <= 5 min" scored in the wrong direction.
         direction, warn = _tax.resolve_direction("", "Tempo di miscelazione più basso possibile")
         assert warn is not None
 
@@ -2655,7 +2899,7 @@ class TestResolveProportional:
 
 
 class TestResolveProportionalInverso:
-    """Regression: real-review testing found the system always scored 'higher wins' even
+    """Regression: a real review found the system always scored 'higher wins' even
     for criteria where the LOWEST value should win (r.75/76 'minor temperatura di
     polimerizzazione', r.112-115 'tempo di miscelazione minore')."""
 

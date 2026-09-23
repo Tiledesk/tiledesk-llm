@@ -973,13 +973,18 @@ class QdrantRepository(VectorStoreRepository):
 
             start_time = datetime.datetime.now() if question_answer.debug else 0
 
+            # HyDE (and future Self-RAG) set retrieval_query to a hypothetical document
+            # meant to be embedded in place of the raw question — falls back to .question
+            # when unset, so this is a no-op for every existing caller.
+            retrieval_q = question_answer.retrieval_query or question_answer.question
+
             if question_answer.search_type == 'hybrid':
                 emb_dimension = await self.get_embeddings_dimension(question_answer.embedding)
                 logger.debug(f"emb_dimension: {emb_dimension}")
                 sparse_encoder = TiledeskSparseEncoders(question_answer.sparse_encoder)
                 index = vector_store.client
-                sparse_vector = await sparse_encoder.aencode_queries(question_answer.question)
-                dense_vector = await embedding_obj.aembed_query(question_answer.question)
+                sparse_vector = await sparse_encoder.aencode_queries(retrieval_q)
+                dense_vector = await embedding_obj.aembed_query(retrieval_q)
                 if question_answer.alpha == 0.5:
                     dense = dense_vector
                     sparse = sparse_vector
@@ -1023,7 +1028,7 @@ class QdrantRepository(VectorStoreRepository):
                 # _validate_collection_for_dense() which embeds "dummy_text" on every
                 # call to check vector dimensions, causing an extra unnecessary TEI round-trip.
                 index = vector_store.client
-                dense_vector = await embedding_obj.aembed_query(question_answer.question)
+                dense_vector = await embedding_obj.aembed_query(retrieval_q)
                 search_result = index.query_points(
                     collection_name=question_answer.engine.index_name,
                     query=dense_vector,

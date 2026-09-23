@@ -13,12 +13,13 @@ Keys per session (never one JSON blob — HSET/RPUSH/INCR are atomic per field,
 a single blob would lose writes under the asyncio.gather fan-out later phases
 use for batched evaluation):
 
-    acc:sess:{sid}            HASH    config, lot, created_at, id_project, request_id
-    acc:sess:{sid}:trace      LIST    RPUSH-only, one TraceRecord JSON per tool call
-    acc:sess:{sid}:seq        STRING  INCR counter, source of TraceRecord.seq (race-free)
-    acc:sess:{sid}:evidence   HASH    evidence_ref -> EvidenceEntry JSON            (from P3)
-    acc:sess:{sid}:results    HASH    "{namespace}|disc|{criterion_id}" -> ... JSON (from P3)
-    acc:sess:{sid}:attempts   HASH    "{namespace}|{criterion_id}" -> int           (from P3)
+    acc:sess:{sid}                HASH  config, lot, created_at, id_project, request_id
+    acc:sess:{sid}:trace          LIST  RPUSH-only, one TraceRecord JSON per tool call
+    acc:sess:{sid}:seq            STR   INCR counter, source of TraceRecord.seq (race-free)
+    acc:sess:{sid}:evidence       HASH  evidence_ref -> EvidenceEntry JSON
+    acc:sess:{sid}:evidence:order LIST  evidence_ref insertion order, for FIFO eviction
+    acc:sess:{sid}:results        HASH  "{namespace}|disc|{criterion_id}" -> DiscretionaryResult JSON
+    acc:sess:{sid}:attempts       HASH  "{namespace}|{criterion_id}" -> int
 
 TTL is refreshed on every read/write across all of a session's keys together,
 so a session in active use never expires mid-run; one that goes idle expires
@@ -36,9 +37,15 @@ from typing import List, Optional
 
 import redis.asyncio as aioredis
 
-from tilellm.modules.agentic_compliance_checker.models import SessionNotFound, TraceRecord
+from tilellm.modules.agentic_compliance_checker.models import (
+    EvidenceEntry,
+    EvidenceNotFound,
+    SessionNotFound,
+    TraceRecord,
+)
 from tilellm.modules.compliance_checker.models_v2 import (
     BulkComplianceRequestV2,
+    DiscretionaryResult,
     TenderLotRequirements,
 )
 
@@ -46,6 +53,10 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 SESSION_TTL_SECONDS = int(os.environ.get("AGENTIC_COMPLIANCE_SESSION_TTL", "21600"))  # 6h
+# Caps the COUNT of cached evidence_refs, never the text of a chunk — full
+# chunk text is never truncated (see EvidenceEntry docstring). FIFO eviction:
+# oldest evidence_ref is dropped first when the cap is hit.
+MAX_EVIDENCE_REFS = int(os.environ.get("AGENTIC_COMPLIANCE_MAX_EVIDENCE_REFS", "200"))
 _KEY_PREFIX = "acc:sess"
 
 
@@ -65,6 +76,10 @@ def _evidence_key(session_id: str) -> str:
     return f"{_KEY_PREFIX}:{session_id}:evidence"
 
 
+def _evidence_order_key(session_id: str) -> str:
+    return f"{_KEY_PREFIX}:{session_id}:evidence:order"
+
+
 def _results_key(session_id: str) -> str:
     return f"{_KEY_PREFIX}:{session_id}:results"
 
@@ -79,9 +94,18 @@ def _all_keys(session_id: str) -> List[str]:
         _trace_key(session_id),
         _seq_key(session_id),
         _evidence_key(session_id),
+        _evidence_order_key(session_id),
         _results_key(session_id),
         _attempts_key(session_id),
     ]
+
+
+def _result_field(namespace: str, criterion_id: str) -> str:
+    return f"{namespace}|disc|{criterion_id}"
+
+
+def _attempts_field(namespace: str, criterion_id: str) -> str:
+    return f"{namespace}|{criterion_id}"
 
 
 def _serialize_request(request: BulkComplianceRequestV2) -> str:
@@ -204,3 +228,82 @@ class SessionStore:
         client = await cls._get_client()
         raw_records = await client.lrange(_trace_key(session_id), 0, -1)
         return [TraceRecord.model_validate_json(r) for r in raw_records]
+
+    # ------------------------------------------------------------------
+    # Evidence (P3) — chunks cached under an opaque ref so an agent's context
+    # only ever sees a preview + handle, never the full retrieved text.
+    # ------------------------------------------------------------------
+
+    @classmethod
+    async def store_evidence(cls, session_id: str, entry: EvidenceEntry) -> None:
+        if not await cls.exists(session_id):
+            raise SessionNotFound(session_id)
+        client = await cls._get_client()
+        await client.hset(_evidence_key(session_id), entry.evidence_ref, entry.model_dump_json())
+        await client.rpush(_evidence_order_key(session_id), entry.evidence_ref)
+        # FIFO eviction on count, never on chunk text (see MAX_EVIDENCE_REFS).
+        while await client.llen(_evidence_order_key(session_id)) > MAX_EVIDENCE_REFS:
+            oldest = await client.lpop(_evidence_order_key(session_id))
+            if oldest is not None:
+                await client.hdel(_evidence_key(session_id), oldest)
+        await cls.touch(session_id)
+
+    @classmethod
+    async def get_evidence(cls, session_id: str, evidence_ref: str) -> EvidenceEntry:
+        client = await cls._get_client()
+        raw = await client.hget(_evidence_key(session_id), evidence_ref)
+        if raw is None:
+            if not await cls.exists(session_id):
+                raise SessionNotFound(session_id)
+            raise EvidenceNotFound(session_id, evidence_ref)
+        return EvidenceEntry.model_validate_json(raw)
+
+    # ------------------------------------------------------------------
+    # Results (P3) — one DiscretionaryResult per (namespace, criterion_id).
+    # ------------------------------------------------------------------
+
+    @classmethod
+    async def store_result(
+        cls, session_id: str, namespace: str, criterion_id: str, result: DiscretionaryResult,
+    ) -> None:
+        if not await cls.exists(session_id):
+            raise SessionNotFound(session_id)
+        client = await cls._get_client()
+        await client.hset(
+            _results_key(session_id), _result_field(namespace, criterion_id), result.model_dump_json(),
+        )
+        await cls.touch(session_id)
+
+    @classmethod
+    async def get_result(
+        cls, session_id: str, namespace: str, criterion_id: str,
+    ) -> Optional[DiscretionaryResult]:
+        client = await cls._get_client()
+        raw = await client.hget(_results_key(session_id), _result_field(namespace, criterion_id))
+        return DiscretionaryResult.model_validate_json(raw) if raw is not None else None
+
+    @classmethod
+    async def get_results(cls, session_id: str, namespace: Optional[str] = None) -> List[DiscretionaryResult]:
+        """All stored discretionary results, optionally filtered to one operator's
+        namespace — used by compliance_build_report (P3) and, unfiltered, by
+        compliance_resolve_proportional (P5, needs every operator together)."""
+        client = await cls._get_client()
+        raw_map = await client.hgetall(_results_key(session_id))
+        results = []
+        for field, raw in raw_map.items():
+            if namespace is not None and not field.startswith(f"{namespace}|disc|"):
+                continue
+            results.append(DiscretionaryResult.model_validate_json(raw))
+        return results
+
+    # ------------------------------------------------------------------
+    # Attempts (P3) — how many times a criterion has been (re-)evaluated,
+    # for the trace and for the P5 re-roll policy.
+    # ------------------------------------------------------------------
+
+    @classmethod
+    async def increment_attempts(cls, session_id: str, namespace: str, criterion_id: str) -> int:
+        client = await cls._get_client()
+        count = await client.hincrby(_attempts_key(session_id), _attempts_field(namespace, criterion_id), 1)
+        await cls.touch(session_id)
+        return count

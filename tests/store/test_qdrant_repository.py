@@ -415,11 +415,15 @@ async def test_get_chunks_from_repo_exposes_chunk_ids(mocker):
     mock_embedding_obj = AsyncMock()
     mock_embedding_obj.aembed_query = AsyncMock(return_value=[0.1, 0.2])
 
-    mock_factory = AsyncMock()
-    mock_factory.create = AsyncMock(return_value=(mock_embedding_obj, 1536))
-    mocker.patch(
-        "tilellm.shared.embeddings.embedding_client_manager.CachedAsyncEmbeddingFactory",
-        return_value=mock_factory,
+    # Patch create() on the class itself, not the constructor: the decorator caches
+    # its CachedAsyncEmbeddingFactory() instance in a closure the first time any test
+    # calls it, so a later mocker.patch(..., return_value=...) on the constructor is a
+    # no-op once another test already triggered that cache — order-dependent flakiness
+    # seen empirically. Patching the method works regardless of which instance is cached.
+    from tilellm.shared.embeddings.embedding_client_manager import CachedAsyncEmbeddingFactory
+    mocker.patch.object(
+        CachedAsyncEmbeddingFactory, "create",
+        AsyncMock(return_value=(mock_embedding_obj, 1536)),
     )
 
     repo = QdrantRepository()
@@ -428,6 +432,116 @@ async def test_get_chunks_from_repo_exposes_chunk_ids(mocker):
     result = await repo.get_chunks_from_repo(question_answer)
 
     assert result.chunk_ids == ["point-123"]
+
+
+@pytest.mark.asyncio
+async def test_get_chunks_from_repo_uses_retrieval_query_when_set(mocker):
+    """HyDE (and future Self-RAG): when question_answer.retrieval_query is set, the
+    embedding call must use it instead of .question — otherwise the hypothetical
+    document generated upstream (tilellm/agents/nodes.py::hyde_node) never actually
+    reaches the vector store, silently no-opping HyDE through this repository."""
+    from pydantic import SecretStr
+    from tilellm.models import QuestionAnswer
+    from tilellm.store.qdrant.qdrant_repository_local import QdrantRepository
+
+    mock_engine = Engine(
+        name="qdrant", deployment="local", host="localhost", port=6333,
+        index_name="test-collection", apikey=None,
+    )
+    question_answer = QuestionAnswer(
+        question="domanda originale", retrieval_query="passaggio ipotetico HyDE",
+        namespace="ns", engine=mock_engine, search_type="similarity", top_k=2,
+        gptkey=SecretStr("test-key"),
+    )
+
+    mock_point = MagicMock()
+    mock_point.id = "point-1"
+    mock_point.payload = {"page_content": "hello", "metadata": {"source": "s1"}}
+
+    mock_client = MagicMock()
+    mock_client.query_points = MagicMock(return_value=MagicMock(points=[mock_point]))
+    mock_vector_store = MagicMock()
+    mock_vector_store.client = mock_client
+
+    mock_embedding_obj = AsyncMock()
+    mock_embedding_obj.aembed_query = AsyncMock(return_value=[0.1, 0.2])
+
+    # Patch create() on the class itself, not the constructor: the decorator caches
+    # its CachedAsyncEmbeddingFactory() instance in a closure the first time any test
+    # calls it, so a later mocker.patch(..., return_value=...) on the constructor is a
+    # no-op once another test already triggered that cache — order-dependent flakiness
+    # seen empirically. Patching the method works regardless of which instance is cached.
+    from tilellm.shared.embeddings.embedding_client_manager import CachedAsyncEmbeddingFactory
+    mocker.patch.object(
+        CachedAsyncEmbeddingFactory, "create",
+        AsyncMock(return_value=(mock_embedding_obj, 1536)),
+    )
+
+    repo = QdrantRepository()
+    mocker.patch.object(repo, "create_index", AsyncMock(return_value=mock_vector_store))
+
+    await repo.get_chunks_from_repo(question_answer)
+
+    mock_embedding_obj.aembed_query.assert_awaited_once_with("passaggio ipotetico HyDE")
+
+
+@pytest.mark.asyncio
+async def test_get_chunks_from_repo_hybrid_uses_retrieval_query_when_set(mocker):
+    """Same guarantee as above, on the hybrid (dense+sparse) search path — the one
+    actually used by compliance_checker/discretionary_check_service."""
+    from pydantic import SecretStr
+    from tilellm.models import QuestionAnswer
+    from tilellm.store.qdrant.qdrant_repository_local import QdrantRepository
+
+    mock_engine = Engine(
+        name="qdrant", deployment="local", host="localhost", port=6333,
+        index_name="test-collection", apikey=None,
+    )
+    question_answer = QuestionAnswer(
+        question="domanda originale", retrieval_query="passaggio ipotetico HyDE",
+        namespace="ns", engine=mock_engine, search_type="hybrid", top_k=2,
+        gptkey=SecretStr("test-key"), sparse_encoder="splade",
+    )
+
+    mock_point = MagicMock()
+    mock_point.id = "point-1"
+    mock_point.payload = {"page_content": "hello", "metadata": {"source": "s1"}}
+
+    mock_client = MagicMock()
+    mock_client.query_points = MagicMock(return_value=MagicMock(points=[mock_point]))
+    mock_vector_store = MagicMock()
+    mock_vector_store.client = mock_client
+
+    mock_embedding_obj = AsyncMock()
+    mock_embedding_obj.aembed_query = AsyncMock(return_value=[0.1, 0.2])
+
+    # Patch create() on the class itself, not the constructor: the decorator caches
+    # its CachedAsyncEmbeddingFactory() instance in a closure the first time any test
+    # calls it, so a later mocker.patch(..., return_value=...) on the constructor is a
+    # no-op once another test already triggered that cache — order-dependent flakiness
+    # seen empirically. Patching the method works regardless of which instance is cached.
+    from tilellm.shared.embeddings.embedding_client_manager import CachedAsyncEmbeddingFactory
+    mocker.patch.object(
+        CachedAsyncEmbeddingFactory, "create",
+        AsyncMock(return_value=(mock_embedding_obj, 1536)),
+    )
+
+    mock_sparse_encoder = AsyncMock()
+    mock_sparse_encoder.aencode_queries = AsyncMock(return_value={"indices": [1], "values": [0.5]})
+    mocker.patch(
+        "tilellm.store.qdrant.qdrant_repository_local.TiledeskSparseEncoders",
+        return_value=mock_sparse_encoder,
+    )
+
+    repo = QdrantRepository()
+    mocker.patch.object(repo, "create_index", AsyncMock(return_value=mock_vector_store))
+    mocker.patch.object(repo, "get_embeddings_dimension", AsyncMock(return_value=1536))
+
+    await repo.get_chunks_from_repo(question_answer)
+
+    mock_embedding_obj.aembed_query.assert_awaited_once_with("passaggio ipotetico HyDE")
+    mock_sparse_encoder.aencode_queries.assert_awaited_once_with("passaggio ipotetico HyDE")
+
 
 @pytest.mark.asyncio
 async def test_get_desc_namespace_success(mocker):

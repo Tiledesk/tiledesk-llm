@@ -82,7 +82,13 @@ def _build_evidence_block(chunks: List[str], metadata: List[dict]) -> str:
         if section:
             header += f" | {section}"
         lines.append(header)
-        lines.append(chunk[:1500])
+        # No truncation: chunks are already bounded upstream by table-aware chunking
+        # (markdown_chunker.py), which deliberately keeps a table's rows together even
+        # past the nominal chunk_size. A fixed-length cut here silently reintroduces
+        # data loss for exactly the criteria that need a table's later rows — found on
+        # a real tender (RC12/BIOCOMPOSITE, 2026-09-16): the cut landed mid-cell, right
+        # before the numeric value the proportional criterion needed.
+        lines.append(chunk)
         lines.append("")
     return "\n".join(lines)
 

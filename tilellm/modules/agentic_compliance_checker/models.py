@@ -28,6 +28,19 @@ class SessionNotFound(Exception):
         super().__init__(f"Sessione '{session_id}' non trovata (scaduta o mai creata).")
 
 
+class EvidenceNotFound(Exception):
+    """Raised when an evidence_ref is unknown, expired with its session, or was
+    evicted by the FIFO cap (AGENTIC_COMPLIANCE_MAX_EVIDENCE_REFS)."""
+
+    def __init__(self, session_id: str, evidence_ref: str):
+        self.session_id = session_id
+        self.evidence_ref = evidence_ref
+        super().__init__(
+            f"Sessione '{session_id}': evidence_ref '{evidence_ref}' non trovato "
+            "(mai creato, sessione scaduta, o evidenza rimpiazzata da retrieval più recenti)."
+        )
+
+
 class TraceIncompleteError(Exception):
     """Raised by build_report when a stored result has no matching, digest-verified
     trace entry — the report-implies-trace guarantee this module exists to provide."""
@@ -64,6 +77,23 @@ class TraceRecord(BaseModel):
     guardrails: List[str] = Field(default_factory=list)
     result_digest: Optional[str] = None
     attempt: Optional[int] = None
+
+
+class EvidenceEntry(BaseModel):
+    """Chunks + metadata cached under an evidence_ref by compliance_retrieve_evidence
+    (P3), consumed later by compliance_evaluate_criteria via
+    DiscretionaryCheckService._evaluate_criterion_once(pre_fetched=...). Storing
+    the full text here (never truncated, same policy as compliance_checker's own
+    _build_evidence_block) is what lets a judge tool call work on exactly the
+    evidence a caller inspected, without a second retrieval."""
+    evidence_ref: str
+    namespace: str
+    criterion_id: Optional[str] = None
+    query: str
+    query_kind: str  # "criterion" | "custom" | "hyde"
+    chunks: List[str]
+    metadata: List[Dict[str, Any]]
+    ts: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
 class SessionOpenResponse(BaseModel):

@@ -1,5 +1,7 @@
 """
-logic.py — session lifecycle (open/status/close) and the _resolve_deps DI seam (P1).
+logic.py — session lifecycle (open/status/close). _resolve_deps moved to
+services/deps.py in P3 to avoid a circular import (tools_core.py needs it
+too, and tools_core -> logic -> langchain_tools -> tools_core would cycle).
 """
 import fakeredis.aioredis
 import pytest
@@ -7,12 +9,12 @@ from langchain_openai import ChatOpenAI
 from pydantic import SecretStr
 
 from tilellm.modules.agentic_compliance_checker.logic import (
-    _resolve_deps,
     close_session,
     get_session_status,
     open_session,
 )
 from tilellm.modules.agentic_compliance_checker.models import SessionNotFound
+from tilellm.modules.agentic_compliance_checker.services.deps import _resolve_deps
 from tilellm.modules.agentic_compliance_checker.services.session_store import SessionStore
 from tilellm.modules.compliance_checker.models_v2 import BulkComplianceRequestV2, ComplianceRequestV2, OperatorRef
 from tilellm.models import Engine
