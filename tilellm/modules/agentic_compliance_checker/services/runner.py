@@ -8,7 +8,11 @@ from typing import Optional
 
 from tilellm.modules.agentic_compliance_checker.services.deps import _resolve_deps
 from tilellm.modules.agentic_compliance_checker.services.session_store import SessionStore
-from tilellm.modules.compliance_checker.models_v2 import DiscretionaryCriterion, OperatorRef
+from tilellm.modules.compliance_checker.models_v2 import (
+    DiscretionaryCriterion,
+    OperatorRef,
+    TabularRequirementV2,
+)
 from tilellm.modules.compliance_checker.services.discretionary_check_service import (
     DiscretionaryCheckService,
 )
@@ -42,6 +46,14 @@ async def resolve_criterion(session_id: str, criterion_id: str) -> Discretionary
         if c.id == criterion_id:
             return c
     raise ValueError(f"Criterio discrezionale '{criterion_id}' non trovato nel lotto.")
+
+
+async def resolve_tabular_requirement(session_id: str, requirement_id: str) -> TabularRequirementV2:
+    lot = await SessionStore.get_lot(session_id)
+    for r in lot.requirements.tabular:
+        if r.id == requirement_id:
+            return r
+    raise ValueError(f"Requisito tabellare '{requirement_id}' non trovato nel lotto.")
 
 
 async def build_service_for_operator(session_id: str, operator: OperatorRef) -> DiscretionaryCheckService:

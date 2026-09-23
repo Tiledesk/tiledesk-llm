@@ -19,6 +19,8 @@ use for batched evaluation):
     acc:sess:{sid}:evidence       HASH  evidence_ref -> EvidenceEntry JSON
     acc:sess:{sid}:evidence:order LIST  evidence_ref insertion order, for FIFO eviction
     acc:sess:{sid}:results        HASH  "{namespace}|disc|{criterion_id}" -> DiscretionaryResult JSON
+                                         "{namespace}|tab|{requirement_id}" -> ComplianceResult JSON
+                                         "{namespace}|l01" -> L01CheckResult JSON
     acc:sess:{sid}:attempts       HASH  "{namespace}|{criterion_id}" -> int
 
 TTL is refreshed on every read/write across all of a session's keys together,
@@ -43,9 +45,11 @@ from tilellm.modules.agentic_compliance_checker.models import (
     SessionNotFound,
     TraceRecord,
 )
+from tilellm.modules.compliance_checker.models import ComplianceResult
 from tilellm.modules.compliance_checker.models_v2 import (
     BulkComplianceRequestV2,
     DiscretionaryResult,
+    L01CheckResult,
     TenderLotRequirements,
 )
 
@@ -102,6 +106,14 @@ def _all_keys(session_id: str) -> List[str]:
 
 def _result_field(namespace: str, criterion_id: str) -> str:
     return f"{namespace}|disc|{criterion_id}"
+
+
+def _tabular_result_field(namespace: str, requirement_id: str) -> str:
+    return f"{namespace}|tab|{requirement_id}"
+
+
+def _l01_field(namespace: str) -> str:
+    return f"{namespace}|l01"
 
 
 def _attempts_field(namespace: str, criterion_id: str) -> str:
@@ -286,15 +298,72 @@ class SessionStore:
     async def get_results(cls, session_id: str, namespace: Optional[str] = None) -> List[DiscretionaryResult]:
         """All stored discretionary results, optionally filtered to one operator's
         namespace — used by compliance_build_report (P3) and, unfiltered, by
-        compliance_resolve_proportional (P5, needs every operator together)."""
+        compliance_resolve_proportional (P5, needs every operator together).
+
+        Always filters to "|disc|" fields — the results HASH also holds tabular
+        ("|tab|") and L01 ("|l01") entries (P4) under the same key, which are a
+        different schema and would fail DiscretionaryResult validation if let through."""
         client = await cls._get_client()
         raw_map = await client.hgetall(_results_key(session_id))
+        prefix = f"{namespace}|disc|" if namespace is not None else None
         results = []
         for field, raw in raw_map.items():
-            if namespace is not None and not field.startswith(f"{namespace}|disc|"):
+            if prefix is not None:
+                if not field.startswith(prefix):
+                    continue
+            elif "|disc|" not in field:
                 continue
             results.append(DiscretionaryResult.model_validate_json(raw))
         return results
+
+    # ------------------------------------------------------------------
+    # Tabular results (P4) — one ComplianceResult per (namespace, requirement_id).
+    # ------------------------------------------------------------------
+
+    @classmethod
+    async def store_tabular_result(
+        cls, session_id: str, namespace: str, requirement_id: str, result: ComplianceResult,
+    ) -> None:
+        if not await cls.exists(session_id):
+            raise SessionNotFound(session_id)
+        client = await cls._get_client()
+        await client.hset(
+            _results_key(session_id), _tabular_result_field(namespace, requirement_id), result.model_dump_json(),
+        )
+        await cls.touch(session_id)
+
+    @classmethod
+    async def get_tabular_results(cls, session_id: str, namespace: Optional[str] = None) -> List[ComplianceResult]:
+        client = await cls._get_client()
+        raw_map = await client.hgetall(_results_key(session_id))
+        prefix = f"{namespace}|tab|" if namespace is not None else None
+        results = []
+        for field, raw in raw_map.items():
+            if prefix is not None:
+                if not field.startswith(prefix):
+                    continue
+            elif "|tab|" not in field:
+                continue
+            results.append(ComplianceResult.model_validate_json(raw))
+        return results
+
+    # ------------------------------------------------------------------
+    # L01 result (P4) — one L01CheckResult per namespace, zero LLM.
+    # ------------------------------------------------------------------
+
+    @classmethod
+    async def store_l01_result(cls, session_id: str, namespace: str, result: L01CheckResult) -> None:
+        if not await cls.exists(session_id):
+            raise SessionNotFound(session_id)
+        client = await cls._get_client()
+        await client.hset(_results_key(session_id), _l01_field(namespace), result.model_dump_json())
+        await cls.touch(session_id)
+
+    @classmethod
+    async def get_l01_result(cls, session_id: str, namespace: str) -> Optional[L01CheckResult]:
+        client = await cls._get_client()
+        raw = await client.hget(_results_key(session_id), _l01_field(namespace))
+        return L01CheckResult.model_validate_json(raw) if raw is not None else None
 
     # ------------------------------------------------------------------
     # Attempts (P3) — how many times a criterion has been (re-)evaluated,

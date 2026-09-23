@@ -396,8 +396,109 @@ async def evaluate_criteria_core(
 
 
 # ---------------------------------------------------------------------------
-# compliance_build_report (P3, minimal — single operator; multi-operator
-# aggregation across proportional criteria is P5)
+# compliance_check_tabular (P4)
+# ---------------------------------------------------------------------------
+
+@traced_tool("compliance_check_tabular")
+async def check_tabular_core(
+    *, session_id: str, requirement_ids: Optional[List[str]] = None,
+    operators: Optional[List[str]] = None,
+) -> str:
+    """Evaluates tabular (presence/absence) requirements for one or more
+    operators via DiscretionaryCheckService._check_tabular — the same path
+    /v2/check uses, which itself delegates to v1 check_compliance. No
+    separate judgment logic here; this function only selects WHICH
+    requirements/operators, same division of responsibility as
+    evaluate_criteria_core.
+    """
+    bulk_request = await SessionStore.get_request(session_id)
+    target_operators = (
+        [await runner.resolve_operator(session_id, o) for o in operators]
+        if operators else bulk_request.operators
+    )
+    lot = await SessionStore.get_lot(session_id)
+
+    if requirement_ids is not None:
+        wanted = set(requirement_ids)
+        for rid in wanted:
+            await runner.resolve_tabular_requirement(session_id, rid)  # raises if unknown
+        filtered_tabular = [r for r in lot.requirements.tabular if r.id in wanted]
+    else:
+        filtered_tabular = lot.requirements.tabular
+    filtered_lot = lot.model_copy(update={
+        "requirements": lot.requirements.model_copy(update={
+            "tabular": filtered_tabular, "discretionary": [],
+        }),
+    })
+
+    results_out = []
+    token_total = {"prompt": 0, "completion": 0, "total": 0}
+    for operator_ref in target_operators:
+        service = await runner.build_service_for_operator(session_id, operator_ref)
+        results = await service._check_tabular(filtered_lot)
+        for result in results:
+            await SessionStore.store_tabular_result(
+                session_id, operator_ref.namespace, result.requirement_id, result,
+            )
+            results_out.append({
+                "requirement_id": result.requirement_id,
+                "operator": operator_ref.operator_label or operator_ref.namespace,
+                "judgment": result.judgment,
+                "confidence": result.confidence,
+                "mandatory": result.mandatory,
+                "evidence_document": result.evidence_document,
+                "evidence_page": result.evidence_page,
+            })
+        totals = service.tokens.total()
+        for k in token_total:
+            token_total[k] += totals.get(k, 0)
+
+    record_trace_detail(
+        llm=token_total,
+        judge={"requirement_count": len(filtered_tabular), "operator_count": len(target_operators)},
+    )
+    return json.dumps({"results": results_out}, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# compliance_check_l01 (P4) — pure listino<->PDF reconciliation, zero LLM
+# ---------------------------------------------------------------------------
+
+@traced_tool("compliance_check_l01")
+async def check_l01_core(*, session_id: str, operators: Optional[List[str]] = None) -> str:
+    """Reconciles each operator's structured L01 price list against the PDF
+    technical sheets already indexed for them, via
+    DiscretionaryCheckService._check_l01 — the same path /v2/check uses. Pure
+    code/name matching, no LLM call; opt-in per operator (l01_xlsx_url on
+    that operator's request — used=False, not an error, when absent).
+    """
+    bulk_request = await SessionStore.get_request(session_id)
+    target_operators = (
+        [await runner.resolve_operator(session_id, o) for o in operators]
+        if operators else bulk_request.operators
+    )
+
+    results_out = []
+    for operator_ref in target_operators:
+        service = await runner.build_service_for_operator(session_id, operator_ref)
+        result = await service._check_l01()
+        await SessionStore.store_l01_result(session_id, operator_ref.namespace, result)
+        results_out.append({
+            "operator": operator_ref.operator_label or operator_ref.namespace,
+            "used": result.used,
+            "l01_products_total": result.l01_products_total,
+            "matched": result.matched,
+            "missing_count": result.missing_count,
+            "missing": result.missing,
+        })
+
+    record_trace_detail(judge={"operator_count": len(target_operators)})
+    return json.dumps({"results": results_out}, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# compliance_build_report (P3 minimal, extended in P4 with tabular/L01 —
+# multi-operator aggregation across proportional criteria is still P5)
 # ---------------------------------------------------------------------------
 
 @traced_tool("compliance_build_report")
@@ -413,16 +514,22 @@ async def build_report_core(*, session_id: str, operator: Optional[str] = None) 
     operator_ref = await runner.resolve_operator(session_id, operator)
     lot = await SessionStore.get_lot(session_id)
     disc_results = await SessionStore.get_results(session_id, namespace=operator_ref.namespace)
+    tab_results = await SessionStore.get_tabular_results(session_id, namespace=operator_ref.namespace)
+    l01_result = await SessionStore.get_l01_result(session_id, operator_ref.namespace)
 
     evaluated_ids = {r.criterion_id for r in disc_results}
     unevaluated = [c.id for c in lot.requirements.discretionary if c.id not in evaluated_ids]
+    evaluated_tab_ids = {r.requirement_id for r in tab_results}
+    unevaluated_tabular = [r.id for r in lot.requirements.tabular if r.id not in evaluated_tab_ids]
 
-    summary = ComplianceSummaryV2.from_results(tabular_results=[], disc_results=disc_results)
+    summary = ComplianceSummaryV2.from_results(tabular_results=tab_results, disc_results=disc_results)
 
     return json.dumps({
         "operator": operator_ref.operator_label or operator_ref.namespace,
         "tender": {"lot_id": lot.tender.lot_id, "lot_name": lot.tender.lot_name},
         "summary": json.loads(summary.model_dump_json()),
         "unevaluated_criteria": unevaluated,
+        "unevaluated_tabular": unevaluated_tabular,
+        "l01_check": json.loads(l01_result.model_dump_json()) if l01_result else None,
         "human_review_count": summary.human_review_count,
     }, ensure_ascii=False)

@@ -15,6 +15,8 @@ from pydantic import BaseModel, Field
 from tilellm.modules.agentic_compliance_checker.models import EvidenceNotFound, SessionNotFound
 from tilellm.modules.agentic_compliance_checker.services.tools_core import (
     build_report_core,
+    check_l01_core,
+    check_tabular_core,
     evaluate_criteria_core,
     list_requirements_core,
     retrieve_evidence_core,
@@ -126,6 +128,47 @@ async def compliance_evaluate_criteria(
     ))
 
 
+class CheckTabularArgs(BaseModel):
+    session_id: str = Field(description="Identificativo della sessione di verifica.")
+    requirement_ids: Optional[List[str]] = Field(
+        default=None,
+        description="Id dei requisiti tabellari da verificare. Default: tutti quelli del lotto.",
+    )
+    operators: Optional[List[str]] = Field(
+        default=None, description="Operatori economici da verificare. Default: tutti quelli della sessione."
+    )
+
+
+@tool(args_schema=CheckTabularArgs)
+async def compliance_check_tabular(
+    session_id: str, requirement_ids: Optional[List[str]] = None, operators: Optional[List[str]] = None,
+) -> str:
+    """Verifica i requisiti tabellari (presenza/assenza, es. certificazioni, requisiti
+    obbligatori) di uno o più operatori economici. Usa lo stesso motore di giudizio
+    dell'endpoint /v2/check: recupera evidenze e produce un giudizio SI/NO/PARZIALE/N.V.
+    per ciascun requisito. Il giudizio è calcolato dal sistema, non dall'agente."""
+    return await _safe(check_tabular_core(
+        session_id=session_id, requirement_ids=requirement_ids, operators=operators,
+    ))
+
+
+class CheckL01Args(BaseModel):
+    session_id: str = Field(description="Identificativo della sessione di verifica.")
+    operators: Optional[List[str]] = Field(
+        default=None, description="Operatori economici da verificare. Default: tutti quelli della sessione."
+    )
+
+
+@tool(args_schema=CheckL01Args)
+async def compliance_check_l01(session_id: str, operators: Optional[List[str]] = None) -> str:
+    """Verifica la coerenza tra il listino L01 di uno o più operatori economici e le
+    relative schede tecniche PDF già indicizzate: per ogni prodotto a listino controlla
+    che esista una scheda che lo supporti. Nessuna chiamata LLM: puro riscontro
+    codice/nome. Attivo solo se la sessione ha un l01_xlsx_url configurato per
+    l'operatore; altrimenti riporta used=False, non è un errore."""
+    return await _safe(check_l01_core(session_id=session_id, operators=operators))
+
+
 class BuildReportArgs(BaseModel):
     session_id: str = Field(description="Identificativo della sessione di verifica.")
     operator: Optional[str] = Field(
@@ -147,5 +190,7 @@ AGENTIC_COMPLIANCE_TOOLS = {
     "compliance_list_requirements": compliance_list_requirements,
     "compliance_retrieve_evidence": compliance_retrieve_evidence,
     "compliance_evaluate_criteria": compliance_evaluate_criteria,
+    "compliance_check_tabular": compliance_check_tabular,
+    "compliance_check_l01": compliance_check_l01,
     "compliance_build_report": compliance_build_report,
 }
