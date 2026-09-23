@@ -2312,6 +2312,19 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
             storage_count=len(base64_storage)
         )
 
+        # This path dropped the caller's system prompt and conversation history, so an
+        # agent with MCP tools lost both its persona and its memory. Mirror the non-MCP path.
+        if question.system_context:
+            system_instructions = question.system_context + "\n\n" + system_instructions
+        history_messages = await _process_history_messages(
+            question.chat_history_dict,
+            question.max_history_messages,
+            question.summarize_old_history,
+            chat_model,
+        )
+        if history_messages:
+            processed_messages = history_messages + processed_messages
+
         from langchain.agents import create_agent
 
         # Pulisci i messaggi iniziali
