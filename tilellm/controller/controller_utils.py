@@ -1429,6 +1429,12 @@ def _describe_mcp_connection_error(exc: BaseException) -> str:
         hints.append("Host DNS non risolvibile. Verifica il dominio nell'URL.")
     if "ssl" in msg or "certificate" in msg:
         hints.append("Errore TLS/certificato SSL. Verifica HTTPS e certificati del server MCP.")
+    if "illegal header value" in msg:
+        hints.append(
+            "Un valore di header contiene un carattere non ammesso (es. un ritorno "
+            "a capo) — probabile testo lungo/multi-riga finito per errore in un "
+            "header invece che nel body. Controlla servers.<nome>.headers nel payload."
+        )
 
     if hints:
         return " | ".join(hints)
@@ -1528,6 +1534,34 @@ def _log_mcp_get_tools_error(server_name: str, config: ServerConfig, exc: Except
     )
 
 
+def _find_illegal_header_control_char(headers: Optional[Dict[str, str]]) -> Optional[str]:
+    """Return a short description of the first header value containing a CR/LF
+    or other control character illegal in an HTTP header value per RFC 7230,
+    or None if headers are clean.
+
+    httpcore/h11 already reject these (LocalProtocolError: Illegal header
+    value) — but only after opening a connection, 40 stack frames inside an
+    ExceptionGroup that names h11 internals, not the offending header. This
+    check catches the same problem before spending a round-trip on a request
+    that can only fail, with a message that names the exact header and server.
+    """
+    if not headers:
+        return None
+    for key, value in headers.items():
+        if not isinstance(value, str):
+            continue
+        if any(ord(c) < 0x20 and c != "\t" for c in value):
+            preview = value[:80].replace("\n", "\\n").replace("\r", "\\r")
+            if len(value) > 80:
+                preview += "..."
+            return (
+                f"header '{key}' contiene un carattere di controllo non ammesso in "
+                f"un header HTTP (RFC 7230), probabilmente un ritorno a capo: "
+                f"'{preview}' (len={len(value)})"
+            )
+    return None
+
+
 async def get_all_filtered_tools(mcp_client, servers_config: Dict[str, ServerConfig]) -> List[BaseTool]:
     """
     Recupera e filtra i tool server per server prima di unirli.
@@ -1535,6 +1569,17 @@ async def get_all_filtered_tools(mcp_client, servers_config: Dict[str, ServerCon
     final_tools = []
 
     for server_name, config in servers_config.items():
+        illegal_header = _find_illegal_header_control_char(config.headers)
+        if illegal_header:
+            logger.error(
+                "Errore nel recupero tool per il server %r — %s. Nessun tentativo "
+                "di connessione effettuato. Probabile errore di configurazione a "
+                "monte (es. il corpo di un messaggio finito in un header pensato "
+                "per un valore breve).",
+                server_name, illegal_header,
+            )
+            continue
+
         try:
             _log_mcp_server_before_get_tools(server_name, config, mcp_client)
 
