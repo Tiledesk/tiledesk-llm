@@ -208,6 +208,56 @@ class TestGoogleVertexAiRouting:
         assert "project" not in client_config
         assert "location" not in client_config
 
+    @pytest.mark.asyncio
+    async def test_llm_cache_key_differs_by_project(self):
+        """A client cached while project routed through the broken OAuth/ADC
+        path (see _apply_google_vertex_flag) must not be silently reused once
+        the caller switches project (e.g. to a placeholder that correctly
+        stays on the API-key/Express Mode path) — same TimedCache staleness
+        bug class already fixed for disable_thinking_mode."""
+        from tilellm.shared.utility import _build_llm_cache_key
+        from tilellm.models.embedding import LlmEmbeddingModel
+        from tilellm.models.base import LLMEmbeddingProviders
+        from unittest.mock import MagicMock
+
+        def _question(project):
+            q = MagicMock()
+            q.llm = "google"
+            q.model = LlmEmbeddingModel(
+                provider=LLMEmbeddingProviders.GOOGLE,
+                name="gemini-2.5-flash",
+                api_key="AQ.Ab8RN6Jjqyi62sQ",
+                project=project,
+            )
+            return q
+
+        key_a = await _build_llm_cache_key(_question("poc-tiledesk-496310"))
+        key_b = await _build_llm_cache_key(_question("x"))
+        assert key_a != key_b
+
+    @pytest.mark.asyncio
+    async def test_standard_llm_cache_key_differs_by_project(self):
+        from tilellm.shared.utility import _build_standard_llm_cache_key
+        from tilellm.models.embedding import LlmEmbeddingModel
+        from tilellm.models.base import LLMEmbeddingProviders
+        from unittest.mock import MagicMock
+
+        def _question(project):
+            q = MagicMock()
+            q.llm = "google"
+            q.llm_key.get_secret_value.return_value = "AQ.Ab8RN6Jjqyi62sQ"
+            q.model = LlmEmbeddingModel(
+                provider=LLMEmbeddingProviders.GOOGLE,
+                name="gemini-2.5-flash",
+                api_key="AQ.Ab8RN6Jjqyi62sQ",
+                project=project,
+            )
+            return q
+
+        key_a = await _build_standard_llm_cache_key(_question("poc-tiledesk-496310"))
+        key_b = await _build_standard_llm_cache_key(_question("x"))
+        assert key_a != key_b
+
 
 class TestInjectDecorators:
     """Test dependency injection decorators."""

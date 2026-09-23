@@ -783,6 +783,18 @@ async def _build_standard_llm_cache_key(question) -> Tuple:
         if disable_thinking_mode is not None:
             cache_key_parts.append(f"disable_thinking_mode={disable_thinking_mode}")
 
+    # Affects ChatGoogleGenerativeAI construction for the "google" provider
+    # (Vertex AI routing via _apply_google_vertex_flag) — must be in the key or
+    # a client cached while project/location led to a broken OAuth/ADC path
+    # stays stale even after the caller switches to a working config.
+    if question.llm == "google":
+        project = getattr(question.model, "project", None)
+        location = getattr(question.model, "location", None)
+        if project is not None:
+            cache_key_parts.append(f"project={project}")
+        if location is not None:
+            cache_key_parts.append(f"location={location}")
+
     # OpenRouter: routing e reasoning distinguono due client altrimenti
     # identici (stesso modello, stessa chiave API).
     if question.llm == "openrouter":
@@ -1171,6 +1183,17 @@ async def _build_llm_cache_key(question) -> tuple:
         # must be in the key or a cached client built before this was set stays stale.
         if question.model.disable_thinking_mode is not None:
             cache_key_parts_dic["disable_thinking_mode"] = question.model.disable_thinking_mode
+        # Affects ChatGoogleGenerativeAI construction for the "google" provider
+        # (Vertex AI routing via _apply_google_vertex_flag) — must be in the key or
+        # a client cached while project/location led to a broken OAuth/ADC path
+        # stays stale even after the caller switches to a working config (same
+        # bug class as disable_thinking_mode above; TimedCache's "chat" bucket
+        # refreshes its 5-minute TTL on every access, so this can persist
+        # indefinitely across a fast retry loop).
+        if question.model.project is not None:
+            cache_key_parts_dic["project"] = question.model.project
+        if question.model.location is not None:
+            cache_key_parts_dic["location"] = question.model.location
     else:  # Modalità legacy con stringa
         cache_key_parts_dic = {
             "model_type": "chat_legacy",
