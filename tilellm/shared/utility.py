@@ -104,6 +104,7 @@ def get_service_config():
             "graphrag_falkor": _str_to_bool(os.environ.get("ENABLE_GRAPHRAG_FALKOR", "false")),
             "raptor": _str_to_bool(os.environ.get("ENABLE_RAPTOR", "false")),
             "compliance": _str_to_bool(os.environ.get("ENABLE_COMPLIANCE", "true")),
+            "agentic_compliance": _str_to_bool(os.environ.get("ENABLE_AGENTIC_COMPLIANCE", "true")),
             "pdf_ocr": _str_to_bool(os.environ.get("ENABLE_PDF_OCR", "false")),
             "conversion": _str_to_bool(os.environ.get("ENABLE_CONVERSION", "true")),
             "tools_registry": _str_to_bool(os.environ.get("ENABLE_TOOLS_REGISTRY", "true")),

@@ -1472,6 +1472,7 @@ def register_feature_routers(_app: FastAPI, base_package_dir: str):
         "knowledge_graph_falkor": "graphrag_falkor",
         "raptor": "raptor",
         "compliance_checker": "compliance",
+        "agentic_compliance_checker": "agentic_compliance",
         "pdf_ocr": "pdf_ocr",
         "conversion": "conversion",
         "tools_registry": "tools_registry",
