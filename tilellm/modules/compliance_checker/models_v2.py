@@ -482,6 +482,15 @@ class DiscretionaryResult(BaseModel):
             "tra operatori (valutazione massiva): è una proposta che resta da confermare."
         ),
     )
+    hyde_used: bool = Field(
+        default=False,
+        description=(
+            "True quando il risultato è stato ottenuto tramite il fallback HyDE "
+            "(riformulazione della query di ricerca dopo un primo recupero senza "
+            "evidenza sufficiente) invece che al primo tentativo di retrieval. "
+            "Prima di questo campo era deducibile solo leggendo 'motivation'."
+        ),
+    )
 
     motivation: str
     confidence: float
