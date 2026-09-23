@@ -19,6 +19,7 @@ from tilellm.modules.agentic_compliance_checker.services.tools_core import (
     check_tabular_core,
     evaluate_criteria_core,
     list_requirements_core,
+    resolve_proportional_core,
     retrieve_evidence_core,
 )
 
@@ -169,6 +170,35 @@ async def compliance_check_l01(session_id: str, operators: Optional[List[str]] =
     return await _safe(check_l01_core(session_id=session_id, operators=operators))
 
 
+class ResolveProportionalArgs(BaseModel):
+    session_id: str = Field(description="Identificativo della sessione di verifica.")
+    criterion_ids: Optional[List[str]] = Field(
+        default=None,
+        description="Id dei criteri proporzionali da risolvere. Default: tutti quelli del lotto.",
+    )
+    allow_partial: bool = Field(
+        default=False,
+        description="Procedi anche se non tutti gli operatori hanno una valutazione per i criteri "
+                    "target (normalmente rifiutato: falserebbe il confronto in modo silenzioso).",
+    )
+
+
+@tool(args_schema=ResolveProportionalArgs)
+async def compliance_resolve_proportional(
+    session_id: str, criterion_ids: Optional[List[str]] = None, allow_partial: bool = False,
+) -> str:
+    """Risolve i criteri proporzionali (es. 'ampiezza di gamma') confrontando la
+    quantità misurata di TUTTI gli operatori economici della sessione: chi offre di
+    più (o di meno, se il criterio è a direzione inversa) riceve il punteggio pieno,
+    gli altri una quota proporzionale. Richiede che ogni operatore sia già stato
+    valutato su questi criteri con compliance_evaluate_criteria — altrimenti rifiuta,
+    a meno di allow_partial=True. Il punteggio resta 'proposta da confermare'
+    (human_review_required) per design, non è mai definitivo automaticamente."""
+    return await _safe(resolve_proportional_core(
+        session_id=session_id, criterion_ids=criterion_ids, allow_partial=allow_partial,
+    ))
+
+
 class BuildReportArgs(BaseModel):
     session_id: str = Field(description="Identificativo della sessione di verifica.")
     operator: Optional[str] = Field(
@@ -192,5 +222,6 @@ AGENTIC_COMPLIANCE_TOOLS = {
     "compliance_evaluate_criteria": compliance_evaluate_criteria,
     "compliance_check_tabular": compliance_check_tabular,
     "compliance_check_l01": compliance_check_l01,
+    "compliance_resolve_proportional": compliance_resolve_proportional,
     "compliance_build_report": compliance_build_report,
 }

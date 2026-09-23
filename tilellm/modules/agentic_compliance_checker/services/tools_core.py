@@ -497,8 +497,112 @@ async def check_l01_core(*, session_id: str, operators: Optional[List[str]] = No
 
 
 # ---------------------------------------------------------------------------
-# compliance_build_report (P3 minimal, extended in P4 with tabular/L01 —
-# multi-operator aggregation across proportional criteria is still P5)
+# compliance_resolve_proportional (P5)
+# ---------------------------------------------------------------------------
+
+@traced_tool("compliance_resolve_proportional")
+async def resolve_proportional_core(
+    *, session_id: str, criterion_ids: Optional[List[str]] = None, allow_partial: bool = False,
+) -> str:
+    """Resolves 'proporzionale' criteria across ALL operators of the session,
+    via bulk_check_service.resolve_proportional — the same cross-operator
+    formula /v2/check/bulk uses (qmax/qmin over measured_quantity). This
+    function's only job is assembling the per-operator result set it runs on
+    and re-storing the mutated results; it invents no scoring of its own.
+
+    Precondition: every operator must already have a stored
+    compliance_evaluate_criteria result for every targeted proportional
+    criterion — qmax/qmin computed on a subset silently skews every score in
+    the lot. Missing an operator/criterion combination raises ValueError
+    unless allow_partial=True, which proceeds anyway and marks every result
+    it touches with a note (and the trace with guardrail "partial").
+    """
+    from tilellm.modules.compliance_checker.models_v2 import (
+        ComplianceReportV2,
+        ComplianceSummaryV2,
+        DiscretionaryMode,
+    )
+    from tilellm.modules.compliance_checker.services.bulk_check_service import (
+        resolve_proportional,
+    )
+
+    bulk_request = await SessionStore.get_request(session_id)
+    lot = await SessionStore.get_lot(session_id)
+    all_operators = bulk_request.operators
+
+    known_ids = {c.id for c in lot.requirements.discretionary}
+    if criterion_ids is not None:
+        for cid in criterion_ids:
+            if cid not in known_ids:
+                raise ValueError(f"Criterio discrezionale '{cid}' non trovato nel lotto.")
+
+    proportional_ids = {
+        c.id for c in lot.requirements.discretionary
+        if c.mode == DiscretionaryMode.PROPORZIONALE and (criterion_ids is None or c.id in criterion_ids)
+    }
+
+    missing: Dict[str, List[str]] = {}
+    per_operator_results = []
+    for operator_ref in all_operators:
+        stored = await SessionStore.get_results(session_id, namespace=operator_ref.namespace)
+        by_id = {r.criterion_id: r for r in stored}
+        op_missing = sorted(cid for cid in proportional_ids if cid not in by_id)
+        if op_missing:
+            missing[operator_ref.operator_label or operator_ref.namespace] = op_missing
+        targeted = [by_id[cid] for cid in proportional_ids if cid in by_id]
+        per_operator_results.append((operator_ref, targeted))
+
+    if missing and not allow_partial:
+        raise ValueError(
+            "Impossibile risolvere il proporzionale: valutazioni mancanti per "
+            f"{missing}. Valutarle con compliance_evaluate_criteria, oppure "
+            "passare allow_partial=True per procedere comunque."
+        )
+
+    compliance_reports = [
+        ComplianceReportV2(
+            tender=lot.tender, namespace=operator_ref.namespace, summary=ComplianceSummaryV2(),
+            tabular_results=[], discretionary_results=targeted,
+        )
+        for operator_ref, targeted in per_operator_results if targeted
+    ]
+    resolve_proportional(compliance_reports)  # mutates in place
+
+    partial = bool(missing)
+    results_out = []
+    for operator_ref, targeted in per_operator_results:
+        for result in targeted:
+            if partial:
+                note = "Risoluzione proporzionale eseguita con operatori/criteri mancanti (allow_partial=True)."
+                result.human_review_reason = (
+                    f"{result.human_review_reason} {note}" if result.human_review_reason else note
+                )
+            await SessionStore.store_result(session_id, operator_ref.namespace, result.criterion_id, result)
+            results_out.append({
+                "criterion_id": result.criterion_id,
+                "operator": operator_ref.operator_label or operator_ref.namespace,
+                "score": result.score,
+                "proportional_auto": result.proportional_auto,
+                "measured_quantity": result.measured_quantity,
+                "direction": result.direction.value,
+            })
+
+    record_trace_detail(
+        judge={"criterion_count": len(proportional_ids), "operator_count": len(all_operators)},
+        guardrails=(["partial"] if partial else []),
+    )
+    return json.dumps({
+        "results": results_out,
+        "partial": partial,
+        "missing": missing or None,
+    }, ensure_ascii=False)
+
+
+# ---------------------------------------------------------------------------
+# compliance_build_report (P3 minimal, extended in P4 with tabular/L01;
+# proportional resolution itself is a separate tool, compliance_resolve_
+# proportional (P5) — this function still reports whatever score ended up
+# stored, proportional or not, single operator at a time)
 # ---------------------------------------------------------------------------
 
 @traced_tool("compliance_build_report")
