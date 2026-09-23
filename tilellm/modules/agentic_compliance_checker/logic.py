@@ -23,6 +23,9 @@ from tilellm.modules.compliance_checker.models_v2 import (
 from tilellm.modules.compliance_checker.services.yaml_requirements_loader import (
     YamlRequirementsLoader,
 )
+from tilellm.modules.agentic_compliance_checker.services.langchain_tools import (
+    AGENTIC_COMPLIANCE_TOOLS,
+)
 from tilellm.shared.utility import inject_llm_chat_async, inject_repo_async
 
 logger = logging.getLogger(__name__)
@@ -57,7 +60,7 @@ async def open_session(request: BulkComplianceRequestV2) -> SessionOpenResponse:
         tabular_count=len(lot.requirements.tabular),
         discretionary_count=len(lot.requirements.discretionary),
         operators=[op.operator_label or op.namespace for op in request.operators],
-        tools=[],  # populated as each phase registers its tools (see services/tools_core.py)
+        tools=sorted(AGENTIC_COMPLIANCE_TOOLS.keys()),
     )
 
 

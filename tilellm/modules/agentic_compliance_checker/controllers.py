@@ -24,11 +24,25 @@ from tilellm.modules.agentic_compliance_checker.models import (
     SessionStatusResponse,
     TraceRecord,
 )
+from tilellm.modules.agentic_compliance_checker.services.langchain_tools import (
+    AGENTIC_COMPLIANCE_TOOLS,
+)
 from tilellm.modules.agentic_compliance_checker.services.session_store import SessionStore
+from tilellm.modules.tools_registry.services.tool_registry import TOOL_REGISTRY
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/agentic-compliance", tags=["Agentic Compliance Checker"])
+
+# Registered here (not in tools_registry) so the module stays self-contained:
+# TOOL_REGISTRY is a plain module-level dict read at call time by both
+# resolve_tools() and get_available_tools_list(), so this needs no edit to
+# tools_registry itself — the tools just appear on GET /api/tools and become
+# selectable via QuestionToLLM.tools on /api/ask and /api/thinking.
+TOOL_REGISTRY.update({
+    name: {"description": tool_obj.description, "implementation": tool_obj, "is_factory": False}
+    for name, tool_obj in AGENTIC_COMPLIANCE_TOOLS.items()
+})
 
 
 @router.post("/sessions", response_model=SessionOpenResponse)
