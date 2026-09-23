@@ -12,7 +12,11 @@ from typing import Awaitable, List, Literal, Optional
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from tilellm.modules.agentic_compliance_checker.models import EvidenceNotFound, SessionNotFound
+from tilellm.modules.agentic_compliance_checker.models import (
+    EvidenceNotFound,
+    SessionNotFound,
+    TraceIncompleteError,
+)
 from tilellm.modules.agentic_compliance_checker.services.tools_core import (
     build_report_core,
     check_l01_core,
@@ -31,7 +35,7 @@ async def _safe(coro: Awaitable[str]) -> str:
     that would end the agent's turn."""
     try:
         return await coro
-    except (SessionNotFound, EvidenceNotFound, ValueError) as e:
+    except (SessionNotFound, EvidenceNotFound, TraceIncompleteError, ValueError) as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
 

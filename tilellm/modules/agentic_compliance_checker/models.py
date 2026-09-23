@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 # without reaching into compliance_checker directly.
 from tilellm.modules.compliance_checker.models_v2 import (  # noqa: F401
     BulkComplianceRequestV2,
+    ComplianceReportV2,
     OperatorRef,
     TenderInfo,
 )
@@ -75,7 +76,19 @@ class TraceRecord(BaseModel):
     retrieval: Optional[Dict[str, Any]] = None
     judge: Optional[Dict[str, Any]] = None
     guardrails: List[str] = Field(default_factory=list)
-    result_digest: Optional[str] = None
+    result_digests: List[str] = Field(
+        default_factory=list,
+        description=(
+            "sha256(model_dump_json()) of every DiscretionaryResult/ComplianceResult/"
+            "L01CheckResult this call stored (P7) — a single traced call can write "
+            "several (evaluate_criteria fans out over operators x criteria, check_tabular "
+            "over requirements x operators, check_l01 over operators). build_report's "
+            "trace-completeness check (services/audit_archive.py) looks for each "
+            "currently-stored result's digest ANYWHERE in the session's trace history, "
+            "not tied 1:1 to one record — a result surviving a later re-evaluation still "
+            "has a legitimate digest from whichever call originally produced it."
+        ),
+    )
     attempt: Optional[int] = None
 
 
@@ -111,3 +124,13 @@ class SessionStatusResponse(BaseModel):
     tender: TenderInfo
     operators: List[str]
     created_at: str
+
+
+class SessionReportResponse(BaseModel):
+    """GET /sessions/{id}/report (P7): the full ComplianceReportV2 built from
+    stored state (same shape /v2/check returns), plus the trace that proves
+    it, plus where the immutable archive copy landed — None when MinIO isn't
+    configured/reachable (best-effort, see services/audit_archive.py)."""
+    report: ComplianceReportV2
+    trace: List[TraceRecord]
+    artifact_uri: Optional[str] = None

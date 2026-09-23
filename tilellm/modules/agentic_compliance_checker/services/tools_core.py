@@ -18,6 +18,10 @@ from typing import Any, Callable, Dict, List, Optional
 
 from tilellm.models import QuestionAnswer
 from tilellm.modules.agentic_compliance_checker.models import EvidenceEntry, TraceRecord
+from tilellm.modules.agentic_compliance_checker.services.audit_archive import (
+    compute_result_digest,
+    verify_trace_completeness,
+)
 from tilellm.modules.agentic_compliance_checker.services.deps import _resolve_deps
 from tilellm.modules.agentic_compliance_checker.services import runner
 from tilellm.modules.agentic_compliance_checker.services.session_store import SessionStore
@@ -331,6 +335,7 @@ async def evaluate_criteria_core(
     results_out = []
     guardrails_seen = set()
     token_total = {"prompt": 0, "completion": 0, "total": 0}
+    digests: List[str] = []
 
     for operator_ref in target_operators:
         service = await runner.build_service_for_operator(session_id, operator_ref)
@@ -358,6 +363,7 @@ async def evaluate_criteria_core(
                 result = await service._evaluate_criterion(criterion)
 
             await SessionStore.store_result(session_id, operator_ref.namespace, criterion_id, result)
+            digests.append(compute_result_digest(result))
             attempt = await SessionStore.increment_attempts(session_id, operator_ref.namespace, criterion_id)
 
             if result.human_review_required:
@@ -391,6 +397,7 @@ async def evaluate_criteria_core(
         llm=token_total,
         judge={"criterion_count": len(criterion_ids), "operator_count": len(target_operators), "reason": reason},
         guardrails=sorted(guardrails_seen),
+        result_digests=digests,
     )
     return json.dumps({"results": results_out}, ensure_ascii=False)
 
@@ -433,6 +440,7 @@ async def check_tabular_core(
 
     results_out = []
     token_total = {"prompt": 0, "completion": 0, "total": 0}
+    digests: List[str] = []
     for operator_ref in target_operators:
         service = await runner.build_service_for_operator(session_id, operator_ref)
         results = await service._check_tabular(filtered_lot)
@@ -440,6 +448,7 @@ async def check_tabular_core(
             await SessionStore.store_tabular_result(
                 session_id, operator_ref.namespace, result.requirement_id, result,
             )
+            digests.append(compute_result_digest(result))
             results_out.append({
                 "requirement_id": result.requirement_id,
                 "operator": operator_ref.operator_label or operator_ref.namespace,
@@ -456,6 +465,7 @@ async def check_tabular_core(
     record_trace_detail(
         llm=token_total,
         judge={"requirement_count": len(filtered_tabular), "operator_count": len(target_operators)},
+        result_digests=digests,
     )
     return json.dumps({"results": results_out}, ensure_ascii=False)
 
@@ -479,10 +489,13 @@ async def check_l01_core(*, session_id: str, operators: Optional[List[str]] = No
     )
 
     results_out = []
+    digests: List[str] = []
     for operator_ref in target_operators:
         service = await runner.build_service_for_operator(session_id, operator_ref)
         result = await service._check_l01()
         await SessionStore.store_l01_result(session_id, operator_ref.namespace, result)
+        if result.used:
+            digests.append(compute_result_digest(result))
         results_out.append({
             "operator": operator_ref.operator_label or operator_ref.namespace,
             "used": result.used,
@@ -492,7 +505,7 @@ async def check_l01_core(*, session_id: str, operators: Optional[List[str]] = No
             "missing": result.missing,
         })
 
-    record_trace_detail(judge={"operator_count": len(target_operators)})
+    record_trace_detail(judge={"operator_count": len(target_operators)}, result_digests=digests)
     return json.dumps({"results": results_out}, ensure_ascii=False)
 
 
@@ -570,6 +583,7 @@ async def resolve_proportional_core(
 
     partial = bool(missing)
     results_out = []
+    digests: List[str] = []
     for operator_ref, targeted in per_operator_results:
         for result in targeted:
             if partial:
@@ -578,6 +592,7 @@ async def resolve_proportional_core(
                     f"{result.human_review_reason} {note}" if result.human_review_reason else note
                 )
             await SessionStore.store_result(session_id, operator_ref.namespace, result.criterion_id, result)
+            digests.append(compute_result_digest(result))
             results_out.append({
                 "criterion_id": result.criterion_id,
                 "operator": operator_ref.operator_label or operator_ref.namespace,
@@ -590,6 +605,7 @@ async def resolve_proportional_core(
     record_trace_detail(
         judge={"criterion_count": len(proportional_ids), "operator_count": len(all_operators)},
         guardrails=(["partial"] if partial else []),
+        result_digests=digests,
     )
     return json.dumps({
         "results": results_out,
@@ -612,6 +628,13 @@ async def build_report_core(*, session_id: str, operator: Optional[str] = None) 
     evaluate_criteria_core's docstring). The summary is recomputed from
     stored state every time, never cached, so it can never drift from what
     the trace actually shows happened.
+
+    P7: before building anything, verifies every stored result has a
+    matching digest somewhere in this session's trace (see
+    services/audit_archive.py::verify_trace_completeness) — a result written
+    by anything other than a @traced_tool call (a manual Redis edit, a bug)
+    fails this and raises TraceIncompleteError instead of silently being
+    reported as if it were legitimate.
     """
     from tilellm.modules.compliance_checker.models_v2 import ComplianceSummaryV2
 
@@ -620,6 +643,8 @@ async def build_report_core(*, session_id: str, operator: Optional[str] = None) 
     disc_results = await SessionStore.get_results(session_id, namespace=operator_ref.namespace)
     tab_results = await SessionStore.get_tabular_results(session_id, namespace=operator_ref.namespace)
     l01_result = await SessionStore.get_l01_result(session_id, operator_ref.namespace)
+    trace = await SessionStore.get_trace(session_id)
+    verify_trace_completeness(session_id, trace, disc_results, tab_results, l01_result)
 
     evaluated_ids = {r.criterion_id for r in disc_results}
     unevaluated = [c.id for c in lot.requirements.discretionary if c.id not in evaluated_ids]
