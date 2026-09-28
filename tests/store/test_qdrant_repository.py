@@ -872,3 +872,44 @@ async def test_search_community_report_prefetch_limit_matches_top_k():
                                                      {"indices": [1], "values": [0.5]})
 
     assert _prefetch_limits(client) == [25, 25]
+
+
+# ---------------------------------------------------------------------------
+# get_chunks_by_index — targeted fetch of specific chunks of one document, used to
+# re-attach the neighbours of a retrieved chunk (a table row that docling split
+# into consecutive sections, e.g. requirement | justification | applicable).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_get_chunks_by_index_fetches_only_the_requested_chunks(mocker):
+    point = MagicMock()
+    point.id = "p-79"
+    point.payload = {"page_content": "ISO 10993-5 citotossicità",
+                     "metadata": {"doc_id": "doc-1", "chunk_index": 79}}
+    client = MagicMock()
+    client.scroll = AsyncMock(return_value=([point], None))
+    mocker.patch('tilellm.store.qdrant.qdrant_repository_local.AsyncQdrantClient', return_value=client)
+    engine = Engine(name="qdrant", deployment="local", host="localhost", port=6333,
+                    index_name="test-collection", apikey=None)
+
+    docs = await QdrantRepository().get_chunks_by_index(engine, "ns", "doc-1", [77, 79])
+
+    assert [d.page_content for d in docs] == ["ISO 10993-5 citotossicità"]
+    assert docs[0].metadata["chunk_index"] == 79
+    conditions = {c.key: c.match for c in client.scroll.call_args.kwargs["scroll_filter"].must}
+    assert conditions["metadata.doc_id"].value == "doc-1"
+    assert conditions["metadata.namespace"].value == "ns"
+    assert conditions["metadata.chunk_index"].any == [77, 79]
+    assert client.scroll.call_args.kwargs["limit"] == 2
+
+
+@pytest.mark.asyncio
+async def test_get_chunks_by_index_with_no_indexes_skips_the_query(mocker):
+    client = MagicMock()
+    client.scroll = AsyncMock()
+    mocker.patch('tilellm.store.qdrant.qdrant_repository_local.AsyncQdrantClient', return_value=client)
+    engine = Engine(name="qdrant", deployment="local", host="localhost", port=6333,
+                    index_name="test-collection", apikey=None)
+
+    assert await QdrantRepository().get_chunks_by_index(engine, "ns", "doc-1", []) == []
+    client.scroll.assert_not_awaited()

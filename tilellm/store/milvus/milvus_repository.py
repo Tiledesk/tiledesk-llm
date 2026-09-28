@@ -3,6 +3,7 @@ Milvus Repository implementation using langchain-milvus for vector storage.
 Provides async operations for dense and hybrid (dense+sparse) vector search.
 """
 import asyncio
+import json
 import logging
 import time
 import uuid
@@ -920,6 +921,31 @@ class MilvusRepository(VectorStoreRepository):
         except Exception as e:
             logger.error(f"Error deleting items from Milvus: {e}")
             raise e
+
+    async def get_chunks_by_index(self, engine: Engine, namespace: str, doc_id: str,
+                                  chunk_indexes: List[int]) -> List[Document]:
+        if not chunk_indexes:
+            return []
+        client = await self._get_milvus_client(engine)
+        # json.dumps quotes and escapes: doc_id/namespace are interpolated into a
+        # filter expression and must not be able to close the string literal.
+        indexes = ", ".join(str(int(i)) for i in chunk_indexes)
+        filter_expr = (
+            f'metadata["doc_id"] == {json.dumps(doc_id)} and '
+            f'metadata["namespace"] == {json.dumps(namespace)} and '
+            f'metadata["chunk_index"] in [{indexes}]'
+        )
+        results = await asyncio.to_thread(
+            client.query,
+            collection_name=engine.index_name,
+            filter=filter_expr,
+            output_fields=["id", "metadata", "page_content"],
+            limit=len(chunk_indexes),
+        )
+        return [
+            Document(id=r.get("id", ""), metadata=r.get("metadata", {}), page_content=r.get("page_content", ""))
+            for r in results
+        ]
 
     async def get_by_doc_id(self, engine: Engine, namespace: str, doc_id: str) -> List[Document]:
         """

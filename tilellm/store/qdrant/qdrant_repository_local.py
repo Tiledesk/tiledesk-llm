@@ -1177,6 +1177,31 @@ class QdrantRepository(VectorStoreRepository):
             logger.error(f"Errore durante l'eliminazione dei punti: {e}")
             raise e
 
+    async def get_chunks_by_index(self, engine: Engine, namespace: str, doc_id: str,
+                                  chunk_indexes: List[int]) -> List[Document]:
+        if not chunk_indexes:
+            return []
+        if engine.deployment == "local":
+            client = AsyncQdrantClient(host=engine.host, port=engine.port)
+        else:
+            client = AsyncQdrantClient(url=engine.host + ":" + str(engine.port),
+                                       api_key=engine.apikey.get_secret_value())
+        points, _ = await client.scroll(
+            collection_name=engine.index_name,
+            scroll_filter=models.Filter(must=[
+                models.FieldCondition(key="metadata.doc_id", match=models.MatchValue(value=doc_id)),
+                models.FieldCondition(key="metadata.namespace", match=models.MatchValue(value=namespace)),
+                models.FieldCondition(key="metadata.chunk_index", match=models.MatchAny(any=list(chunk_indexes))),
+            ]),
+            limit=len(chunk_indexes),
+            with_payload=["page_content", "metadata"],
+            with_vectors=False,
+        )
+        return [
+            Document(id=p.id, page_content=p.payload.get("page_content", ""), metadata=p.payload.get("metadata", {}))
+            for p in points
+        ]
+
     async def get_by_doc_id(self, engine:Engine, namespace: str, doc_id: str):
         """
         GEt from Qdrant all item from namespace given document id

@@ -314,6 +314,32 @@ class PineconeRepositoryBase(VectorStoreRepository):
     async def delete_ids_namespace(self, engine: Engine, metadata_id: str, namespace: str):
         pass
 
+    async def get_chunks_by_index(self, engine: Engine, namespace: str, doc_id: str,
+                                  chunk_indexes: List[int]) -> List[Document]:
+        if not chunk_indexes:
+            return []
+        import pinecone
+
+        pc = pinecone.Pinecone(api_key=engine.apikey.get_secret_value())
+        index_info = pc.describe_index(engine.index_name)
+        async with pc.IndexAsyncio(name=engine.index_name, host=index_info.host) as idx:
+            # Metadata-only lookup: Pinecone needs a vector, a zero vector is the idiom
+            # get_by_doc_id already uses here.
+            res = await idx.query(
+                vector=[0] * index_info.dimension,
+                top_k=len(chunk_indexes),
+                filter={"doc_id": {"$eq": doc_id}, "chunk_index": {"$in": list(chunk_indexes)}},
+                namespace=namespace,
+                include_values=False,
+                include_metadata=True,
+            )
+        docs = []
+        for match in res.get("matches", []):
+            metadata = match.get("metadata", {})
+            docs.append(Document(id=match.get("id", ""), page_content=metadata.pop(engine.text_key, ""),
+                                 metadata=metadata))
+        return docs
+
     async def get_by_doc_id(self, engine: Engine, namespace: str, doc_id: str) -> List[Document]:
         """
         Get from Pinecone all items from namespace given document id (doc_id metadata)

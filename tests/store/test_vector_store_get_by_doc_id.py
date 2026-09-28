@@ -94,3 +94,82 @@ async def test_milvus_get_by_doc_id_success(mocker):
     assert result[0].page_content == "chunk1"
     assert result[1].page_content == "chunk2"
     mock_client.query.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# get_chunks_by_index — targeted fetch of specific chunks of one document.
+# ---------------------------------------------------------------------------
+
+def _pinecone_index_returning(matches):
+    mock_pc = MagicMock()
+    info = MagicMock()
+    info.host = "http://test-host"
+    info.dimension = 4
+    mock_pc.describe_index.return_value = info
+    index = MagicMock()
+    index.__aenter__ = AsyncMock(return_value=index)
+    index.__aexit__ = AsyncMock(return_value=None)
+    index.query = AsyncMock(return_value={"matches": matches})
+    mock_pc.IndexAsyncio.return_value = index
+    return mock_pc, index
+
+
+@pytest.mark.asyncio
+async def test_pinecone_get_chunks_by_index_filters_doc_and_indexes(mocker):
+    engine = Engine(index_name="test-index", apikey="test-key", text_key="text", type="serverless")
+    mock_pc, index = _pinecone_index_returning(
+        [{"id": "doc1#79", "metadata": {"doc_id": "doc1", "chunk_index": 79, "text": "vicino"}}]
+    )
+    mocker.patch("pinecone.Pinecone", return_value=mock_pc)
+
+    docs = await TestPineconeRepo().get_chunks_by_index(engine, "test-ns", "doc1", [77, 79])
+
+    assert [d.page_content for d in docs] == ["vicino"]
+    kwargs = index.query.call_args.kwargs
+    assert kwargs["filter"] == {"doc_id": {"$eq": "doc1"}, "chunk_index": {"$in": [77, 79]}}
+    assert kwargs["namespace"] == "test-ns"
+    assert kwargs["top_k"] == 2
+
+
+@pytest.mark.asyncio
+async def test_pinecone_get_chunks_by_index_with_no_indexes_skips_the_query(mocker):
+    engine = Engine(index_name="test-index", apikey="test-key", text_key="text", type="serverless")
+    pinecone_ctor = mocker.patch("pinecone.Pinecone")
+
+    assert await TestPineconeRepo().get_chunks_by_index(engine, "test-ns", "doc1", []) == []
+    pinecone_ctor.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_milvus_get_chunks_by_index_filters_doc_and_indexes(mocker):
+    engine = Engine(index_name="test-collection", apikey="test-key", host="http://localhost", port=19530)
+    mock_client = MagicMock()
+    mock_client.query.return_value = [
+        {"id": "9", "metadata": {"doc_id": "doc1", "chunk_index": 79}, "page_content": "vicino"},
+    ]
+    repo = MilvusRepository()
+    mocker.patch.object(repo, "_get_milvus_client", return_value=mock_client)
+
+    docs = await repo.get_chunks_by_index(engine, "test-ns", "doc1", [77, 79])
+
+    assert [d.page_content for d in docs] == ["vicino"]
+    expr = mock_client.query.call_args.kwargs["filter"]
+    assert 'metadata["doc_id"] == "doc1"' in expr
+    assert 'metadata["namespace"] == "test-ns"' in expr
+    assert 'metadata["chunk_index"] in [77, 79]' in expr
+
+
+@pytest.mark.asyncio
+async def test_milvus_get_chunks_by_index_escapes_quotes_in_identifiers(mocker):
+    """doc_id/namespace are interpolated into a Milvus filter expression — a value
+    containing a quote must not be able to close the string and inject a condition."""
+    engine = Engine(index_name="test-collection", apikey="test-key", host="http://localhost", port=19530)
+    mock_client = MagicMock()
+    mock_client.query.return_value = []
+    repo = MilvusRepository()
+    mocker.patch.object(repo, "_get_milvus_client", return_value=mock_client)
+
+    await repo.get_chunks_by_index(engine, 'ns" or 1==1 or "x', "doc1", [1])
+
+    expr = mock_client.query.call_args.kwargs["filter"]
+    assert 'metadata["namespace"] == "ns\\" or 1==1 or \\"x"' in expr

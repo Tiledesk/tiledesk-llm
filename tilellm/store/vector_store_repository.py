@@ -1,6 +1,8 @@
 import logging
 from abc import ABC, abstractmethod
-from typing import Optional, Union, Dict, Any
+from typing import Optional, Union, Dict, Any, List
+
+from langchain_core.documents import Document
 
 from tilellm.models.schemas import (RepositoryNamespace,
                                     RepositoryItems,
@@ -106,6 +108,19 @@ class VectorStoreRepository(ABC):
         """
         pass
 
+
+    async def get_chunks_by_index(self, engine: Engine, namespace: str, doc_id: str,
+                                  chunk_indexes: List[int]) -> List[Document]:
+        """
+        Only the chunks `chunk_indexes` (metadata.chunk_index) of document `doc_id` —
+        a targeted fetch, unlike get_by_doc_id which pages through the whole document.
+        Used to re-attach a retrieved chunk's neighbours when a table row was split
+        across consecutive chunks. Order of the result is not guaranteed.
+
+        Default: no neighbours available (backends that don't override it behave
+        exactly as before).
+        """
+        return []
 
     @abstractmethod
     async def get_by_doc_id(self, engine: Engine, namespace:str, doc_id: str):
