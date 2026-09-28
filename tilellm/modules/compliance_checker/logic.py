@@ -18,8 +18,9 @@ import json
 import logging
 import re
 import unicodedata
+from collections import defaultdict
 from difflib import SequenceMatcher
-from typing import List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -186,6 +187,96 @@ async def _rerank_chunks(
         None, lambda: reranker.rerank_documents(query, docs, top_k)
     )
     return [d.page_content for d in reranked], [d.metadata for d in reranked]
+
+
+# Neighbours are re-attached only around the best-ranked chunks: that is where a split
+# table row matters (the judge reads those first) and it caps the extra prompt size.
+NEIGHBOR_EXPANSION_TOP_N = 5
+
+
+def _chunk_position(meta: dict) -> Optional[Tuple[str, int]]:
+    """(doc_id, chunk_index) of a chunk, or None when its position isn't recorded.
+    chunk_index may come back as a float (Pinecone stores numbers as floats)."""
+    doc_id = meta.get("doc_id") or meta.get("id")
+    index = meta.get("chunk_index")
+    if isinstance(index, float) and index.is_integer():
+        index = int(index)
+    if not doc_id or not isinstance(index, int) or isinstance(index, bool):
+        return None
+    return doc_id, index
+
+
+async def _expand_with_neighbors(
+    repo, engine, namespace: str, chunks: List[str], metadata: List[dict],
+    top_n: int = NEIGHBOR_EXPANSION_TOP_N,
+) -> Tuple[List[str], List[dict]]:
+    """Merge each of the first `top_n` chunks with its neighbours (chunk_index +/- 1,
+    same document), in document order. Document converters can split one table row
+    into consecutive chunks — on a real tender the judge saw a requirement row
+    without the manufacturer's answer, which sat in the next chunk.
+
+    A neighbour already among the selected chunks, or already merged into an earlier
+    one, is not repeated. Metadata is unchanged: the citation stays on the retrieved
+    chunk. Best effort — any repository failure leaves the evidence as it was.
+    """
+    positions = [_chunk_position(m) for m in metadata]
+    taken = {p for p in positions if p}
+    owned: Dict[int, List[Tuple[str, int]]] = {}
+    wanted_by_doc: Dict[str, set] = defaultdict(set)
+    for i, position in enumerate(positions[:top_n]):
+        if position is None:
+            continue
+        doc_id, index = position
+        owned[i] = []
+        for neighbour in ((doc_id, index - 1), (doc_id, index + 1)):
+            if neighbour[1] >= 0 and neighbour not in taken:
+                taken.add(neighbour)
+                owned[i].append(neighbour)
+                wanted_by_doc[doc_id].add(neighbour[1])
+    if not wanted_by_doc:
+        return chunks, metadata
+
+    texts: Dict[Tuple[str, int], str] = {}
+    try:
+        for doc_id, indexes in wanted_by_doc.items():
+            for doc in await repo.get_chunks_by_index(engine, namespace, doc_id, sorted(indexes)):
+                position = _chunk_position(doc.metadata)
+                if position:
+                    texts[position] = doc.page_content
+    except Exception as e:
+        logger.warning("Neighbour expansion skipped, evidence left as retrieved: %s", e)
+        return chunks, metadata
+
+    expanded = list(chunks)
+    for i, neighbours in owned.items():
+        index = positions[i][1]
+        before = [texts[n] for n in neighbours if n[1] < index and n in texts]
+        after = [texts[n] for n in neighbours if n[1] > index and n in texts]
+        expanded[i] = "\n\n".join(before + [chunks[i]] + after)
+    return expanded, metadata
+
+
+async def _retrieve_evidence(
+    repo, qa: QuestionAnswer, rerank_query: str, reranker_config, top_k: int, label: str,
+) -> Tuple[List[str], List[dict]]:
+    """The one evidence pipeline every compliance judge uses: retrieve (qa.top_k is the
+    oversampled pool) -> rerank down to `top_k` against `rerank_query` -> re-attach
+    split neighbours. A retrieval failure yields no evidence; a reranking failure
+    proceeds with the retrieved order. `label` only names the item in logs."""
+    try:
+        retrieval = await repo.get_chunks_from_repo(qa)
+        chunks, metadata = retrieval.chunks or [], retrieval.metadata or []
+    except Exception as e:
+        logger.warning("Retrieval failed for %s: %s", label, e)
+        return [], []
+
+    if reranker_config and chunks:
+        try:
+            chunks, metadata = await _rerank_chunks(rerank_query, chunks, metadata, reranker_config, top_k)
+        except Exception as e:
+            logger.warning("Reranking failed for %s: %s — proceeding without reranking", label, e)
+
+    return await _expand_with_neighbors(repo, qa.engine, qa.namespace, chunks, metadata)
 
 
 async def _judge_requirement(
@@ -368,22 +459,9 @@ async def check_compliance(
                 top_k=search_top_k,
                 search_type=request.search_type,
             )
-            try:
-                retrieval = await repo.get_chunks_from_repo(qa)
-                chunks = retrieval.chunks
-                metadata = retrieval.metadata
-            except Exception as e:
-                logger.warning(f"Retrieval failed for requirement '{req.id}': {e}")
-                chunks = []
-                metadata = []
-
-            if reranker_config and chunks:
-                try:
-                    chunks, metadata = await _rerank_chunks(
-                        req.text, chunks, metadata, reranker_config, request.top_k
-                    )
-                except Exception as e:
-                    logger.warning(f"Reranking failed for requirement '{req.id}': {e} — proceeding without reranking")
+            chunks, metadata = await _retrieve_evidence(
+                repo, qa, req.text, reranker_config, request.top_k, f"requirement '{req.id}'"
+            )
 
             return await _judge_requirement(
                 req, chunks, metadata, request.config, llm,

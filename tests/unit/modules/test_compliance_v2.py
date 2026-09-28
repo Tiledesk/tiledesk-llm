@@ -1461,7 +1461,7 @@ requirements:
         llm.ainvoke = AsyncMock(return_value=_make_judge_response(coefficient=0.75))
         request = _make_request_v2()  # reranking defaults to False
         with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc, \
-             patch("tilellm.modules.compliance_checker.services.discretionary_check_service._rerank_chunks") as mock_rerank:
+             patch("tilellm.modules.compliance_checker.logic._rerank_chunks") as mock_rerank:
             from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
             mock_cc.return_value = ComplianceReport(domain="e_procurement", namespace="ns", summary=ComplianceSummary(total=0), results=[])
             svc = DiscretionaryCheckService(repo=repo, llm=llm, request=request)
@@ -1489,7 +1489,7 @@ requirements:
         request.reranking = True
         request.reranking_multiplier = 3
         with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc, \
-             patch("tilellm.modules.compliance_checker.services.discretionary_check_service._rerank_chunks", new_callable=AsyncMock) as mock_rerank:
+             patch("tilellm.modules.compliance_checker.logic._rerank_chunks", new_callable=AsyncMock) as mock_rerank:
             from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
             mock_cc.return_value = ComplianceReport(domain="e_procurement", namespace="ns", summary=ComplianceSummary(total=0), results=[])
             mock_rerank.return_value = (["chunk 0"], [{"file_name": "o.pdf", "page": 0}])
@@ -1769,7 +1769,7 @@ requirements:
         request = _make_request_v2()
         request.reranking = True
         with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance") as mock_cc, \
-             patch("tilellm.modules.compliance_checker.services.discretionary_check_service._rerank_chunks", new_callable=AsyncMock) as mock_rerank:
+             patch("tilellm.modules.compliance_checker.logic._rerank_chunks", new_callable=AsyncMock) as mock_rerank:
             from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
             mock_cc.return_value = ComplianceReport(domain="e_procurement", namespace="ns", summary=ComplianceSummary(total=0), results=[])
             mock_rerank.side_effect = RuntimeError("reranker down")

@@ -25,7 +25,7 @@ from tilellm.modules.agentic_compliance_checker.services.audit_archive import (
 from tilellm.modules.agentic_compliance_checker.services.deps import _resolve_deps
 from tilellm.modules.agentic_compliance_checker.services import runner
 from tilellm.modules.agentic_compliance_checker.services.session_store import SessionStore
-from tilellm.modules.compliance_checker.logic import _rerank_chunks
+from tilellm.modules.compliance_checker.logic import _retrieve_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -202,13 +202,10 @@ async def retrieve_evidence_core(
     compact preview + that ref — never the full chunk text, which stays in
     the session (and, verbatim, in the trace record for this call).
 
-    Mirrors DiscretionaryCheckService._evaluate_criterion_once's retrieval
-    exactly (oversample-then-rerank, exclude_chiarimenti filter) rather than
-    calling it, because that method always retrieves internally — there is
-    no seam to reuse for a standalone "just fetch, don't judge" call. Same
-    small retrieval-building pattern this codebase already repeats in three
-    other places (v1 check_compliance, v2 _evaluate_criterion_once, v2
-    _fetch_capitolato_evidence); not new duplication, the existing idiom.
+    Same evidence as DiscretionaryCheckService._evaluate_criterion_once would
+    judge: identical query building (oversample, exclude_chiarimenti filter)
+    and the shared compliance_checker.logic._retrieve_evidence pipeline
+    (retrieve -> rerank -> re-attach split neighbours).
     """
     if not criterion_id and not query:
         raise ValueError("Fornire 'criterion_id' oppure 'query'.")
@@ -249,21 +246,9 @@ async def retrieve_evidence_core(
     if request.exclude_chiarimenti and not include_chiarimenti:
         qa._metadata_filter = {"doc_type": {"$ne": "chiarimento"}}
 
-    try:
-        retrieval = await repo.get_chunks_from_repo(qa)
-        chunks = retrieval.chunks or []
-        metadata = retrieval.metadata or []
-    except Exception as e:
-        logger.warning("Retrieval failed for '%s': %s", search_text, e)
-        chunks, metadata = [], []
-
-    reranked = False
-    if reranker_config and chunks:
-        try:
-            chunks, metadata = await _rerank_chunks(search_text, chunks, metadata, reranker_config, effective_top_k)
-            reranked = True
-        except Exception as e:
-            logger.warning("Reranking failed for '%s': %s — proceeding without", search_text, e)
+    chunks, metadata = await _retrieve_evidence(
+        repo, qa, search_text, reranker_config, effective_top_k, f"'{search_text}'"
+    )
 
     evidence_ref = f"ev-{secrets.token_hex(8)}"
     entry = EvidenceEntry(
@@ -274,7 +259,7 @@ async def retrieve_evidence_core(
 
     record_trace_detail(retrieval={
         "namespace": request.namespace, "query_used": search_text, "query_kind": query_kind,
-        "top_k": effective_top_k, "reranked": reranked, "evidence_ref": evidence_ref,
+        "top_k": effective_top_k, "reranking": bool(reranker_config), "evidence_ref": evidence_ref,
         "chunk_count": len(chunks),
     })
 

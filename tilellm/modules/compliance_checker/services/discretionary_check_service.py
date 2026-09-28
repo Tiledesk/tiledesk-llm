@@ -17,7 +17,7 @@ from tilellm.models import QuestionAnswer
 from tilellm.modules.compliance_checker.logic import (
     _build_evidence_block,
     _pick_best_source,
-    _rerank_chunks,
+    _retrieve_evidence,
     check_compliance,
 )
 from tilellm.modules.compliance_checker.models import (
@@ -505,25 +505,10 @@ class DiscretionaryCheckService:
                 # (see docs/COMPLIANCE_V2_IMPLEMENTATION_PLAN.md §7, pattern E). No-op on
                 # chunks that were never tagged with doc_type (backward compatible).
                 qa._metadata_filter = {"doc_type": {"$ne": "chiarimento"}}
-            try:
-                retrieval = await self._repo.get_chunks_from_repo(qa)
-                chunks = retrieval.chunks or []
-                metadata = retrieval.metadata or []
-            except Exception as e:
-                logger.warning("Retrieval failed for criterion '%s': %s", criterion.id, e)
-                chunks = []
-                metadata = []
-
-            if reranker_config and chunks:
-                try:
-                    chunks, metadata = await _rerank_chunks(
-                        criterion.text, chunks, metadata, reranker_config, self._request.top_k
-                    )
-                except Exception as e:
-                    logger.warning(
-                        "Reranking failed for criterion '%s': %s — proceeding without reranking",
-                        criterion.id, e,
-                    )
+            chunks, metadata = await _retrieve_evidence(
+                self._repo, qa, criterion.text, reranker_config, self._request.top_k,
+                f"criterion '{criterion.id}'",
+            )
 
         # No evidence → flag without calling LLM
         if not chunks:
