@@ -880,15 +880,28 @@ async def test_search_community_report_prefetch_limit_matches_top_k():
 # into consecutive sections, e.g. requirement | justification | applicable).
 # ---------------------------------------------------------------------------
 
+def _neighbours_client(mocker, points):
+    """get_chunks_by_index must reuse the repository's cached client (a new
+    AsyncQdrantClient per call meant one version-check round trip and a never-closed
+    connection per criterion) — under its own cache key, so a wrapper built without
+    embeddings can never be handed to ingestion."""
+    client = MagicMock()
+    client.scroll = MagicMock(return_value=(points, None))
+    wrapper = MagicMock()
+    wrapper.get_client = AsyncMock(return_value=client)
+    factory = mocker.patch.object(QdrantRepository, "create_index_cache_wrapper",
+                                  AsyncMock(return_value=wrapper))
+    return client, factory
+
+
 @pytest.mark.asyncio
 async def test_get_chunks_by_index_fetches_only_the_requested_chunks(mocker):
     point = MagicMock()
     point.id = "p-79"
     point.payload = {"page_content": "ISO 10993-5 citotossicità",
                      "metadata": {"doc_id": "doc-1", "chunk_index": 79}}
-    client = MagicMock()
-    client.scroll = AsyncMock(return_value=([point], None))
-    mocker.patch('tilellm.store.qdrant.qdrant_repository_local.AsyncQdrantClient', return_value=client)
+    client, factory = _neighbours_client(mocker, [point])
+    constructor = mocker.patch('tilellm.store.qdrant.qdrant_repository_local.AsyncQdrantClient')
     engine = Engine(name="qdrant", deployment="local", host="localhost", port=6333,
                     index_name="test-collection", apikey=None)
 
@@ -901,15 +914,15 @@ async def test_get_chunks_by_index_fetches_only_the_requested_chunks(mocker):
     assert conditions["metadata.namespace"].value == "ns"
     assert conditions["metadata.chunk_index"].any == [77, 79]
     assert client.scroll.call_args.kwargs["limit"] == 2
+    constructor.assert_not_called()  # no fresh client per call
+    assert factory.call_args.kwargs["cache_suffix"] == "neighbours"
 
 
 @pytest.mark.asyncio
 async def test_get_chunks_by_index_with_no_indexes_skips_the_query(mocker):
-    client = MagicMock()
-    client.scroll = AsyncMock()
-    mocker.patch('tilellm.store.qdrant.qdrant_repository_local.AsyncQdrantClient', return_value=client)
+    client, _ = _neighbours_client(mocker, [])
     engine = Engine(name="qdrant", deployment="local", host="localhost", port=6333,
                     index_name="test-collection", apikey=None)
 
     assert await QdrantRepository().get_chunks_by_index(engine, "ns", "doc-1", []) == []
-    client.scroll.assert_not_awaited()
+    client.scroll.assert_not_called()

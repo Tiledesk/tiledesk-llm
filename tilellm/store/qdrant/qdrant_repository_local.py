@@ -1181,12 +1181,12 @@ class QdrantRepository(VectorStoreRepository):
                                   chunk_indexes: List[int]) -> List[Document]:
         if not chunk_indexes:
             return []
-        if engine.deployment == "local":
-            client = AsyncQdrantClient(host=engine.host, port=engine.port)
-        else:
-            client = AsyncQdrantClient(url=engine.host + ":" + str(engine.port),
-                                       api_key=engine.apikey.get_secret_value())
-        points, _ = await client.scroll(
+        # Called once per criterion per document: reuse a cached client (a new one per
+        # call cost a version-check round trip and leaked a connection each time). Own
+        # cache key — a wrapper built without embeddings must never reach ingestion.
+        wrapper = await self.create_index_cache_wrapper(engine, None, None, cache_suffix="neighbours")
+        client = await wrapper.get_client()
+        points, _ = client.scroll(
             collection_name=engine.index_name,
             scroll_filter=models.Filter(must=[
                 models.FieldCondition(key="metadata.doc_id", match=models.MatchValue(value=doc_id)),
