@@ -25,7 +25,7 @@ from tilellm.modules.agentic_compliance_checker.services.audit_archive import (
 from tilellm.modules.agentic_compliance_checker.services.deps import _resolve_deps
 from tilellm.modules.agentic_compliance_checker.services import runner
 from tilellm.modules.agentic_compliance_checker.services.session_store import SessionStore
-from tilellm.modules.compliance_checker.logic import _retrieve_evidence
+from tilellm.modules.compliance_checker.logic import EXCLUDE_CHIARIMENTI_FILTER, _retrieve_evidence
 
 logger = logging.getLogger(__name__)
 
@@ -244,7 +244,7 @@ async def retrieve_evidence_core(
         search_type=request.search_type,
     )
     if request.exclude_chiarimenti and not include_chiarimenti:
-        qa._metadata_filter = {"doc_type": {"$ne": "chiarimento"}}
+        qa._metadata_filter = EXCLUDE_CHIARIMENTI_FILTER
 
     chunks, metadata = await _retrieve_evidence(
         repo, qa, search_text, reranker_config, effective_top_k, f"'{search_text}'"

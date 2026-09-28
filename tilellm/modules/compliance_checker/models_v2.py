@@ -316,12 +316,11 @@ class ComplianceRequestV2(BaseModel):
     exclude_chiarimenti: bool = Field(
         default=True,
         description=(
-            "Se True (default), esclude dal retrieval dei criteri discrezionali/tabellari i "
-            "chunk con metadata.doc_type='chiarimento' — le risposte ai chiarimenti di gara non "
-            "possono integrare la documentazione di offerta, solo rimandare a pagine esistenti. "
-            "Richiede che il chunk sia stato taggato in ingestion (additional_metadata={'doc_type': "
-            "'chiarimento'}); non ha effetto sui chunk non taggati. NON si applica al path "
-            "Conformità (delegato a v1, fuori scope per non toccare logic.py)."
+            "Se True (default), esclude dal retrieval di TUTTI i requisiti (Conformità, "
+            "Tabellare, Discrezionale) i chunk con metadata.doc_type='chiarimento' — le risposte "
+            "ai chiarimenti di gara non possono integrare la documentazione di offerta, solo "
+            "rimandare a pagine esistenti. Richiede che il chunk sia stato taggato in ingestion "
+            "(additional_metadata={'doc_type': 'chiarimento'}); non ha effetto sui chunk non taggati."
         ),
     )
 
@@ -335,7 +334,7 @@ class ComplianceRequestV2(BaseModel):
             "'capitolato_discrepancy'. La tabella criteri resta l'unica fonte di punteggio: "
             "il capitolato è un vincolo di verifica aggiuntivo, mai un sostituto. Se assente, "
             "comportamento identico a prima (nessuna retrieval né prompt aggiuntivi). NON si "
-            "applica al path Conformità (stesso motivo di exclude_chiarimenti)."
+            "applica al path Conformità (giudice v1, senza sezione capitolato nel prompt)."
         ),
     )
 

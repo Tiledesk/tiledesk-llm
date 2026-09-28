@@ -295,3 +295,64 @@ async def test_agentic_retrieve_evidence_stores_the_neighbour():
         assert "ISO 10993-5 Ensayos de citotoxicidad" in entry.chunks[0]
     finally:
         SessionStore._client = None
+
+
+# ---------------------------------------------------------------------------
+# Clarification documents excluded on the Conformità path too (review pattern E):
+# answers to tender clarifications can only point back to offer pages, never add
+# evidence. v2 applied this only to scored criteria; Conformità (v1) still used them.
+# ---------------------------------------------------------------------------
+
+from tilellm.modules.compliance_checker.logic import EXCLUDE_CHIARIMENTI_FILTER  # noqa: E402
+
+
+async def _v1_qa_sent_to_repo(**request_overrides):
+    from tilellm.modules.compliance_checker.logic import check_compliance
+    from tilellm.modules.compliance_checker.models import ComplianceRequest, RequirementItem
+    from tilellm.modules.compliance_checker.prompts import get_builtin_config
+
+    request = ComplianceRequest(config=get_builtin_config("e_procurement"),
+                                requirements=[RequirementItem(id="C1", text="Radiopaco")],
+                                namespace="ns", engine=ENGINE, **request_overrides)
+    repo = _repo_with(["x"], [{"file_name": "a.pdf", "page": 1}])
+    llm = _llm_capturing({"judgment": "not_verifiable", "confidence": 0.0, "source_chunk_index": 0,
+                          "evidence_text": "", "justification": "-"})
+    await check_compliance.__wrapped__.__wrapped__(request, repo=repo, llm=llm)
+    return repo.get_chunks_from_repo.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_v1_excludes_clarifications_when_asked():
+    qa = await _v1_qa_sent_to_repo(exclude_chiarimenti=True)
+
+    assert getattr(qa, "_metadata_filter", None) == EXCLUDE_CHIARIMENTI_FILTER
+
+
+@pytest.mark.asyncio
+async def test_v1_standalone_default_is_unchanged():
+    qa = await _v1_qa_sent_to_repo()
+
+    assert getattr(qa, "_metadata_filter", None) is None
+
+
+@pytest.mark.asyncio
+async def test_v2_passes_its_clarification_policy_to_the_conformity_path():
+    from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
+    from tilellm.modules.compliance_checker.models_v2 import (
+        ComplianceRequestV2, TabularRequirementV2, TenderInfo, TenderLotRequirements, _RequirementsBlock,
+    )
+    from tilellm.modules.compliance_checker.services.discretionary_check_service import (
+        DiscretionaryCheckService,
+    )
+
+    request = ComplianceRequestV2(requirements_yaml="tender:\n  title: t\n  lot_id: L1\n  lot_name: n\n",
+                                  namespace="ns", engine=ENGINE)  # exclude_chiarimenti defaults to True
+    lot = TenderLotRequirements(tender=TenderInfo(title="t", lot_id="L1", lot_name="n"),
+                                requirements=_RequirementsBlock(tabular=[TabularRequirementV2(id="C1", text="x")]))
+    fake_v1 = AsyncMock(return_value=ComplianceReport(domain="e_procurement", namespace="ns",
+                                                      summary=ComplianceSummary(total=0), results=[]))
+
+    with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance", fake_v1):
+        await DiscretionaryCheckService(repo=AsyncMock(), llm=AsyncMock(), request=request)._check_tabular(lot)
+
+    assert fake_v1.call_args.args[0].exclude_chiarimenti is True

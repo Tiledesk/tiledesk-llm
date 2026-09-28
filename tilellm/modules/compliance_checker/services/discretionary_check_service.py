@@ -16,6 +16,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from tilellm.models import QuestionAnswer
 from tilellm.modules.compliance_checker.logic import (
     _build_evidence_block,
+    EXCLUDE_CHIARIMENTI_FILTER,
     _pick_best_source,
     _retrieve_evidence,
     check_compliance,
@@ -223,6 +224,7 @@ class DiscretionaryCheckService:
             reranking_multiplier=self._request.reranking_multiplier,
             reranker_model=self._request.reranker_model,
             max_concurrent_requirements=self._request.max_concurrent_requirements,
+            exclude_chiarimenti=self._request.exclude_chiarimenti,
         )
         # Pass our collector so tabular judge tokens are merged into this check's total;
         # the v1 path records into it and leaves emission/attachment to us.
@@ -504,7 +506,7 @@ class DiscretionaryCheckService:
                 # pages, never add new content — so they must never be judged as evidence
                 # (see docs/COMPLIANCE_V2_IMPLEMENTATION_PLAN.md §7, pattern E). No-op on
                 # chunks that were never tagged with doc_type (backward compatible).
-                qa._metadata_filter = {"doc_type": {"$ne": "chiarimento"}}
+                qa._metadata_filter = EXCLUDE_CHIARIMENTI_FILTER
             chunks, metadata = await _retrieve_evidence(
                 self._repo, qa, criterion.text, reranker_config, self._request.top_k,
                 f"criterion '{criterion.id}'",

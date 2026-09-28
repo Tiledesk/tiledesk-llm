@@ -189,6 +189,11 @@ async def _rerank_chunks(
     return [d.page_content for d in reranked], [d.metadata for d in reranked]
 
 
+# Answers to tender clarifications may only point back to existing offer pages, never
+# add evidence (review pattern E). Needs chunks tagged doc_type="chiarimento" at
+# ingestion; "$ne" on an absent field matches, so untagged chunks are unaffected.
+EXCLUDE_CHIARIMENTI_FILTER = {"doc_type": {"$ne": "chiarimento"}}
+
 # Neighbours are re-attached only around the best-ranked chunks: that is where a split
 # table row matters (the judge reads those first) and it caps the extra prompt size.
 NEIGHBOR_EXPANSION_TOP_N = 5
@@ -459,6 +464,8 @@ async def check_compliance(
                 top_k=search_top_k,
                 search_type=request.search_type,
             )
+            if request.exclude_chiarimenti:
+                qa._metadata_filter = EXCLUDE_CHIARIMENTI_FILTER
             chunks, metadata = await _retrieve_evidence(
                 repo, qa, req.text, reranker_config, request.top_k, f"requirement '{req.id}'"
             )

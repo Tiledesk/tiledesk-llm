@@ -197,6 +197,15 @@ class ComplianceRequest(BaseModel):
             return self.reranker_model
         return self.reranking
 
+    exclude_chiarimenti: bool = Field(
+        default=False,
+        description=(
+            "If True, chunks tagged metadata.doc_type='chiarimento' (answers to tender "
+            "clarifications) are never retrieved as evidence. False by default for this "
+            "domain-agnostic endpoint; the v2 check passes its own policy (default True)."
+        ),
+    )
+
     # Behaviour
     max_concurrent_requirements: int = Field(
         default=3,
