@@ -309,15 +309,19 @@ def _open_session_http(client):
 
 
 def test_get_report_returns_full_report_with_no_artifact_when_minio_unavailable(client, fake_redis):
+    """MinIO is forced unavailable here: relying on "no MinIO in the test env" made the
+    test depend on the machine — with MinIO running it archived a real object."""
     session_id = _open_session_http(client)
 
-    resp = client.get(f"/api/agentic-compliance/sessions/{session_id}/report")
+    with patch("tilellm.shared.minio_storage.get_minio_storage_service",
+               side_effect=ValueError("MinIO configuration not found")):
+        resp = client.get(f"/api/agentic-compliance/sessions/{session_id}/report")
 
     assert resp.status_code == 200
     body = resp.json()
     assert body["report"]["namespace"] == "ns-oe1"
     assert body["trace"] == []
-    assert body["artifact_uri"] is None  # no real MinIO in this test env
+    assert body["artifact_uri"] is None
 
 
 def test_get_report_409s_on_tampered_result(client, fake_redis):
