@@ -1710,9 +1710,18 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
 
         logger.info(f"Invoking agent with {len(message_content)} content items")
 
+        # Same fix as ask_mcp_agent_llm_simple: this path used to send only the
+        # current message, so the agent had no memory of the conversation.
+        history_messages = await _process_history_messages(
+            question.chat_history_dict,
+            question.max_history_messages,
+            question.summarize_old_history,
+            chat_model,
+        )
+
         _agent_t0 = time.monotonic()
         response = await agent_executor.ainvoke(
-            {"input": text_prompt, "messages": [HumanMessage(content=message_content)]}
+            {"input": text_prompt, "messages": history_messages + [HumanMessage(content=message_content)]}
         )
         _agent_latency_ms = int((time.monotonic() - _agent_t0) * 1000)
 
