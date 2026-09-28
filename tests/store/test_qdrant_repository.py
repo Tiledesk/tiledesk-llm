@@ -798,3 +798,77 @@ class TestBuildRegexCustomChunks:
         chunks = Repo._build_regex_custom_chunks(item, documents)
 
         assert chunks[0].metadata["tags"] == ["billing"]
+
+
+# ---------------------------------------------------------------------------
+# Hybrid prefetch limit — every RRF branch must fetch at least top_k candidates.
+# Without an explicit limit Qdrant defaults each Prefetch to 10, so the fused pool
+# silently caps at 20 whatever top_k asks for (seen on real data: top_k=45 -> 20),
+# which made the reranking oversample (top_k x reranking_multiplier) a no-op.
+# ---------------------------------------------------------------------------
+
+def _prefetch_limits(mock_client):
+    prefetch = mock_client.query_points.call_args.kwargs["prefetch"]
+    return [p.limit for p in prefetch]
+
+
+def _hybrid_qa(top_k):
+    from pydantic import SecretStr
+    from tilellm.models import QuestionAnswer
+
+    engine = Engine(name="qdrant", deployment="local", host="localhost", port=6333,
+                    index_name="test-collection", apikey=None)
+    return QuestionAnswer(question="q", namespace="ns", engine=engine, search_type="hybrid",
+                          top_k=top_k, gptkey=SecretStr("test-key"), sparse_encoder="splade")
+
+
+def _client_returning_one_point():
+    point = MagicMock()
+    point.id = "point-1"
+    point.payload = {"page_content": "hello", "metadata": {"source": "s1"}}
+    client = MagicMock()
+    client.query_points = MagicMock(return_value=MagicMock(points=[point]))
+    return client
+
+
+@pytest.mark.asyncio
+async def test_get_chunks_from_repo_hybrid_prefetch_limit_matches_top_k(mocker):
+    from tilellm.shared.embeddings.embedding_client_manager import CachedAsyncEmbeddingFactory
+
+    client = _client_returning_one_point()
+    vector_store = MagicMock()
+    vector_store.client = client
+    embedding_obj = AsyncMock()
+    embedding_obj.aembed_query = AsyncMock(return_value=[0.1, 0.2])
+    mocker.patch.object(CachedAsyncEmbeddingFactory, "create", AsyncMock(return_value=(embedding_obj, 1536)))
+    sparse_encoder = AsyncMock()
+    sparse_encoder.aencode_queries = AsyncMock(return_value={"indices": [1], "values": [0.5]})
+    mocker.patch("tilellm.store.qdrant.qdrant_repository_local.TiledeskSparseEncoders", return_value=sparse_encoder)
+
+    repo = QdrantRepository()
+    mocker.patch.object(repo, "create_index", AsyncMock(return_value=vector_store))
+    mocker.patch.object(repo, "get_embeddings_dimension", AsyncMock(return_value=1536))
+
+    await repo.get_chunks_from_repo(_hybrid_qa(top_k=45))
+
+    assert _prefetch_limits(client) == [45, 45]
+
+
+@pytest.mark.asyncio
+async def test_perform_hybrid_search_prefetch_limit_matches_top_k():
+    client = _client_returning_one_point()
+
+    await QdrantRepository().perform_hybrid_search(_hybrid_qa(top_k=30), client, [0.1, 0.2],
+                                                   {"indices": [1], "values": [0.5]})
+
+    assert _prefetch_limits(client) == [30, 30]
+
+
+@pytest.mark.asyncio
+async def test_search_community_report_prefetch_limit_matches_top_k():
+    client = _client_returning_one_point()
+
+    await QdrantRepository().search_community_report(_hybrid_qa(top_k=25), client, [0.1, 0.2],
+                                                     {"indices": [1], "values": [0.5]})
+
+    assert _prefetch_limits(client) == [25, 25]

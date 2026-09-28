@@ -41,6 +41,18 @@ from tilellm.modules.ingestion.text_processor import process_auto_detected_text
 logger = logging.getLogger(__name__)
 
 
+def _rrf_prefetch(dense, sparse, limit: int) -> List[models.Prefetch]:
+    """Dense + sparse branches for an RRF hybrid query, each fetching `limit` candidates.
+
+    The limit is not optional in practice: Qdrant defaults every Prefetch to 10, which
+    silently capped the fused pool at 20 whatever top_k asked for (top_k=45 -> 20 on
+    real data), making the reranking oversample a no-op.
+    """
+    return [
+        models.Prefetch(query=dense, using="text-dense", limit=limit),
+        models.Prefetch(query=sparse, using="text-sparse", limit=limit),
+    ]
+
 
 class CachedVectorStore:
     """
@@ -554,17 +566,7 @@ class QdrantRepository(VectorStoreRepository):
             query=models.FusionQuery(
                 fusion=models.Fusion.RRF  # we are using reciprocal rank fusion here
             ),
-            prefetch=[
-                models.Prefetch(
-                    query=dense,
-                    using="text-dense"
-                ),
-
-                models.Prefetch(
-                    query=sparse,
-                    using="text-sparse"
-                ),
-            ],
+            prefetch=_rrf_prefetch(dense, sparse, question_answer.top_k),
             query_filter=filter_qdrant,  # If you don't want any filters for now
             limit=question_answer.top_k,  # 5 the closest results
         ).points
@@ -599,17 +601,7 @@ class QdrantRepository(VectorStoreRepository):
             query=models.FusionQuery(
                 fusion=models.Fusion.RRF  # we are using reciprocal rank fusion here
             ),
-            prefetch=[
-                models.Prefetch(
-                    query=dense,
-                    using="text-dense"
-                ),
-
-                models.Prefetch(
-                    query=sparse,
-                    using = "text-sparse"
-                ),
-            ],
+            prefetch=_rrf_prefetch(dense, sparse, question_answer.top_k),
             query_filter=filter_qdrant,  # If you don't want any filters for now
             limit=question_answer.top_k,  # 5 the closest results
         ).points
@@ -996,17 +988,7 @@ class QdrantRepository(VectorStoreRepository):
                     query=models.FusionQuery(
                         fusion=models.Fusion.RRF  # we are using reciprocal rank fusion here
                     ),
-                    prefetch=[
-                        models.Prefetch(
-                            query=dense,
-                            using="text-dense"
-                        ),
-
-                        models.Prefetch(
-                            query=sparse,
-                            using="text-sparse"
-                        ),
-                    ],
+                    prefetch=_rrf_prefetch(dense, sparse, question_answer.top_k),
                     query_filter=filter_qdrant,  # If you don't want any filters for now
                     limit=question_answer.top_k,  # 5 the closest results
                 ).points
