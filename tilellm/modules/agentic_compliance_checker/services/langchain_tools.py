@@ -196,8 +196,11 @@ async def compliance_resolve_proportional(
     più (o di meno, se il criterio è a direzione inversa) riceve il punteggio pieno,
     gli altri una quota proporzionale. Richiede che ogni operatore sia già stato
     valutato su questi criteri con compliance_evaluate_criteria — altrimenti rifiuta,
-    a meno di allow_partial=True. Il punteggio resta 'proposta da confermare'
-    (human_review_required) per design, non è mai definitivo automaticamente."""
+    a meno di allow_partial=True. Per i criteri la cui quantità viene dal listino L01
+    (es. ampiezza di gamma) chiama PRIMA compliance_check_l01 per ogni operatore: la
+    risposta elenca in 'l01_not_checked' gli operatori per cui non è stato fatto.
+    Il punteggio resta 'proposta da confermare' (human_review_required) per design,
+    non è mai definitivo automaticamente."""
     return await _safe(resolve_proportional_core(
         session_id=session_id, criterion_ids=criterion_ids, allow_partial=allow_partial,
     ))

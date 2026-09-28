@@ -557,6 +557,20 @@ async def resolve_proportional_core(
             "passare allow_partial=True per procedere comunque."
         )
 
+    # quantity_from_l01 criteria (e.g. range breadth): the comparable quantity is the
+    # operator's L01 product count, stored by compliance_check_l01 — same fallback
+    # /v2/check applies (_apply_l01_quantity: a quantity the judge measured wins).
+    l01_not_checked: List[str] = []
+    if any(c.quantity_from_l01 for c in lot.requirements.discretionary if c.id in proportional_ids):
+        from tilellm.modules.compliance_checker.services.discretionary_check_service import (
+            _apply_l01_quantity,
+        )
+        for operator_ref, targeted in per_operator_results:
+            l01_result = await SessionStore.get_l01_result(session_id, operator_ref.namespace)
+            if l01_result is None:
+                l01_not_checked.append(operator_ref.operator_label or operator_ref.namespace)
+            _apply_l01_quantity(lot, targeted, l01_result)
+
     compliance_reports = [
         ComplianceReportV2(
             tender=lot.tender, namespace=operator_ref.namespace, summary=ComplianceSummaryV2(),
@@ -596,6 +610,9 @@ async def resolve_proportional_core(
         "results": results_out,
         "partial": partial,
         "missing": missing or None,
+        # compliance_check_l01 never called for these operators: their L01 count
+        # couldn't be used, so they may be unscored on quantity_from_l01 criteria.
+        "l01_not_checked": l01_not_checked or None,
     }, ensure_ascii=False)
 
 

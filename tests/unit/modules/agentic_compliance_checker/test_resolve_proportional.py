@@ -192,3 +192,73 @@ async def test_resolve_proportional_matches_direct_bulk_service_call(fake_redis)
     assert agentic_a.score == direct_a.score
     assert agentic_b.score == direct_b.score
     assert agentic_a.proportional_auto == direct_a.proportional_auto
+
+
+# ---------------------------------------------------------------------------
+# quantity_from_l01 (ampiezza di gamma): the comparable quantity is the operator's
+# L01 product count — the price list is not indexed, so the judge can't measure it.
+# /v2/check applies it via _apply_l01_quantity; the agentic path must too.
+# ---------------------------------------------------------------------------
+
+from tilellm.modules.compliance_checker.models_v2 import L01CheckResult  # noqa: E402
+
+
+def _lot_l01() -> TenderLotRequirements:
+    return TenderLotRequirements(
+        tender=TenderInfo(title="Gara test", lot_id="L1", lot_name="Lotto 1"),
+        requirements=_RequirementsBlock(discretionary=[
+            DiscretionaryCriterion(id="P7", text="Maggior ampiezza gamma", mode="proporzionale",
+                                   max_points=11.0, quantity_from_l01=True),
+        ]),
+    )
+
+
+async def _seed_l01(session_id, namespace, products_total):
+    await SessionStore.store_l01_result(session_id, namespace, L01CheckResult(
+        used=True, l01_products_total=products_total, matched=products_total))
+
+
+@pytest.mark.asyncio
+async def test_l01_product_count_is_the_quantity_for_quantity_from_l01_criteria(fake_redis):
+    session_id = await SessionStore.create(_request(), _lot_l01())
+    await _seed_result(session_id, "ns-a", _prop_result(None, cid="P7", max_points=11.0))
+    await _seed_result(session_id, "ns-b", _prop_result(None, cid="P7", max_points=11.0))
+    await _seed_l01(session_id, "ns-a", 4)
+    await _seed_l01(session_id, "ns-b", 1)
+
+    body = json.loads(await resolve_proportional_core(session_id=session_id))
+
+    by_op = {r["operator"]: r for r in body["results"]}
+    assert by_op["Alpha"]["score"] == 11.0
+    assert by_op["Beta"]["score"] == 2.75
+    assert body["l01_not_checked"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_quantity_measured_by_the_judge_wins_over_the_l01_count(fake_redis):
+    session_id = await SessionStore.create(_request(), _lot_l01())
+    await _seed_result(session_id, "ns-a", _prop_result(8.0, cid="P7", max_points=11.0))
+    await _seed_result(session_id, "ns-b", _prop_result(None, cid="P7", max_points=11.0))
+    await _seed_l01(session_id, "ns-a", 2)
+    await _seed_l01(session_id, "ns-b", 4)
+
+    body = json.loads(await resolve_proportional_core(session_id=session_id))
+
+    by_op = {r["operator"]: r for r in body["results"]}
+    assert by_op["Alpha"]["measured_quantity"] == 8.0  # the judge's own measurement, not 2
+    assert by_op["Alpha"]["score"] == 11.0
+    assert by_op["Beta"]["score"] == 5.5
+
+
+@pytest.mark.asyncio
+async def test_operators_whose_l01_was_never_checked_are_reported(fake_redis):
+    session_id = await SessionStore.create(_request(), _lot_l01())
+    await _seed_result(session_id, "ns-a", _prop_result(None, cid="P7", max_points=11.0))
+    await _seed_result(session_id, "ns-b", _prop_result(None, cid="P7", max_points=11.0))
+    await _seed_l01(session_id, "ns-a", 4)  # ns-b: compliance_check_l01 never called
+
+    body = json.loads(await resolve_proportional_core(session_id=session_id))
+
+    assert body["l01_not_checked"] == ["Beta"]
+    by_op = {r["operator"]: r for r in body["results"]}
+    assert by_op["Beta"]["measured_quantity"] is None
