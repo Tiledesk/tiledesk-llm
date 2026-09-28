@@ -245,8 +245,12 @@ class ComplianceResult(BaseModel):
     evidence_document: str              # file_name of the source chunk
     evidence_page: int                  # page number (1-indexed)
     evidence_section: str               # heading_path of the source chunk
-    evidence_chunk_index: int = 0       # 1-based index of cited chunk (0 = fallback to first)
+    evidence_chunk_index: int = 0       # 1-based index of cited chunk (0 = not attributed)
     evidence_chunk_ids: List[str] = []  # doc_ids of retrieved chunks (debug)
+    # False when the judge anchored no chunk: evidence_document is then left empty
+    # rather than filled with an arbitrary retrieved chunk (same flag as v2's
+    # DiscretionaryResult.citation_attributed).
+    citation_attributed: bool = True
 
 
 class ComplianceSummary(BaseModel):

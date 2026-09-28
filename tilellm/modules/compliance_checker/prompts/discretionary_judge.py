@@ -167,6 +167,12 @@ source_chunk_index = 0, evidence_text = "".
    - Alta (> 0.8) se l'evidenza è esplicita e inequivocabile
    - Media (0.4–0.8) se l'evidenza è implicita o parziale
    - Bassa (< 0.4) se l'evidenza è vaga o assente
+6. Il criterio può comparire nelle evidenze con parole diverse, sinonimi, forme equivalenti o in \
+un'altra lingua (le offerte sono spesso multilingue): valuta il significato, non la corrispondenza \
+letterale. Una dichiarazione esplicita che il prodotto possiede la caratteristica richiesta, o che è \
+conforme a una norma il cui titolo o contenuto, riportato nelle evidenze, riguarda quella \
+caratteristica, è evidenza valida: non pretendere dati di test o certificati se il criterio non li \
+chiede espressamente.
 
 RISPONDI con un singolo oggetto JSON valido — nessun fence markdown, nessun preambolo — \
 con esattamente queste chiavi:

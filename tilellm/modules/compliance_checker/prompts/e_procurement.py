@@ -20,7 +20,7 @@ E_PROCUREMENT_CONFIG = ComplianceConfig(
         "- 'non_compliant': the offer explicitly contradicts or ignores the requirement.\n"
         "- 'not_verifiable': the evidence contains no information relevant to the requirement.\n\n"
         "You MUST respond with a single valid JSON object — no markdown fences, no preamble — "
-        "with exactly these keys: judgment, confidence, evidence_text, justification."
+        "in the exact format specified in the user message."
     ),
     judgment_labels=["compliant", "non_compliant", "partial", "not_verifiable"],
 )

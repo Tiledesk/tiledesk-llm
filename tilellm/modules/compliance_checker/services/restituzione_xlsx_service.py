@@ -176,7 +176,7 @@ class RestituzioneXlsxService:
             "",                       # Punteggio assegnato (n/a for Conformità)
             round(r.confidence, 2),
             r.justification,
-            r.evidence_document,
+            r.evidence_document if r.citation_attributed else _CITATION_UNATTRIBUTED,
             str(r.evidence_page) if r.evidence_document else "",
             "",
         ]

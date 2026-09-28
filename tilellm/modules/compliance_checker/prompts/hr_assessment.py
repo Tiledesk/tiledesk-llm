@@ -19,7 +19,7 @@ HR_ASSESSMENT_CONFIG = ComplianceConfig(
         "- 'non_compliant': the CV explicitly lacks or contradicts the requirement.\n"
         "- 'not_verifiable': the CV sections retrieved contain no relevant information.\n\n"
         "You MUST respond with a single valid JSON object — no markdown fences, no preamble — "
-        "with exactly these keys: judgment, confidence, evidence_text, justification."
+        "in the exact format specified in the user message."
     ),
     judgment_labels=["compliant", "non_compliant", "partial", "not_verifiable"],
 )

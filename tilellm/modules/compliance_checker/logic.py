@@ -54,6 +54,12 @@ Testo: {req_text}
 </evidenze_recuperate>
 
 Basandoti ESCLUSIVAMENTE sulle evidenze recuperate sopra, valuta se il requisito è soddisfatto.
+Il requisito può comparire nelle evidenze con parole diverse, sinonimi, forme equivalenti o in \
+un'altra lingua (le offerte sono spesso multilingue): valuta il significato, non la corrispondenza \
+letterale. Una dichiarazione esplicita che il prodotto possiede la caratteristica richiesta, o che è \
+conforme a una norma il cui titolo o contenuto, riportato nelle evidenze, riguarda quella \
+caratteristica, è evidenza valida: non pretendere dati di test o certificati se il requisito non li \
+chiede espressamente.
 Rispondi con un singolo oggetto JSON valido (senza fence markdown) con esattamente queste chiavi:
   "judgment"           : uno tra {valid_judgments}
   "confidence"         : numero float tra 0.0 e 1.0
@@ -262,6 +268,12 @@ async def _judge_requirement(
     evidence_doc, evidence_page, evidence_section, matched_idx = _pick_best_source(
         chunks, metadata, evidence_text, source_index
     )
+    citation_attributed = matched_idx > 0
+    if not citation_attributed:
+        # _pick_best_source's last resort is simply the first retrieved chunk — not
+        # evidence. Reporting it as the source put unrelated documents next to
+        # "not found" verdicts on a real tender.
+        evidence_doc, evidence_page, evidence_section = "", 1, ""
 
     return ComplianceResult(
         requirement_id=req.id,
@@ -277,6 +289,7 @@ async def _judge_requirement(
         evidence_section=evidence_section,
         evidence_chunk_index=matched_idx,
         evidence_chunk_ids=chunk_ids,
+        citation_attributed=citation_attributed,
     )
 
 

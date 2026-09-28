@@ -33,11 +33,7 @@ MEDICAL_DEVICES_CONFIG = ComplianceConfig(
         "   citando l'equivalenza.\n"
         "4. Cita sempre il testo verbatim nell'evidence_text (max 200 caratteri).\n\n"
         "DEVI rispondere con un singolo oggetto JSON valido — senza fence markdown, senza preambolo — "
-        "con esattamente queste chiavi:\n"
-        "  \"judgment\"      : uno tra \"compliant\", \"non_compliant\", \"partial\", \"not_verifiable\"\n"
-        "  \"confidence\"    : numero float tra 0.0 e 1.0\n"
-        "  \"evidence_text\" : citazione verbatim dal documento (stringa vuota se assente)\n"
-        "  \"justification\" : 1-3 frasi che spiegano il giudizio in italiano"
+        "nel formato esatto indicato nel messaggio utente."
     ),
     judgment_labels=["compliant", "non_compliant", "partial", "not_verifiable"],
     judgment_map={
