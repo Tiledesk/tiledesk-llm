@@ -762,6 +762,14 @@ def inject_llm_async(func: Callable) -> Callable:
     return async_wrapper
 
 
+def _generation_params_cache_fragment(question) -> Tuple:
+    """temperature/top_p/max_tokens are baked into a chat client when it is built, so
+    they must be part of its cache key — otherwise a cached client serves one request's
+    values to another (vLLM rejected a cached max_tokens=10000 on a max_tokens=2000
+    request: max_tokens + prompt exceeded the model's context)."""
+    return tuple((name, getattr(question, name, None)) for name in ("temperature", "top_p", "max_tokens"))
+
+
 async def _build_standard_llm_cache_key(question) -> Tuple:
     """Costruisce la chiave di cache per il modello LLM standard"""
     cache_key_parts = [
@@ -791,6 +799,7 @@ async def _build_standard_llm_cache_key(question) -> Tuple:
                 hashlib.sha256(json.dumps(extra_body, sort_keys=True).encode('utf-8')).hexdigest()
             )
 
+    cache_key_parts.extend(_generation_params_cache_fragment(question))
     return tuple(cache_key_parts)
 
 
@@ -1188,6 +1197,8 @@ async def _build_llm_cache_key(question) -> tuple:
             cache_key_parts_dic["openrouter_body"] = hashlib.sha256(
                 json.dumps(extra_body, sort_keys=True).encode('utf-8')
             ).hexdigest()
+
+    cache_key_parts_dic.update(dict(_generation_params_cache_fragment(question)))
 
     sorted_params = tuple(
         (k, str(v)) for k, v in sorted(cache_key_parts_dic.items())
@@ -1729,6 +1740,7 @@ async def _build_reasoning_llm_cache_key(question) -> Tuple:
                 hashlib.sha256(json.dumps(extra_body, sort_keys=True).encode('utf-8')).hexdigest()
             )
 
+    cache_key_parts.extend(_generation_params_cache_fragment(question))
     return tuple(cache_key_parts)
 
 
