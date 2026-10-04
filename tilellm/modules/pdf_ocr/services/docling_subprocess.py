@@ -94,9 +94,42 @@ def _cuda_available() -> bool:
         return False
 
 
-def _child_convert(file_path: str, do_table_structure: bool, do_ocr: bool) -> dict:
+_OCR_KEYS = ("ocr_engine", "ocr_lang", "force_full_page_ocr")
+_OCR_ENGINES = ("auto", "rapidocr", "tesseract")
+
+
+def _ocr_config(options: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The OCR keys of a converter's options, validated; None = Docling's default
+    (auto engine, raster areas only). An unknown engine is an error, not a silent
+    fallback to the default that produced the bad text in the first place."""
+    ocr = {k: options[k] for k in _OCR_KEYS if options and options.get(k) is not None}
+    if ocr.get("ocr_engine", "auto") not in _OCR_ENGINES:
+        raise ValueError(f"ocr_engine '{ocr['ocr_engine']}' non valido: usa uno tra {_OCR_ENGINES}")
+    return ocr or None
+
+
+def _ocr_options(ocr: Optional[Dict[str, Any]]):
+    """Docling OcrOptions for a validated OCR config (see _ocr_config)."""
+    ocr = _ocr_config(ocr)
+    if not ocr:
+        return None
+    from docling.datamodel.pipeline_options import (
+        OcrAutoOptions,
+        RapidOcrOptions,
+        TesseractCliOcrOptions,
+    )
+    cls = {"auto": OcrAutoOptions, "rapidocr": RapidOcrOptions,
+           "tesseract": TesseractCliOcrOptions}[ocr.get("ocr_engine", "auto")]
+    kwargs = {"force_full_page_ocr": bool(ocr.get("force_full_page_ocr", False))}
+    if ocr.get("ocr_lang"):
+        kwargs["lang"] = list(ocr["ocr_lang"])
+    return cls(**kwargs)
+
+
+def _child_convert(file_path: str, do_table_structure: bool, do_ocr: bool,
+                   ocr: Optional[Dict[str, Any]] = None) -> dict:
     """Convert one PDF (segment) and return the serialized DoclingDocument."""
-    key = (do_table_structure, do_ocr)
+    key = (do_table_structure, do_ocr, repr(sorted((ocr or {}).items())))
     converter = _child_converters.get(key)
     if converter is None:
         from docling.datamodel.accelerator_options import AcceleratorOptions
@@ -106,6 +139,9 @@ def _child_convert(file_path: str, do_table_structure: bool, do_ocr: bool) -> di
 
         opts = PdfPipelineOptions()
         opts.do_ocr = do_ocr
+        ocr_options = _ocr_options(ocr)
+        if ocr_options is not None:
+            opts.ocr_options = ocr_options
         opts.do_table_structure = do_table_structure
         if do_table_structure:
             opts.table_structure_options.do_cell_matching = True
@@ -164,8 +200,11 @@ async def convert_in_subprocess(
     file_path: str,
     do_table_structure: bool = True,
     do_ocr: bool = True,
+    ocr: Optional[Dict[str, Any]] = None,
 ) -> Any:
     """Convert a PDF in the isolated child process.
+
+    `ocr`: optional OCR engine config (see _ocr_config); None keeps Docling's default.
 
     Returns a rebuilt DoclingDocument.
     Raises ConversionProcessDied when the child is killed (OOM) or times out.
@@ -180,7 +219,7 @@ async def convert_in_subprocess(
     try:
         doc_dict = await asyncio.wait_for(
             loop.run_in_executor(
-                pool, _child_convert, file_path, do_table_structure, do_ocr
+                pool, _child_convert, file_path, do_table_structure, do_ocr, ocr
             ),
             timeout=SEGMENT_TIMEOUT_S,
         )

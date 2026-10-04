@@ -214,7 +214,7 @@ class TestRunConversionDispatch:
 
         seen = {}
 
-        async def fake_convert(path, do_table_structure=True, do_ocr=True):
+        async def fake_convert(path, do_table_structure=True, do_ocr=True, ocr=None):
             seen["do_ocr"] = do_ocr
             return "doc"
 
@@ -228,7 +228,7 @@ class TestRunConversionDispatch:
 
         seen_paths = []
 
-        async def fake_convert(path, do_table_structure=True, do_ocr=True):
+        async def fake_convert(path, do_table_structure=True, do_ocr=True, ocr=None):
             seen_paths.append(path)
             return f"doc_{len(seen_paths)}"  # placeholder document
 

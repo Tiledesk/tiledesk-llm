@@ -121,3 +121,22 @@ class TestItemSingleField:
         assert _item(pdf_options={"extract_md_simple": True}).pdf_options == {
             "extract_md_simple": True
         }
+
+
+def test_ocr_choice_survives_the_trip_to_the_taskiq_worker():
+    """/api/ingestion -> _build_pdf_request -> TaskIQ payload -> PDFScrapingRequest
+    rebuilt by the worker: the Docling OCR choice (converter_options) must arrive
+    intact, since the conversion happens in the worker, not in the API process."""
+    from tilellm.modules.pdf_ocr.models.pdf_scraping import PDFScrapingRequest
+    from tilellm.shared.llm_config import serialize_with_secrets
+
+    ocr = {"ocr_engine": "tesseract", "ocr_lang": ["ita"], "force_full_page_ocr": True}
+    request = _build_pdf_request(_item(pdf_options={
+        "use_docling": True, "extract_md_simple": True, "converter": "docling",
+        "converter_options": ocr,
+    }))
+
+    worker_side = PDFScrapingRequest(**serialize_with_secrets(request.model_dump(mode="python")))
+
+    assert worker_side.converter_options == ocr
+    assert worker_side.extract_md_simple is True

@@ -816,14 +816,20 @@ async def docling_convert(file_path, doc_id, attempt: int = 1, options=None) -> 
     downstream LLM enrichment. Segmented heavy documents are merged with
     corrected page numbers and reading order. options={"skip_ocr": True}
     forces Docling to skip OCR (use for native-digital PDFs — faster and, on a
-    clean text layer, more accurate than OCR-ing it).
+    clean text layer, more accurate than OCR-ing it). Optional ocr_engine
+    ('auto'|'rapidocr'|'tesseract'), ocr_lang and force_full_page_ocr (from the
+    request's converter_options) choose Docling's OCR — e.g. tesseract + ['ita']
+    + full page for scans the default engine reads with glued words.
     """
-    from tilellm.modules.pdf_ocr.services.conversion_pipeline import run_conversion
+    from tilellm.modules.pdf_ocr.services import conversion_pipeline
+    from tilellm.modules.pdf_ocr.services.docling_subprocess import _ocr_config
 
     skip_ocr = bool(options and options.get("skip_ocr"))
-    outcome = await run_conversion(
+    ocr = _ocr_config(options)  # validated here: a bad engine fails before converting
+    outcome = await conversion_pipeline.run_conversion(
         file_path, doc_id, attempt=attempt,
         do_ocr_override=False if skip_ocr else None,
+        ocr=ocr,
     )
 
     page_bodies: List[Any] = []
