@@ -61,6 +61,7 @@ def get_service_config():
             "conversion": True,
             "tools_registry": True,
             "temporal_digest": True,
+            "system_one": True,
         },
         "app-graph": {
             "task_executor": True,
@@ -71,6 +72,7 @@ def get_service_config():
             "conversion": True,
             "tools_registry": True,
             "temporal_digest": True,
+            "system_one": True,
         },
         "app-ocr": {
             "task_executor": True,
@@ -81,6 +83,7 @@ def get_service_config():
             "conversion": True,
             "tools_registry": True,
             "temporal_digest": True,
+            "system_one": True,
         },
         "app-all": {
             "task_executor": True,
@@ -91,6 +94,7 @@ def get_service_config():
             "conversion": True,
             "tools_registry": True,
             "temporal_digest": True,
+            "system_one": True,
         }
     }
 
@@ -110,7 +114,8 @@ def get_service_config():
             "tools_registry": _str_to_bool(os.environ.get("ENABLE_TOOLS_REGISTRY", "true")),
             "api_v2": _str_to_bool(os.environ.get("ENABLE_API_V2", "true")),
             "temporal_digest": _str_to_bool(os.environ.get("ENABLE_TEMPORAL_DIGEST", "true")),
-            "lgraph": _str_to_bool(os.environ.get("ENABLE_LGRAPH", "false"))
+            "lgraph": _str_to_bool(os.environ.get("ENABLE_LGRAPH", "false")),
+            "system_one": _str_to_bool(os.environ.get("ENABLE_SYSTEM_ONE", "true")),
         }
 
     # TEI Configuration

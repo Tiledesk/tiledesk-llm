@@ -1,0 +1,11 @@
+# clm-serve: CLM System One server (POST /v1/systemone, POST /v1/rank).
+# contrastive-lm depends on vLLM, so it is installed on top of the official vLLM image.
+# The same image runs both services of the "clm" profile: the Qwen3-8B pooling encoder
+# (entrypoint "vllm serve") and the CLM API (entrypoint "clm-serve").
+ARG VLLM_IMAGE=vllm/vllm-openai:latest
+FROM ${VLLM_IMAGE}
+
+ARG CLM_VERSION=0.1.0
+RUN pip install --no-cache-dir "contrastive-lm[hf]==${CLM_VERSION}"
+
+EXPOSE 8700

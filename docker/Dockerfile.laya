@@ -1,0 +1,17 @@
+# laya-serve: Jev-compatible System One server (POST /v1/systemone) for Laya checkpoints.
+# Upstream publishes no image; this installs the pinned PyPI release.
+# The PyPI torch wheel ships CUDA libraries and also runs on CPU (LAYA_DEVICE=cpu).
+FROM python:3.12-slim
+
+ARG LAYA_VERSION=0.3.27
+RUN pip install --no-cache-dir "laya[serve]==${LAYA_VERSION}"
+
+ENV LAYA_HOST=0.0.0.0 \
+    LAYA_PORT=8000 \
+    HF_HOME=/root/.cache/huggingface
+
+EXPOSE 8000
+HEALTHCHECK --interval=15s --timeout=5s --start-period=180s --retries=5 \
+  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4).status == 200 else 1)"
+
+CMD ["laya-serve"]

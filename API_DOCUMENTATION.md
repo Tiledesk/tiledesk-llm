@@ -18,6 +18,7 @@ Complete REST API documentation for Tiledesk LLM server.
 - [Namespace Management APIs](#namespace-management-apis)
 - [Conversion APIs](#conversion-apis)
 - [Tag Filtering](#tag-filtering)
+- [System One API](#system-one-api)
 - [Tools Registry APIs](#tools-registry-apis)
 - [Knowledge Graph APIs (Neo4j)](#knowledge-graph-apis)
 - [Knowledge Graph APIs (FalkorDB)](#knowledge-graph-apis-falkordb)
@@ -93,6 +94,48 @@ When `type` is omitted or set to `"auto"`, the system resolves the document type
 | `situated_context.provider` | string | `openai` | LLM provider (`openai`\|`anthropic`\|`google`\|`groq`\|`vllm`\|`ollama`). |
 | `situated_context.model` | string | `gpt-4o-mini` | LLM model for context generation. |
 | `situated_context.api_key` | string | `null` | API key for the provider. |
+| `pdf_options` | object | `null` | PDF-pipeline options, passed to the Docling request. Keys are validated against `PDFScrapingRequest`: an unknown key is **rejected** (400), never silently ignored. Common keys: `use_docling`, `extract_md_simple`, `export_md`, `converter`, `converter_options`, `skip_ocr`, `include_tables`, `include_images`, `llm`, `model`, `file_name`. |
+| `pdf_options.converter_options` | object | `null` | Per-request converter config. For `converter: "docling"`: `ocr_engine` (`auto`\|`rapidocr`\|`tesseract`), `ocr_lang` (e.g. `["ita"]`), `force_full_page_ocr` (bool). An unknown `ocr_engine` fails before conversion. |
+
+**Choosing the OCR engine for a scan.** Docling's default OCR (`auto` → RapidOCR, raster
+areas only) can glue words on some scans — a real declaration was indexed as "sonoprivi
+dilattice/ftalati" and never retrieved. Re-ingest that file with Tesseract (installed with
+the language data, `tesseract --list-langs`). Same `id` → the document's chunks are replaced,
+the rest of the namespace is untouched. The conversion runs in the TaskIQ worker: restart it
+after upgrading.
+
+```bash
+curl -X POST http://localhost:8000/api/ingestion \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "71e736da856830eb",
+    "namespace": "OPERATORE_A",
+    "type": "auto",
+    "source": "http://localhost:5200/files/gara-2026/OPERATORE_A/Decl_latex-ftalati_free.pdf",
+    "engine": { "name": "qdrant", "type": "serverless", "host": "localhost", "port": 6333,
+                "index_name": "gare-2026", "vector_size": 1024 },
+    "embedding": { "provider": "tei", "name": "intfloat/multilingual-e5-large-instruct",
+                   "url": "http://localhost:7580/", "api_key": "..." },
+    "hybrid": true,
+    "sparse_encoder": "splade",
+    "gptkey": "sk-ant-...",
+    "use_ocr": true,
+    "pdf_options": {
+      "llm": "anthropic",
+      "model": { "provider": "anthropic", "name": "claude-haiku-4-5-20251001", "api_key": "sk-ant-..." },
+      "use_docling": true,
+      "extract_md_simple": true,
+      "converter": "docling",
+      "converter_options": { "ocr_engine": "tesseract", "ocr_lang": ["ita"], "force_full_page_ocr": true },
+      "include_tables": false,
+      "include_images": false,
+      "file_name": "Decl_latex-ftalati_free.pdf"
+    },
+    "additional_metadata": { "operatore_economico": "OPERATORE_A", "source_file_name": "Decl_latex-ftalati_free.pdf" }
+  }'
+```
+
+The response is queued (`job_id`); the chunks appear once the worker has processed the job.
 
 **Supported document types** (via `type` field):
 
@@ -118,6 +161,50 @@ When `type` is omitted or set to `"auto"`, the system resolves the document type
 - `200`: Processed synchronously
 - `300`: Queued (if `webhook` is provided)
 - `400`: Validation error (e.g., `use_ocr=true` but missing `source`)
+
+---
+
+### POST `/api/v2/ingestion`
+
+Same request body as `/api/ingestion` (`ItemSingle`); `/api/ingestion` stays the production
+path. Routing: `pdf`/`docx` with `use_ocr=true` → the same Docling pipeline as
+`/api/ingestion`; `regex_custom` → legacy pipeline; everything else → **canonical path**
+(same converters as `/api/export/md`, written synchronously with baseline provenance metadata
+on every chunk: `id`, `doc_id`, `chunk_index` — document-wide, used to fetch a chunk's
+neighbours —, `file_name`, `page`, `heading_path`, plus `additional_metadata`).
+
+On the canonical path a PDF is converted by Docling, with OCR decided per document by a
+classifier unless `pdf_options.skip_ocr` is given; `pdf_options.converter_options` (OCR engine
+choice, see above) is honoured here too. Chunking is per page with a character splitter
+(`chunk_size`/`chunk_overlap`), not the Markdown-heading chunker of `extract_md_simple`.
+
+```bash
+curl -X POST http://localhost:8000/api/v2/ingestion \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "71e736da856830eb",
+    "namespace": "OPERATORE_A",
+    "type": "pdf",
+    "source": "http://localhost:5200/files/gara-2026/OPERATORE_A/Decl_latex-ftalati_free.pdf",
+    "engine": { "name": "qdrant", "type": "serverless", "host": "localhost", "port": 6333,
+                "index_name": "gare-2026", "vector_size": 1024 },
+    "embedding": { "provider": "tei", "name": "intfloat/multilingual-e5-large-instruct",
+                   "url": "http://localhost:7580/", "api_key": "..." },
+    "hybrid": true,
+    "sparse_encoder": "splade",
+    "use_ocr": false,
+    "pdf_options": {
+      "skip_ocr": false,
+      "converter_options": { "ocr_engine": "tesseract", "ocr_lang": ["ita"], "force_full_page_ocr": true }
+    },
+    "additional_metadata": { "operatore_economico": "OPERATORE_A" }
+  }'
+```
+
+**Response** (synchronous):
+```json
+{ "id": "71e736da856830eb", "namespace": "OPERATORE_A", "chunks_indexed": 1, "chunk_ids": ["..."] }
+```
 
 ---
 
@@ -934,6 +1021,77 @@ Tag filtering allows you to filter documents by tags during indexing and queryin
 **Supported Vector Stores**: Pinecone (Serverless and Pod) and Qdrant fully support tag filtering. Redis vector store is not affected (used only for caching/streaming).
 
 **Implementation Details**: Tags are stored in vector store metadata under the `"tags"` field. Filter conversion happens automatically for different vector stores (Pinecone native filters, Qdrant via `build_filter()`). Works with all search types (`similarity`, `hybrid`, `mmr`) and reranking.
+
+## System One API
+
+### POST `/api/v1/systemone`
+
+Typed, calibrated decisions instead of generated text, from any server speaking the Jev
+wire protocol (`POST {url}/v1/systemone`): **TypeSafe Jev** (hosted), **Laya** via
+`laya-serve` and **CLM** via `clm-serve` (self-hosted — profiles `laya` and `clm` of
+`docker-compose-redis-tei-qdrant.yml`). The request carries a `state` and typed
+questions; the answer gives each question a value with probabilities and confidence.
+Module enabled by default (`ENABLE_SYSTEM_ONE`).
+
+**Request**
+```json
+{
+  "model": {"provider": "laya", "url": "http://laya-serve:8000", "name": "/models/laya-gare-ft"},
+  "state": "The integration keeps failing for 3 days and I am losing sales.",
+  "questions": {
+    "department":  {"type": "choice", "instructions": "Which team should handle this",
+                    "criteria": {"billing": "Payment issues", "technical": "Bugs or integration problems"}},
+    "frustration": {"type": "score",  "instructions": "How frustrated", "criteria": ["calm", "frustrated", "angry"]},
+    "is_urgent":   {"type": "noul",   "instructions": "The message conveys urgency"}
+  },
+  "parameters": {"max_len": 1024},
+  "debug": false
+}
+```
+
+| Field | Notes |
+|-------|-------|
+| `model.provider` | `jev`, `laya`, `clm` (`GET /api/v1/systemone/providers` lists them with their defaults) |
+| `model.url` | server base url; default only for `jev` (`https://api.typesafe.ai`), required for self-hosted providers |
+| `model.api_key` | required for `jev`; optional for `laya`/`clm` (their `LAYA_API_KEY`/`CLM_API_KEY`) |
+| `model.name` | model/checkpoint; defaults: `jev-latest`, `clm-latest`, Laya chooses by language. Laya: `english`, `multilingual`, `typed-decisions` or a fine-tuned path served by `laya-serve` |
+| `state` | text, object or list |
+| `questions` | at least one. `noul` (yes/no, optional `criteria` `{"true","false"}`), `choice` (1–255 options), `score` (2–10 ordered levels) |
+| `parameters` | provider-specific fields forwarded as-is (Laya: `lang`, `max_len`, `min_confidence`; CLM: `temperature`); cannot override `model`/`state`/`questions` |
+
+Unknown fields, unknown question types or out-of-range option sets are rejected with 422.
+
+**Response**
+```json
+{
+  "provider": "laya",
+  "model": "laya-rl-agent",
+  "answers": {
+    "department":  {"type": "choice", "choice": "technical", "confidence": 0.24,
+                    "probabilities": {"billing": 0.22, "technical": 0.78}},
+    "frustration": {"type": "score", "score": 1.14, "confidence": 0.53,
+                    "probabilities": {"0": 0.02, "1": 0.83, "2": 0.16},
+                    "legend": {"0": "calm", "1": "frustrated", "2": "angry"}},
+    "is_urgent":   {"type": "noul", "noul": 0.8, "confidence": 0.8}
+  },
+  "usage": {"input_tokens": 134, "output_tokens": 0},
+  "latency_ms": 41.3,
+  "warnings": []
+}
+```
+`raw` (the provider's full response) is added with `debug: true`.
+
+**Errors** — never an empty 200: provider `401/403` → `401`; `400/422` → `422`; `429/503/529`
+→ `503` (with `Retry-After` when given); other errors and an answer missing for a question → `502`;
+unreachable server → `502`; timeout → `504`.
+
+**Laya checks** — `laya-serve` (0.3.27) ignores an unknown model name and answers with the base
+checkpoint chosen by language, with HTTP 200. When `model.name` is given, the response's `routing`
+must name it, otherwise the call fails with `422` (a mistyped fine-tuned path never returns
+base-model answers silently). Without `routing` (`LAYA_JEV_STRICT=1`) the response carries a
+"non verificabile" warning; state truncation (`usage.truncated`) is reported in `warnings`.
+
+---
 
 ## Tools Registry APIs
 
