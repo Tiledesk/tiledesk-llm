@@ -257,3 +257,17 @@ class TestConvertDocx:
 
 async def _async_return(value):
     return value
+
+
+@pytest.mark.asyncio
+async def test_converter_options_forwarded_alongside_skip_ocr():
+    """OCR engine choice (e.g. tesseract for scans the default engine misreads)."""
+    calls = {}
+
+    async def fake_converter(file_path, doc_id, attempt=1, options=None):
+        calls["options"] = options
+        return Mock(page_bodies=[])
+
+    await convert_pdf("/tmp/f.pdf", "doc1", converter=fake_converter, skip_ocr=False,
+                      converter_options={"ocr_engine": "tesseract", "ocr_lang": ["ita"]})
+    assert calls["options"] == {"skip_ocr": False, "ocr_engine": "tesseract", "ocr_lang": ["ita"]}

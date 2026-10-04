@@ -178,6 +178,7 @@ def _base_metadata(doc: ExtractedDocument, config: IngestConfig) -> dict:
     meta = {
         "id": config.id,
         "metadata_id": config.id,
+        "doc_id": config.id,  # with chunk_index: where a chunk sits in its document
         "namespace": config.namespace,
         "source": doc.resource or "",
         "doc_type": doc.type,
@@ -228,4 +229,8 @@ def _build_documents(doc: ExtractedDocument, config: IngestConfig) -> List[Docum
             for chunk_text in splitter.split_text(block.content):
                 documents.append(Document(page_content=chunk_text, metadata=dict(block_meta)))
 
+    # Document-wide position, so a reader can fetch a chunk's neighbours (compliance
+    # re-attaches chunk_index +/- 1 to recover a table row a converter split in two).
+    for index, document in enumerate(documents):
+        document.metadata["chunk_index"] = index
     return documents

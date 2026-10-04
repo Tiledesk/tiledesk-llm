@@ -109,10 +109,12 @@ async def _route_legacy_regex_custom(item: ItemSingle):
 
 async def _route_canonical(item: ItemSingle, resolved_type: DocumentType, repo, llm_embeddings) -> IngestMdResult:
     logger.info("v2 ingestion: doc_id=%s -> canonical MD+frontmatter pipeline", item.id)
+    pdf_options = item.pdf_options or {}
     export_request = ExportMdRequest(
         type=resolved_type, source=item.source, content=item.content,
         scrape_type=int(item.scrape_type), parameters_scrape_type_4=item.parameters_scrape_type_4,
         browser_headers=item.browser_headers,
+        skip_ocr=pdf_options.get("skip_ocr"), converter_options=pdf_options.get("converter_options"),
     )
     doc = await export_document(export_request)
 

@@ -68,6 +68,15 @@ class ExportMdRequest(BaseModel):
     )
     format: str = Field(default="md", description="'md' (frontmatter+markdown) or 'json'.")
 
+    # type=pdf only
+    skip_ocr: Optional[bool] = Field(
+        default=None, description="None: OCR decided per document by the PDF classifier.",
+    )
+    converter_options: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Merged into the PDF converter's options (docling: ocr_engine, ocr_lang, force_full_page_ocr).",
+    )
+
     # type=url only — same scraping strategy knobs as ItemSingle/add_item
     scrape_type: int = Field(default=0, description="Web-page scraping strategy (see ScrapeType).")
     parameters_scrape_type_4: Optional[Any] = Field(default=None)

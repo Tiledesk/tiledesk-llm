@@ -59,7 +59,10 @@ async def export_document(request: ExportMdRequest) -> ExtractedDocument:
         doc = convert_xlsx(await _resolve_bytes(request), resource=resource)
     elif resolved == DocumentType.PDF:
         path = await _download_to_temp_file(request, suffix=".pdf")
-        doc = await convert_pdf(path, request.file_name or "export", resource=resource)
+        doc = await convert_pdf(
+            path, request.file_name or "export", resource=resource,
+            skip_ocr=request.skip_ocr, converter_options=request.converter_options,
+        )
     elif resolved == DocumentType.DOCX:
         path = await _download_to_temp_file(request, suffix=".docx")
         doc = convert_docx(path, resource=resource)

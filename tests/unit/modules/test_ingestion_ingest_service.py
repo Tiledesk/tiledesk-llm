@@ -260,3 +260,22 @@ class TestIngestDocumentAnalytics:
         assert kwargs["success"] is False
         assert kwargs["error_message"] == "boom"
         assert kwargs["chunks_indexed"] == 0
+
+
+class TestChunkPosition:
+    """Compliance re-attaches a chunk's neighbours (chunk_index +/- 1, same doc_id —
+    see compliance_checker.logic._expand_with_neighbors) to recover table rows a
+    converter split in two. Chunks without a position can never be expanded."""
+
+    def test_every_chunk_carries_doc_id_and_a_document_wide_index(self):
+        doc = ExtractedDocument(type="PDF Document", blocks=[
+            Block(content="a " * 400, page=1, order=0),
+            Block(content="| h |\n|---|\n| r |", block_type="table", page=2, order=1),
+            Block(content="b " * 400, page=3, order=2),
+        ])
+
+        docs = _build_documents(doc, _req(id="doc1", chunk_size=300, chunk_overlap=0))
+
+        assert [d.metadata["chunk_index"] for d in docs] == list(range(len(docs)))
+        assert {d.metadata["doc_id"] for d in docs} == {"doc1"}
+        assert len(docs) > 3  # several blocks and several chunks per block

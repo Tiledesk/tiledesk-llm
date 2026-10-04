@@ -252,3 +252,25 @@ class TestIngestionV2EndpointRegistered:
         from tilellm.modules.api_v2.controllers import router
         paths = {route.path for route in router.routes}
         assert "/api/v2/ingestion" in paths
+
+
+@pytest.mark.asyncio
+async def test_canonical_pdf_path_forwards_pdf_options_ocr_choice():
+    """pdf_options.converter_options / skip_ocr reach the PDF converter on the
+    canonical path too, not only on the legacy use_ocr=True one."""
+    from tilellm.modules.api_v2.services.ingestion_v2_service import _route_canonical
+    from tilellm.modules.ingestion.export.models import ExtractedDocument
+
+    export = AsyncMock(return_value=ExtractedDocument(type="PDF Document", blocks=[]))
+    with patch("tilellm.modules.api_v2.services.ingestion_v2_service.export_document", new=export), \
+         patch("tilellm.modules.api_v2.services.ingestion_v2_service.write_extracted_document",
+               new=AsyncMock(return_value=None)):
+        await _route_canonical(
+            _item(source="https://x/scan.pdf", pdf_options={
+                "skip_ocr": False, "converter_options": {"ocr_engine": "tesseract"}}),
+            DocumentType.PDF, repo="REPO", llm_embeddings="EMB",
+        )
+
+    request = export.call_args.args[0]
+    assert request.skip_ocr is False
+    assert request.converter_options == {"ocr_engine": "tesseract"}

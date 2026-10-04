@@ -91,6 +91,7 @@ async def convert_pdf(
     skip_ocr: Optional[bool] = None,
     converter: Optional[PdfConverterFn] = None,
     classifier: Optional[PdfClassifierFn] = None,
+    converter_options: Optional[dict] = None,
 ) -> ExtractedDocument:
     """Delegate to the docling converter seam (pdf_ocr.converter_registry).
 
@@ -99,7 +100,9 @@ async def convert_pdf(
     pdf_ocr.pdf_classifier) and skips OCR only for a fully native-digital
     file — never a fixed default, which would silently drop scanned content
     on non-native PDFs (see docs/MIGLIORIE_DA_FARE.md, "UPGRADE" section).
-    Pass skip_ocr explicitly to override the classifier.
+    Pass skip_ocr explicitly to override the classifier. `converter_options` is
+    merged into the converter's options (for docling: ocr_engine, ocr_lang,
+    force_full_page_ocr).
     """
     if skip_ocr is None:
         if classifier is None:
@@ -116,7 +119,7 @@ async def convert_pdf(
         from tilellm.modules.pdf_ocr.services.converter_registry import get_converter
         converter = get_converter("docling")
 
-    result = await converter(file_path, doc_id, options={"skip_ocr": skip_ocr})
+    result = await converter(file_path, doc_id, options={"skip_ocr": skip_ocr, **(converter_options or {})})
     blocks = [
         Block(content=md, block_type="page", page=page_no, order=i)
         for i, (page_no, md) in enumerate(result.page_bodies)
