@@ -34,11 +34,90 @@ from tilellm.modules.compliance_checker.models import (
     ComplianceSummary,
     RequirementItem,
 )
+from tilellm.modules.compliance_checker.prompts.evidence_rules import EVIDENCE_RULES
 from tilellm.shared.utility import inject_llm_chat_async, inject_repo_async
 from tilellm.shared import token_tracking
 from tilellm.shared.token_tracking import TokenUsageCollector, model_name_of
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Judge-LLM invocation — shared by the v1 (Conformità) and v2 (discretionary) judges
+# ---------------------------------------------------------------------------
+
+_MAX_JUDGE_ATTEMPTS = 2
+_JUDGE_RETRY_DELAY_S = 1.0
+
+
+class JudgeInvocationError(Exception):
+    """Raised when the judge LLM call fails (provider error, or unparseable response)
+    after all retries. Distinct from a genuine "no evidence" judgment — the caller
+    must never silently treat this the same as an empty-but-valid verdict."""
+
+
+def _response_text(response) -> str:
+    """Text of an LLM response. Reasoning models (gpt-5.x, o-series, Claude with
+    thinking) return content as a list of blocks: keep only the text ones."""
+    content = response.content
+    if isinstance(content, list):
+        text_parts = []
+        for part in content:
+            if isinstance(part, dict):
+                if part.get("type") == "text":
+                    text_parts.append(part.get("text", ""))
+                elif "text" in part:
+                    text_parts.append(part["text"])
+            elif isinstance(part, str):
+                text_parts.append(part)
+        return "\n".join(text_parts).strip()
+    return str(content).strip()
+
+
+def _parse_judge_json(raw: str) -> dict:
+    """First JSON object in *raw*, wherever it sits: models wrap it in markdown
+    fences, put a sentence before it, or add notes after it."""
+    decoder = json.JSONDecoder()
+    start = raw.find("{")
+    while start != -1:
+        try:
+            obj, _ = decoder.raw_decode(raw, start)
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+        start = raw.find("{", start + 1)
+    # An empty body is what an overloaded provider looks like (HTTP 200, no content).
+    raise JudgeInvocationError(f"Nessun oggetto JSON nella risposta del giudice: {raw[:200]!r}")
+
+
+async def invoke_json_judge(llm, system_prompt: str, user_prompt: str, on_response=None) -> dict:
+    """Call the judge LLM and parse its JSON verdict, retrying a bounded number of
+    times on transient failures (provider error, timeout, empty/malformed
+    response). Raises JudgeInvocationError — never returns a fake empty verdict,
+    which the caller could mistake for a genuine "no evidence found" judgment.
+    *on_response* receives each raw response (token accounting)."""
+    last_error: Exception = JudgeInvocationError("nessun tentativo eseguito")
+    for attempt in range(1, _MAX_JUDGE_ATTEMPTS + 1):
+        try:
+            response = await llm.ainvoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
+            ])
+            if on_response is not None:
+                on_response(response)
+            return _parse_judge_json(_response_text(response))
+        except Exception as e:
+            last_error = e
+            logger.warning(
+                "Judge LLM invocation failed (tentativo %d/%d): %s",
+                attempt, _MAX_JUDGE_ATTEMPTS, e,
+            )
+            if attempt < _MAX_JUDGE_ATTEMPTS:
+                await asyncio.sleep(_JUDGE_RETRY_DELAY_S)
+    raise JudgeInvocationError(
+        f"Il giudice LLM non ha risposto correttamente dopo {_MAX_JUDGE_ATTEMPTS} "
+        f"tentativi: {last_error}"
+    ) from last_error
 
 # ---------------------------------------------------------------------------
 # Judge-LLM user-turn prompt
@@ -55,12 +134,7 @@ Testo: {req_text}
 </evidenze_recuperate>
 
 Basandoti ESCLUSIVAMENTE sulle evidenze recuperate sopra, valuta se il requisito è soddisfatto.
-Il requisito può comparire nelle evidenze con parole diverse, sinonimi, forme equivalenti o in \
-un'altra lingua (le offerte sono spesso multilingue): valuta il significato, non la corrispondenza \
-letterale. Una dichiarazione esplicita che il prodotto possiede la caratteristica richiesta, o che è \
-conforme a una norma il cui titolo o contenuto, riportato nelle evidenze, riguarda quella \
-caratteristica, è evidenza valida: non pretendere dati di test o certificati se il requisito non li \
-chiede espressamente.
+""" + EVIDENCE_RULES.replace("{", "{{").replace("}", "}}") + """
 Rispondi con un singolo oggetto JSON valido (senza fence markdown) con esattamente queste chiavi:
   "judgment"           : uno tra {valid_judgments}
   "confidence"         : numero float tra 0.0 e 1.0
@@ -320,37 +394,30 @@ async def _judge_requirement(
         valid_judgments=str(config.judgment_labels),
     )
 
-    parsed: dict = {}
-    try:
-        response = await llm.ainvoke([
-            SystemMessage(content=config.system_prompt),
-            HumanMessage(content=user_msg),
-        ])
-        if token_collector is not None:
+    record = None
+    if token_collector is not None:
+        def record(response):
             token_collector.record(response, operation="compliance_judge", model=model_name)
-        content = response.content
-        # Reasoning models (gpt-5.x, o-series) return content as a list of blocks
-        if isinstance(content, list):
-            text_parts = []
-            for part in content:
-                if isinstance(part, dict):
-                    if part.get("type") == "text":
-                        text_parts.append(part.get("text", ""))
-                    elif "text" in part:
-                        text_parts.append(part["text"])
-                elif isinstance(part, str):
-                    text_parts.append(part)
-            raw = "\n".join(text_parts).strip()
-        else:
-            raw = str(content).strip()
-        # Strip markdown code fences if the model added them
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.lower().startswith("json"):
-                raw = raw[4:]
-        parsed = json.loads(raw)
-    except Exception as e:
-        logger.warning(f"Judge LLM call failed for requirement '{req.id}': {e}")
+    try:
+        parsed = await invoke_json_judge(llm, config.system_prompt, user_msg, on_response=record)
+    except JudgeInvocationError as e:
+        logger.error(f"Requisito '{req.id}': giudice LLM non disponibile — {e}")
+        return ComplianceResult(
+            requirement_id=req.id,
+            requirement_text=req.text,
+            category=req.category,
+            mandatory=req.mandatory,
+            judgment="not_verifiable",
+            confidence=0.0,
+            evidence_text="",
+            justification=f"Giudice LLM non disponibile (non un giudizio di merito): {e}",
+            evidence_document="",
+            evidence_page=1,
+            evidence_section="",
+            evidence_chunk_ids=chunk_ids,
+            citation_attributed=False,
+            judge_failed=True,
+        )
 
     judgment = parsed.get("judgment", "not_verifiable")
     if judgment not in config.judgment_labels:
@@ -451,8 +518,11 @@ async def check_compliance(
                 if reranker_config
                 else request.top_k
             )
+            # The declared search wording, when any, drives retrieval and reranking;
+            # the judge below still reads the official requirement text.
+            search_text = req.search_query or req.text
             qa = QuestionAnswer(
-                question=req.text,
+                question=search_text,
                 namespace=request.namespace,
                 engine=request.engine,
                 embedding=request.embedding,
@@ -467,7 +537,7 @@ async def check_compliance(
             if request.exclude_chiarimenti:
                 qa._metadata_filter = EXCLUDE_CHIARIMENTI_FILTER
             chunks, metadata = await _retrieve_evidence(
-                repo, qa, req.text, reranker_config, request.top_k, f"requirement '{req.id}'"
+                repo, qa, search_text, reranker_config, request.top_k, f"requirement '{req.id}'"
             )
 
             return await _judge_requirement(

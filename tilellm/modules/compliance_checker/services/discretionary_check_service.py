@@ -7,7 +7,6 @@ Discretionary → uses pre-injected repo + llm directly; applies human_review ru
 Entry point: check_compliance_v2 (decorated with @inject_llm_chat_async @inject_repo_async).
 """
 import asyncio
-import json
 import logging
 from typing import List, Optional, Tuple
 
@@ -15,7 +14,13 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from tilellm.models import QuestionAnswer
 from tilellm.modules.compliance_checker.logic import (
+    # Judge invocation (bounded retry + tolerant JSON extraction) is shared with
+    # the v1 Conformità judge — see docs/COMPLIANCE_V2_IMPLEMENTATION_PLAN.md §7.9.
+    _MAX_JUDGE_ATTEMPTS,
+    JudgeInvocationError,
     _build_evidence_block,
+    _response_text,
+    invoke_json_judge,
     EXCLUDE_CHIARIMENTI_FILTER,
     _pick_best_source,
     _retrieve_evidence,
@@ -52,12 +57,6 @@ logger = logging.getLogger(__name__)
 
 _E_PROCUREMENT_DOMAIN = "e_procurement"
 
-# Judge invocation: transient provider failures (timeout, overload, empty/malformed
-# response) are common enough in practice — see docs/COMPLIANCE_V2_IMPLEMENTATION_PLAN.md
-# §7.9 — to warrant a short bounded retry before giving up on a single criterion.
-_MAX_JUDGE_ATTEMPTS = 2
-_JUDGE_RETRY_DELAY_S = 1.0
-
 # HyDE fallback (§7.11-7.12): when a criterion's normal retrieval comes back
 # with nothing usable, retry once with a hypothetical-document query instead
 # of the discursive criterion text. Verified empirically on a real tender
@@ -83,10 +82,18 @@ o spiegarli. Niente linguaggio discorsivo da bando di gara, niente \
 introduzioni, solo il passaggio ipotetico."""
 
 
-class JudgeInvocationError(Exception):
-    """Raised when the judge LLM call fails (provider error, or unparseable response)
-    after all retries. Distinct from a genuine "no evidence" judgment — the caller
-    must never silently treat this the same as an empty-but-valid verdict."""
+def _criterion_fields(criterion: DiscretionaryCriterion) -> dict:
+    """Criterion properties every DiscretionaryResult carries — one place, so a new
+    per-criterion field (e.g. baseline, unit) can't be forgotten on one code path."""
+    return dict(
+        criterion_id=criterion.id,
+        criterion_text=criterion.text,
+        mode=criterion.mode,
+        max_points=criterion.max_points,
+        direction=criterion.direction,
+        baseline=criterion.baseline,
+        unit=criterion.unit,
+    )
 
 
 def _apply_l01_quantity(
@@ -145,9 +152,11 @@ class DiscretionaryCheckService:
     # ------------------------------------------------------------------
 
     async def evaluate_lot(self, lot: TenderLotRequirements) -> ComplianceReportV2:
+        # L01 first: it needs no LLM, so an unreachable workbook fails before the
+        # judge calls are paid for rather than after.
+        l01_check = await self._check_l01()
         tabular_results = await self._check_tabular(lot)
         disc_results = await self._check_discretionary(lot)
-        l01_check = await self._check_l01()
         _apply_l01_quantity(lot, disc_results, l01_check)
         summary = ComplianceSummaryV2.from_results(tabular_results, disc_results)
         return ComplianceReportV2(
@@ -203,7 +212,7 @@ class DiscretionaryCheckService:
         config = get_builtin_config(_E_PROCUREMENT_DOMAIN)
 
         reqs = [
-            RequirementItem(id=r.id, text=r.text, mandatory=r.mandatory)
+            RequirementItem(id=r.id, text=r.text, mandatory=r.mandatory, search_query=r.search_query)
             for r in lot.requirements.tabular
         ]
         v1_request = ComplianceRequest(
@@ -261,11 +270,7 @@ class DiscretionaryCheckService:
                     criterion.id, r,
                 )
                 results.append(DiscretionaryResult(
-                    criterion_id=criterion.id,
-                    criterion_text=criterion.text,
-                    mode=criterion.mode,
-                    max_points=criterion.max_points,
-                    direction=criterion.direction,
+                    **_criterion_fields(criterion),
                     human_review_required=True,
                     human_review_reason=f"Errore imprevisto durante la valutazione: {r}",
                     motivation="Valutazione non completata per un errore interno "
@@ -328,11 +333,7 @@ class DiscretionaryCheckService:
         # fallback below (this is a deliberate design choice, not a retrieval gap).
         if criterion.human_only:
             return DiscretionaryResult(
-                criterion_id=criterion.id,
-                criterion_text=criterion.text,
-                mode=criterion.mode,
-                max_points=criterion.max_points,
-                direction=criterion.direction,
+                **_criterion_fields(criterion),
                 human_review_required=True,
                 human_review_reason="Criterio marcato human_only: richiede valutazione soggettiva non automatizzabile.",
                 motivation="Valutazione delegata alla commissione.",
@@ -487,8 +488,12 @@ class DiscretionaryCheckService:
                 if reranker_config
                 else self._request.top_k
             )
+            # Declared search wording (criteria table) for retrieval and reranking; the
+            # judge reads the official criterion text. A HyDE retrieval_query, when
+            # given, still overrides it on backends that honour retrieval_query.
+            search_text = criterion.search_query or criterion.text
             qa = QuestionAnswer(
-                question=criterion.text,
+                question=search_text,
                 retrieval_query=retrieval_query,
                 namespace=self._request.namespace,
                 engine=self._request.engine,
@@ -508,18 +513,14 @@ class DiscretionaryCheckService:
                 # chunks that were never tagged with doc_type (backward compatible).
                 qa._metadata_filter = EXCLUDE_CHIARIMENTI_FILTER
             chunks, metadata = await _retrieve_evidence(
-                self._repo, qa, criterion.text, reranker_config, self._request.top_k,
+                self._repo, qa, search_text, reranker_config, self._request.top_k,
                 f"criterion '{criterion.id}'",
             )
 
         # No evidence → flag without calling LLM
         if not chunks:
             return DiscretionaryResult(
-                criterion_id=criterion.id,
-                criterion_text=criterion.text,
-                mode=criterion.mode,
-                max_points=criterion.max_points,
-                direction=criterion.direction,
+                **_criterion_fields(criterion),
                 human_review_required=True,
                 human_review_reason="Nessuna evidenza trovata nel namespace: impossibile valutare automaticamente.",
                 motivation="Nessuna evidenza disponibile nel knowledge base.",
@@ -535,6 +536,7 @@ class DiscretionaryCheckService:
             max_points=criterion.max_points,
             evidence_block=evidence_block,
             capitolato_evidence_block=capitolato_evidence_block,
+            unit=criterion.unit,
         )
         try:
             raw_output = await self._invoke_judge(user_prompt)
@@ -544,11 +546,7 @@ class DiscretionaryCheckService:
             # always flagged for human review regardless of confidence/mode.
             logger.error("Criterio '%s': giudice LLM non disponibile — %s", criterion.id, e)
             return DiscretionaryResult(
-                criterion_id=criterion.id,
-                criterion_text=criterion.text,
-                mode=criterion.mode,
-                max_points=criterion.max_points,
-                direction=criterion.direction,
+                **_criterion_fields(criterion),
                 human_review_required=True,
                 human_review_reason=f"Errore del provider LLM durante la valutazione: {e}",
                 motivation="Valutazione non completata per un errore del provider LLM "
@@ -641,15 +639,12 @@ class DiscretionaryCheckService:
             )
 
         result = DiscretionaryResult(
-            criterion_id=criterion.id,
-            criterion_text=criterion.text,
-            mode=criterion.mode,
-            max_points=criterion.max_points,
-            direction=criterion.direction,
+            **_criterion_fields(criterion),
             coefficient=coefficient,
             score=score,
             measured_value=measured_value,
             measured_quantity=measured_quantity,
+            measured_unit=raw_output.get("measured_unit") if measured_quantity is not None else None,
             motivation=motivation,
             confidence=confidence,
             capitolato_discrepancy=capitolato_discrepancy,
@@ -672,76 +667,18 @@ class DiscretionaryCheckService:
         result._retrieved_metadata = metadata
         return result
 
-    @staticmethod
-    def _extract_response_text(response) -> str:
-        """Flatten an LLM response's .content into plain text — handles both a
-        plain string and the list-of-blocks shape some providers return
-        (e.g. Gemini AFC; see controller.py::_normalize_answer_content for the
-        same issue on the main /api/ask path)."""
-        content = response.content
-        if isinstance(content, list):
-            text_parts = []
-            for part in content:
-                if isinstance(part, dict):
-                    if part.get("type") == "text":
-                        text_parts.append(part.get("text", ""))
-                    elif "text" in part:
-                        text_parts.append(part["text"])
-                elif isinstance(part, str):
-                    text_parts.append(part)
-            return "\n".join(text_parts).strip()
-        return str(content).strip()
-
-    async def _invoke_judge_once(self, user_prompt: str) -> dict:
-        """Single attempt: call the judge LLM and parse its JSON response.
-
-        Raises on any failure — provider error (ainvoke) or empty/unparseable
-        content. Never swallows: the caller (_invoke_judge) decides whether to
-        retry or give up, and giving up must never look like "no evidence".
-        """
-        response = await self._llm.ainvoke([
-            SystemMessage(content=DISCRETIONARY_JUDGE_SYSTEM_PROMPT),
-            HumanMessage(content=user_prompt),
-        ])
-        self.tokens.record(
-            response, operation="discretionary_judge", model=model_name_of(self._request.model)
-        )
-        raw = self._extract_response_text(response)
-
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.lower().startswith("json"):
-                raw = raw[4:]
-        if not raw:
-            # Empirically what an overloaded provider looks like (e.g. deepseek
-            # dropping a queued request): HTTP 200, empty content — no exception
-            # to catch, just nothing to parse.
-            raise JudgeInvocationError("Risposta vuota dal modello giudice.")
-        return json.loads(raw)  # json.JSONDecodeError propagates, caught by the retry loop
+    _extract_response_text = staticmethod(_response_text)
 
     async def _invoke_judge(self, user_prompt: str) -> dict:
-        """Call the judge LLM, retrying a bounded number of times on transient
-        failures (provider error, timeout, empty/malformed response) before
-        giving up. Raises JudgeInvocationError — never returns a fake empty
-        verdict, which the caller could otherwise mistake for a genuine
-        "no evidence found" judgment.
-        """
-        last_error: Exception = JudgeInvocationError("nessun tentativo eseguito")
-        for attempt in range(1, _MAX_JUDGE_ATTEMPTS + 1):
-            try:
-                return await self._invoke_judge_once(user_prompt)
-            except Exception as e:
-                last_error = e
-                logger.warning(
-                    "Judge LLM invocation failed (tentativo %d/%d): %s",
-                    attempt, _MAX_JUDGE_ATTEMPTS, e,
-                )
-                if attempt < _MAX_JUDGE_ATTEMPTS:
-                    await asyncio.sleep(_JUDGE_RETRY_DELAY_S)
-        raise JudgeInvocationError(
-            f"Il giudice LLM non ha risposto correttamente dopo {_MAX_JUDGE_ATTEMPTS} "
-            f"tentativi: {last_error}"
-        ) from last_error
+        """Judge verdict for one criterion. Raises JudgeInvocationError after the
+        shared bounded retry — never a fake empty verdict."""
+        model = model_name_of(self._request.model)
+        return await invoke_json_judge(
+            self._llm, DISCRETIONARY_JUDGE_SYSTEM_PROMPT, user_prompt,
+            on_response=lambda r: self.tokens.record(
+                r, operation="discretionary_judge", model=model
+            ),
+        )
 
 
 # ---------------------------------------------------------------------------

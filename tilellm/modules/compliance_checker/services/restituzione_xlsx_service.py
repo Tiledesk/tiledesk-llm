@@ -165,7 +165,8 @@ class RestituzioneXlsxService:
         self._apply_formatting(ws, header_row, last_row=row - 1)
 
     def _write_tabular_row(self, ws, row: int, operator: str, r) -> int:
-        presenza = _DEFAULT_JUDGMENT_MAP.get(r.judgment, r.judgment)
+        presenza = (_HUMAN_REVIEW_MARK if r.judge_failed
+                    else _DEFAULT_JUDGMENT_MAP.get(r.judgment, r.judgment))
         values = [
             operator,
             r.requirement_text,

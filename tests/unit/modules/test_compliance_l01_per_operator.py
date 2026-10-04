@@ -267,3 +267,21 @@ class TestAmpiezzaGammaFromL01:
         ):
             report = await svc.evaluate_lot(lot)
         assert report.discretionary_results[0].measured_quantity is None
+
+
+@pytest.mark.asyncio
+async def test_unreachable_l01_fails_before_any_judge_call():
+    """Found on a real run: the L01 webserver was down and every operator paid for
+    all its judge calls before the L01 download failed and discarded the report.
+    The L01 needs no LLM — fetch it first, fail cheap."""
+    import httpx
+
+    svc = _service("http://x/l01.xlsx")
+    judge = AsyncMock(return_value=dict(_JUDGE_UNMEASURED))
+    with patch(
+        "tilellm.modules.compliance_checker.services.l01_service.fetch_l01",
+        new=AsyncMock(side_effect=httpx.ConnectError("All connection attempts failed")),
+    ), patch.object(svc, "_invoke_judge", new=judge):
+        with pytest.raises(httpx.ConnectError):
+            await svc.evaluate_lot(_lot_with_gamma_criterion())
+    judge.assert_not_awaited()

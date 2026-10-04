@@ -14,6 +14,8 @@ from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from tilellm.modules.compliance_checker.prompts.evidence_rules import EVIDENCE_RULES
+
 
 # ---------------------------------------------------------------------------
 # Modello di output del judge (usato per parsing/validazione della risposta)
@@ -46,6 +48,13 @@ class DiscretionaryJudgeOutput(BaseModel):
             "Grandezza NUMERICA confrontabile estratta per 'proporzionale' (es. 14 = numero di "
             "misure/taglie, 7 = anni di follow-up). Serve a normalizzare il punteggio tra operatori. "
             "Null se non quantificabile o per le altre modalità."
+        ),
+    )
+    measured_unit: Optional[str] = Field(
+        default=None,
+        description=(
+            "Unità di misura in cui è espressa measured_quantity (es. 'min', 'MPa', '°C', "
+            "'prodotti'). Null se measured_quantity è null."
         ),
     )
     motivation: str = Field(
@@ -120,6 +129,9 @@ NON assegnare un coefficiente. Invece:
 - Riporta il valore estratto nel campo `measured_value` (formato: numero + unità o descrizione breve).
 - Riporta inoltre in `measured_quantity` la SOLA grandezza numerica confrontabile (es. 14, 7.5):
   è ciò che permette di normalizzare il punteggio tra operatori. Se non quantificabile, `measured_quantity: null`.
+- Riporta in `measured_unit` l'unità in cui è espressa `measured_quantity`. Se il criterio indica \
+un'unità di misura, esprimi `measured_quantity` in QUELLA unità, convertendo se il documento ne usa \
+un'altra (es. 45 secondi → 0.75 min): quantità in unità diverse non sono confrontabili.
 - Imposta `coefficient: null`.
 
 ### Modalità ON_OFF
@@ -167,18 +179,16 @@ source_chunk_index = 0, evidence_text = "".
    - Alta (> 0.8) se l'evidenza è esplicita e inequivocabile
    - Media (0.4–0.8) se l'evidenza è implicita o parziale
    - Bassa (< 0.4) se l'evidenza è vaga o assente
-6. Il criterio può comparire nelle evidenze con parole diverse, sinonimi, forme equivalenti o in \
-un'altra lingua (le offerte sono spesso multilingue): valuta il significato, non la corrispondenza \
-letterale. Una dichiarazione esplicita che il prodotto possiede la caratteristica richiesta, o che è \
-conforme a una norma il cui titolo o contenuto, riportato nelle evidenze, riguarda quella \
-caratteristica, è evidenza valida: non pretendere dati di test o certificati se il criterio non li \
-chiede espressamente.
+6. Criteri di prova: vedi sotto.
+
+""" + EVIDENCE_RULES + """
 
 RISPONDI con un singolo oggetto JSON valido — nessun fence markdown, nessun preambolo — \
 con esattamente queste chiavi:
   "coefficient"        : float 0.0–1.0 oppure null (solo per proporzionale)
   "measured_value"     : stringa con valore estratto oppure null
   "measured_quantity"  : numero confrontabile per proporzionale oppure null
+  "measured_unit"      : unità di misura di measured_quantity oppure null
   "motivation"         : stringa (2–4 frasi in italiano)
   "confidence"         : float 0.0–1.0
   "source_chunk_index" : intero 1-based del blocco [N] citato (0 SOLO se requisito assente)
@@ -239,6 +249,7 @@ def build_judge_user_prompt(
     max_points: float,
     evidence_block: str,
     capitolato_evidence_block: Optional[str] = None,
+    unit: Optional[str] = None,
 ) -> str:
     """Costruisce il messaggio utente per il judge LLM.
 
@@ -248,6 +259,11 @@ def build_judge_user_prompt(
     ``[N]`` dell'offerta, per non essere mai scambiata per una citazione dell'offerta.
     """
     mode_instruction = _MODE_INSTRUCTIONS.get(mode, "")
+    if unit and mode == "proporzionale":
+        mode_instruction += (
+            f" Unità di misura del criterio: {unit}. Esprimi measured_quantity in {unit} "
+            f"(converti se il documento usa un'altra unità) e imposta measured_unit: \"{unit}\"."
+        )
     capitolato_section = (
         f"<capitolato_evidence>\n{capitolato_evidence_block}\n</capitolato_evidence>\n"
         if capitolato_evidence_block

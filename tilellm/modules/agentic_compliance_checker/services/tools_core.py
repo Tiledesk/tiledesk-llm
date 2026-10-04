@@ -218,7 +218,7 @@ async def retrieve_evidence_core(
 
     if criterion_id:
         criterion = await runner.resolve_criterion(session_id, criterion_id)
-        search_text = criterion.text
+        search_text = criterion.search_query or criterion.text
         query_kind = "criterion"
     else:
         search_text = query

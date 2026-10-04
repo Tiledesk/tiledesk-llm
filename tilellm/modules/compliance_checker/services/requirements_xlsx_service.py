@@ -69,12 +69,20 @@ _COL_MANDATORY = "Obbligatorio"
 _COL_HUMAN_ONLY = "Solo revisione umana"
 _COL_ID = "ID"  # optional — honored if present, else auto-generated
 _COL_DIRECTION = "Direzione"  # only meaningful for mode=proporzionale — see resolve_direction
+# Also proporzionale-only, and never inferred from the criterion text (see
+# DiscretionaryCriterion.baseline / .unit): what isn't declared isn't applied.
+_COL_BASELINE = "Soglia a zero punti"
+_COL_UNIT = "Unità di misura"
+# Any criterion type: the wording to search the offer with, when the official text is
+# too short or in another language. Retrieval/reranking only — never shown to the judge.
+_COL_SEARCH_QUERY = "Query di ricerca"
 
 # Appended at the end (not interleaved) so column numbers of the original 8
 # headers never shift for files written before this column existed.
 _HEADERS = [
     _COL_CRITERIO, _COL_TIPO, _COL_MODE, _COL_MAX_POINTS,
     _COL_NOTES, _COL_MANDATORY, _COL_HUMAN_ONLY, _COL_ID, _COL_DIRECTION,
+    _COL_BASELINE, _COL_UNIT, _COL_SEARCH_QUERY,
 ]
 
 _HEADER_FILL = PatternFill(start_color="FFD9E1F2", end_color="FFD9E1F2", fill_type="solid")
@@ -160,6 +168,7 @@ class RequirementsXlsxService:
             ws.cell(row=row, column=4, value=0)
             ws.cell(row=row, column=6, value=tax.bool_to_cell(r.mandatory))
             ws.cell(row=row, column=8, value=r.id)
+            ws.cell(row=row, column=12, value=r.search_query)
             row += 1
 
         for c in lot.requirements.discretionary:
@@ -171,12 +180,15 @@ class RequirementsXlsxService:
             ws.cell(row=row, column=7, value=tax.bool_to_cell(c.human_only))
             ws.cell(row=row, column=8, value=c.id)
             ws.cell(row=row, column=9, value=c.direction.value)
+            ws.cell(row=row, column=10, value=c.baseline)
+            ws.cell(row=row, column=11, value=c.unit)
+            ws.cell(row=row, column=12, value=c.search_query)
             row += 1
 
         self._apply_formatting(ws, header_row, last_row=row - 1)
 
     def _apply_formatting(self, ws, header_row: int, last_row: int) -> None:
-        widths = [60, 16, 16, 18, 40, 14, 20, 12, 14]
+        widths = [60, 16, 16, 18, 40, 14, 20, 12, 14, 14, 14, 40]
         for i, w in enumerate(widths, start=1):
             ws.column_dimensions[get_column_letter(i)].width = w
         ws.freeze_panes = ws.cell(row=header_row + 1, column=1)
@@ -291,10 +303,14 @@ class RequirementsXlsxService:
             explicit_id = _get(cells, _COL_ID)
             explicit_id = str(explicit_id).strip() if explicit_id not in (None, "") else ""
 
+            search_query = _get(cells, _COL_SEARCH_QUERY)
+            search_query = str(search_query).strip() if search_query not in (None, "") else None
+
             if tipo == tax.TYPE_CONFORMITA:
                 rid = explicit_id or f"C{counters[tipo]}"
                 mandatory = tax.cell_to_bool(_get(cells, _COL_MANDATORY), default=True)
-                tabular.append(TabularRequirementV2(id=rid, text=text, mandatory=mandatory))
+                tabular.append(TabularRequirementV2(
+                    id=rid, text=text, mandatory=mandatory, search_query=search_query))
             else:
                 prefix = "T" if tipo == tax.TYPE_TABELLARE else "D"
                 rid = explicit_id or f"{prefix}{counters[tipo]}"
@@ -321,10 +337,15 @@ class RequirementsXlsxService:
                 human_only = tax.cell_to_bool(_get(cells, _COL_HUMAN_ONLY), default=False)
                 notes = _get(cells, _COL_NOTES)
                 notes = str(notes).strip() if notes not in (None, "") else None
+                baseline = _get(cells, _COL_BASELINE)
+                baseline = tax.parse_float(baseline, row_id=rid) if baseline not in (None, "") else None
+                unit = _get(cells, _COL_UNIT)
+                unit = str(unit).strip() if unit not in (None, "") else None
                 discretionary.append(
                     DiscretionaryCriterion(
                         id=rid, text=text, mode=mode, max_points=max_points,
                         human_only=human_only, notes=notes, direction=direction,
+                        baseline=baseline, unit=unit, search_query=search_query,
                     )
                 )
 

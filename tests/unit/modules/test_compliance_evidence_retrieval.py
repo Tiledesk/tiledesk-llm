@@ -356,3 +356,177 @@ async def test_v2_passes_its_clarification_policy_to_the_conformity_path():
         await DiscretionaryCheckService(repo=AsyncMock(), llm=AsyncMock(), request=request)._check_tabular(lot)
 
     assert fake_v1.call_args.args[0].exclude_chiarimenti is True
+
+
+def test_compliance_requests_default_to_a_multilingual_reranker_and_a_wider_pool():
+    """Measured on the real tender: the English-only ms-marco cross-encoder pushed the
+    right chunk from #17 of the hybrid pool to #45 (last) — an English "GS1 data matrix"
+    passage against an Italian requirement; bge-reranker-v2-m3 put it at #2. Offers are
+    multilingual, so is the reranker. The pool goes from 3x to 6x top_k."""
+    from tilellm.modules.compliance_checker.models import ComplianceRequest
+    from tilellm.modules.compliance_checker.models_v2 import (
+        BulkComplianceRequestV2,
+        ComplianceRequestV2,
+    )
+
+    for model in (ComplianceRequest, ComplianceRequestV2, BulkComplianceRequestV2):
+        fields = model.model_fields
+        assert fields["reranker_model"].default == "BAAI/bge-reranker-v2-m3", model.__name__
+        assert fields["reranking_multiplier"].default == 6, model.__name__
+
+
+# ---------------------------------------------------------------------------
+# search_query: a declared search wording, distinct from the official text.
+# Real tender: "Latex free" (two English words) never retrieved an offer saying
+# "non contengono lattice" (not in the top 90); "Latex free (privo di lattice)" put it
+# at #1. The tender text can't be edited, so the wording is declared per criterion
+# in the criteria table. It drives retrieval and reranking only — the judge and the
+# report keep the official text.
+# ---------------------------------------------------------------------------
+
+_SEARCH = "Latex free, privo di lattice"
+
+
+def _capturing_rerank():
+    async def rerank(query, chunks, metadata, config, top_k):
+        rerank.queries.append(query)
+        return chunks, metadata
+    rerank.queries = []
+    return rerank
+
+
+@pytest.mark.asyncio
+async def test_v1_searches_with_the_declared_query_and_judges_the_official_text():
+    from tilellm.modules.compliance_checker.logic import check_compliance
+    from tilellm.modules.compliance_checker.models import ComplianceRequest, RequirementItem
+    from tilellm.modules.compliance_checker.prompts import get_builtin_config
+
+    request = ComplianceRequest(
+        config=get_builtin_config("e_procurement"), namespace="ns", engine=ENGINE, reranking=True,
+        requirements=[RequirementItem(id="C1", text="Latex free", search_query=_SEARCH)])
+    repo = _repo_with(["non contengono lattice"], [{"file_name": "st.pdf", "page": 6}])
+    llm = _llm_capturing({"judgment": "compliant", "confidence": 0.9, "source_chunk_index": 1,
+                          "evidence_text": "non contengono lattice", "justification": "ok"})
+    rerank = _capturing_rerank()
+
+    with patch(f"{_LOGIC}._rerank_chunks", rerank):
+        await check_compliance.__wrapped__.__wrapped__(request, repo=repo, llm=llm)
+
+    assert repo.get_chunks_from_repo.call_args.args[0].question == _SEARCH
+    assert rerank.queries == [_SEARCH]
+    assert "Testo: Latex free\n" in _prompt_seen_by(llm)
+    assert _SEARCH not in _prompt_seen_by(llm)
+
+
+@pytest.mark.asyncio
+async def test_v1_without_a_search_query_searches_with_the_text():
+    qa = await _v1_qa_sent_to_repo()
+
+    assert qa.question == "Radiopaco"
+
+
+@pytest.mark.asyncio
+async def test_v2_conformity_path_forwards_the_search_query():
+    from tilellm.modules.compliance_checker.models import ComplianceReport, ComplianceSummary
+    from tilellm.modules.compliance_checker.models_v2 import (
+        ComplianceRequestV2, TabularRequirementV2, TenderInfo, TenderLotRequirements, _RequirementsBlock,
+    )
+    from tilellm.modules.compliance_checker.services.discretionary_check_service import (
+        DiscretionaryCheckService,
+    )
+
+    request = ComplianceRequestV2(requirements_yaml="tender:\n  title: t\n  lot_id: L1\n  lot_name: n\n",
+                                  namespace="ns", engine=ENGINE)
+    lot = TenderLotRequirements(
+        tender=TenderInfo(title="t", lot_id="L1", lot_name="n"),
+        requirements=_RequirementsBlock(tabular=[
+            TabularRequirementV2(id="C1", text="Latex free", search_query=_SEARCH)]))
+    fake_v1 = AsyncMock(return_value=ComplianceReport(domain="e_procurement", namespace="ns",
+                                                      summary=ComplianceSummary(total=0), results=[]))
+
+    with patch("tilellm.modules.compliance_checker.services.discretionary_check_service.check_compliance", fake_v1):
+        await DiscretionaryCheckService(repo=AsyncMock(), llm=AsyncMock(), request=request)._check_tabular(lot)
+
+    assert fake_v1.call_args.args[0].requirements[0].search_query == _SEARCH
+
+
+@pytest.mark.asyncio
+async def test_v2_discretionary_searches_with_the_declared_query_and_judges_the_official_text():
+    from tilellm.modules.compliance_checker.models_v2 import ComplianceRequestV2, DiscretionaryCriterion
+    from tilellm.modules.compliance_checker.services.discretionary_check_service import (
+        DiscretionaryCheckService,
+    )
+
+    request = ComplianceRequestV2(requirements_yaml="tender:\n  title: t\n  lot_id: L1\n  lot_name: n\n",
+                                  namespace="ns", engine=ENGINE, reranking=True)
+    repo = _repo_with(["non contengono lattice"], [{"file_name": "st.pdf", "page": 6}])
+    llm = _llm_capturing({"coefficient": 1.0, "measured_value": None, "measured_quantity": None,
+                          "motivation": "ok", "confidence": 0.9, "source_chunk_index": 1,
+                          "evidence_text": "non contengono lattice", "capitolato_discrepancy": None})
+    rerank = _capturing_rerank()
+
+    with patch(f"{_LOGIC}._rerank_chunks", rerank):
+        await DiscretionaryCheckService(repo=repo, llm=llm, request=request)._evaluate_criterion_once(
+            DiscretionaryCriterion(id="P9", text="Latex free", mode="on_off", max_points=1,
+                                   search_query=_SEARCH))
+
+    assert repo.get_chunks_from_repo.call_args.args[0].question == _SEARCH
+    assert rerank.queries == [_SEARCH]
+    assert "Testo: Latex free\n" in _prompt_seen_by(llm)
+    assert _SEARCH not in _prompt_seen_by(llm)
+
+
+@pytest.mark.asyncio
+async def test_agentic_retrieve_evidence_by_criterion_uses_the_search_query():
+    import fakeredis.aioredis
+
+    from tilellm.modules.agentic_compliance_checker.services.session_store import SessionStore
+    from tilellm.modules.agentic_compliance_checker.services.tools_core import retrieve_evidence_core
+    from tilellm.modules.compliance_checker.models_v2 import (
+        BulkComplianceRequestV2, DiscretionaryCriterion, OperatorRef, TenderInfo, TenderLotRequirements,
+        _RequirementsBlock,
+    )
+
+    SessionStore._client = fakeredis.aioredis.FakeRedis(decode_responses=True)
+    try:
+        bulk = BulkComplianceRequestV2(
+            requirements_yaml="tender:\n  title: t\n  lot_id: L1\n  lot_name: n\n",
+            operators=[OperatorRef(namespace="ns")], engine=ENGINE, gptkey=SecretStr("k"),
+        )
+        lot = TenderLotRequirements(
+            tender=TenderInfo(title="t", lot_id="L1", lot_name="n"),
+            requirements=_RequirementsBlock(discretionary=[DiscretionaryCriterion(
+                id="P9", text="Latex free", mode="on_off", max_points=1, search_query=_SEARCH)]),
+        )
+        session_id = await SessionStore.create(bulk, lot)
+        repo = _repo_with(["non contengono lattice"], [{"file_name": "st.pdf", "page": 6}])
+
+        with patch("tilellm.modules.agentic_compliance_checker.services.tools_core._resolve_deps",
+                   AsyncMock(return_value=(repo, AsyncMock()))):
+            await retrieve_evidence_core(session_id=session_id, criterion_id="P9")
+
+        assert repo.get_chunks_from_repo.call_args.args[0].question == _SEARCH
+    finally:
+        SessionStore._client = None
+
+
+def test_criteria_workbook_round_trips_the_search_query():
+    from tilellm.modules.compliance_checker.models_v2 import (
+        DiscretionaryCriterion, TabularRequirementV2, TenderInfo, TenderLotRequirements, _RequirementsBlock,
+    )
+    from tilellm.modules.compliance_checker.services.requirements_xlsx_service import RequirementsXlsxService
+
+    lot = TenderLotRequirements(
+        tender=TenderInfo(title="t", lot_id="1", lot_name="Lotto 1"),
+        requirements=_RequirementsBlock(
+            tabular=[TabularRequirementV2(id="C1", text="Latex free", search_query=_SEARCH),
+                     TabularRequirementV2(id="C2", text="Radiopaco")],
+            discretionary=[DiscretionaryCriterion(id="P1", text="Gamma", mode="proporzionale",
+                                                  max_points=5, search_query="numero di referenze")]),
+    )
+    svc = RequirementsXlsxService()
+
+    parsed = svc.parse_workbook(svc.build_workbook([lot]))[0].requirements
+
+    assert [r.search_query for r in parsed.tabular] == [_SEARCH, None]
+    assert parsed.discretionary[0].search_query == "numero di referenze"

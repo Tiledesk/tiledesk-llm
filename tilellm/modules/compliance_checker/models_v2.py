@@ -20,6 +20,9 @@ from pydantic import BaseModel, Field, SecretStr, computed_field, field_validato
 from tilellm.models import Engine, LlmEmbeddingModel
 from tilellm.models.llm import PineconeRerankerConfig, TEIConfig
 from tilellm.modules.compliance_checker.models import (
+    COMPLIANCE_RERANKER_MODEL,
+    COMPLIANCE_RERANKING_MULTIPLIER,
+    SEARCH_QUERY_DESCRIPTION,
     ComplianceResult,
     _DEFAULT_JUDGMENT_MAP,
 )
@@ -56,6 +59,7 @@ class TabularRequirementV2(BaseModel):
     id: str
     text: str
     mandatory: bool = True
+    search_query: Optional[str] = Field(default=None, description=SEARCH_QUERY_DESCRIPTION)
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +70,7 @@ class DiscretionaryCriterion(BaseModel):
     """Criterio discrezionale con punteggio massimo e modalità di attribuzione."""
     id: str
     text: str
+    search_query: Optional[str] = Field(default=None, description=SEARCH_QUERY_DESCRIPTION)
     mode: DiscretionaryMode
     max_points: float
     human_only: bool = Field(
@@ -90,6 +95,24 @@ class DiscretionaryCriterion(BaseModel):
             "dai documenti. Serve per l'ampiezza di gamma: il listino sta nell'L01, che "
             "non viene indicizzato, quindi il giudice LLM non potrebbe mai misurarlo. "
             "Richiede un 'l01_xlsx_url'; la misura del giudice, se presente, ha la precedenza."
+        ),
+    )
+    baseline: Optional[float] = Field(
+        default=None,
+        description=(
+            "Solo per mode=proporzionale: valore a cui corrispondono ZERO punti (es. 70 per "
+            "'se uguale a 70 = 0, se > 70 proporzionale'). Con la soglia il punteggio è "
+            "proporzionale alla distanza dalla soglia: (q − soglia)/(migliore − soglia) × max "
+            "(verso diretto; speculare per l'inverso); chi non la supera prende 0. Va dichiarata "
+            "esplicitamente in tabella: non viene mai dedotta dal testo del criterio."
+        ),
+    )
+    unit: Optional[str] = Field(
+        default=None,
+        description=(
+            "Solo per mode=proporzionale: unità di misura in cui confrontare le quantità "
+            "(es. 'min', 'MPa', '°C'). Il giudice deve esprimere la quantità in questa unità; "
+            "una quantità dichiarata in un'altra unità non riceve punteggio."
         ),
     )
 
@@ -370,8 +393,8 @@ class ComplianceRequestV2(BaseModel):
 
     # Reranking
     reranking: Union[bool, TEIConfig, PineconeRerankerConfig] = Field(default=False)
-    reranking_multiplier: int = Field(default=3)
-    reranker_model: str = Field(default="cross-encoder/ms-marco-MiniLM-L-6-v2")
+    reranking_multiplier: int = Field(default=COMPLIANCE_RERANKING_MULTIPLIER)
+    reranker_model: str = Field(default=COMPLIANCE_RERANKER_MODEL)
 
     # Concorrenza
     max_concurrent_requirements: int = Field(default=3)
@@ -473,6 +496,15 @@ class DiscretionaryResult(BaseModel):
     direction: DiscretionaryDirection = Field(
         default=DiscretionaryDirection.DIRETTO,
         description="Copiato dal criterio (`DiscretionaryCriterion.direction`): verso usato da resolve_proportional.",
+    )
+    baseline: Optional[float] = Field(
+        default=None, description="Copiato dal criterio: soglia a zero punti usata da resolve_proportional.",
+    )
+    unit: Optional[str] = Field(
+        default=None, description="Copiato dal criterio: unità di confronto dichiarata.",
+    )
+    measured_unit: Optional[str] = Field(
+        default=None, description="Unità in cui il giudice ha espresso measured_quantity.",
     )
     proportional_auto: bool = Field(
         default=False,
@@ -963,8 +995,8 @@ class BulkComplianceRequestV2(BaseModel):
 
     # Reranking
     reranking: Union[bool, TEIConfig, PineconeRerankerConfig] = Field(default=False)
-    reranking_multiplier: int = Field(default=3)
-    reranker_model: str = Field(default="cross-encoder/ms-marco-MiniLM-L-6-v2")
+    reranking_multiplier: int = Field(default=COMPLIANCE_RERANKING_MULTIPLIER)
+    reranker_model: str = Field(default=COMPLIANCE_RERANKER_MODEL)
 
     max_concurrent_requirements: int = Field(default=3)
 

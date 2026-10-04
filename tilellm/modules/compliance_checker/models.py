@@ -119,12 +119,29 @@ class ComplianceConfig(BaseModel):
 # Input models
 # ---------------------------------------------------------------------------
 
+SEARCH_QUERY_DESCRIPTION = (
+    "Formulazione con cui cercare il requisito nei documenti dell'offerta, se diversa dal "
+    "testo ufficiale (es. 'Latex free, privo di lattice' per 'Latex free'). Usata SOLO per "
+    "ricerca e reranking: il giudice e la restituzione usano sempre il testo ufficiale. "
+    "Vuota = si cerca con il testo."
+)
+
+
 class RequirementItem(BaseModel):
     """A single requirement from the user-provided table."""
     id: str = Field(..., description="Unique requirement identifier (e.g. 'REQ-001', '3.2.1').")
     text: str = Field(..., description="Full text of the requirement.")
     category: Optional[str] = Field(None, description="Category/section the requirement belongs to.")
     mandatory: bool = Field(True, description="Whether the requirement is mandatory.")
+    search_query: Optional[str] = Field(None, description=SEARCH_QUERY_DESCRIPTION)
+
+
+# Offers are multilingual (Italian, English, Spanish... often in the same folder): an
+# English-only cross-encoder (ms-marco) pushed an English passage matching an Italian
+# requirement from #17 of the hybrid pool to last, on a real tender; this one put it
+# at #2. ~2 s per criterion on GPU (fp16) with 90 candidates.
+COMPLIANCE_RERANKER_MODEL = "BAAI/bge-reranker-v2-m3"
+COMPLIANCE_RERANKING_MULTIPLIER = 6
 
 
 class ComplianceRequest(BaseModel):
@@ -179,11 +196,11 @@ class ComplianceRequest(BaseModel):
         ),
     )
     reranking_multiplier: int = Field(
-        default=3,
+        default=COMPLIANCE_RERANKING_MULTIPLIER,
         description="Retrieve top_k * reranking_multiplier chunks, then rerank to top_k.",
     )
     reranker_model: str = Field(
-        default="cross-encoder/ms-marco-MiniLM-L-6-v2",
+        default=COMPLIANCE_RERANKER_MODEL,
         description="CrossEncoder model name used when reranking=True.",
     )
 
@@ -260,6 +277,9 @@ class ComplianceResult(BaseModel):
     # rather than filled with an arbitrary retrieved chunk (same flag as v2's
     # DiscretionaryResult.citation_attributed).
     citation_attributed: bool = True
+    # True when the judge LLM could not be invoked/parsed after retries: judgment is
+    # then not_verifiable for a technical reason, not for lack of evidence.
+    judge_failed: bool = False
 
 
 class ComplianceSummary(BaseModel):
