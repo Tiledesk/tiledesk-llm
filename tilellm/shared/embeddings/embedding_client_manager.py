@@ -36,7 +36,7 @@ class TEIEmbeddings(Embeddings):
         self.headers = headers or {}
         self.batch_size = batch_size  # Maximum batch size supported by TEI server
 
-    async def _acall(self, inputs):
+    async def _acall(self, inputs, use_shared_client: bool = True):
         url = f"{self.base_url}/embed"
         request_headers = {"Content-Type": "application/json"}
         request_headers.update(self.headers)
@@ -51,7 +51,7 @@ class TEIEmbeddings(Embeddings):
         payload = {"inputs": inputs}
         
         try:
-            if self.client and not self.client.is_closed:
+            if use_shared_client and self.client and not self.client.is_closed:
                 response = await self.client.post(url, json=payload, headers=request_headers)
             else:
                  # Force fallback
@@ -64,6 +64,10 @@ class TEIEmbeddings(Embeddings):
         response.raise_for_status()
         return response.json()
 
+    # Sync entry points run their coroutine on a loop of their own (a worker thread,
+    # or a fresh loop) and must not use the shared AsyncClient: its connections belong
+    # to the main loop. Found on a real run — the main loop blocked waiting for the
+    # thread, the thread waited on a main-loop connection: a silent worker freeze.
     def _run_in_thread(self, coro):
         import asyncio
         from concurrent.futures import ThreadPoolExecutor
@@ -90,12 +94,12 @@ class TEIEmbeddings(Embeddings):
             loop = None
 
         if loop and loop.is_running():
-             return self._run_in_thread(self.aembed_documents(texts))
+             return self._run_in_thread(self.aembed_documents(texts, use_shared_client=False))
         else:
              if not loop:
                  loop = asyncio.new_event_loop()
                  asyncio.set_event_loop(loop)
-             return loop.run_until_complete(self.aembed_documents(texts))
+             return loop.run_until_complete(self.aembed_documents(texts, use_shared_client=False))
 
     def embed_query(self, text: str) -> List[float]:
         import asyncio
@@ -105,14 +109,14 @@ class TEIEmbeddings(Embeddings):
             loop = None
             
         if loop and loop.is_running():
-             return self._run_in_thread(self.aembed_query(text))
+             return self._run_in_thread(self.aembed_query(text, use_shared_client=False))
         else:
              if not loop:
                  loop = asyncio.new_event_loop()
                  asyncio.set_event_loop(loop)
-             return loop.run_until_complete(self.aembed_query(text))
+             return loop.run_until_complete(self.aembed_query(text, use_shared_client=False))
 
-    async def aembed_documents(self, texts: List[str]) -> List[List[float]]:
+    async def aembed_documents(self, texts: List[str], use_shared_client: bool = True) -> List[List[float]]:
         """
         Embed documents with automatic batching to respect TEI server limits.
         Splits large batches into smaller chunks to avoid 413 Payload Too Large errors.
@@ -122,7 +126,7 @@ class TEIEmbeddings(Embeddings):
 
         # If the batch is small enough, process it directly
         if len(texts) <= self.batch_size:
-            return await self._acall(texts)
+            return await self._acall(texts, use_shared_client)
 
         # Otherwise, split into smaller batches
         logger.info(f"TEI: Splitting {len(texts)} documents into batches of {self.batch_size}")
@@ -132,13 +136,13 @@ class TEIEmbeddings(Embeddings):
             batch = texts[i:i + self.batch_size]
             batch_num = (i // self.batch_size) + 1
             logger.debug(f"TEI: Processing batch {batch_num}/{num_batches} with {len(batch)} documents")
-            batch_embeddings = await self._acall(batch)
+            batch_embeddings = await self._acall(batch, use_shared_client)
             all_embeddings.extend(batch_embeddings)
 
         return all_embeddings
 
-    async def aembed_query(self, text: str) -> List[float]:
-        result = await self._acall(text)
+    async def aembed_query(self, text: str, use_shared_client: bool = True) -> List[float]:
+        result = await self._acall(text, use_shared_client)
         return result[0]
 
 class EmbeddingSessionManager:

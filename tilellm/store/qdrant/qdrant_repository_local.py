@@ -125,7 +125,11 @@ class CachedVectorStore:
             collection_name=self.engine.index_name,
             embedding=self.embeddings,
             vector_name="text-dense",
-            sparse_vector_name="text-sparse"
+            sparse_vector_name="text-sparse",
+            # The validation embeds a dummy text with a SYNC embed_documents call from
+            # inside the event loop, on every retrieval — it deadlocked a worker.
+            # _ensure_client already checks the collection asynchronously.
+            validate_collection_config=False,
         )
 
     async def get_client(self) -> QdrantClient:
@@ -1728,8 +1732,8 @@ class QdrantRepository(VectorStoreRepository):
             collection_name=collection_name,
             embedding=embeddings,
             vector_name="text-dense",
-            sparse_vector_name="text-sparse"
-
+            sparse_vector_name="text-sparse",
+            validate_collection_config=False,  # checked just above; see get_vector_store
         )
 
 

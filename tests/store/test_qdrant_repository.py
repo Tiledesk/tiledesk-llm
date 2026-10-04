@@ -926,3 +926,20 @@ async def test_get_chunks_by_index_with_no_indexes_skips_the_query(mocker):
 
     assert await QdrantRepository().get_chunks_by_index(engine, "ns", "doc-1", []) == []
     client.scroll.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_vector_store_skips_langchain_sync_embedding_validation():
+    """QdrantVectorStore's collection validation embeds a dummy text with a SYNC
+    embed_documents call — from inside the event loop, on every retrieval. That sync
+    call deadlocked a gunicorn worker on a real run. _ensure_client already checks
+    the collection asynchronously."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from tilellm.store.qdrant import qdrant_repository_local as mod
+
+    wrapper = mod.CachedVectorStore(MagicMock(index_name="c"), MagicMock(), 1024)
+    with patch.object(wrapper, "_ensure_client", new=AsyncMock()), \
+         patch.object(mod, "QdrantVectorStore") as vs_cls:
+        await wrapper.get_vector_store()
+
+    assert vs_cls.call_args.kwargs["validate_collection_config"] is False
