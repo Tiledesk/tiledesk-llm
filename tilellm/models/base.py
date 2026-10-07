@@ -22,12 +22,15 @@ class AWSAuthentication(BaseModel):
     aws_secret_access_key: str
     region_name: str
 
+# Solo trasporti di rete: la config arriva dal payload della richiesta, e con
+# "stdio" il client MCP avvierebbe `command args` come processo nel nostro pod.
+MCP_ALLOWED_TRANSPORTS = ("streamable_http", "sse")
+
+
 class ServerConfig(BaseModel):
     """Modello per la configurazione di un server MCP"""
     transport: str
     url: Optional[str] = None
-    command: Optional[str] = None
-    args: Optional[List[str]] = None
     api_key: Optional[SecretStr] = None
     headers: Optional[Dict[str, str]] = Field(default=None, description="HTTP headers to send to the MCP server (e.g. x-composio-user-id for Composio)")
     enabled_tools: Optional[List[str]] = Field(default_factory=lambda: ["all"])
@@ -46,14 +49,10 @@ class ServerConfig(BaseModel):
 
     @model_validator(mode='after')
     def validate_transport_specific_fields(self):
-        # Validazione per trasporto SSE
-        if self.transport == "sse" or self.transport=="streamable_http":
-            if not self.url:
-                raise ValueError("URL è obbligatorio per il trasporto SSE")
-
-        # Validazione per trasporto stdio
-        elif self.transport == "stdio":
-            if not self.command or not self.args:
-                raise ValueError("Command e args sono obbligatori per il trasporto stdio")
-
+        if self.transport not in MCP_ALLOWED_TRANSPORTS:
+            raise ValueError(
+                f"MCP transport {self.transport!r} non ammesso: usare uno tra {MCP_ALLOWED_TRANSPORTS}"
+            )
+        if not self.url:
+            raise ValueError(f"URL è obbligatorio per il trasporto {self.transport}")
         return self

@@ -1255,7 +1255,7 @@ ENABLE_TASKIQ=true            # for async digest generation via Redis Stream
 ### MCP (Model Context Protocol) Integration
 The `/api/ask` endpoint supports integration with MCP servers, enabling the LLM to use external tools and data sources.
 
-- **Server Configuration**: Configure MCP servers in the `servers` field with transport options (`sse`, `stdio`, `streamable_http`).
+- **Server Configuration**: Configure MCP servers in the `servers` field with network transports only (`sse`, `streamable_http`).
 - **Tool Filtering**: Use the `enabled_tools` parameter on each server configuration to specify which tools from that server are available (default: `["all"]`).
 - **Internal Tools**: Specify internal tools from the tool registry using the `tools` field in the request body.
 
@@ -1271,12 +1271,6 @@ The `/api/ask` endpoint supports integration with MCP servers, enabling the LLM 
       "transport": "sse",
       "url": "https://mcp-server.com/github",
       "enabled_tools": ["search_repo", "read_file"]
-    },
-    "filesystem": {
-      "transport": "stdio",
-      "command": "mcp-server-fs",
-      "args": ["--root", "/home/user/docs"],
-      "enabled_tools": ["list_directory", "read_file"]
     }
   },
   "tools": ["pdf_extractor", "web_search"]
