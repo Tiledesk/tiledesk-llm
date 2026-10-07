@@ -12,12 +12,29 @@ Perfect for applications with:
 
 import json
 import logging
+import re
 from typing import Optional, List, Dict, Any, Union, cast
 import os
 
 from tilellm.shared.utility import get_service_config
 from tilellm.store.graph import BaseGraphRepository
 from tilellm.modules.knowledge_graph.models import Node, Relationship
+
+
+def _cypher_ident(name: str) -> str:
+    """Labels, relationship types and property keys can't be query parameters,
+    so they end up in the query text: reject anything that isn't an identifier
+    (they come from the API and from LLM output over user documents)."""
+    if not isinstance(name, str) or not name.isidentifier():
+        raise ValueError(f"invalid Cypher identifier: {str(name)[:60]!r}")
+    return name
+
+
+def _llm_type_to_ident(value: Optional[str], default: str) -> str:
+    """entity_type / relationship_type produced by the LLM → valid identifier
+    ("medical device" → MEDICAL_DEVICE) instead of a broken or injected query."""
+    ident = re.sub(r"\W+", "_", (value or "").strip().upper()).strip("_")
+    return ident if ident.isidentifier() else default
 
 logger = logging.getLogger(__name__)
 
@@ -192,7 +209,7 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
             for label in node_labels:
                 for prop in self.SEARCHABLE_PROPERTIES:
                     # OpenCypher standard syntax for FalkorDB
-                    query = f"CREATE INDEX FOR (n:{label}) ON (n.{prop})"
+                    query = f"CREATE INDEX FOR (n:{_cypher_ident(label)}) ON (n.{prop})"
                     try:
                         await self._execute_query(query, namespace=graph_name)
                         logger.debug(f"Created index on {label}.{prop} for graph '{graph_name}'")
@@ -225,9 +242,11 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
 
     async def _execute_query(self, query: str, parameters: Optional[Dict[str, Any]] = None,
                             namespace: Optional[str] = None, graph_name: Optional[str] = None,
-                            timeout: Optional[int] = None) -> List[Dict[str, Any]]:
+                            timeout: Optional[int] = None, read_only: bool = False) -> List[Dict[str, Any]]:
         """
         Execute a FalkorDB query (openCypher) asynchronously.
+        read_only=True runs it with GRAPH.RO_QUERY: the server rejects any write
+        (use it for every query whose text is not ours, e.g. LLM-generated).
 
         Args:
             query: openCypher query string
@@ -243,7 +262,8 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
         logger.debug(f"Executing async query on graph '{graph.name}': {query}, params: {parameters}")
 
         try:
-            result = await graph.query(query, params=parameters if parameters else None, timeout=timeout)
+            run = graph.ro_query if read_only else graph.query
+            result = await run(query, params=parameters if parameters else None, timeout=timeout)
 
             # Convert result to list of dicts
             records = []
@@ -472,10 +492,10 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
         if metadata_id is not None:
             properties["metadata_id"] = metadata_id
 
-        props_str = ", ".join([f"{k}: ${k}" for k in properties.keys()])
+        props_str = ", ".join([f"{_cypher_ident(k)}: ${k}" for k in properties.keys()])
 
         query = f"""
-        CREATE (n:{node.label} {{{props_str}}})
+        CREATE (n:{_cypher_ident(node.label)} {{{props_str}}})
         RETURN id(n) as id, labels(n) as labels, properties(n) as properties
         """
 
@@ -527,7 +547,7 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
         where_clause = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
         query = f"""
-        MATCH (n:{label})
+        MATCH (n:{_cypher_ident(label)})
         {where_clause}
         RETURN id(n) as id, labels(n) as labels, properties(n) as properties
         LIMIT $limit
@@ -549,7 +569,7 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
         """
         Find nodes by a specific property value (async).
         """
-        where_clauses = [f"n.{property_key} = $value"]
+        where_clauses = [f"n.{_cypher_ident(property_key)} = $value"]
         params = {"value": property_value, "limit": limit}
         if namespace is not None:
             where_clauses.append("n.namespace = $namespace")
@@ -560,7 +580,7 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
 
         where_clause = "WHERE " + " AND ".join(where_clauses)
         query = f"""
-        MATCH (n:{label})
+        MATCH (n:{_cypher_ident(label)})
         {where_clause}
         RETURN id(n) as id, labels(n) as labels, properties(n) as properties
         LIMIT $limit
@@ -641,7 +661,7 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
             return None
 
         if properties:
-            set_clauses = ", ".join([f"n.{k} = ${k}" for k in properties.keys()])
+            set_clauses = ", ".join([f"n.{_cypher_ident(k)} = ${k}" for k in properties.keys()])
             query = f"""
             MATCH (n)
             WHERE id(n) = $node_id
@@ -699,8 +719,9 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
         if metadata_id is not None:
             properties["metadata_id"] = metadata_id
 
-        props_str = ", ".join([f"{k}: ${k}" for k in properties.keys()]) if properties else ""
-        rel_clause = f"[r:{relationship.type} {{{props_str}}}]" if props_str else f"[r:{relationship.type}]"
+        props_str = ", ".join([f"{_cypher_ident(k)}: ${k}" for k in properties.keys()]) if properties else ""
+        rel_type = _cypher_ident(relationship.type)
+        rel_clause = f"[r:{rel_type} {{{props_str}}}]" if props_str else f"[r:{rel_type}]"
 
         query = f"""
         MATCH (source), (target)
@@ -765,7 +786,7 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
                 entity_node_map[norm] = existing[norm]
                 reused += 1
                 continue
-            label = (entity.get("entity_type") or "ENTITY").strip().upper() or "ENTITY"
+            label = _llm_type_to_ident(entity.get("entity_type"), "ENTITY")
             by_label[label].append(entity)
         if reused:
             logger.info(f"batch_create_nodes: {reused} entities reused from existing map")
@@ -875,7 +896,7 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
 
         by_type: Dict[str, list] = defaultdict(list)
         for rel in relationships:
-            rel_type = (rel.get("relationship_type") or "RELATED_TO").upper().strip() or "RELATED_TO"
+            rel_type = _llm_type_to_ident(rel.get("relationship_type"), "RELATED_TO")
             source_name = rel.get("src_id", "").strip()
             target_name = rel.get("tgt_id", "").strip()
             source_id = entity_node_map.get(self._normalize_name(source_name))
@@ -1095,7 +1116,7 @@ class AsyncFalkorGraphRepository(BaseGraphRepository):
             return await self.create_relationship(new_rel, namespace=namespace, graph_name=graph_name)
 
         if properties:
-            set_clauses = ", ".join([f"r.{k} = ${k}" for k in properties.keys()])
+            set_clauses = ", ".join([f"r.{_cypher_ident(k)} = ${k}" for k in properties.keys()])
             query = f"""
             MATCH ()-[r]->()
             WHERE id(r) = $relationship_id

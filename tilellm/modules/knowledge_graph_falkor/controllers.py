@@ -165,6 +165,8 @@ async def get_nodes_by_label(
     """Get all nodes with a specific label."""
     try:
         return await kg_logic.get_nodes_by_label(label, limit)
+    except ValueError as e:  # invalid label / property key
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to retrieve nodes: {str(e)}")
 
@@ -178,6 +180,8 @@ async def search_nodes(
     """Search for nodes by property value."""
     try:
         return await kg_logic.search_nodes(label, property_key, property_value, limit)
+    except ValueError as e:  # invalid label / property key
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 

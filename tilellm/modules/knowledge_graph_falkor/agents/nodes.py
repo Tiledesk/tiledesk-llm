@@ -179,7 +179,9 @@ def create_nodes(repository, llm):
             logger.info(f"Executing Cypher: {cypher_query} on namespace: {namespace}")
 
             # Execute query via repository
-            results = await repository._execute_query(cypher_query, {}, namespace=namespace, graph_name=graph_name)
+            results = await repository._execute_query(
+                cypher_query, {}, namespace=namespace, graph_name=graph_name, read_only=True
+            )
 
             result_count = len(results) if results else 0
 

@@ -56,7 +56,9 @@ def create_cypher_executor_tool(repository: Any, namespace: str, graph_name: str
         try:
             logger.info(f"Tool executing Cypher: {cypher_query} on namespace: {namespace}")
 
-            results = await repository._execute_query(cypher_query, {}, namespace=namespace, graph_name=graph_name)
+            results = await repository._execute_query(
+                cypher_query, {}, namespace=namespace, graph_name=graph_name, read_only=True
+            )
 
             if not results:
                 return "No results found."
