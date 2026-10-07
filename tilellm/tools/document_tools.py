@@ -22,7 +22,7 @@ from langchain_community.document_transformers import BeautifulSoupTransformer, 
 from langchain_community.document_transformers.beautiful_soup_transformer import get_navigable_strings
 from langchain_core.documents import Document
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
-from tilellm.shared.outbound_url import outbound_requests_get, validate_outbound_url
+from tilellm.shared.outbound_url import guard_page, outbound_requests_get, validate_outbound_url
 
 logger = logging.getLogger(__name__)
 
@@ -443,6 +443,7 @@ async def handle_chromium_loader(
                     extra_http_headers=browser_headers,
                     java_script_enabled=True
                 )
+                await guard_page(page)
                 await page.goto(url=url, wait_until="load", timeout=60000)
                 html = await page.content()
                 raw_htmls.append((html, url))
@@ -494,6 +495,7 @@ async def scrape_page_fallback_selectors(url, browser_headers: Optional[dict] = 
         try:
             page = await browser.new_page(extra_http_headers=browser_headers,
                                           java_script_enabled=True)
+            await guard_page(page)
 
             await page.goto(url=url, wait_until="networkidle", timeout=60000)
             time.sleep(2)  # Tempo ridotto per fallback
@@ -606,6 +608,7 @@ async def scrape_page(url, params_type_4, browser_headers: Optional[dict] = None
         try:
             page = await browser.new_page(extra_http_headers=browser_headers,
                                           java_script_enabled=True)
+            await guard_page(page)
 
             try:
                 # 1. Initial navigation. 'load' is a good starting point.
@@ -720,6 +723,7 @@ async def scrape_page_complex(url, params_type_4, browser_headers: Optional[dict
                 await stealth.apply_stealth_async(context)
 
                 page = await context.new_page()
+                await guard_page(page)
 
                 # **4. Intercept and log the redirect**
                 async def check_redirect(route, request):
@@ -730,7 +734,8 @@ async def scrape_page_complex(url, params_type_4, browser_headers: Optional[dict
                         # Otherwise continue in order to analyze the response:
                         # await route.continue_()
                     else:
-                        await route.continue_()
+                        # fallback, not continue_: let guard_page's handler check the URL too
+                        await route.fallback()
 
                 await page.route("**/*", check_redirect)
 
@@ -828,6 +833,7 @@ async def scrape_page_complex_a(url, params_type_4, browser_headers: Optional[di
                                               )
             page = await browser.new_page(extra_http_headers=browser_headers,
                                           java_script_enabled=True)
+            await guard_page(page)
 
             page.on("request", handle_request)
             await page.goto(url=url)
