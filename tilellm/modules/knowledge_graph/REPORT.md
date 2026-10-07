@@ -393,7 +393,7 @@ curl -X POST http://localhost:8000/api/kg/create \
 curl -X POST http://localhost:8000/api/kg/hybrid \
   -H "Content-Type: application/json" \
   -d '{
-    "question": "What are the relationships between Mario Draghi and the ECB?",
+    "question": "What are the relationships between Anna Esempio and the ECB?",
     "namespace": "bancaitalia",
     "engine": {
       "name": "pinecone",

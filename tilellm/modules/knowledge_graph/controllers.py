@@ -480,7 +480,7 @@ def get_graph_network(
     ```json
     {
         "nodes": [
-            {"id": "node_id", "label": "PERSON", "properties": {"name": "Mario Draghi", ...}},
+            {"id": "node_id", "label": "PERSON", "properties": {"name": "Anna Esempio", ...}},
             ...
         ],
         "relationships": [
