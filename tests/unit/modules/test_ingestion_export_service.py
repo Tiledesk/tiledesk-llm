@@ -134,6 +134,37 @@ class TestPdfDocxDispatch:
         assert result == "CONVERTED_DOCX"
 
 
+class TestTempFileCleanup:
+    """The downloaded PDF/DOCX used to stay in /tmp forever: every export
+    leaked up to OUTBOUND_MAX_RESPONSE_BYTES of disk."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("doc_type, converter, ok", [
+        (DocumentType.PDF, "convert_pdf", True),
+        (DocumentType.PDF, "convert_pdf", False),
+        (DocumentType.DOCX, "convert_docx", True),
+        (DocumentType.DOCX, "convert_docx", False),
+    ])
+    async def test_downloaded_file_is_removed(self, tmp_path, doc_type, converter, ok):
+        downloaded = tmp_path / "downloaded.bin"
+        downloaded.write_bytes(b"x")
+        effect = "CONVERTED" if ok else RuntimeError("converter crashed")
+        mock = (AsyncMock if converter == "convert_pdf" else __import__("unittest.mock").mock.MagicMock)(
+            **({"return_value": effect} if ok else {"side_effect": effect})
+        )
+        with patch(f"tilellm.modules.ingestion.export.service.{converter}", new=mock), \
+             patch("tilellm.modules.ingestion.export.service._download_to_temp_file",
+                   new=AsyncMock(return_value=str(downloaded))):
+            req = ExportMdRequest(type=doc_type, source="https://x/doc")
+            if ok:
+                await export_document(req)
+            else:
+                with pytest.raises(RuntimeError):
+                    await export_document(req)
+
+        assert not downloaded.exists()
+
+
 class TestConvertUrlBranch:
     @pytest.mark.asyncio
     async def test_url_scrapes_then_converts(self):

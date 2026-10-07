@@ -8,6 +8,7 @@ half (frontmatter -> real ingestion) is a separate endpoint (F2).
 """
 import base64
 import logging
+from pathlib import Path
 import tempfile
 from typing import Optional
 
@@ -60,13 +61,19 @@ async def export_document(request: ExportMdRequest) -> ExtractedDocument:
         doc = convert_xlsx(await _resolve_bytes(request), resource=resource)
     elif resolved == DocumentType.PDF:
         path = await _download_to_temp_file(request, suffix=".pdf")
-        doc = await convert_pdf(
-            path, request.file_name or "export", resource=resource,
-            skip_ocr=request.skip_ocr, converter_options=request.converter_options,
-        )
+        try:
+            doc = await convert_pdf(
+                path, request.file_name or "export", resource=resource,
+                skip_ocr=request.skip_ocr, converter_options=request.converter_options,
+            )
+        finally:
+            Path(path).unlink(missing_ok=True)
     elif resolved == DocumentType.DOCX:
         path = await _download_to_temp_file(request, suffix=".docx")
-        doc = convert_docx(path, resource=resource)
+        try:
+            doc = convert_docx(path, resource=resource)
+        finally:
+            Path(path).unlink(missing_ok=True)
     elif resolved == DocumentType.URL:
         if not _is_http_url(request.source):
             raise ValueError("Export type=url richiede un 'source' http/https.")
