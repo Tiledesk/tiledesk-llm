@@ -230,7 +230,7 @@ async def test_client_is_cached_per_provider_url_and_key():
 def test_route_is_registered_by_default():
     from tilellm.__main__ import app
 
-    assert "/api/v1/systemone" in {getattr(r, "path", None) for r in app.routes}
+    assert "/api/v1/systemone" in app.openapi()["paths"]
 
 
 def test_endpoint_returns_normalized_answers(client, upstream):

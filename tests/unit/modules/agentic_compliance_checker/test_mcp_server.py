@@ -82,9 +82,12 @@ def test_mcp_route_has_explicit_non_empty_methods():
     an empty list — a route matched by GET/POST/DELETE, but registered to
     accept none of them. If this ever regresses to methods=None or [], every
     other test in this file would also fail, but this one names the cause."""
-    from tilellm.__main__ import app
+    import tilellm.__main__  # noqa: F401 — registers the module routers
+    from tilellm.modules.agentic_compliance_checker.controllers import router
 
-    route = next(r for r in app.routes if getattr(r, "path", None) == _MCP_PATH)
+    # FastAPI >=0.135 keeps included routers wrapped instead of copying their
+    # routes into app.routes: the Route that serves requests is this one.
+    route = next(r for r in router.routes if getattr(r, "path", None) == _MCP_PATH)
     assert route.methods and route.methods >= {"GET", "POST", "DELETE"}
 
 

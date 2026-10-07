@@ -35,6 +35,17 @@ from tilellm.modules.compliance_checker.models_v2 import (
 from tilellm.modules.compliance_checker.models import ComplianceResult
 
 
+def _route_paths(router):
+    """Public view of the registered paths. FastAPI >=0.135 keeps included
+    sub-routers as wrappers in `router.routes`, so iterate the OpenAPI schema."""
+    from fastapi import FastAPI
+
+    app = FastAPI()
+    app.include_router(router)
+    return list(app.openapi()["paths"])
+
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -1942,7 +1953,7 @@ requirements:
     async def test_regression_v1_routes_unchanged(self):
         """V1 routes must still be importable and registered after v2 changes."""
         from tilellm.modules.compliance_checker.controllers import router
-        routes = [r.path for r in router.routes]
+        routes = _route_paths(router)
         assert any("/check" in p for p in routes)
         assert any("/domains" in p for p in routes)
 
@@ -2256,7 +2267,7 @@ class TestAggregateReportRenderers:
 
     def test_aggregate_route_registered(self):
         from tilellm.modules.compliance_checker.controllers import router
-        routes = [r.path for r in router.routes]
+        routes = _route_paths(router)
         assert any("/reports/aggregate" in p for p in routes)
 
 
@@ -2709,7 +2720,7 @@ class TestRestituzioneXlsx:
 
     def test_check_xlsx_route_registered(self):
         from tilellm.modules.compliance_checker.controllers import router
-        routes = [r.path for r in router.routes]
+        routes = _route_paths(router)
         assert any(p.endswith("/check/xlsx") for p in routes)
 
 
@@ -2769,7 +2780,7 @@ class TestExportRequirementsXlsx:
 
     def test_to_xlsx_route_registered(self):
         from tilellm.modules.compliance_checker.controllers import router
-        routes = [r.path for r in router.routes]
+        routes = _route_paths(router)
         assert any(p.endswith("/requirements/to-xlsx") for p in routes)
 
 
@@ -2989,5 +3000,5 @@ class TestBulkOrchestration:
 
     def test_bulk_route_registered(self):
         from tilellm.modules.compliance_checker.controllers import router
-        routes = [r.path for r in router.routes]
+        routes = _route_paths(router)
         assert any(p.endswith("/check/bulk") for p in routes)

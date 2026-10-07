@@ -6,7 +6,12 @@ authors = [{ name = "Gianluca Lorenzo", email = "gianluca.lorenzo@gmail.com" }]
 license = "MIT"
 requires-python = ">=3.12,<3.14"
 dependencies = [
-    "fastapi>=0.123.4,<0.124.0",
+    "fastapi>=0.142.2,<0.143.0",
+    # Security floors for transitive deps: the production image installs from
+    # this file, not from uv.lock, so the lock alone doesn't protect prod.
+    "starlette>=1.3.1",      # Host/path injection into request.url, urlencoded form limits
+    "urllib3>=2.8.0",        # decompression bomb in streaming, proxy TLS
+    "multidict>=6.9.1",      # remotely driven memory growth
     "fastapi-cprofile>=0.0.2,<0.0.3",
     "jsonschema>=4.25.1,<5.0.0",
     "redis>=7.1.0,<8.0.0",
@@ -50,11 +55,11 @@ dependencies = [
     "pymilvus>=2.6.11,<3.0.0",
     "tiktoken>=0.12.0,<0.13.0",
     "beautifulsoup4>=4.14.3,<5.0.0",
-    "unstructured[md]>=0.22.18,<0.23.0",
+    "unstructured[md]>=0.24.0,<0.28.0",   # >=0.24: SSRF in partition(url=)
     "markdown>=3.10.2,<4.0.0",
     "playwright>=1.58.0,<2.0.0",
     "playwright-stealth>=2.0.3,<3.0.0",
-    "pypdf>=6.9.2,<7.0.0",
+    "pypdf>=6.19.0,<7.0.0",   # >=6.19: DoS on crafted PDFs
     "trafilatura>=2.0",
     "docx2txt>=0.9,<0.10.0",
     "openpyxl>=3.1.5,<4.0.0",
@@ -64,7 +69,7 @@ dependencies = [
     "psutil>=7.2.2,<8.0.0",
     "httpx>=0.28.1,<0.29.0",
     "gql>=4.0.0,<5.0.0",
-    "PyJWT>=2.12.1,<3.0.0",
+    "PyJWT>=2.15.0,<3.0.0",
     "simsimd>=6.5.16,<7.0.0",
     "pandas>=3.0.2,<4.0.0",
     "PyMuPdf>=1.27.2,<2.0.0",
@@ -112,7 +117,7 @@ ocr = [
     "neo4j>=5.26.0,<6.0.0",
     "minio>=7.2.0,<8.0.0",
     "langchain-aws>=1.4.3,<2.0.0",
-    "docling>=2.85.0,<3.0.0",
+    "docling>=2.131.0,<3.0.0",
     "pillow>=12.0.0,<13.0.0",
     "duckdb>=1.4.3,<2.0.0",
     "parquet>=1.3.1,<2.0.0",
@@ -154,7 +159,7 @@ all = [
     "pyarrow>=22.0.0,<23.0.0",
     "taskiq>=0.12.0,<0.13.0",
     "taskiq-redis>=1.2.1,<2.0.0",
-    "docling>=2.85.0,<3.0.0",
+    "docling>=2.131.0,<3.0.0",
     "pillow>=12.0.0,<13.0.0",
     "mineru>=2.0.0",
     "falkordb>=1.0.0,<2.0.0",
