@@ -156,6 +156,7 @@ dmypy.json
 .agents/
 .ASE/
 .claude/
+CLAUDE.md
 .gemini/
 .github/
 .opencode/
