@@ -33,6 +33,7 @@ from tilellm.modules.compliance_checker.prompts.xlsx_extraction import (
 from tilellm.shared.utility import inject_llm_chat_async
 from tilellm.shared import token_tracking
 from tilellm.shared.token_tracking import TokenUsageCollector, model_name_of
+from tilellm.shared.outbound_url import outbound_client
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +132,7 @@ class XlsxExtractionService:
     # ------------------------------------------------------------------
 
     async def _download(self, url: str) -> bytes:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with outbound_client(timeout=60.0) as client:
             response = await client.get(url)
             response.raise_for_status()
             content = response.content

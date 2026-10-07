@@ -12,6 +12,7 @@ from tilellm.modules.conversion.services.conversion_service import (
     process_pdf_to_text,
     process_pdf_to_images
 )
+from tilellm.shared.outbound_url import outbound_aiohttp_session
 
 # 1. Crea il router per questo modulo
 router = APIRouter(
@@ -33,7 +34,7 @@ async def convert_file(request: ConversionRequest):
     if request.is_url():
         try:
             # Scarica il file dalla URL
-            async with aiohttp.ClientSession() as session:
+            async with outbound_aiohttp_session() as session:
                 async with session.get(request.file_content) as response:
                     if response.status != 200:
                         raise HTTPException(

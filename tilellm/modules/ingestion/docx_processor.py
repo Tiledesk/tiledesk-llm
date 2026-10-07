@@ -25,7 +25,7 @@ from tilellm.models.llm import TEIConfig
 from tilellm.modules.pdf_ocr.models.pdf_scraping import PDFScrapingRequest
 from tilellm.shared.situated_context import enrich_chunks_with_situated_context
 from tilellm.shared.utility import inject_llm_chat_async, inject_repo_async
-from tilellm.tools.document_tools import _extract_file_name
+from tilellm.tools.document_tools import _extract_file_name, require_remote_url
 from tilellm.tools.structured_loaders import StructuredDocxLoader
 
 logger = logging.getLogger(__name__)
@@ -108,6 +108,7 @@ async def process_docx_with_images(
     resolved_file_name = question.file_name or _extract_file_name(source) or source
 
     # ── 1. Load text + tables + extract image records ─────────────────────
+    require_remote_url(source)
     loader = StructuredDocxLoader(source)
     try:
         text_table_docs, image_records = loader.load_with_images()

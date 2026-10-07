@@ -36,6 +36,7 @@ from redis.asyncio import Redis, from_url
 import aiohttp
 
 
+from tilellm.shared.outbound_url import outbound_aiohttp_session
 from tilellm.shared.timed_cache import TimedCache
 from tilellm.shared.utility import decode_jwt
 from tilellm.models import ItemSingle, Engine, QuestionToLLM, QuestionAnswer
@@ -228,12 +229,12 @@ async def reader(channel: Redis):
                         else:
                             webhook = raw_webhook
 
-                        logger.info(f"webhook: {webhook}, token: {token}")
+                        logger.info(f"webhook: {webhook}, token present: {bool(token)}")
 
                         if webhook:
                             res = IndexingResult(id=item.get("id"), status=200)
                             try:
-                                async with aiohttp.ClientSession() as session:
+                                async with outbound_aiohttp_session() as session:
                                     res = await session.post(
                                         webhook,
                                         json=res.model_dump(exclude_none=True),
@@ -300,7 +301,7 @@ async def reader(channel: Redis):
                         logger.debug(f"End {add_to_queue}")
                         if webhook:
                             try:
-                                async with aiohttp.ClientSession() as session:
+                                async with outbound_aiohttp_session() as session:
                                     res = await session.post(
                                         webhook,
                                         json=pc_result.model_dump(exclude_none=True),
@@ -334,7 +335,7 @@ async def reader(channel: Redis):
 
                 if webhook:
                     res = IndexingResult(id=item.get("id"), status=400, error=repr(e))
-                    async with aiohttp.ClientSession() as session:
+                    async with outbound_aiohttp_session() as session:
                         response = await session.post(
                             webhook,
                             json=res.model_dump(exclude_none=True),
@@ -528,7 +529,7 @@ async def enqueue_scrape_item_main(
         else:
             webhook = raw_webhook or ""
 
-        logger.info(f"webhook: {webhook}, token: {token}")
+        logger.info(f"webhook: {webhook}, token present: {bool(token)}")
 
         if item.hybrid:
             pc_result = await add_item_hybrid(item)
@@ -637,7 +638,7 @@ async def create_scrape_item_single(
         else:
             webhook = raw_webhook
 
-        logger.info(f"webhook: {webhook}, token: {token}")
+        logger.info(f"webhook: {webhook}, token present: {bool(token)}")
 
         _idx_t0 = time.monotonic()
         _idx_error: str | None = None
@@ -683,7 +684,7 @@ async def create_scrape_item_single(
         # logger.debug(f"End {add_to_queue}")
         # if webhook:
         #    try:
-        #        async with aiohttp.ClientSession() as session:
+        #        async with outbound_aiohttp_session() as session:
         #            res = await session.post(webhook,
         #                                     json=pc_result.model_dump(exclude_none=True),
         #                                     headers={"Content-Type": "application/json",
@@ -710,7 +711,7 @@ async def create_scrape_item_single(
 
         # if webhook:
         #    res = PineconeIndexingResult(id=item.id, status=400, error=repr(e))
-        #    async with aiohttp.ClientSession() as session:
+        #    async with outbound_aiohttp_session() as session:
         #        response = await session.post(webhook, json=res.model_dump(exclude_none=True),
         #                                      headers={"Content-Type": "application/json", "X-Auth-Token": token})
         #        logger.error(response)
@@ -757,7 +758,7 @@ async def create_scrape_item_hybrid(
         else:
             webhook = raw_webhook
 
-        logger.info(f"webhook: {webhook}, token: {token}")
+        logger.info(f"webhook: {webhook}, token present: {bool(token)}")
 
         _idx_t0 = time.monotonic()
         _idx_error: str | None = None
@@ -1272,9 +1273,8 @@ async def list_namespace_items_with_text(
     """
     try:
         token = credentials.credentials  # estrae il token dall'header
-        logger.info(f"retrieve namespace {namespace}  Raw token: %s {token}")
+        logger.info(f"retrieve namespace {namespace}")
         engine_dec = decode_jwt(token)
-        logger.info(f"asd {engine_dec}")
         repository_engine = RepositoryEngine(**engine_dec)
         result = await get_listitems_namespace(repository_engine, namespace, True)
         return result  # FastAPI serializzerà il modello

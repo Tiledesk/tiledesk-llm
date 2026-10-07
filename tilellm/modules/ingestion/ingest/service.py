@@ -32,6 +32,7 @@ from tilellm.modules.ingestion.ingest.models import IngestConfig, IngestMdReques
 from tilellm.modules.ingestion.table_chunker import split_table_document
 from tilellm.shared.utility import inject_embeddings_async, inject_repo_async
 from tilellm.tools.document_tools import _apply_additional_metadata, _extract_file_name
+from tilellm.shared.outbound_url import outbound_client
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +158,7 @@ async def _load_document(request: IngestMdRequest) -> ExtractedDocument:
 
 
 async def _fetch(url: str) -> bytes:
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with outbound_client(timeout=30.0) as client:
         response = await client.get(url)
         response.raise_for_status()
         content = response.content

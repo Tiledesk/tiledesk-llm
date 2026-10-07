@@ -10,6 +10,7 @@ import httpx
 
 from taskiq import TaskiqDepends, TaskiqState, Context
 from tilellm.modules.task_executor.broker import broker
+from tilellm.shared.outbound_url import outbound_client
 
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ async def send_webhook(url: Optional[str], payload: dict):
     if not url:
         return
     try:
-        async with httpx.AsyncClient() as client:
+        async with outbound_client() as client:
             await client.post(url, json=payload)
             logger.info(f"Webhook sent to {url}")
     except Exception as e:
@@ -610,7 +611,7 @@ async def task_scrape_item_single(item_dict: dict) -> dict:
 
         if webhook:
             try:
-                async with httpx.AsyncClient() as client:
+                async with outbound_client() as client:
                     await client.post(
                         webhook,
                         json=pc_result.model_dump(exclude_none=True),
@@ -632,7 +633,7 @@ async def task_scrape_item_single(item_dict: dict) -> dict:
         if webhook:
             try:
                 res = IndexingResult(id=item.id, status=400, error=repr(e))
-                async with httpx.AsyncClient() as client:
+                async with outbound_client() as client:
                     await client.post(
                         webhook,
                         json=res.model_dump(exclude_none=True),
@@ -702,7 +703,7 @@ async def process_pdf_document_task(
             if webhook_url:
                 import httpx
                 try:
-                    async with httpx.AsyncClient() as client:
+                    async with outbound_client() as client:
                         await client.post(webhook_url, json={
                             "status": "failed",
                             "doc_id": doc_id,
@@ -821,7 +822,7 @@ async def _process_pdf_document_task_inner(
         if webhook_url:
             import httpx
             try:
-                async with httpx.AsyncClient() as client:
+                async with outbound_client() as client:
                     response = await client.post(webhook_url, json={
                         "status": "completed",
                         "doc_id": doc_id,
@@ -865,7 +866,7 @@ async def _process_pdf_document_task_inner(
         if is_final_attempt and webhook_url:
             import httpx
             try:
-                async with httpx.AsyncClient() as client:
+                async with outbound_client() as client:
                     await client.post(webhook_url, json={
                         "status": "failed",
                         "doc_id": doc_id,

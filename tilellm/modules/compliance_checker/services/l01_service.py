@@ -28,6 +28,7 @@ from tilellm.modules.compliance_checker.models_v2 import (
     L01Product,
     L01ReconItem,
 )
+from tilellm.shared.outbound_url import outbound_client
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ def parse_l01(content: bytes) -> List[L01Product]:
 
 async def fetch_l01(url: str) -> bytes:
     """Download the L01 xlsx (size-guarded)."""
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with outbound_client(timeout=60.0) as client:
         response = await client.get(url)
         response.raise_for_status()
         content = response.content

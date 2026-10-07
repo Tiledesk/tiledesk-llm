@@ -1360,6 +1360,14 @@ Many endpoints require a JWT token containing engine configuration.
 - Index name
 - Vector dimensions
 
+**Caller authentication** is delegated to the Tiledesk platform: the service must be reachable only from its gateway, not from the internet.
+
+### Restrictions on request-supplied URLs and configs
+
+- **URLs fetched by the service** (`file_content`, `source`, `*_url`, `webhook`): only `http`/`https`. Loopback, link-local and cloud metadata addresses are rejected, also when reached through a redirect. Private networks are allowed unless `OUTBOUND_ALLOW_PRIVATE_NETWORKS=false`; `OUTBOUND_URL_ALLOWED_HOSTS` lists hosts that bypass the check. A local file path as `source` is rejected.
+- **MCP servers** (`servers` in `/api/ask`, `/api/thinking`): only `streamable_http` and `sse`; `stdio` is rejected (422).
+- **Graph labels / property keys** (Knowledge Graph FalkorDB APIs): must be identifiers (letters, digits, `_`); anything else is rejected.
+
 ---
 
 ## Data Models

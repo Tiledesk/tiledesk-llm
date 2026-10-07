@@ -3,15 +3,32 @@ import pytest
 import pandas as pd
 from tilellm.tools.document_tools import load_document, fetch_documents
 
+
+@pytest.fixture
+def served(tmp_path, monkeypatch):
+    """Sources must be http(s) URLs (local paths are rejected), so the files
+    are served over a real local HTTP server — loopback is blocked for
+    outbound URLs, hence the explicit allowlist."""
+    import functools
+    import threading
+    from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+
+    handler = functools.partial(SimpleHTTPRequestHandler, directory=str(tmp_path))
+    monkeypatch.setenv("OUTBOUND_URL_ALLOWED_HOSTS", "127.0.0.1")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    yield lambda path: f"http://127.0.0.1:{server.server_port}/{path.name}"
+    server.shutdown()
+
 @pytest.mark.asyncio
-async def test_fetch_documents_csv(tmp_path):
+async def test_fetch_documents_csv(tmp_path, served):
     csv_file = tmp_path / "test.csv"
     df = pd.DataFrame({"col1": ["val1"], "col2": ["val2"]})
     df.to_csv(csv_file, index=False)
     
     docs = await fetch_documents(
         type_source="csv",
-        source=str(csv_file),
+        source=served(csv_file),
         scrape_type=0,
         parameters_scrape_type_4=None,
         browser_headers={}
@@ -23,14 +40,14 @@ async def test_fetch_documents_csv(tmp_path):
     assert docs[0].metadata["file_name"] == "test.csv"
 
 @pytest.mark.asyncio
-async def test_fetch_documents_xlsx(tmp_path):
+async def test_fetch_documents_xlsx(tmp_path, served):
     excel_file = tmp_path / "test.xlsx"
     df = pd.DataFrame({"col1": ["val1"]})
     df.to_excel(excel_file, index=False)
     
     docs = await fetch_documents(
         type_source="xlsx",
-        source=str(excel_file),
+        source=served(excel_file),
         scrape_type=0,
         parameters_scrape_type_4=None,
         browser_headers={}
@@ -41,7 +58,7 @@ async def test_fetch_documents_xlsx(tmp_path):
     assert docs[0].metadata["type"] == "xlsx"
 
 @pytest.mark.asyncio
-async def test_fetch_documents_docx(tmp_path):
+async def test_fetch_documents_docx(tmp_path, served):
     import docx
     docx_file = tmp_path / "test.docx"
     doc = docx.Document()
@@ -50,7 +67,7 @@ async def test_fetch_documents_docx(tmp_path):
     
     docs = await fetch_documents(
         type_source="docx",
-        source=str(docx_file),
+        source=served(docx_file),
         scrape_type=0,
         parameters_scrape_type_4=None,
         browser_headers={}
