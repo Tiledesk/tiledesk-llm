@@ -6,12 +6,12 @@ import asyncio
 from typing import List, Optional
 
 import pandas as pd
-from tilellm.shared.outbound_url import outbound_aiohttp_session
+from tilellm.shared.outbound_url import outbound_client
 try:
     import fitz  # PyMuPDF
 except ImportError:
     fitz = None
-import aiohttp
+import httpx
 from fastapi import HTTPException
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 async def _download_file_from_url(url: str) -> bytes:
     """
-    Scarica un file da una URL HTTP/HTTPS usando aiohttp.
+    Scarica un file da una URL HTTP/HTTPS (URL verificata, dimensione limitata).
 
     Args:
         url: URL del file da scaricare (http:// o https://)
@@ -42,15 +42,15 @@ async def _download_file_from_url(url: str) -> bytes:
         HTTPException: Se il download fallisce
     """
     try:
-        async with outbound_aiohttp_session() as session:
-            async with session.get(url) as response:
-                if response.status != 200:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Failed to download file from URL. Status: {response.status}"
-                    )
-                return await response.read()
-    except aiohttp.ClientError as e:
+        async with outbound_client() as client:
+            response = await client.get(url)
+        if response.status_code != 200:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to download file from URL. Status: {response.status_code}"
+            )
+        return response.content
+    except httpx.HTTPError as e:
         raise HTTPException(status_code=400, detail=f"Error downloading file: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Unexpected error downloading file: {str(e)}")

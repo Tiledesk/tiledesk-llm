@@ -3,7 +3,7 @@ import base64
 from binascii import Error
 from typing import List
 
-import aiohttp
+import httpx
 from fastapi import APIRouter, HTTPException
 
 from tilellm.modules.conversion.models.convertion import ConvertedFile, ConversionRequest, ConversionType
@@ -12,7 +12,7 @@ from tilellm.modules.conversion.services.conversion_service import (
     process_pdf_to_text,
     process_pdf_to_images
 )
-from tilellm.shared.outbound_url import outbound_aiohttp_session
+from tilellm.shared.outbound_url import outbound_client
 
 # 1. Crea il router per questo modulo
 router = APIRouter(
@@ -34,15 +34,15 @@ async def convert_file(request: ConversionRequest):
     if request.is_url():
         try:
             # Scarica il file dalla URL
-            async with outbound_aiohttp_session() as session:
-                async with session.get(request.file_content) as response:
-                    if response.status != 200:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Impossibile scaricare il file dalla URL. Status: {response.status}"
-                        )
-                    file_bytes = await response.read()
-        except aiohttp.ClientError as e:
+            async with outbound_client() as client:
+                response = await client.get(request.file_content)
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Impossibile scaricare il file dalla URL. Status: {response.status_code}"
+                )
+            file_bytes = response.content
+        except (httpx.HTTPError, ValueError) as e:
             raise HTTPException(status_code=400, detail=f"Errore durante il download del file: {str(e)}")
     else:
         try:

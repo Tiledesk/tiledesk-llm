@@ -52,38 +52,30 @@ class TestConversionServiceCore:
         result = _decode_file_content(data_uri)
         assert result == test_data
     
+    @staticmethod
+    def _client_answering(status, body=b""):
+        import httpx
+
+        transport = httpx.MockTransport(lambda request: httpx.Response(status, content=body))
+        return lambda **kw: httpx.AsyncClient(transport=transport)
+
     @pytest.mark.asyncio
     async def test_download_file_from_url_success(self):
-        """Test downloading file from URL with mocked aiohttp."""
-        mock_response = AsyncMock()
-        mock_response.status = 200
-        mock_response.read = AsyncMock(return_value=b"file content")
-        
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock()
-        mock_session.get = AsyncMock(return_value=mock_response)
-        
-        with patch('aiohttp.ClientSession', return_value=mock_session):
+        """Test downloading file from URL (outbound client mocked)."""
+        with patch('tilellm.modules.conversion.services.conversion_service.outbound_client',
+                   self._client_answering(200, b"file content")):
             result = await _download_file_from_url("http://example.com/file.pdf")
             assert result == b"file content"
-    
+
     @pytest.mark.asyncio
     async def test_download_file_from_url_failure(self):
         """Test URL download failure raises HTTPException."""
-        mock_response = AsyncMock()
-        mock_response.status = 404
-        
-        mock_session = AsyncMock()
-        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
-        mock_session.__aexit__ = AsyncMock()
-        mock_session.get = AsyncMock(return_value=mock_response)
-        
-        with patch('aiohttp.ClientSession', return_value=mock_session):
+        with patch('tilellm.modules.conversion.services.conversion_service.outbound_client',
+                   self._client_answering(404)):
             with pytest.raises(HTTPException) as exc:
                 await _download_file_from_url("http://example.com/notfound.pdf")
             assert exc.value.status_code == 400
-    
+
     @pytest.mark.asyncio
     async def test_get_file_bytes_url(self):
         """Test getting file bytes from URL."""

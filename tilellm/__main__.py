@@ -33,10 +33,9 @@ from fastapi.responses import JSONResponse
 import asyncio
 import time
 from redis.asyncio import Redis, from_url
-import aiohttp
 
 
-from tilellm.shared.outbound_url import outbound_aiohttp_session
+from tilellm.shared.outbound_url import outbound_client
 from tilellm.shared.timed_cache import TimedCache
 from tilellm.shared.utility import decode_jwt
 from tilellm.models import ItemSingle, Engine, QuestionToLLM, QuestionAnswer
@@ -234,7 +233,7 @@ async def reader(channel: Redis):
                         if webhook:
                             res = IndexingResult(id=item.get("id"), status=200)
                             try:
-                                async with outbound_aiohttp_session() as session:
+                                async with outbound_client() as session:
                                     res = await session.post(
                                         webhook,
                                         json=res.model_dump(exclude_none=True),
@@ -243,7 +242,7 @@ async def reader(channel: Redis):
                                             "X-Auth-Token": token,
                                         },
                                     )
-                                    logger.info(f"200 {await res.json()}")
+                                    logger.info(f"200 {res.json()}")
                             except Exception as ewh:
                                 logger.error(ewh)
                                 pass
@@ -301,7 +300,7 @@ async def reader(channel: Redis):
                         logger.debug(f"End {add_to_queue}")
                         if webhook:
                             try:
-                                async with outbound_aiohttp_session() as session:
+                                async with outbound_client() as session:
                                     res = await session.post(
                                         webhook,
                                         json=pc_result.model_dump(exclude_none=True),
@@ -310,7 +309,7 @@ async def reader(channel: Redis):
                                             "X-Auth-Token": token,
                                         },
                                     )
-                                    logger.info(f"300 {await res.json()}")
+                                    logger.info(f"300 {res.json()}")
                             except Exception as ewh:
                                 logger.error(ewh)
                                 pass
@@ -335,7 +334,7 @@ async def reader(channel: Redis):
 
                 if webhook:
                     res = IndexingResult(id=item.get("id"), status=400, error=repr(e))
-                    async with outbound_aiohttp_session() as session:
+                    async with outbound_client() as session:
                         response = await session.post(
                             webhook,
                             json=res.model_dump(exclude_none=True),
@@ -345,7 +344,7 @@ async def reader(channel: Redis):
                             },
                         )
                         logger.error(response)
-                        logger.error(f"{await response.json()}")
+                        logger.error(f"{response.json()}")
                     logger.error(f"Error {e}, webhook: {webhook}")
                 traceback.print_exc()
                 logger.error(e)
@@ -684,12 +683,12 @@ async def create_scrape_item_single(
         # logger.debug(f"End {add_to_queue}")
         # if webhook:
         #    try:
-        #        async with outbound_aiohttp_session() as session:
+        #        async with outbound_client() as session:
         #            res = await session.post(webhook,
         #                                     json=pc_result.model_dump(exclude_none=True),
         #                                     headers={"Content-Type": "application/json",
         #                                              "X-Auth-Token": token})
-        #            logger.info(f"300 {await res.json()}")
+        #            logger.info(f"300 {res.json()}")
         #    except Exception as ewh:
         #        logger.error(ewh)
         #        pass
@@ -711,11 +710,11 @@ async def create_scrape_item_single(
 
         # if webhook:
         #    res = PineconeIndexingResult(id=item.id, status=400, error=repr(e))
-        #    async with outbound_aiohttp_session() as session:
+        #    async with outbound_client() as session:
         #        response = await session.post(webhook, json=res.model_dump(exclude_none=True),
         #                                      headers={"Content-Type": "application/json", "X-Auth-Token": token})
         #        logger.error(response)
-        #        logger.error(f"{await response.json()}")
+        #        logger.error(f"{response.json()}")
         #    logger.error(f"Error {e}, webhook: {webhook}")
         traceback.print_exc()
         logger.error(e)
