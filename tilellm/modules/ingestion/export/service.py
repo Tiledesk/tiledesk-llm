@@ -25,6 +25,7 @@ from tilellm.modules.ingestion.export.converters import (
 )
 from tilellm.modules.ingestion.export.models import ExportMdRequest, ExtractedDocument
 from tilellm.modules.ingestion.type_detector import resolve_item_type
+from tilellm.shared.outbound_url import outbound_client
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +113,7 @@ async def _resolve_bytes(request: ExportMdRequest) -> bytes:
         return base64.b64decode(request.file_content)
     source = request.file_content if _is_http_url(request.file_content) else request.source
     if _is_http_url(source):
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with outbound_client(timeout=30.0) as client:
             response = await client.get(source)
             response.raise_for_status()
             return response.content
@@ -128,7 +129,7 @@ async def _download_to_temp_file(request: ExportMdRequest, suffix: str) -> str:
             f"Export {suffix} richiede un 'source' URL http/https "
             "(base64 diretto non ancora supportato per questo tipo)."
         )
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with outbound_client(timeout=60.0) as client:
         response = await client.get(url, follow_redirects=True)
         response.raise_for_status()
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:

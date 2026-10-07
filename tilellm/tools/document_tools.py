@@ -22,6 +22,7 @@ from langchain_community.document_transformers import BeautifulSoupTransformer, 
 from langchain_community.document_transformers.beautiful_soup_transformer import get_navigable_strings
 from langchain_core.documents import Document
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+from tilellm.shared.outbound_url import outbound_requests_get, validate_outbound_url
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,13 @@ def _apply_additional_metadata(base: dict, additional) -> dict:
             v = _normalize_date_str(v)
         base[k] = v
     return base
+
+
+def require_remote_url(source: str) -> str:
+    """`source`/`file_content` arrive in the request: anything that is not an
+    http(s) URL would be opened from the container filesystem by the loaders
+    (or by the browser, for `file://`) and its content indexed."""
+    return validate_outbound_url(source)
 
 
 def _extract_file_name(source: str) -> str:
@@ -191,7 +199,7 @@ async def _handle_trafilatura_scrape(url: str, headers: Optional[dict] = None) -
         try:
             resp = await loop.run_in_executor(
                 None,
-                lambda: requests.get(url, headers=headers, timeout=30, allow_redirects=True)
+                lambda: outbound_requests_get(url, headers=headers, timeout=30, allow_redirects=True)
             )
             resp.raise_for_status()
             downloaded = resp.text
@@ -243,6 +251,7 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
     :param scrape_type: 0|1|2!3!4
     :return: list[Document]
     """
+    require_remote_url(url)
     urls = [url]
     params_type_4 = kwargs.get("parameters_scrape_type_4")
     browser_headers: Optional[dict] = kwargs.get("browser_headers")
@@ -959,8 +968,7 @@ def custom_html_transform(html_content, selectors_to_extract=None, unwanted_tags
 from tilellm.tools.structured_loaders import StructuredDocxLoader, ExcelLoader, CSVLoader
 
 def load_document(url: str, type_source: str):
-    # import os
-    # name, extension = os.path.splitext(file)
+    require_remote_url(url)
 
     if type_source == 'pdf':
         logger.info(f'Loading {url}')
@@ -1110,7 +1118,7 @@ async def handle_regex_custom_chunk(url: str, chunk_regex: str, browser_headers:
     logger.info(f"Fetching regex_custom content from: {url}")
     
     try:
-        response = requests.get(url, headers=browser_headers, timeout=60)
+        response = outbound_requests_get(url, headers=browser_headers, timeout=60)
         response.raise_for_status()
         content = response.text
         

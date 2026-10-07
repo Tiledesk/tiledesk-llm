@@ -6,6 +6,7 @@ import asyncio
 from typing import List, Optional
 
 import pandas as pd
+from tilellm.shared.outbound_url import outbound_aiohttp_session
 try:
     import pymupdf  # PyMuPDF — `fitz` is the deprecated alias, avoid it
 except ImportError:
@@ -41,7 +42,7 @@ async def _download_file_from_url(url: str) -> bytes:
         HTTPException: Se il download fallisce
     """
     try:
-        async with aiohttp.ClientSession() as session:
+        async with outbound_aiohttp_session() as session:
             async with session.get(url) as response:
                 if response.status != 200:
                     raise HTTPException(

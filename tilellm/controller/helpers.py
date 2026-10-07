@@ -4,6 +4,7 @@ import logging
 import base64
 import httpx
 from typing import Union, List, Any, Dict, Tuple
+from tilellm.shared.outbound_url import outbound_client
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ async def _preprocess_documents_for_mcp(
                 # Se è un URL, scaricalo prima
                 if url:
                     logger.info(f"Downloading document from URL: {url}")
-                    async with httpx.AsyncClient() as client:
+                    async with outbound_client() as client:
                         response = await client.get(url, timeout=30.0)
                         response.raise_for_status()
                         file_bytes = response.content

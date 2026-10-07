@@ -21,6 +21,7 @@ from tilellm.modules.compliance_checker.services.requirements_xlsx_service impor
     RequirementsXlsxService,
     select_lot,
 )
+from tilellm.shared.outbound_url import outbound_client
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +60,7 @@ class YamlRequirementsLoader:
         )
 
     async def _load_from_url(self, url: str) -> TenderLotRequirements:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with outbound_client(timeout=30.0) as client:
             response = await client.get(url)
             response.raise_for_status()
             content = response.content
@@ -75,7 +76,7 @@ class YamlRequirementsLoader:
     async def _load_from_xlsx_url(
         self, url: str, lot_id: Optional[str]
     ) -> TenderLotRequirements:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with outbound_client(timeout=60.0) as client:
             response = await client.get(url)
             response.raise_for_status()
             content = response.content
@@ -108,7 +109,7 @@ async def export_requirements_xlsx(
     return RequirementsXlsxService().build_workbook([lot])
 
     async def _load_from_url(self, url: str) -> TenderLotRequirements:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with outbound_client(timeout=30.0) as client:
             response = await client.get(url)
             response.raise_for_status()
             content = response.content

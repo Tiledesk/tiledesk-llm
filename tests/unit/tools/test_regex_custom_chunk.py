@@ -32,7 +32,7 @@ Ultima pagina del documento.
 
     chunk_regex = r"={10,}\s*INIZIO: pagina_(\d+)\.md\s*={10,}(.*?)\s*={10,}\s*FINE: pagina_\1\.md\s*={10,}"
     
-    with patch('tilellm.tools.document_tools.requests.get') as mock_get:
+    with patch('tilellm.tools.document_tools.outbound_requests_get') as mock_get:
         mock_response = mock_get.return_value
         mock_response.text = test_content
         mock_response.raise_for_status = lambda: None
@@ -65,7 +65,7 @@ def test_regex_custom_chunk_no_matches():
     
     chunk_regex = r"={10,}\s*INIZIO: pagina_(\d+)\.md\s*={10,}(.*?)\s*={10,}\s*FINE: pagina_\1\.md\s*={10,}"
     
-    with patch('tilellm.tools.document_tools.requests.get') as mock_get:
+    with patch('tilellm.tools.document_tools.outbound_requests_get') as mock_get:
         mock_response = mock_get.return_value
         mock_response.text = test_content
         mock_response.raise_for_status = lambda: None
@@ -103,7 +103,7 @@ Contenuto della pagina 3.
 
     chunk_regex = r"={10,}\s*INIZIO: pagina_(\d+)\.md\s*={10,}(.*?)\s*={10,}\s*FINE: pagina_\1\.md\s*={10,}"
     
-    with patch('tilellm.tools.document_tools.requests.get') as mock_get:
+    with patch('tilellm.tools.document_tools.outbound_requests_get') as mock_get:
         mock_response = mock_get.return_value
         mock_response.text = test_content
         mock_response.raise_for_status = lambda: None
@@ -148,7 +148,7 @@ Contenuto pagina 1
 
     chunk_regex = r"={10,}\s*INIZIO: pagina_(\d+)\.md\s*={10,}(.*?)\s*={10,}\s*FINE: pagina_\1\.md\s*={10,}"
     
-    with patch('tilellm.tools.document_tools.requests.get') as mock_get:
+    with patch('tilellm.tools.document_tools.outbound_requests_get') as mock_get:
         mock_response = mock_get.return_value
         mock_response.text = test_content
         mock_response.raise_for_status = lambda: None
@@ -181,7 +181,7 @@ Contenuto pagina 1
 
     chunk_regex = r"={10,}\s*INIZIO: pagina_(\d+)\.md\s*={10,}(.*?)\s*={10,}\s*FINE: pagina_\1\.md\s*={10,}"
 
-    with patch('tilellm.tools.document_tools.requests.get') as mock_get:
+    with patch('tilellm.tools.document_tools.outbound_requests_get') as mock_get:
         mock_response = mock_get.return_value
         mock_response.text = test_content
         mock_response.raise_for_status = lambda: None
@@ -200,7 +200,7 @@ def test_regex_custom_chunk_file_name_on_no_match_fallback():
     carry file_name, not just the paginated path."""
     chunk_regex = r"={10,}\s*INIZIO: pagina_(\d+)\.md\s*={10,}(.*?)\s*={10,}\s*FINE: pagina_\1\.md\s*={10,}"
 
-    with patch('tilellm.tools.document_tools.requests.get') as mock_get:
+    with patch('tilellm.tools.document_tools.outbound_requests_get') as mock_get:
         mock_response = mock_get.return_value
         mock_response.text = "plain text, no markers"
         mock_response.raise_for_status = lambda: None

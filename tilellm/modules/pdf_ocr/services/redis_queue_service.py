@@ -10,6 +10,7 @@ import logging
 import redis.asyncio as redis
 import requests
 import io
+from tilellm.shared.outbound_url import outbound_requests_get
 try:
     from minio import Minio
 except ImportError:
@@ -109,7 +110,7 @@ class RedisQueueService:
         try:
             # 1. Get PDF content as bytes
             if request.is_url():
-                response = requests.get(request.file_content, timeout=30)
+                response = outbound_requests_get(request.file_content, timeout=30)
                 response.raise_for_status()
                 pdf_content = response.content
             else:

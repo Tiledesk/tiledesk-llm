@@ -12,6 +12,7 @@ from tilellm.shared.utility import inject_llm_chat_async, inject_repo_async, inj
 from tilellm.shared.llm_utils import extract_llm_text
 from tilellm.shared import token_tracking
 import tilellm.analytics as analytics
+from tilellm.shared.outbound_url import outbound_client
 
 
 def _emit_pdf_sc_tokens(question, sc_tokens) -> Optional[dict]:
@@ -364,7 +365,7 @@ async def process_pdf_document_with_embeddings(
                 import httpx
                 logger.info(f"Downloading PDF from URL: {question.file_content}")
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                    async with httpx.AsyncClient() as client:
+                    async with outbound_client() as client:
                         response = await client.get(question.file_content, follow_redirects=True, timeout=60)
                         response.raise_for_status()
                         tmp_file.write(response.content)
@@ -1216,7 +1217,7 @@ async def process_pdf_markdown_extraction(
             import httpx
             logger.info(f"Downloading PDF from URL for Markdown extraction: {question.file_content}")
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                async with httpx.AsyncClient() as client:
+                async with outbound_client() as client:
                     response = await client.get(question.file_content, follow_redirects=True, timeout=60)
                     response.raise_for_status()
                     tmp_file.write(response.content)

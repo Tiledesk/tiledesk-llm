@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from langchain_core.documents import Document
+from tilellm.shared.outbound_url import outbound_requests_get
 
 try:
     import docx as python_docx
@@ -82,7 +83,7 @@ class StructuredDocxLoader:
         if self.file_path.startswith(("http://", "https://")):
             import tempfile
             import requests
-            response = requests.get(self.file_path, timeout=60)
+            response = outbound_requests_get(self.file_path, timeout=60)
             response.raise_for_status()
             with tempfile.NamedTemporaryFile(delete=False, suffix=".docx") as tmp:
                 tmp.write(response.content)
@@ -284,7 +285,7 @@ class ExcelLoader:
         if self.file_path.startswith(("http://", "https://")):
             import requests
             import tempfile
-            response = requests.get(self.file_path, timeout=60)
+            response = outbound_requests_get(self.file_path, timeout=60)
             response.raise_for_status()
             suffix = ".xlsx" if ".xlsx" in self.file_path.lower() else ".xls"
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
@@ -368,7 +369,7 @@ class CSVLoader:
         if self.file_path.startswith(("http://", "https://")):
             import requests
             import tempfile
-            response = requests.get(self.file_path, timeout=60)
+            response = outbound_requests_get(self.file_path, timeout=60)
             response.raise_for_status()
             with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
                 tmp.write(response.content)

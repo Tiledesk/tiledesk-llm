@@ -399,9 +399,8 @@ Direct LLM query with optional MCP servers and tools support.
 ```
 
 **MCP Server Configuration**:
-- `transport`: `"sse"` | `"stdio"` | `"streamable_http"`
-- For SSE & Streamable Http: provide `url` and optional `headers`
-- For stdio: provide `command` and `args`
+- `transport`: `"sse"` | `"streamable_http"` (required `url`, optional `headers`)
+- `"stdio"` is rejected with 422: the config comes from the request, and stdio would spawn `command args` as a process inside the service container
 - `headers`: optional HTTP headers sent on every request (e.g. API keys, user identity)
 - `enabled_tools`: list of tool names to expose, or `["all"]` (default)
 
@@ -1511,6 +1510,14 @@ Many endpoints require a JWT token containing engine configuration.
 - Index name
 - Vector dimensions
 
+**Caller authentication** is delegated to the Tiledesk platform: the service must be reachable only from its gateway, not from the internet.
+
+### Restrictions on request-supplied URLs and configs
+
+- **URLs fetched by the service** (`file_content`, `source`, `*_url`, `webhook`): only `http`/`https`. Loopback, link-local and cloud metadata addresses are rejected, also when reached through a redirect. Private networks are allowed unless `OUTBOUND_ALLOW_PRIVATE_NETWORKS=false`; `OUTBOUND_URL_ALLOWED_HOSTS` lists hosts that bypass the check. A local file path as `source` is rejected.
+- **MCP servers** (`servers` in `/api/ask`, `/api/thinking`): only `streamable_http` and `sse`; `stdio` is rejected (422).
+- **Graph labels / property keys** (Knowledge Graph FalkorDB APIs): must be identifiers (letters, digits, `_`); anything else is rejected.
+
 ---
 
 ## Data Models
@@ -1573,10 +1580,8 @@ MCP server configuration.
 
 ```json
 {
-  "transport": "sse | stdio | streamable_http",
-  "url": "string (required for SSE and streamable_http)",
-  "command": "string (required for stdio)",
-  "args": ["string"],
+  "transport": "sse | streamable_http",
+  "url": "string (required)",
   "headers": {"header-name": "value"},
   "enabled_tools": ["all"],
   "parameters": {}
