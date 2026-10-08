@@ -35,7 +35,8 @@ from tilellm.modules.agentic_compliance_checker.models import (
 )
 from tilellm.modules.agentic_compliance_checker.services.audit_archive import archive_report
 from tilellm.modules.agentic_compliance_checker.services.langchain_tools import (
-    AGENTIC_COMPLIANCE_TOOLS,
+    registry_factories,
+    tool_description,
 )
 from tilellm.modules.agentic_compliance_checker.services.mcp_server import transport
 from tilellm.modules.agentic_compliance_checker.services.session_store import SessionStore
@@ -72,9 +73,11 @@ router = APIRouter(
 # resolve_tools() and get_available_tools_list(), so this needs no edit to
 # tools_registry itself — the tools just appear on GET /api/tools and become
 # selectable via QuestionToLLM.tools on /api/ask and /api/thinking.
+# Factories: resolve_tools() builds them per request, bound to that request's
+# QuestionToLLM.compliance_session_id — the session never goes through the LLM.
 TOOL_REGISTRY.update({
-    name: {"description": tool_obj.description, "implementation": tool_obj, "is_factory": False}
-    for name, tool_obj in AGENTIC_COMPLIANCE_TOOLS.items()
+    name: {"description": tool_description(name), "implementation": factory, "is_factory": True}
+    for name, factory in registry_factories().items()
 })
 
 # MCP server (P6): a plain Starlette Route wrapping `transport` (a stable

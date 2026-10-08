@@ -273,12 +273,8 @@ def test_get_pdf_status_found_completed(client: TestClient, setup_pdf_ocr_mocks)
             status="completed",
             progress=100,
             message="Processing completed successfully.",
-            result=PDFScrapingResponse(
-                file_name="test.pdf",
-                total_pages=1,
-                pages=[],
-                markdown_content="# Test"
-            ),
+            # a lightweight summary: the full document is delivered via webhook
+            result={"num_chunks": 3, "num_images": 0},
             error_message=None
         )
     
@@ -293,4 +289,4 @@ def test_get_pdf_status_found_completed(client: TestClient, setup_pdf_ocr_mocks)
     data = response.json()
     assert data["job_id"] == job_id
     assert data["status"] == "completed"
-    assert data["result"] is not None
+    assert data["result"] == {"num_chunks": 3, "num_images": 0}

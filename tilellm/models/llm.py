@@ -556,6 +556,12 @@ class QuestionToLLM(BaseModel):
     tools: Optional[List[str]] = Field(
         default=None, description="List of internal tool names from tool_registry"
     )
+    compliance_session_id: Optional[SecretStr] = Field(
+        default=None,
+        description="Agentic compliance session (POST /api/agentic-compliance/sessions) the "
+        "compliance_* tools operate on. Required when `tools` selects any of them. Sent here, "
+        "never in the prompt: the tools are bound to it server side.",
+    )
 
     # Modalità di gestione history
     contextualize_prompt: Optional[bool] = Field(
@@ -589,6 +595,12 @@ class QuestionToLLM(BaseModel):
         default=None,
         description="Tiledesk agent/bot ID for analytics.",
     )
+
+    @model_validator(mode="after")
+    def check_compliance_session(self):
+        if not self.compliance_session_id and any(t.startswith("compliance_") for t in self.tools or []):
+            raise ValueError("compliance_session_id is required when `tools` selects compliance_* tools")
+        return self
 
     @model_validator(mode="after")
     def adjust_temperature_and_validate(self):

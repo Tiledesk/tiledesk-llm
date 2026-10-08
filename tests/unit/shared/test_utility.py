@@ -51,12 +51,12 @@ class TestUtilityFunctions:
     
     @patch.dict(os.environ, {"TILELLM_PROFILE": "app-graph"})
     def test_get_service_config_profile_graph(self):
-        """Test loading service config with graphrag enabled."""
+        """app-graph enables the FalkorDB graph; the Neo4j one (graphrag) is deprecated."""
         result = get_service_config()
         
         assert "services" in result
-        assert result["services"]["graphrag"] is True
-        assert result["services"]["graphrag_falkor"] is False
+        assert result["services"]["graphrag"] is False
+        assert result["services"]["graphrag_falkor"] is True
         assert result["services"]["pdf_ocr"] is False
     
     @patch.dict(os.environ, {"TILELLM_PROFILE": "app-ocr"})
@@ -66,8 +66,8 @@ class TestUtilityFunctions:
         
         assert "services" in result
         assert result["services"]["pdf_ocr"] is True
-        assert result["services"]["graphrag"] is True
-        assert result["services"]["graphrag_falkor"] is False
+        assert result["services"]["graphrag"] is False
+        assert result["services"]["graphrag_falkor"] is True
     
     @patch.dict(os.environ, {"TILELLM_PROFILE": "app-all"})
     def test_get_service_config_profile_all(self):
@@ -76,8 +76,9 @@ class TestUtilityFunctions:
         
         assert "services" in result
         assert result["services"]["task_executor"] is True
-        assert result["services"]["graphrag"] is True
-        assert result["services"]["graphrag_falkor"] is False
+        assert result["services"]["graphrag"] is False
+        assert result["services"]["graphrag_falkor"] is True
+        assert result["services"]["raptor"] is True
         assert result["services"]["pdf_ocr"] is True
         assert result["services"]["conversion"] is True
         assert result["services"]["tools_registry"] is True
@@ -94,7 +95,8 @@ class TestUtilityFunctions:
         assert result["services"]["graphrag_falkor"] is False
         assert result["services"]["pdf_ocr"] is False
     
-    @patch.dict(os.environ, {"ENABLE_GRAPHRAG": "true", "ENABLE_PDF_OCR": "yes"})
+    # clear=True: a TILELLM_PROFILE from the developer's .env would win over the flags
+    @patch.dict(os.environ, {"ENABLE_GRAPHRAG": "true", "ENABLE_PDF_OCR": "yes"}, clear=True)
     def test_get_service_config_individual_flags(self):
         """Test loading service config with individual enable flags."""
         result = get_service_config()
@@ -260,145 +262,99 @@ class TestGoogleVertexAiRouting:
 
 
 class TestInjectDecorators:
-    """Test dependency injection decorators."""
-    
-    @pytest.mark.asyncio
-    async def test_inject_llm_async(self):
-        """Test LLM injection decorator."""
-        mock_func = AsyncMock(return_value="result")
-        
-        # Apply decorator
-        decorated = inject_llm_async(mock_func)
-        
-        # Call with question that has llm_key
-        mock_question = Mock()
-        mock_question.llm_key = "test-key"
-        mock_question.llm = "gpt-4"
-        
-        # Mock the internal _get_llm function
-        with patch('tilellm.shared.utility._get_llm', return_value="mocked-llm"):
-            result = await decorated(mock_question)
-            
-            # Function should be called with injected llm
-            mock_func.assert_called_once_with(mock_question, "mocked-llm")
-            assert result == "result"
-    
-    @pytest.mark.asyncio
-    async def test_inject_llm_async_no_key(self):
-        """Test LLM injection with missing API key."""
-        mock_func = AsyncMock()
-        
-        decorated = inject_llm_async(mock_func)
-        
-        mock_question = Mock()
-        mock_question.llm_key = None
-        mock_question.llm = "gpt-4"
-        
-        with patch('tilellm.shared.utility._get_llm', return_value=None):
-            result = await decorated(mock_question)
-            
-            # Function should be called with None llm
-            mock_func.assert_called_once_with(mock_question, None)
-    
-    @pytest.mark.asyncio
-    async def test_inject_llm_chat_async(self):
-        """Test LLM chat injection decorator."""
-        mock_func = AsyncMock(return_value="result")
-        
-        decorated = inject_llm_chat_async(mock_func)
-        
-        mock_question = Mock()
-        mock_question.llm_key = "test-key"
-        mock_question.llm = "gpt-4"
-        
-        with patch('tilellm.shared.utility._get_llm_chat', return_value="mocked-chat-llm"):
-            result = await decorated(mock_question)
-            
-            mock_func.assert_called_once_with(mock_question, "mocked-chat-llm")
-            assert result == "result"
-    
-    @pytest.mark.asyncio
-    async def test_inject_repo_async(self):
-        """Test repository injection decorator."""
-        mock_func = AsyncMock(return_value="result")
-        
-        decorated = inject_repo_async(mock_func)
-        
-        mock_question = Mock()
-        mock_question.engine = Mock()
-        
-        with patch('tilellm.shared.utility._get_repo', AsyncMock(return_value="mocked-repo")):
-            result = await decorated(mock_question)
-            
-            mock_func.assert_called_once_with(mock_question, "mocked-repo")
-            assert result == "result"
-    
-    @pytest.mark.asyncio
-    async def test_inject_reason_llm_async(self):
-        """Test reasoning LLM injection decorator."""
-        mock_func = AsyncMock(return_value="result")
-        
-        decorated = inject_reason_llm_async(mock_func)
-        
-        mock_question = Mock()
-        mock_question.llm_key = "test-key"
-        mock_question.llm = "deepseek"
-        
-        with patch('tilellm.shared.utility._get_reason_llm', return_value="mocked-reason-llm"):
-            result = await decorated(mock_question)
-            
-            mock_func.assert_called_once_with(mock_question, "mocked-reason-llm")
-            assert result == "result"
+    """inject_repo_async against the real implementation (the previous tests
+    patched helpers — _get_llm, _get_repo... — that never existed). The LLM
+    decorators are covered with real flows in test_vllm_enable_thinking.py,
+    test_llm_cache_key_generation_params.py and test_inject_embeddings_async.py."""
 
+    @pytest.mark.asyncio
+    async def test_inject_repo_async_injects_and_reuses_the_repository(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock, MagicMock
 
-# Test other utility functions if needed
-class TestOtherUtilities:
-    """Test other utility functions."""
-    
-    def test_timed_cache(self):
-        """Test TimedCache functionality."""
+        from tilellm.models import Engine
         from tilellm.shared.timed_cache import TimedCache
-        
-        cache = TimedCache(default_ttl=1.0)  # 1 second TTL
-        
-        # Set value
-        cache.set("key1", "value1")
-        assert cache.get("key1") == "value1"
-        
-        # Set with custom TTL
-        cache.set("key2", "value2", ttl=0.1)  # 0.1 second TTL
-        
-        # Wait for expiration
-        import time
-        time.sleep(0.2)
-        
-        # key2 should be expired, key1 still valid
-        assert cache.get("key2") is None
-        assert cache.get("key1") == "value1"
-        
-        # Wait for key1 expiration
-        time.sleep(0.9)
-        assert cache.get("key1") is None
-    
-    def test_embedding_factory(self):
-        """Test embedding factory creation."""
+
+        TimedCache.clear_cache("repository")
+        func = AsyncMock(return_value="ok")
+        decorated = inject_repo_async(func)
+        question = SimpleNamespace(engine=Engine(name="qdrant", url="http://qdrant:6333"))
+
+        with patch("tilellm.store.qdrant.qdrant_repository_local.QdrantRepository",
+                   MagicMock(side_effect=lambda: object())) as repo_cls:
+            assert await decorated(question) == "ok"
+            await decorated(question)
+
+        first, second = (c.kwargs["repo"] for c in func.call_args_list)
+        assert first is second and repo_cls.call_count == 1
+        TimedCache.clear_cache("repository")
+
+    @pytest.mark.asyncio
+    async def test_inject_repo_async_unknown_engine_raises(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from tilellm.shared.timed_cache import TimedCache
+
+        TimedCache.clear_cache("repository")
+        decorated = inject_repo_async(AsyncMock())
+        with pytest.raises(ValueError, match="Unknown engine"):
+            await decorated(SimpleNamespace(engine=SimpleNamespace(name="nope", type=None)))
+
+
+class TestOtherUtilities:
+    """TimedCache and EmbeddingFactory against their real API (the previous
+    tests used a TimedCache(default_ttl=...) instance and an
+    EmbeddingFactory.create_embeddings() that don't exist)."""
+
+    @staticmethod
+    def _fresh(object_type, **policy):
+        from tilellm.shared.timed_cache import TimedCache
+
+        TimedCache.clear_cache(object_type)
+        TimedCache.set_policy(object_type, **policy)
+        return TimedCache
+
+    def test_timed_cache_reuses_until_expiry(self, monkeypatch):
+        cache = self._fresh("test_ttl", timeout_seconds=10, max_size=10, refresh_on_access=False)
+        now = [1000.0]
+        monkeypatch.setattr("tilellm.shared.timed_cache.time.time", lambda: now[0])
+        built = []
+
+        def make():
+            built.append(object())
+            return built[-1]
+
+        first = cache.get("test_ttl", ("k",), make)
+        assert cache.get("test_ttl", ("k",), make) is first
+        now[0] += 11
+        assert cache.get("test_ttl", ("k",), make) is not first
+        assert len(built) == 2
+
+    def test_timed_cache_evicts_least_recently_used(self):
+        cache = self._fresh("test_lru", timeout_seconds=None, max_size=2)
+        a = cache.get("test_lru", ("a",), object)
+        cache.get("test_lru", ("b",), object)
+        cache.get("test_lru", ("a",), object)      # a becomes the most recent
+        cache.get("test_lru", ("c",), object)      # evicts b
+        assert cache.get("test_lru", ("a",), object) is a
+        assert list(cache._caches["test_lru"]) == [("c",), ("a",)]
+
+    def test_embedding_factory_caches_per_config_without_the_plain_key(self):
+        from unittest.mock import MagicMock
+
         from tilellm.shared.embedding_factory import EmbeddingFactory
-        
+        from tilellm.shared.timed_cache import TimedCache
+
+        TimedCache.clear_cache("embedding")
         factory = EmbeddingFactory()
-        
-        # Test getting OpenAI embeddings
-        with patch('langchain_openai.embeddings.OpenAIEmbeddings') as MockEmbeddings:
-            mock_embeddings = Mock()
-            MockEmbeddings.return_value = mock_embeddings
-            
-            result = factory.create_embeddings(
-                provider="openai",
-                api_key="test-key",
-                model="text-embedding-ada-002"
-            )
-            
-            assert result == mock_embeddings
-            MockEmbeddings.assert_called_once_with(
-                api_key="test-key",
-                model="text-embedding-ada-002"
-            )
+        factory.provider_map["tei"] = MagicMock(side_effect=lambda cfg: (object(), 1024))
+        cfg = {"provider": "tei", "model_name": "e5", "api_key": "secret-key-1", "base_url": "http://tei"}
+
+        emb1, dim = factory.create(cfg)
+        emb2, _ = factory.create(dict(cfg))
+        emb3, _ = factory.create(dict(cfg, api_key="secret-key-2"))
+
+        assert dim == 1024 and emb1 is emb2 and emb3 is not emb1
+        assert all("secret-key" not in str(k) for k in TimedCache._caches["embedding"])
+        TimedCache.clear_cache("embedding")

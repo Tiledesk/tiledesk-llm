@@ -9,6 +9,15 @@ from fastapi.testclient import TestClient
 from tilellm.modules.knowledge_graph_falkor.models import Node, Relationship
 
 
+
+
+@pytest.fixture(autouse=True)
+def _synchronous_path():
+    """These tests assert on kg_logic results (synchronous path): a developer's
+    .env with ENABLE_TASKIQ=true would route them to a real queue."""
+    with patch('tilellm.modules.knowledge_graph_falkor.controllers.ENABLE_TASKIQ', False):
+        yield
+
 class TestCriticalNodeWorkflows:
     """
     Regression tests for node operations.

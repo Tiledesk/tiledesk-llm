@@ -1,15 +1,22 @@
 """
-LangChain @tool adapters over tools_core's _core coroutines.
+LangChain tool adapters over tools_core's _core coroutines.
 
 No business logic and no tracing here — both live in tools_core.py, shared
 with the MCP server adapter (services/mcp_server.py, P6). This file only
 translates argument/return shapes for langchain.agents.create_agent, the
 agent builder tilellm/controller/controller.py already uses for /api/ask.
+
+The session is bound server side, never passed by the model: the functions
+below take session_id, but the schemas the LLM sees don't have it. build_tool()
+closes over the session (from QuestionToLLM.compliance_session_id on /api/ask,
+from the X-Compliance-Session header on MCP), so a session_id can't leak from
+the prompt nor be swapped by the agent.
 """
 import json
-from typing import Awaitable, List, Literal, Optional
+from functools import partial
+from typing import Any, Awaitable, Callable, Dict, List, Literal, NamedTuple, Optional, Type
 
-from langchain_core.tools import tool
+from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from tilellm.modules.agentic_compliance_checker.models import (
@@ -40,9 +47,6 @@ async def _safe(coro: Awaitable[str]) -> str:
 
 
 class ListRequirementsArgs(BaseModel):
-    session_id: str = Field(
-        description="Identificativo della sessione di verifica, fornito dall'utente."
-    )
     kind: Literal["all", "tabular", "discretionary"] = "all"
     status: Literal["all", "pending", "done", "human_review"] = "all"
     operator: Optional[str] = Field(
@@ -51,7 +55,6 @@ class ListRequirementsArgs(BaseModel):
     )
 
 
-@tool(args_schema=ListRequirementsArgs)
 async def compliance_list_requirements(
     session_id: str, kind: str = "all", status: str = "all", operator: Optional[str] = None,
 ) -> str:
@@ -65,7 +68,6 @@ async def compliance_list_requirements(
 
 
 class RetrieveEvidenceArgs(BaseModel):
-    session_id: str = Field(description="Identificativo della sessione di verifica.")
     criterion_id: Optional[str] = Field(
         default=None, description="Id del criterio da cercare (usa il suo testo come query di ricerca)."
     )
@@ -81,7 +83,6 @@ class RetrieveEvidenceArgs(BaseModel):
     )
 
 
-@tool(args_schema=RetrieveEvidenceArgs)
 async def compliance_retrieve_evidence(
     session_id: str, criterion_id: Optional[str] = None, query: Optional[str] = None,
     operator: Optional[str] = None, top_k: Optional[int] = None, include_chiarimenti: bool = False,
@@ -98,7 +99,6 @@ async def compliance_retrieve_evidence(
 
 
 class EvaluateCriteriaArgs(BaseModel):
-    session_id: str = Field(description="Identificativo della sessione di verifica.")
     criterion_ids: List[str] = Field(description="Uno o più id di criteri discrezionali da valutare.")
     operators: Optional[List[str]] = Field(
         default=None, description="Operatori economici da valutare. Default: tutti quelli della sessione."
@@ -116,7 +116,6 @@ class EvaluateCriteriaArgs(BaseModel):
     )
 
 
-@tool(args_schema=EvaluateCriteriaArgs)
 async def compliance_evaluate_criteria(
     session_id: str, criterion_ids: List[str], operators: Optional[List[str]] = None,
     evidence_ref: Optional[str] = None, retrieval_query: Optional[str] = None,
@@ -134,7 +133,6 @@ async def compliance_evaluate_criteria(
 
 
 class CheckTabularArgs(BaseModel):
-    session_id: str = Field(description="Identificativo della sessione di verifica.")
     requirement_ids: Optional[List[str]] = Field(
         default=None,
         description="Id dei requisiti tabellari da verificare. Default: tutti quelli del lotto.",
@@ -144,7 +142,6 @@ class CheckTabularArgs(BaseModel):
     )
 
 
-@tool(args_schema=CheckTabularArgs)
 async def compliance_check_tabular(
     session_id: str, requirement_ids: Optional[List[str]] = None, operators: Optional[List[str]] = None,
 ) -> str:
@@ -158,13 +155,11 @@ async def compliance_check_tabular(
 
 
 class CheckL01Args(BaseModel):
-    session_id: str = Field(description="Identificativo della sessione di verifica.")
     operators: Optional[List[str]] = Field(
         default=None, description="Operatori economici da verificare. Default: tutti quelli della sessione."
     )
 
 
-@tool(args_schema=CheckL01Args)
 async def compliance_check_l01(session_id: str, operators: Optional[List[str]] = None) -> str:
     """Verifica la coerenza tra il listino L01 di uno o più operatori economici e le
     relative schede tecniche PDF già indicizzate: per ogni prodotto a listino controlla
@@ -175,7 +170,6 @@ async def compliance_check_l01(session_id: str, operators: Optional[List[str]] =
 
 
 class ResolveProportionalArgs(BaseModel):
-    session_id: str = Field(description="Identificativo della sessione di verifica.")
     criterion_ids: Optional[List[str]] = Field(
         default=None,
         description="Id dei criteri proporzionali da risolvere. Default: tutti quelli del lotto.",
@@ -187,7 +181,6 @@ class ResolveProportionalArgs(BaseModel):
     )
 
 
-@tool(args_schema=ResolveProportionalArgs)
 async def compliance_resolve_proportional(
     session_id: str, criterion_ids: Optional[List[str]] = None, allow_partial: bool = False,
 ) -> str:
@@ -207,13 +200,11 @@ async def compliance_resolve_proportional(
 
 
 class BuildReportArgs(BaseModel):
-    session_id: str = Field(description="Identificativo della sessione di verifica.")
     operator: Optional[str] = Field(
         default=None, description="Etichetta o namespace dell'operatore economico. Omettere se la gara ha un solo operatore."
     )
 
 
-@tool(args_schema=BuildReportArgs)
 async def compliance_build_report(session_id: str, operator: Optional[str] = None) -> str:
     """Produce il riepilogo di conformità per un operatore economico a partire
     ESCLUSIVAMENTE dalle valutazioni già registrate nella sessione. Non valuta nulla
@@ -221,14 +212,46 @@ async def compliance_build_report(session_id: str, operator: Optional[str] = Non
     return await _safe(build_report_core(session_id=session_id, operator=operator))
 
 
-# name -> LangChain tool object, mirrors tools_registry.TOOL_REGISTRY's shape
-# for the entries controllers.py registers there.
-AGENTIC_COMPLIANCE_TOOLS = {
-    "compliance_list_requirements": compliance_list_requirements,
-    "compliance_retrieve_evidence": compliance_retrieve_evidence,
-    "compliance_evaluate_criteria": compliance_evaluate_criteria,
-    "compliance_check_tabular": compliance_check_tabular,
-    "compliance_check_l01": compliance_check_l01,
-    "compliance_resolve_proportional": compliance_resolve_proportional,
-    "compliance_build_report": compliance_build_report,
+class ToolSpec(NamedTuple):
+    function: Callable[..., Awaitable[str]]  # takes session_id + the schema's arguments
+    args_schema: Type[BaseModel]              # what the model sees: never session_id
+
+
+AGENTIC_COMPLIANCE_TOOLS: Dict[str, ToolSpec] = {
+    "compliance_list_requirements": ToolSpec(compliance_list_requirements, ListRequirementsArgs),
+    "compliance_retrieve_evidence": ToolSpec(compliance_retrieve_evidence, RetrieveEvidenceArgs),
+    "compliance_evaluate_criteria": ToolSpec(compliance_evaluate_criteria, EvaluateCriteriaArgs),
+    "compliance_check_tabular": ToolSpec(compliance_check_tabular, CheckTabularArgs),
+    "compliance_check_l01": ToolSpec(compliance_check_l01, CheckL01Args),
+    "compliance_resolve_proportional": ToolSpec(compliance_resolve_proportional, ResolveProportionalArgs),
+    "compliance_build_report": ToolSpec(compliance_build_report, BuildReportArgs),
 }
+
+
+def tool_description(name: str) -> str:
+    return (AGENTIC_COMPLIANCE_TOOLS[name].function.__doc__ or "").strip()
+
+
+def build_tool(name: str, session_id: str) -> StructuredTool:
+    """A LangChain tool bound to one session. Arguments outside the schema —
+    a session_id the model invents included — are dropped by args_schema."""
+    spec = AGENTIC_COMPLIANCE_TOOLS[name]
+
+    async def run(**kwargs: Any) -> str:
+        return await spec.function(session_id=session_id, **kwargs)
+
+    return StructuredTool.from_function(
+        coroutine=run, name=name, description=tool_description(name), args_schema=spec.args_schema,
+    )
+
+
+def _registry_factory(name: str, compliance_session_id: Optional[str] = None, **_: Any) -> StructuredTool:
+    if not compliance_session_id:
+        raise ValueError(f"{name}: compliance_session_id is required to use the compliance tools")
+    return build_tool(name, compliance_session_id)
+
+
+def registry_factories() -> Dict[str, Callable[..., StructuredTool]]:
+    """name -> factory for tools_registry (is_factory=True): resolve_tools()
+    calls it per request with that request's compliance_session_id."""
+    return {name: partial(_registry_factory, name) for name in AGENTIC_COMPLIANCE_TOOLS}

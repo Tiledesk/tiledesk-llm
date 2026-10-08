@@ -23,6 +23,18 @@ from tilellm.models import Engine
 from tilellm.shared.utility import inject_embeddings_async
 
 
+@pytest.fixture(autouse=True)
+def _empty_embedding_cache():
+    """The decorator caches embeddings process-wide (TimedCache "embedding"):
+    an entry left by another test for the same model/key would be returned
+    instead of this test's fake."""
+    from tilellm.shared.timed_cache import TimedCache
+
+    TimedCache.clear_cache("embedding")
+    yield
+    TimedCache.clear_cache("embedding")
+
+
 class _EmbeddingOnlyQuestion:
     """Mirrors ItemSingle/IngestConfig's shape: has .embedding/.gptkey, no .llm."""
     def __init__(self):

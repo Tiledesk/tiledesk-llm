@@ -23,7 +23,7 @@ from tilellm.modules.agentic_compliance_checker.services.audit_archive import (
 )
 from tilellm.modules.agentic_compliance_checker.services.session_store import SessionStore
 from tilellm.modules.agentic_compliance_checker.services.langchain_tools import (
-    AGENTIC_COMPLIANCE_TOOLS,
+    build_tool,
 )
 from tilellm.modules.agentic_compliance_checker.services.tools_core import (
     build_report_core,
@@ -180,7 +180,7 @@ async def test_compliance_build_report_tool_turns_tampering_into_a_json_error(fa
     session_id = await SessionStore.create(_request(), _lot())
     await SessionStore.store_result(session_id, "ns-oe1", "P1", _make_result())
 
-    result = await AGENTIC_COMPLIANCE_TOOLS["compliance_build_report"].ainvoke({"session_id": session_id})
+    result = await build_tool("compliance_build_report", session_id).ainvoke({})
 
     assert "error" in json.loads(result)
 

@@ -1,6 +1,9 @@
 """
 Integration tests for Knowledge Graph Falkor module.
 Tests integration between repository, services, and controllers.
+
+Note: the Falkor API models (knowledge_graph_falkor.models) declare integer
+ids — the public response contract — so "123" is coerced to 123.
 """
 import pytest
 from unittest.mock import Mock, patch, AsyncMock
@@ -54,13 +57,13 @@ class TestNodeOperationsIntegration:
         node = Node(label="Person", properties={"name": "John"})
         result = await mock_graph_service.create_node(node, namespace="test")
         
-        assert result.id == "123"
+        assert result.id == 123
         
         # Retrieve node
         retrieved = await mock_graph_service.get_node("123")
         
         assert retrieved is not None
-        assert retrieved.id == "123"
+        assert retrieved.id == 123
         assert retrieved.properties["name"] == "John"
     
     @pytest.mark.asyncio
@@ -91,7 +94,7 @@ class TestNodeOperationsIntegration:
         result = await mock_graph_service.delete_node("1", detach=True)
         
         assert result is True
-        mock_falkor_repository.delete_node.assert_called_once_with("1", True)
+        mock_falkor_repository.delete_node.assert_called_once_with("1", True, namespace=None, graph_name=None)
 
 
 class TestRelationshipOperationsIntegration:
@@ -119,7 +122,7 @@ class TestRelationshipOperationsIntegration:
         result = await mock_graph_service.create_relationship(rel)
         
         assert result is not None
-        assert result.id == "100"
+        assert result.id == 100
         assert result.type == "KNOWS"
     
     @pytest.mark.asyncio
@@ -134,7 +137,7 @@ class TestRelationshipOperationsIntegration:
         results = await mock_graph_service.get_node_relationships("10", direction="both")
         
         assert len(results) == 2
-        mock_falkor_repository.find_relationships_by_node.assert_called_once_with("10", "both")
+        mock_falkor_repository.find_relationships_by_node.assert_called_once_with("10", "both", namespace=None, graph_name=None)
 
 
 class TestGraphServiceIntegration:
@@ -153,7 +156,7 @@ class TestGraphServiceIntegration:
         )
         
         assert result is not None
-        assert result.id == "5"
+        assert result.id == 5
     
     @pytest.mark.asyncio
     async def test_search_nodes_flow(self, mock_graph_service, mock_falkor_repository):
@@ -243,7 +246,7 @@ class TestComplexWorkflows:
         mock_falkor_repository.create_node.return_value = created
         
         result = await mock_graph_service.create_node(node, namespace="test")
-        assert result.id == "1"
+        assert result.id == 1
         
         # Read
         mock_falkor_repository.find_node_by_id.return_value = created
@@ -282,7 +285,7 @@ class TestComplexWorkflows:
         
         # Get relationships for each node
         rels = [
-            Relationship(id="r1", source_id="0", target_id="1", type="KNOWS", properties={})
+            Relationship(id=1, source_id="0", target_id="1", type="KNOWS", properties={})
         ]
         mock_falkor_repository.find_relationships_by_node.return_value = rels
         

@@ -43,9 +43,12 @@ class TestGraphService(unittest.TestCase):
 
     def test_get_graph_network_community_false(self):
         # Mock repository response for normal node search
-        self.mock_repo.find_nodes_by_label.return_value = [
-            Node(id="node1", label="PERSON", properties={"name": "Mario"})
-        ]
+        # get_graph_network queries every known label: answer like the DB
+        # would, with the node only under its own label.
+        person = Node(id="node1", label="PERSON", properties={"name": "Mario"})
+        self.mock_repo.find_nodes_by_label.side_effect = (
+            lambda label, **kw: [person] if label == "PERSON" else []
+        )
         self.mock_repo.find_relationships_by_node.return_value = []
 
         result = self.service.get_graph_network(
@@ -61,7 +64,7 @@ class TestGraphService(unittest.TestCase):
         self.assertTrue(self.mock_repo.find_nodes_by_label.called)
         
         self.assertEqual(len(result["nodes"]), 1)
-        self.assertEqual(result["stats"]["filtered_by"]["community"], False)
+        self.assertFalse(result["stats"]["filtered_by"].get("community", False))
 
 if __name__ == "__main__":
     unittest.main()

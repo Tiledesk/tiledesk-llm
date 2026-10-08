@@ -12,29 +12,14 @@ Perfect for applications with:
 
 import json
 import logging
-import re
 from typing import Optional, List, Dict, Any, Union, cast
 import os
 
 from tilellm.shared.utility import get_service_config
 from tilellm.store.graph import BaseGraphRepository
 from tilellm.modules.knowledge_graph.models import Node, Relationship
+from tilellm.modules.knowledge_graph_falkor.repository.cypher import _cypher_ident, _llm_type_to_ident
 
-
-def _cypher_ident(name: str) -> str:
-    """Labels, relationship types and property keys can't be query parameters,
-    so they end up in the query text: reject anything that isn't an identifier
-    (they come from the API and from LLM output over user documents)."""
-    if not isinstance(name, str) or not name.isidentifier():
-        raise ValueError(f"invalid Cypher identifier: {str(name)[:60]!r}")
-    return name
-
-
-def _llm_type_to_ident(value: Optional[str], default: str) -> str:
-    """entity_type / relationship_type produced by the LLM → valid identifier
-    ("medical device" → MEDICAL_DEVICE) instead of a broken or injected query."""
-    ident = re.sub(r"\W+", "_", (value or "").strip().upper()).strip("_")
-    return ident if ident.isidentifier() else default
 
 logger = logging.getLogger(__name__)
 

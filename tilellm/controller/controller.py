@@ -1603,7 +1603,11 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
                 f"Resolving {len(question.tools)} tools from registry: {question.tools}"
             )
             registry_tools = resolve_tools(
-                question.tools, chat_model=chat_model, base64_storage=base64_storage
+                question.tools, chat_model=chat_model, base64_storage=base64_storage,
+                compliance_session_id=(
+                    question.compliance_session_id.get_secret_value()
+                    if question.compliance_session_id else None
+                ),
             )
             logger.info(f"Resolved {len(registry_tools)} tools from registry")
 
@@ -1915,7 +1919,11 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
                 f"Resolving {len(question.tools)} tools from registry: {question.tools}"
             )
             registry_tools = resolve_tools(
-                question.tools, chat_model=chat_model, base64_storage=base64_storage
+                question.tools, chat_model=chat_model, base64_storage=base64_storage,
+                compliance_session_id=(
+                    question.compliance_session_id.get_secret_value()
+                    if question.compliance_session_id else None
+                ),
             )
             logger.info(f"Resolved {len(registry_tools)} tools from registry")
 

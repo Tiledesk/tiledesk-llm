@@ -141,7 +141,11 @@ class TestDocumentStructureExtractor:
     async def test_create_section_nodes_in_graph(self):
         """Test creating section nodes in Neo4j."""
         mock_graph_repo = Mock()
-        
+        # Answer like the repository does: a list of nodes, and created nodes
+        # carrying a string id (a bare Mock is neither indexable nor a str).
+        mock_graph_repo.find_nodes_by_property.return_value = [Mock(id="doc-node")]
+        mock_graph_repo.create_node.side_effect = lambda node: Mock(id=f"neo-{node.id}")
+
         extractor = DocumentStructureExtractor(graph_repository=mock_graph_repo)
         
         doc_id = "test_doc"
@@ -409,8 +413,7 @@ class TestContextAwareChunker:
         
         assert len(chunks) > 0
         # Check metadata
-        for chunk in chunks:
-            assert 'metadata' in chunk.metadata
+        for chunk in chunks:  # Document.metadata is flat: no nested "metadata" key
             assert 'section_path' in chunk.metadata
             assert 'doc_id' in chunk.metadata
     

@@ -217,8 +217,12 @@ class TestCacheDisabled:
         from tilellm.agents.nodes import cache_lookup_node
         from tilellm.models.graph_state import GraphState
 
+        from tilellm.models.llm import QuestionAnswer
+
         qa = MagicMock()
-        qa.use_cache = False
+        # what QuestionAnswer really holds for use_cache=False (its validator
+        # turns the bool into a CacheConfig with every layer off)
+        qa.use_cache = QuestionAnswer._normalize_use_cache(False)
         state = {"question_answer": qa}
 
         result = await cache_lookup_node(state)

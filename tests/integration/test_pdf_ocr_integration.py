@@ -4,6 +4,8 @@ Integration tests for PDF OCR module.
 Test complete PDF processing workflow with GraphRAG integration.
 """
 
+import inspect
+
 import pytest
 from unittest.mock import Mock, AsyncMock, patch
 import os
@@ -47,8 +49,8 @@ class TestPDFOCRIntegration:
         mock_processor.close = AsyncMock()
         
         mocker.patch(
-            'tilellm.modules.pdf_ocr.logic.ProductionDocumentProcessor',
-            return_value=mock_processor
+            'tilellm.modules.pdf_ocr.logic.get_or_create_processor',
+            AsyncMock(return_value=mock_processor)
         )
         
         # Create request
@@ -62,11 +64,11 @@ class TestPDFOCRIntegration:
             include_images=False,
             extract_entities=False,
             namespace='test_ns',
-            engine='qdrant'
+            engine={'name': 'qdrant'}
         )
         
         # Process
-        result = await process_pdf_document_with_embeddings(
+        result = await inspect.unwrap(process_pdf_document_with_embeddings)(
             question=request,
             file_path='/fake/path.pdf',
             repo=mock_repo,
@@ -131,8 +133,8 @@ class TestPDFOCRIntegration:
         mock_processor.close = AsyncMock()
         
         mocker.patch(
-            'tilellm.modules.pdf_ocr.logic.ProductionDocumentProcessor',
-            return_value=mock_processor
+            'tilellm.modules.pdf_ocr.logic.get_or_create_processor',
+            AsyncMock(return_value=mock_processor)
         )
         
         # Create request with entity extraction enabled
@@ -146,11 +148,11 @@ class TestPDFOCRIntegration:
             include_images=False,
             extract_entities=True,
             namespace='test_ns',
-            engine='qdrant'
+            engine={'name': 'qdrant'}
         )
         
         # Process
-        result = await process_pdf_document_with_embeddings(
+        result = await inspect.unwrap(process_pdf_document_with_embeddings)(
             question=request,
             file_path='/fake/path.pdf',
             repo=mock_repo,
@@ -215,8 +217,8 @@ class TestPDFOCRIntegration:
         mock_processor.close = AsyncMock()
         
         mocker.patch(
-            'tilellm.modules.pdf_ocr.logic.ProductionDocumentProcessor',
-            return_value=mock_processor
+            'tilellm.modules.pdf_ocr.logic.get_or_create_processor',
+            AsyncMock(return_value=mock_processor)
         )
         
         # Create request with tables and images enabled
@@ -230,11 +232,11 @@ class TestPDFOCRIntegration:
             include_images=True,
             extract_entities=False,
             namespace='test_ns',
-            engine='qdrant'
+            engine={'name': 'qdrant'}
         )
         
         # Process
-        result = await process_pdf_document_with_embeddings(
+        result = await inspect.unwrap(process_pdf_document_with_embeddings)(
             question=request,
             file_path='/fake/path.pdf',
             repo=mock_repo,
@@ -258,9 +260,12 @@ class TestPDFOCRGraphIntegration:
         
         # Mock graph repository
         mock_graph_repo = Mock()
-        mock_graph_repo.create_node = Mock()
+        # like the real repository: no existing Document node, created nodes
+        # come back with a string id
+        mock_graph_repo.find_nodes_by_property.return_value = []
+        mock_graph_repo.create_node.side_effect = lambda node: Mock(id=f"neo-{node.id}", label=node.label)
         mock_graph_repo.create_relationship = Mock()
-        
+
         # Create extractor with mocked repository
         extractor = DocumentStructureExtractor(graph_repository=mock_graph_repo)
         
@@ -285,19 +290,20 @@ class TestPDFOCRGraphIntegration:
         # Verify Document node created
         doc_node_calls = [
             call for call in mock_graph_repo.create_node.call_args_list
-            if call.kwargs.get('label') == 'Document'
+            if call.args[0].label == 'Document'
         ]
         assert len(doc_node_calls) >= 1
         
         # Verify Section node(s) created
         section_node_calls = [
             call for call in mock_graph_repo.create_node.call_args_list
-            if call.kwargs.get('label') == 'Section'
+            if call.args[0].label == 'Section'
         ]
         assert len(section_node_calls) >= 1
         
-        # Verify relationships created
-        assert mock_graph_repo.create_relationship.call_count >= 2
+        # Verify relationships created: one heading → one section, linked to the document
+        rel_types = [c.args[0].type for c in mock_graph_repo.create_relationship.call_args_list]
+        assert rel_types.count("CONTAINS_SECTION") == len(section_node_calls)
     
     @pytest.mark.asyncio
     async def test_entity_extraction_creates_entity_nodes(self, mocker):
@@ -306,16 +312,26 @@ class TestPDFOCRGraphIntegration:
         
         # Mock graph repository
         mock_graph_repo = Mock()
-        
+        mock_graph_repo.find_nodes_by_property.return_value = []
+        mock_graph_repo.create_node.side_effect = lambda node: Mock(id=f"neo-{node.id}", label=node.label)
+
         # Mock LLM
         mock_llm = AsyncMock()
         mock_llm.ainvoke.return_value = Mock(
             content='{"entities": [{"name": "TestEntity", "type": "concept"}], "relationships": []}'
         )
         
+        # The GraphRAG parser expects LightRAG's delimited tuples, not JSON: this
+        # test is about turning extracted entities into graph nodes, so the
+        # extraction step returns what the parser would.
+        mocker.patch(
+            'tilellm.modules.pdf_ocr.services.pdf_entity_extractor.extract_entities',
+            AsyncMock(return_value=([{"name": "TestEntity", "type": "concept", "description": "d"}], [])),
+        )
+
         # Create extractor
         extractor = PDFEntityExtractor(graph_repository=mock_graph_repo)
-        
+
         # Process text elements
         text_elements = [
             {'id': 'text1', 'text': 'TestEntity is important.' * 10, 'page': 0}
@@ -332,14 +348,14 @@ class TestPDFOCRGraphIntegration:
         # Verify Entity node created
         entity_node_calls = [
             call for call in mock_graph_repo.create_node.call_args_list
-            if call.kwargs.get('label') == 'Entity'
+            if call.args[0].label == 'Entity'
         ]
         assert len(entity_node_calls) >= 1
         
         # Verify MENTIONS relationship created (Paragraph -> Entity)
         mentions_rel_calls = [
             call for call in mock_graph_repo.create_relationship.call_args_list
-            if call.kwargs.get('type') == 'MENTIONS'
+            if call.args[0].type == 'MENTIONS'
         ]
         assert len(mentions_rel_calls) >= 1
     

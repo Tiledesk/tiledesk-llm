@@ -51,9 +51,12 @@ def client(mock_kg_logic):
     
     app = FastAPI()
     app.include_router(router)
-    
-    with TestClient(app) as test_client:
-        yield test_client
+
+    # These tests exercise the synchronous path (results from kg_logic): don't
+    # let a developer's .env with ENABLE_TASKIQ=true route them to a real queue.
+    with patch('tilellm.modules.knowledge_graph_falkor.controllers.ENABLE_TASKIQ', False):
+        with TestClient(app) as test_client:
+            yield test_client
 
 
 class TestHealthEndpoints:
@@ -105,7 +108,7 @@ class TestNodeEndpoints:
         
         assert response.status_code == 201
         data = response.json()
-        assert data["id"] == "123"
+        assert data["id"] == 123
         assert data["label"] == "Person"
         assert data["properties"]["name"] == "John"
     
@@ -133,7 +136,7 @@ class TestNodeEndpoints:
         
         assert response.status_code == 200
         data = response.json()
-        assert data["id"] == "456"
+        assert data["id"] == 456
         assert data["label"] == "Organization"
     
     def test_get_node_not_found(self, client, mock_kg_logic):
@@ -220,7 +223,7 @@ class TestRelationshipEndpoints:
         
         assert response.status_code == 201
         data = response.json()
-        assert data["id"] == "100"
+        assert data["id"] == 100
         assert data["type"] == "KNOWS"
     
     def test_create_relationship_missing_nodes(self, client, mock_kg_logic):
@@ -251,7 +254,7 @@ class TestRelationshipEndpoints:
         
         assert response.status_code == 200
         data = response.json()
-        assert data["id"] == "5"
+        assert data["id"] == 5
     
     def test_get_node_relationships(self, client, mock_kg_logic):
         """Test getting node relationships."""

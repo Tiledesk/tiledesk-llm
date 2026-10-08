@@ -30,6 +30,7 @@ except ImportError:
 
 # Shared GPU concurrency primitives (single source of truth)
 from tilellm.tools._gpu_concurrency import (
+    call_on_gpu,
     run_on_gpu,
     is_cuda_oom,
     cuda_empty_cache_safe,
@@ -215,7 +216,22 @@ def aggregate_maxp_scores(
     """
     doc_max_scores: dict = {}  # original_doc_idx -> (doc, max_score)
 
-    for (chunk_doc, score), orig_idx in zip(chunked_scores, doc_indices):
+    # Remote rerankers (Pinecone, TEI) return results sorted by score, not in
+    # input order: the original document must come from the chunk itself
+    # (_original_doc_idx, or the identity of an unsplit document), never from
+    # the position in chunked_scores. Positional pairing is only a fallback
+    # for callers without original_documents (scores in chunk order).
+    position_of = {id(d): i for i, d in enumerate(original_documents or [])}
+
+    def _origin(chunk_doc: Document, position: int) -> int:
+        if "_original_doc_idx" in chunk_doc.metadata:
+            return chunk_doc.metadata["_original_doc_idx"]
+        if id(chunk_doc) in position_of:
+            return position_of[id(chunk_doc)]
+        return doc_indices[position]
+
+    for position, (chunk_doc, score) in enumerate(chunked_scores):
+        orig_idx = _origin(chunk_doc, position)
         if orig_idx not in doc_max_scores:
             if original_documents is not None and orig_idx < len(original_documents):
                 doc = original_documents[orig_idx]
@@ -866,7 +882,10 @@ class TileReranker:
         effective_max_pairs = batch_size if batch_size > 0 else self.max_pairs_per_batch
 
         # ===== STEP 3: Predict con token-budget batching + OOM recovery =====
-        scores = self._predict_local_with_oom_recovery(
+        # call_on_gpu: sync callers come from worker threads (run_in_executor);
+        # the forward pass must still go through the single GPU thread.
+        scores = call_on_gpu(
+            self._predict_local_with_oom_recovery,
             pairs=pairs,
             pair_lengths=pair_lengths,
             token_budget=self.token_budget_per_batch,
@@ -932,7 +951,7 @@ class TileReranker:
                 for batch_idx, batch in enumerate(batches):
                     batch_pairs = [pairs[i] for i in batch]
                     # No explicit lock: _predict_local_with_oom_recovery always
-                    # runs inside _GPU_EXECUTOR (single thread via run_on_gpu).
+                    # runs inside _GPU_EXECUTOR (run_on_gpu / call_on_gpu).
                     batch_scores = self.model.predict(
                         batch_pairs,
                         batch_size=len(batch_pairs),

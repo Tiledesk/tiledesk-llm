@@ -5261,6 +5261,7 @@ source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
     { name = "cohere" },
+    { name = "cryptography" },
     { name = "docx2txt" },
     { name = "fastapi" },
     { name = "fastapi-cprofile" },
@@ -5412,6 +5413,7 @@ dev = [
 requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.14.3,<5.0.0" },
     { name = "cohere", specifier = ">=5.21.1,<6.0.0" },
+    { name = "cryptography", specifier = ">=44.0.0" },
     { name = "datasets", marker = "extra == 'evaluation'", specifier = ">=2.0.0" },
     { name = "docling", marker = "extra == 'all'", specifier = ">=2.131.0,<3.0.0" },
     { name = "docling", marker = "extra == 'ocr'", specifier = ">=2.131.0,<3.0.0" },

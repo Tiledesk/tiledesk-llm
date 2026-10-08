@@ -24,16 +24,15 @@ except ImportError as e:
     Node = None
     Relationship = None
     logger.warning(f"Knowledge Graph module not available: {e}")
-    
-    # Define stub functions if not available
-    async def stub_extract_entities(*args, **kwargs):
-        return [], []
-    
-    # Use actual or stub
-    if GRAPHRAG_AVAILABLE:
-        extract_entities = graphrag_extract_entities
-    else:
-        extract_entities = stub_extract_entities
+
+
+# Use actual or stub (module level: it used to sit inside the except block, so
+# with a working import extract_entities was never defined → NameError).
+async def stub_extract_entities(*args, **kwargs):
+    return [], []
+
+
+extract_entities = graphrag_extract_entities if GRAPHRAG_AVAILABLE else stub_extract_entities
 
 
 class PDFEntityExtractor:

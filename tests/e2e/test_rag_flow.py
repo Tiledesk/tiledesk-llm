@@ -2,224 +2,154 @@
 """
 End-to-end tests for RAG flow.
 These tests simulate complete user interactions with mocked external services.
+
+The controller functions are patched where /api/qa and /api/ask look them up
+(tilellm.__main__ imports them by name: patching tilellm.controller.controller
+had no effect), the payloads are valid QuestionAnswer / QuestionToLLM bodies,
+and the mocked controllers return the real response models.
 """
-import pytest
-import json
-from unittest.mock import Mock, patch, AsyncMock
+from unittest.mock import AsyncMock, patch
+
 from fastapi.testclient import TestClient
+
+from tilellm.models.schemas.general_schemas import SimpleAnswer
+from tilellm.models.schemas.retrieval_schemas import RetrievalResult
+
+
+def _qa_payload(question, **extra):
+    payload = {
+        "question": question,
+        "namespace": "e2e-ns",
+        "engine": {"name": "qdrant"},
+        "gptkey": "sk-test",
+        "search_type": "hybrid",
+        "use_cache": False,   # no Redis lookups in this flow
+    }
+    payload.update(extra)
+    return payload
+
+
+def _answer(answer, history):
+    return RetrievalResult(answer=answer, success=True, namespace="e2e-ns", chat_history_dict=history)
 
 
 class TestRAGFlow:
     """Test complete RAG flow with mocked dependencies."""
-    
+
     def test_complete_rag_conversation(self, client: TestClient):
-        """
-        Test a complete RAG conversation flow:
-        1. Initial question with hybrid search
-        2. Follow-up question with chat history
-        3. Structured output request
-        """
-        # Mock payloads directory path
-        import os
-        payloads_dir = os.path.join(os.path.dirname(__file__), '..', 'payloads')
-        
-        # Step 1: Initial question with hybrid search
-        with open(os.path.join(payloads_dir, 'post_ask_with_memory.json'), 'r') as f:
-            payload1 = json.load(f)
-        
-        # Modify payload for hybrid search
-        payload1['search_type'] = 'hybrid'
-        payload1['question'] = "What is artificial intelligence?"
-        
-        # Mock the hybrid search response
-        mock_response1 = {
-            "answer": "Artificial intelligence is the simulation of human intelligence processes by machines.",
-            "chat_history_dict": {
-                "0": {
-                    "question": "What is artificial intelligence?",
-                    "answer": "Artificial intelligence is the simulation of human intelligence processes by machines."
-                }
-            },
-            "prompt_token_info": {
-                "input_tokens": 50,
-                "output_tokens": 20,
-                "total_tokens": 70
-            }
-        }
-        
-        # Since we're using a real test client with mocked dependencies in conftest.py,
-        # we need to mock the specific controller functions
-        with patch('tilellm.controller.controller.ask_hybrid_with_memory', 
-                  AsyncMock(return_value=Mock(**mock_response1))):
-            response1 = client.post("/api/qa", json=payload1)
-            assert response1.status_code == 200
-            
-            response_data1 = response1.json()
-            assert "answer" in response_data1
-            assert "chat_history_dict" in response_data1
-        
-        # Step 2: Follow-up question using history from step 1
-        payload2 = payload1.copy()
-        payload2['question'] = "What are its main applications?"
-        payload2['chat_history_dict'] = response_data1['chat_history_dict']
-        
-        mock_response2 = {
-            "answer": "Main applications include natural language processing, computer vision, and robotics.",
-            "chat_history_dict": {
-                "0": payload2['chat_history_dict']["0"],
-                "1": {
-                    "question": "What are its main applications?",
-                    "answer": "Main applications include natural language processing, computer vision, and robotics."
-                }
-            },
-            "prompt_token_info": {
-                "input_tokens": 60,
-                "output_tokens": 25,
-                "total_tokens": 85
-            }
-        }
-        
-        with patch('tilellm.controller.controller.ask_hybrid_with_memory',
-                  AsyncMock(return_value=Mock(**mock_response2))):
-            response2 = client.post("/api/qa", json=payload2)
-            assert response2.status_code == 200
-            
-            response_data2 = response2.json()
-            assert "applications" in response_data2['answer'].lower()
-            assert len(response_data2['chat_history_dict']) == 2
-    
+        """Two turns of hybrid RAG: the second sends the history of the first."""
+        first_q, first_a = "What is artificial intelligence?", "Artificial intelligence is the simulation of human intelligence."
+        history1 = {"0": {"question": first_q, "answer": first_a}}
+
+        with patch("tilellm.__main__.ask_hybrid_with_memory",
+                   AsyncMock(return_value=_answer(first_a, history1))) as hybrid:
+            response1 = client.post("/api/qa", json=_qa_payload(first_q))
+
+        assert response1.status_code == 200
+        data1 = response1.json()
+        assert data1["answer"] == first_a and data1["chat_history_dict"]["0"]["question"] == first_q
+        assert hybrid.await_args.args[0].namespace == "e2e-ns"
+
+        second_q, second_a = "What are its main applications?", "Natural language processing and robotics."
+        history2 = {**data1["chat_history_dict"], "1": {"question": second_q, "answer": second_a}}
+        with patch("tilellm.__main__.ask_hybrid_with_memory",
+                   AsyncMock(return_value=_answer(second_a, history2))) as hybrid:
+            response2 = client.post(
+                "/api/qa", json=_qa_payload(second_q, chat_history_dict=data1["chat_history_dict"]))
+
+        assert response2.status_code == 200
+        assert len(response2.json()["chat_history_dict"]) == 2
+        # the history of turn 1 reached the controller on turn 2
+        assert "0" in hybrid.await_args.args[0].chat_history_dict
+
     def test_conversion_and_rag_integration(self, client: TestClient):
-        """
-        Test integration between conversion module and RAG:
-        1. Convert PDF to text
-        2. Use converted text in RAG search
-        """
-        # Step 1: Convert PDF to text
+        """Convert a PDF to text, then ask a RAG question about it."""
         conversion_payload = {
             "file_name": "sample.pdf",
             "file_content": "JVBERi0xLjUK...",  # Minimal PDF base64
-            "conversion_type": "pdf_to_text"
+            "conversion_type": "pdf_to_text",
         }
-        
-        mock_conversion_response = [
-            {
-                "FileName": "sample.txt",
-                "FileExt": "txt",
-                "FileSize": 1000,
-                "File": "base64_encoded_text",
-                "FileContent": "This is extracted text from PDF about machine learning."
-            }
-        ]
-        
-        with patch('tilellm.modules.conversion.controllers.process_pdf_to_text',
-                  return_value=mock_conversion_response):
+        mock_conversion_response = [{
+            "FileName": "sample.txt", "FileExt": "txt", "FileSize": 1000, "File": "base64_encoded_text",
+            "FileContent": "This is extracted text from PDF about machine learning.",
+        }]
+
+        with patch("tilellm.modules.conversion.controllers.process_pdf_to_text",
+                   return_value=mock_conversion_response):
             response1 = client.post("/api/convert", json=conversion_payload)
-            assert response1.status_code == 200
-            
-            conversion_result = response1.json()
-            assert len(conversion_result) == 1
-            assert conversion_result[0]['FileExt'] == 'txt'
-            
-            extracted_text = conversion_result[0]['FileContent']
-            assert "machine learning" in extracted_text.lower()
-        
-        # Step 2: Use extracted text in RAG question
-        rag_payload = {
-            "question": f"Based on this document: {extracted_text}. What is machine learning?",
-            "llm": "gpt-4",
-            "llm_key": "test-key",
-            "stream": False,
-            "search_type": "hybrid"
-        }
-        
-        mock_rag_response = {
-            "answer": "Machine learning is a subset of AI that enables systems to learn from data.",
-            "chat_history_dict": {},
-            "prompt_token_info": {
-                "input_tokens": 40,
-                "output_tokens": 15,
-                "total_tokens": 55
-            }
-        }
-        
-        with patch('tilellm.controller.controller.ask_hybrid_with_memory',
-                  AsyncMock(return_value=Mock(**mock_rag_response))):
-            response2 = client.post("/api/qa", json=rag_payload)
-            assert response2.status_code == 200
-            
-            rag_result = response2.json()
-            assert "machine learning" in rag_result['answer'].lower()
-    
+
+        assert response1.status_code == 200
+        extracted_text = response1.json()[0]["FileContent"]
+        assert "machine learning" in extracted_text.lower()
+
+        answer = "Machine learning is a subset of AI that enables systems to learn from data."
+        with patch("tilellm.__main__.ask_hybrid_with_memory", AsyncMock(return_value=_answer(answer, {}))):
+            response2 = client.post(
+                "/api/qa", json=_qa_payload(f"Based on this document: {extracted_text}. What is machine learning?"))
+
+        assert response2.status_code == 200
+        assert "machine learning" in response2.json()["answer"].lower()
+
     def test_structured_output_flow(self, client: TestClient):
-        """
-        Test flow with structured output requests.
-        """
+        """A structured-output request to /api/ask returns the structured answer."""
         from pydantic import BaseModel
-        
+
         class PersonInfo(BaseModel):
             name: str
             age: int
             occupation: str
-        
-        # Create structured output request
+
         payload = {
-            "question": "Extract person information: John Doe, 30 years old, software engineer",
-            "llm": "gpt-4",
+            "question": "Extract person information: Mario Esempio, 30 years old, software engineer",
+            "llm": "openai",
+            "model": "gpt-4o-mini",
             "llm_key": "test-key",
             "stream": False,
             "structured_output": True,
-            "output_schema": PersonInfo.model_json_schema()
+            "output_schema": PersonInfo.model_json_schema(),
         }
-        
-        mock_response = {
-            "answer": {"name": "John Doe", "age": 30, "occupation": "software engineer"},
-            "chat_history_dict": {},
-            "prompt_token_info": {
-                "input_tokens": 35,
-                "output_tokens": 18,
-                "total_tokens": 53
-            }
-        }
-        
-        with patch('tilellm.controller.controller.ask_to_llm',
-                  AsyncMock(return_value=Mock(**mock_response))):
+        structured = {"name": "Mario Esempio", "age": 30, "occupation": "software engineer"}
+
+        with patch("tilellm.__main__.ask_to_llm",
+                   AsyncMock(return_value=SimpleAnswer(answer=structured))) as ask:
             response = client.post("/api/ask", json=payload)
-            assert response.status_code == 200
-            
-            result = response.json()
-            assert result['answer']['name'] == "John Doe"
-            assert result['answer']['age'] == 30
-            assert result['answer']['occupation'] == "software engineer"
+
+        assert response.status_code == 200
+        assert response.json()["answer"] == structured
+        assert ask.await_args.kwargs["question"].structured_output is True
 
 
 class TestErrorFlows:
     """Test error scenarios in complete flows."""
-    
+
     def test_rag_with_missing_dependencies(self, client: TestClient):
-        """Test RAG flow when external dependencies are missing."""
-        payload = {
-            "question": "Test question",
-            "llm": "gpt-4",
-            "llm_key": None,  # Missing API key
-            "search_type": "hybrid"
-        }
-        
-        # Mock the controller to simulate missing dependency error
-        with patch('tilellm.controller.controller.ask_hybrid_with_memory',
-                  AsyncMock(side_effect=Exception("Missing API key"))):
-            response = client.post("/api/qa", json=payload)
-            # Should return error response
-            assert response.status_code in [400, 500]
-    
+        """A failing dependency inside the controller becomes an error response, not a crash."""
+        # the app turns it into an error response; TestClient would re-raise it
+        lenient = TestClient(client.app, raise_server_exceptions=False)
+        with patch("tilellm.__main__.ask_hybrid_with_memory",
+                   AsyncMock(side_effect=Exception("Missing API key"))):
+            response = lenient.post("/api/qa", json=_qa_payload("Test question"))
+
+        assert response.status_code in [400, 500]
+
+    def test_invalid_rag_request_is_rejected(self, client: TestClient):
+        """A body without namespace/engine never reaches the controller (422)."""
+        with patch("tilellm.__main__.ask_hybrid_with_memory", AsyncMock()) as hybrid:
+            response = client.post("/api/qa", json={"question": "q", "llm_key": None})
+
+        assert response.status_code == 422
+        hybrid.assert_not_called()
+
     def test_conversion_invalid_file(self, client: TestClient):
         """Test conversion with invalid file content."""
         payload = {
             "file_name": "invalid.pdf",
             "file_content": "not-a-valid-base64",
-            "conversion_type": "pdf_to_text"
+            "conversion_type": "pdf_to_text",
         }
-        
-        with patch('tilellm.modules.conversion.controllers.process_pdf_to_text',
-                  side_effect=Exception("Invalid PDF content")):
+
+        with patch("tilellm.modules.conversion.controllers.process_pdf_to_text",
+                   side_effect=Exception("Invalid PDF content")):
             response = client.post("/api/convert", json=payload)
-            assert response.status_code == 400
+
+        assert response.status_code == 400

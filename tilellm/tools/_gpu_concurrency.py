@@ -21,6 +21,7 @@ This module MUST NOT import heavy ML libraries (sentence-transformers,
 FlagEmbedding, ...). It only touches torch, and only lazily.
 """
 import asyncio
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from threading import Lock
@@ -36,7 +37,8 @@ except ImportError:
 # Dedicated single-thread GPU executor
 # ---------------------------------------------------------------------------
 
-_GPU_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="gpu-worker")
+_GPU_THREAD_PREFIX = "gpu-worker"
+_GPU_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix=_GPU_THREAD_PREFIX)
 """
 Single-thread executor for all local GPU inference (sparse encoders + reranker).
 
@@ -65,6 +67,21 @@ async def run_on_gpu(fn: Any, *args: Any, **kwargs: Any) -> Any:
     loop = asyncio.get_running_loop()
     call = partial(fn, *args, **kwargs) if kwargs else partial(fn, *args)
     return await loop.run_in_executor(_GPU_EXECUTOR, call)
+
+
+def call_on_gpu(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """
+    Synchronous counterpart of run_on_gpu, for sync code paths (e.g. a
+    reranker called from run_in_executor / to_thread worker threads).
+
+    On the GPU thread already (run_on_gpu -> sync code -> call_on_gpu) it runs
+    directly: queueing behind itself on a 1-worker executor would deadlock.
+    From any other thread it queues on the GPU executor and waits, so forward
+    passes never overlap.
+    """
+    if threading.current_thread().name.startswith(_GPU_THREAD_PREFIX):
+        return fn(*args, **kwargs)
+    return _GPU_EXECUTOR.submit(fn, *args, **kwargs).result()
 
 
 # ---------------------------------------------------------------------------

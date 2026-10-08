@@ -266,10 +266,12 @@ def test_no_tool_args_schema_exposes_a_verdict_field():
     guardrails non-bypassable regardless of tool-call order."""
     from tilellm.modules.agentic_compliance_checker.services.langchain_tools import (
         AGENTIC_COMPLIANCE_TOOLS,
+        build_tool,
     )
-    forbidden = {"score", "coefficient", "confidence", "human_review_required", "judgment", "gptkey"}
-    for name, tool_obj in AGENTIC_COMPLIANCE_TOOLS.items():
-        fields = set(tool_obj.args_schema.model_fields.keys())
+    forbidden = {"score", "coefficient", "confidence", "human_review_required", "judgment", "gptkey",
+                 "session_id"}
+    for name in AGENTIC_COMPLIANCE_TOOLS:
+        fields = set(build_tool(name, "sid").args)
         assert not (fields & forbidden), f"{name} exposes forbidden field(s): {fields & forbidden}"
 
 

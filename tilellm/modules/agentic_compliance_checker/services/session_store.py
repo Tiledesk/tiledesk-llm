@@ -30,6 +30,8 @@ pauses between batches is hours, not minutes). Durable audit retention past
 that TTL is handled separately (see services/audit_archive.py, P7): Redis is
 working state, not the archive.
 """
+import base64
+import hashlib
 import json
 import logging
 import os
@@ -38,6 +40,7 @@ import time
 from typing import List, Optional
 
 import redis.asyncio as aioredis
+from cryptography.fernet import Fernet, InvalidToken
 
 from tilellm.modules.agentic_compliance_checker.models import (
     EvidenceEntry,
@@ -120,18 +123,49 @@ def _attempts_field(namespace: str, criterion_id: str) -> str:
     return f"{namespace}|{criterion_id}"
 
 
+def _fernet() -> Fernet:
+    """gptkey is encrypted at rest. Key: AGENTIC_COMPLIANCE_ENCRYPTION_KEY (a
+    Fernet key), else derived from JWT_SECRET_KEY. With neither, refuse: the
+    key is never stored in clear (Redis often runs without auth)."""
+    dedicated = os.environ.get("AGENTIC_COMPLIANCE_ENCRYPTION_KEY")
+    if dedicated:
+        try:
+            return Fernet(dedicated.encode())
+        except ValueError as e:
+            raise ValueError(
+                "AGENTIC_COMPLIANCE_ENCRYPTION_KEY non è una chiave Fernet valida "
+                "(generarla con: python -c \"from cryptography.fernet import Fernet; "
+                "print(Fernet.generate_key().decode())\")"
+            ) from e
+    jwt_secret = os.environ.get("JWT_SECRET_KEY")
+    if jwt_secret:
+        return Fernet(base64.urlsafe_b64encode(hashlib.sha256(jwt_secret.encode()).digest()))
+    raise ValueError(
+        "Impossibile salvare la gptkey della sessione: configurare "
+        "AGENTIC_COMPLIANCE_ENCRYPTION_KEY (o JWT_SECRET_KEY)."
+    )
+
+
 def _serialize_request(request: BulkComplianceRequestV2) -> str:
-    """model_dump(mode="json") masks SecretStr as "**********" — restore the
-    real gptkey value before persisting. Round-tripped by _deserialize_request,
-    where a plain string is accepted back into the SecretStr field by pydantic."""
+    """model_dump(mode="json") masks SecretStr as "**********": the real gptkey
+    is put back ENCRYPTED. _deserialize_request decrypts it into the SecretStr."""
     data = request.model_dump(mode="json")
     if request.gptkey is not None:
-        data["gptkey"] = request.gptkey.get_secret_value()
+        data["gptkey"] = _fernet().encrypt(request.gptkey.get_secret_value().encode()).decode()
     return json.dumps(data)
 
 
 def _deserialize_request(raw: str) -> BulkComplianceRequestV2:
-    return BulkComplianceRequestV2.model_validate(json.loads(raw))
+    data = json.loads(raw)
+    if data.get("gptkey"):
+        try:
+            data["gptkey"] = _fernet().decrypt(data["gptkey"].encode()).decode()
+        except InvalidToken as e:
+            raise ValueError(
+                "gptkey della sessione non decifrabile: la chiave di cifratura è cambiata "
+                "dopo l'apertura della sessione. Riaprire la sessione."
+            ) from e
+    return BulkComplianceRequestV2.model_validate(data)
 
 
 class SessionStore:

@@ -153,7 +153,7 @@ class TestPromptSelection:
         llm = MagicMock()
         llm.ainvoke = fake_ainvoke
 
-        text, usage = await _generate_situated_context(
+        text, usage, extracted_meta = await _generate_situated_context(
             doc_context=SOURCE_URL,
             chunk_text="| SKU | Nome |\n|---|---|\n| A001 | Alpha |",
             llm=llm,
@@ -162,6 +162,7 @@ class TestPromptSelection:
 
         assert "A001" in text or "Alpha" in text
         assert usage["total_tokens"] == 15
+        assert extracted_meta == {}  # no metadata_extraction_prompt → nothing extracted
 
 
 # ---------------------------------------------------------------------------

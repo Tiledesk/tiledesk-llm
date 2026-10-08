@@ -156,6 +156,7 @@ dmypy.json
 .agents/
 .ASE/
 .claude/
+docs/
 CLAUDE.md
 .gemini/
 .github/
@@ -192,6 +193,7 @@ docs/COMPLIANCE_CHECKER.md
 docs/INGESTION_IMPLEMENTATION_PLAN.md
 docs/ROADMAP_SINTETYC.md
 docs/UNIFIED_INGESTION_PLAN.md
+docs/AGENTIC_COMPLIANCE_MCP.md
 tilellm/modules/knowledge_graph_falkor/config/extraction/debt_recovery.yaml
 tilellm/modules/knowledge_graph_falkor/config/extraction/legal.yaml
 tilellm/modules/knowledge_graph_falkor/config/extraction/procurement.yaml

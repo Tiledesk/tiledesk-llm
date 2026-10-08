@@ -252,3 +252,43 @@ if __name__ == "__main__":
         import traceback
         traceback.print_exc()
         sys.exit(1)
+
+
+class TestMaxPAggregationOrder:
+    """Remote rerankers (Pinecone, TEI) return results sorted by SCORE, not in
+    input order. Scores used to be paired with documents by position (zip with
+    doc_indices), so they landed on the wrong documents."""
+
+    @staticmethod
+    def _docs():
+        from langchain_core.documents import Document
+
+        return [Document(page_content=f"doc {i}", metadata={"id": f"d{i}"}) for i in range(3)]
+
+    def test_scores_out_of_input_order_stay_with_their_document(self):
+        from tilellm.tools.reranker import aggregate_maxp_scores, apply_maxp_chunking
+
+        docs = self._docs()
+        chunks, indices = apply_maxp_chunking(docs, max_tokens=512, overlap_tokens=0)
+        by_score = [(chunks[1], 0.9), (chunks[0], 0.7), (chunks[2], 0.5)]  # API order
+
+        scores = {d.metadata["id"]: s for d, s in aggregate_maxp_scores(by_score, indices, original_documents=docs)}
+
+        assert scores == {"d0": 0.7, "d1": 0.9, "d2": 0.5}
+
+    def test_split_document_takes_the_max_of_its_chunks_in_any_order(self):
+        from langchain_core.documents import Document
+
+        from tilellm.tools.reranker import aggregate_maxp_scores, apply_maxp_chunking
+
+        docs = [Document(page_content="short", metadata={"id": "s"}),
+                Document(page_content=" ".join(f"w{i}" for i in range(400)), metadata={"id": "long"})]
+        chunks, indices = apply_maxp_chunking(docs, max_tokens=50, overlap_tokens=0)
+        long_chunks = [c for c, i in zip(chunks, indices) if i == 1]
+        assert len(long_chunks) > 1
+        by_score = [(long_chunks[-1], 0.8), (chunks[0], 0.6)] + [(c, 0.1) for c in long_chunks[:-1]]
+
+        result = aggregate_maxp_scores(by_score, indices, original_documents=docs)
+
+        assert {d.metadata["id"]: s for d, s in result} == {"s": 0.6, "long": 0.8}
+        assert next(d for d, _ in result if d.metadata["id"] == "long") is docs[1]  # full original, not a chunk

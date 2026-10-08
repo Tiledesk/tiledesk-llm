@@ -42,13 +42,26 @@ class TestNerBackendDispatch:
     yet (that's A6) — an unknown/unimplemented backend must fail loud, not
     silently fall back to spaCy under a different label."""
 
-    def test_default_backend_is_spacy_unchanged(self):
+    def test_default_backend_is_spacy_unchanged(self, monkeypatch):
+        # A unit test must not need the ~500 MB it_core_news_lg model: a blank
+        # Italian pipeline with a deterministic entity ruler stands in for it.
+        import spacy
+
+        from tilellm.modules.lgraph.services import entity_extractor
+
+        nlp = spacy.blank("it")
+        nlp.add_pipe("entity_ruler").add_patterns([
+            {"label": "ORG", "pattern": "Comune di Bari"}, {"label": "LOC", "pattern": "Bari"},
+        ])
+        monkeypatch.setitem(entity_extractor._nlp_cache, "it_core_news_lg", nlp)
+
         text = "Il Comune di Bari ha pubblicato la determina n. 100."
         default = extract_entities(text, "it_core_news_lg", ["ORG", "LOC"], use_noun_chunks=False)
         explicit = extract_entities(
             text, "it_core_news_lg", ["ORG", "LOC"], use_noun_chunks=False, ner_backend="spacy",
         )
         assert default == explicit
+        assert any(label == "ORG" for _, label in default)  # the ruler really ran
 
     def test_unknown_ner_backend_raises_not_implemented(self):
         with pytest.raises(NotImplementedError, match="made-up-backend"):

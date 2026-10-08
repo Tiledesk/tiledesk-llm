@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 from tilellm.shared.utility import get_service_config
 from tilellm.store.graph import BaseGraphRepository
 from tilellm.modules.knowledge_graph.models import Node, Relationship
+from tilellm.modules.knowledge_graph_falkor.repository.cypher import _cypher_ident
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +206,7 @@ class FalkorGraphRepository(BaseGraphRepository):
             for label in node_labels:
                 for prop in self.SEARCHABLE_PROPERTIES:
                     # OpenCypher standard syntax for FalkorDB
-                    query = f"CREATE INDEX FOR (n:{label}) ON (n.{prop})"
+                    query = f"CREATE INDEX FOR (n:{_cypher_ident(label)}) ON (n.{prop})"
                     try:
                         self._execute_query(query, namespace=graph_name, graph_name=graph_name)
                         logger.debug(f"Created index on {label}.{prop} for graph '{graph_name}'")
@@ -240,9 +241,11 @@ class FalkorGraphRepository(BaseGraphRepository):
         """
         self._ensure_indexes_for_graph(graph_name, node_labels)
 
-    def _execute_query(self, query: str, parameters: Optional[Dict[str, Any]] = None, namespace: Optional[str] = None, graph_name: Optional[str] = None) -> List[Dict[str, Any]]:
+    def _execute_query(self, query: str, parameters: Optional[Dict[str, Any]] = None, namespace: Optional[str] = None, graph_name: Optional[str] = None, read_only: bool = False) -> List[Dict[str, Any]]:
         """
         Execute a FalkorDB query (openCypher) and return results.
+        read_only=True runs it with GRAPH.RO_QUERY: the server rejects any write
+        (use it for every query whose text is not ours, e.g. LLM-generated).
         
         Args:
             query: openCypher query string
@@ -257,7 +260,8 @@ class FalkorGraphRepository(BaseGraphRepository):
         logger.debug(f"Executing query on graph '{graph.name}': {query}, params: {parameters}")
         
         try:
-            result = graph.query(query, params=parameters if parameters else None)
+            run = graph.ro_query if read_only else graph.query
+            result = run(query, params=parameters if parameters else None)
             
             # Convert result to list of dicts
             records = []
@@ -437,10 +441,10 @@ class FalkorGraphRepository(BaseGraphRepository):
         if metadata_id is not None:
             properties["metadata_id"] = metadata_id
         
-        props_str = ", ".join([f"{k}: ${k}" for k in properties.keys()])
+        props_str = ", ".join([f"{_cypher_ident(k)}: ${k}" for k in properties.keys()])
         
         query = f"""
-        CREATE (n:{node.label} {{{props_str}}})
+        CREATE (n:{_cypher_ident(node.label)} {{{props_str}}})
         RETURN id(n) as id, labels(n) as labels, properties(n) as properties
         """
         
@@ -500,7 +504,7 @@ class FalkorGraphRepository(BaseGraphRepository):
         where_clause = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
         
         query = f"""
-        MATCH (n:{label})
+        MATCH (n:{_cypher_ident(label)})
         {where_clause}
         RETURN id(n) as id, labels(n) as labels, properties(n) as properties
         LIMIT $limit
@@ -522,7 +526,7 @@ class FalkorGraphRepository(BaseGraphRepository):
         """
         Find nodes by a specific property value.
         """
-        where_clauses = [f"n.{property_key} = $value"]
+        where_clauses = [f"n.{_cypher_ident(property_key)} = $value"]
         params = {"value": property_value, "limit": limit}
         if namespace is not None:
             where_clauses.append("n.namespace = $namespace")
@@ -533,7 +537,7 @@ class FalkorGraphRepository(BaseGraphRepository):
         
         where_clause = "WHERE " + " AND ".join(where_clauses)
         query = f"""
-        MATCH (n:{label})
+        MATCH (n:{_cypher_ident(label)})
         {where_clause}
         RETURN id(n) as id, labels(n) as labels, properties(n) as properties
         LIMIT $limit
@@ -548,6 +552,36 @@ class FalkorGraphRepository(BaseGraphRepository):
                 properties=self._convert_properties(dict(record["properties"]))
             ))
         return nodes
+
+    async def find_nodes_by_source_id(self, source_id: str, limit: int = 10,
+                                      namespace: Optional[str] = None,
+                                      index_name: Optional[str] = None,
+                                      graph_name: Optional[str] = None) -> List[Node]:
+        """Find nodes whose 'source_ids' list contains source_id (vector store chunk ID)."""
+        where_clauses = ["$source_id IN n.source_ids"]
+        params: Dict[str, Any] = {"source_id": source_id, "limit": limit}
+        if namespace is not None:
+            where_clauses.append("n.namespace = $namespace")
+            params["namespace"] = namespace
+        if index_name is not None:
+            where_clauses.append("n.index_name = $index_name")
+            params["index_name"] = index_name
+
+        query = f"""
+        MATCH (n)
+        WHERE {" AND ".join(where_clauses)}
+        RETURN id(n) as id, labels(n) as labels, properties(n) as properties
+        LIMIT $limit
+        """
+        result = self._execute_query(query, params, namespace=namespace, graph_name=graph_name)
+        return [
+            Node(
+                id=str(record["id"]),
+                label=record["labels"][0] if record["labels"] else "Node",
+                properties=self._convert_properties(dict(record["properties"])),
+            )
+            for record in result
+        ]
 
     async def update_node(self, node_id: str, label: Optional[str] = None,
                    properties: Optional[Dict[str, Any]] = None,
@@ -570,7 +604,7 @@ class FalkorGraphRepository(BaseGraphRepository):
             return None
 
         if properties:
-            set_clauses = ", ".join([f"n.{k} = ${k}" for k in properties.keys()])
+            set_clauses = ", ".join([f"n.{_cypher_ident(k)} = ${k}" for k in properties.keys()])
             query = f"""
             MATCH (n)
             WHERE id(n) = $node_id
@@ -637,8 +671,9 @@ class FalkorGraphRepository(BaseGraphRepository):
         if metadata_id is not None:
             properties["metadata_id"] = metadata_id
         
-        props_str = ", ".join([f"{k}: ${k}" for k in properties.keys()]) if properties else ""
-        rel_clause = f"[r:{relationship.type} {{{props_str}}}]" if props_str else f"[r:{relationship.type}]"
+        props_str = ", ".join([f"{_cypher_ident(k)}: ${k}" for k in properties.keys()]) if properties else ""
+        rel_type = _cypher_ident(relationship.type)
+        rel_clause = f"[r:{rel_type} {{{props_str}}}]" if props_str else f"[r:{rel_type}]"
         
         query = f"""
         MATCH (source), (target)
@@ -777,7 +812,7 @@ class FalkorGraphRepository(BaseGraphRepository):
             return await self.create_relationship(new_rel, namespace=namespace, graph_name=graph_name)
 
         if properties:
-            set_clauses = ", ".join([f"r.{k} = ${k}" for k in properties.keys()])
+            set_clauses = ", ".join([f"r.{_cypher_ident(k)} = ${k}" for k in properties.keys()])
             query = f"""
             MATCH ()-[r]->()
             WHERE id(r) = $relationship_id

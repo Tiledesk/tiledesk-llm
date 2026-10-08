@@ -3,6 +3,7 @@ Milvus Repository implementation using langchain-milvus for vector storage.
 Provides async operations for dense and hybrid (dense+sparse) vector search.
 """
 import asyncio
+import re
 import json
 import logging
 import time
@@ -43,6 +44,28 @@ from tilellm.tools.sparse_encoders import TiledeskSparseEncoders
 from tilellm.modules.ingestion.text_processor import process_auto_detected_text
 
 logger = logging.getLogger(__name__)
+
+
+# Milvus filter expressions are strings: request values must never be able to
+# close a literal and add conditions (x" or metadata["namespace"] != " would
+# turn a per-namespace delete into "delete the whole collection").
+def _q(value: Any) -> str:
+    """A Milvus string literal with backslashes and double quotes escaped."""
+    return '"' + str(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _lit(value: Any) -> str:
+    if isinstance(value, str):
+        return _q(value)
+    if isinstance(value, (bool, int, float)):
+        return str(value)
+    raise ValueError(f"unsupported Milvus filter value: {type(value).__name__}")
+
+
+def _field(name: str) -> str:
+    if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+        raise ValueError(f"invalid metadata field name: {str(name)[:60]!r}")
+    return name
 
 
 class CachedVectorStore:
@@ -299,7 +322,7 @@ class MilvusRepository(VectorStoreRepository):
         """
         Build Milvus filter expression from namespace, optional tag filter dict, and optional metadata filter.
         """
-        namespace_condition = f'metadata["namespace"] == "{namespace}"'
+        namespace_condition = f'metadata["namespace"] == {_q(namespace)}'
 
         if not filter_dict and not metadata_filter:
             return namespace_condition
@@ -327,16 +350,16 @@ class MilvusRepository(VectorStoreRepository):
                 if "$in" in tag_cond:
                     tags = tag_cond["$in"]
                     if len(tags) == 1:
-                        return f'metadata["tags"] contains "{tags[0]}"'
+                        return f'metadata["tags"] contains {_q(tags[0])}'
                     else:
-                        conditions = [f'metadata["tags"] contains "{tag}"' for tag in tags]
+                        conditions = [f'metadata["tags"] contains {_q(tag)}' for tag in tags]
                         return "(" + " or ".join(conditions) + ")"
                 elif "$nin" in tag_cond:
                     tags = tag_cond["$nin"]
                     if len(tags) == 1:
-                        return f'not (metadata["tags"] contains "{tags[0]}")'
+                        return f'not (metadata["tags"] contains {_q(tags[0])})'
                     else:
-                        conditions = [f'not (metadata["tags"] contains "{tag}")' for tag in tags]
+                        conditions = [f'not (metadata["tags"] contains {_q(tag)})' for tag in tags]
                         return "(" + " and ".join(conditions) + ")"
                 else:
                     logger.warning(f"Unsupported tag condition: {tag_cond}")
@@ -350,17 +373,17 @@ class MilvusRepository(VectorStoreRepository):
                 if isinstance(condition, dict):
                     parts = []
                     for op, val in condition.items():
-                        quoted = f'"{val}"' if isinstance(val, str) else str(val)
+                        quoted = _lit(val) if op != "$in" else None
                         if op == "$eq":
-                            parts.append(f'metadata["{field}"] == {quoted}')
+                            parts.append(f'metadata[{_q(_field(field))}] == {quoted}')
                         elif op == "$ne":
-                            parts.append(f'metadata["{field}"] != {quoted}')
+                            parts.append(f'metadata[{_q(_field(field))}] != {quoted}')
                         elif op == "$gte":
-                            parts.append(f'metadata["{field}"] >= {quoted}')
+                            parts.append(f'metadata[{_q(_field(field))}] >= {quoted}')
                         elif op == "$lte":
-                            parts.append(f'metadata["{field}"] <= {quoted}')
+                            parts.append(f'metadata[{_q(_field(field))}] <= {quoted}')
                         elif op == "$in":
-                            vals = [f'metadata["{field}"] == "{v}"' if isinstance(v, str) else f'metadata["{field}"] == {v}' for v in val]
+                            vals = [f'metadata[{_q(_field(field))}] == {_lit(v)}' for v in val]
                             parts.append("(" + " or ".join(vals) + ")")
                         else:
                             logger.warning(f"Unsupported operator {op} for field {field}")
@@ -834,7 +857,7 @@ class MilvusRepository(VectorStoreRepository):
             client = await self._get_milvus_client(engine)
 
             # Build filter expression
-            filter_expr = f'metadata["namespace"] == "{namespace_to_delete.namespace}"'
+            filter_expr = f'metadata["namespace"] == {_q(namespace_to_delete.namespace)}'
 
             # Delete using filter (wrapped in asyncio.to_thread for non-blocking)
             result = await asyncio.to_thread(
@@ -856,7 +879,7 @@ class MilvusRepository(VectorStoreRepository):
             client = await self._get_milvus_client(engine)
 
             # Build filter expression
-            filter_expr = f'metadata["id"] == "{metadata_id}" and metadata["namespace"] == "{namespace}"'
+            filter_expr = f'metadata["id"] == {_q(metadata_id)} and metadata["namespace"] == {_q(namespace)}'
 
             # Delete using filter (wrapped in asyncio.to_thread for non-blocking)
             result = await asyncio.to_thread(
@@ -894,7 +917,7 @@ class MilvusRepository(VectorStoreRepository):
         Helper method to delete items by metadata_id from namespace.
         Uses pymilvus client for deletion.
         """
-        filter_expr = f'metadata["id"] == "{metadata_id}" and metadata["namespace"] == "{namespace}"'
+        filter_expr = f'metadata["id"] == {_q(metadata_id)} and metadata["namespace"] == {_q(namespace)}'
         logger.info(f"Deleting items with metadata_id={metadata_id} from namespace={namespace}")
 
         try:
@@ -955,7 +978,7 @@ class MilvusRepository(VectorStoreRepository):
             client = await self._get_milvus_client(engine)
 
             # Try doc_id first
-            filter_expr = f'metadata["doc_id"] == "{doc_id}" and metadata["namespace"] == "{namespace}"'
+            filter_expr = f'metadata["doc_id"] == {_q(doc_id)} and metadata["namespace"] == {_q(namespace)}'
             
             results = await asyncio.to_thread(
                 client.query,
@@ -968,7 +991,7 @@ class MilvusRepository(VectorStoreRepository):
             # Fallback to id (metadata_id) if no results found
             if not results:
                 logger.debug(f"No results found for doc_id='{doc_id}'. Trying metadata['id'].")
-                filter_expr = f'metadata["id"] == "{doc_id}" and metadata["namespace"] == "{namespace}"'
+                filter_expr = f'metadata["id"] == {_q(doc_id)} and metadata["namespace"] == {_q(namespace)}'
                 results = await asyncio.to_thread(
                     client.query,
                     collection_name=engine.index_name,
@@ -1000,7 +1023,7 @@ class MilvusRepository(VectorStoreRepository):
             client = await self._get_milvus_client(engine)
 
             # Build filter expression
-            filter_expr = f'metadata["id"] == "{metadata_id}" and metadata["namespace"] == "{namespace}"'
+            filter_expr = f'metadata["id"] == {_q(metadata_id)} and metadata["namespace"] == {_q(namespace)}'
 
             # Query with filter (limit to max results) (wrapped in asyncio.to_thread for non-blocking)
             results = await asyncio.to_thread(
@@ -1078,7 +1101,7 @@ class MilvusRepository(VectorStoreRepository):
             client = await self._get_milvus_client(engine)
 
             # Build filter expression
-            filter_expr = f'metadata["namespace"] == "{namespace}"'
+            filter_expr = f'metadata["namespace"] == {_q(namespace)}'
 
             # Query with filter
             output_fields = ["id", "metadata"]
@@ -1123,7 +1146,7 @@ class MilvusRepository(VectorStoreRepository):
             client = await self._get_milvus_client(engine)
 
             # Build filter expression
-            filter_expr = f'metadata["namespace"] == "{namespace}"'
+            filter_expr = f'metadata["namespace"] == {_q(namespace)}'
 
             # Query with filter to get all items (wrapped in asyncio.to_thread for non-blocking)
             results = await asyncio.to_thread(
@@ -1175,7 +1198,7 @@ class MilvusRepository(VectorStoreRepository):
             client = await self._get_milvus_client(engine)
 
             # Build filter expression
-            filter_expr = f'metadata["source"] == "{source}" and metadata["namespace"] == "{namespace}"'
+            filter_expr = f'metadata["source"] == {_q(source)} and metadata["namespace"] == {_q(namespace)}'
 
             # Query with filter (wrapped in asyncio.to_thread for non-blocking)
             results = await asyncio.to_thread(
@@ -1239,9 +1262,9 @@ class MilvusRepository(VectorStoreRepository):
                 logger.info(f"Clearing namespace '{namespace}' before upserting.")
                 client = await self._get_milvus_client(engine)
                 if metadata_id:
-                    filter_expr = f'metadata["namespace"] == "{namespace}" && metadata["id"] == "{metadata_id}"'
+                    filter_expr = f'metadata["namespace"] == {_q(namespace)} && metadata["id"] == {_q(metadata_id)}'
                 else:
-                    filter_expr = f'metadata["namespace"] == "{namespace}"'
+                    filter_expr = f'metadata["namespace"] == {_q(namespace)}'
                 try:
                     await asyncio.to_thread(
                         client.delete,

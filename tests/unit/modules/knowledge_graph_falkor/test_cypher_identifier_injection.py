@@ -132,9 +132,7 @@ async def test_text2cypher_executor_runs_read_only(repo):
     assert repo._execute_query.call_args.kwargs.get("read_only") is True
 
 
-# ponytail: /nodes/search is not exercised — /nodes/{node_id} is declared first
-# and shadows it (pre-existing routing bug, the endpoint is unreachable today).
-@pytest.mark.parametrize("path", ["/nodes?label=X"])
+@pytest.mark.parametrize("path", ["/nodes?label=X", "/nodes/search?label=X&property_key=k&property_value=v"])
 def test_invalid_identifier_is_a_client_error_not_a_500(path):
     from unittest.mock import patch
 
@@ -152,3 +150,104 @@ def test_invalid_identifier_is_a_client_error_not_a_500(path):
         response = TestClient(app).get(prefix + path)
 
     assert response.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# Sync repository (FalkorGraphRepository): same identifiers, same guarantees.
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def sync_repo():
+    from unittest.mock import MagicMock
+
+    from tilellm.modules.knowledge_graph_falkor.repository.falkor_repository import FalkorGraphRepository
+
+    r = FalkorGraphRepository.__new__(FalkorGraphRepository)
+    r._execute_query = MagicMock(return_value=[])
+    return r
+
+
+@pytest.mark.parametrize("call", [
+    lambda r: r.find_nodes_by_label(EVIL),
+    lambda r: r.find_nodes_by_property(EVIL, "name", "x"),
+    lambda r: r.find_nodes_by_property("Entity", "name = 'a' OR true //", "x"),
+    lambda r: r.create_node(Node(label=EVIL, properties={"name": "a"})),
+    lambda r: r.create_node(Node(label="Entity", properties={"a: 1}) DETACH DELETE n //": 1})),
+    lambda r: r.create_relationship(Relationship(source_id="1", target_id="2", type=EVIL)),
+    lambda r: r.create_relationship(Relationship(source_id="1", target_id="2", type="REL",
+                                                 properties={"x}]->() DETACH DELETE n //": 1})),
+])
+@pytest.mark.asyncio
+async def test_sync_api_identifiers_are_rejected_before_any_query(sync_repo, call):
+    # the "sync" repository exposes async methods over the blocking FalkorDB client
+    with pytest.raises(ValueError, match="identifier"):
+        await call(sync_repo)
+    sync_repo._execute_query.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sync_update_node_rejects_property_keys(sync_repo):
+    sync_repo.find_node_by_id = AsyncMock(return_value=Node(id="1", label="Entity", properties={}))
+    with pytest.raises(ValueError, match="identifier"):
+        await sync_repo.update_node("1", properties={"a = 1 DETACH DELETE n //": 1})
+    sync_repo._execute_query.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_sync_valid_identifiers_still_work(sync_repo):
+    await sync_repo.find_nodes_by_label("ATTIVITÀ")
+
+    assert "(n:ATTIVITÀ)" in sync_repo._execute_query.call_args.args[0]
+
+
+def test_sync_read_only_execution_uses_ro_query():
+    from unittest.mock import MagicMock
+
+    from tilellm.modules.knowledge_graph_falkor.repository.falkor_repository import FalkorGraphRepository
+
+    r = FalkorGraphRepository.__new__(FalkorGraphRepository)
+    graph = MagicMock(name="graph")
+    graph.ro_query.return_value = MagicMock(result_set=[], header=[])
+    r._get_graph = lambda **kw: graph
+
+    r._execute_query("MATCH (n) DETACH DELETE n", {}, namespace="ns", read_only=True)
+
+    graph.ro_query.assert_called_once()
+    graph.query.assert_not_called()
+
+
+def test_sync_repository_implements_every_abstract_method():
+    from tilellm.modules.knowledge_graph_falkor.repository.falkor_repository import FalkorGraphRepository
+
+    assert not FalkorGraphRepository.__abstractmethods__
+
+
+@pytest.mark.asyncio
+async def test_sync_find_nodes_by_source_id_is_parametrized(sync_repo):
+    await sync_repo.find_nodes_by_source_id("chunk-1", namespace="ns")
+
+    query, params = sync_repo._execute_query.call_args.args[:2]
+    assert "$source_id IN n.source_ids" in query and params["source_id"] == "chunk-1"
+
+
+def test_nodes_search_is_not_shadowed_by_node_id_route():
+    """/nodes/{node_id} used to be declared first and swallowed /nodes/search."""
+    from unittest.mock import patch
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from tilellm.modules.knowledge_graph_falkor import controllers
+
+    app = FastAPI()
+    app.include_router(controllers.router)
+    search = AsyncMock(return_value=[])
+    get_node = AsyncMock(return_value=None)
+    with patch.object(controllers.kg_logic, "search_nodes", search), \
+         patch.object(controllers.kg_logic, "get_node", get_node):
+        response = TestClient(app).get(
+            controllers.router.prefix + "/nodes/search?label=Entity&property_key=name&property_value=a")
+
+    assert response.status_code == 200
+    search.assert_awaited_once()
+    get_node.assert_not_called()

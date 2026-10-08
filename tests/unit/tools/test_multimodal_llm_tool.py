@@ -279,15 +279,13 @@ class TestMultimodalLLMTool(unittest.TestCase):
 class TestMultimodalToolIntegration(unittest.TestCase):
     """Test di integrazione per il tool multimodale con MCP"""
 
-    @patch('tilellm.tools.multimodal_llm_tool.HumanMessage')
-    @patch('tilellm.tools.multimodal_llm_tool.SystemMessage')
-    def test_tool_message_construction(self, mock_system_msg, mock_human_msg):
-        """Test: Verifica costruzione corretta dei messaggi"""
+    def test_tool_message_construction(self):
+        """The LLM receives a SystemMessage with the custom system prompt and a
+        HumanMessage with the user prompt (checked on the messages actually
+        passed to ainvoke: the tool imports the message classes locally, so
+        patching them at module level never intercepted anything)."""
+        from langchain_core.messages import HumanMessage, SystemMessage
 
-        # VECCHIO CODICE (commentato):
-        # Test semplice senza mock dei messaggi
-
-        # NUOVO CODICE: Test con mock per verificare i parametri esatti
         mock_llm = AsyncMock()
         mock_llm.bind = Mock(return_value=mock_llm)
         mock_response = Mock()
@@ -295,16 +293,12 @@ class TestMultimodalToolIntegration(unittest.TestCase):
         mock_llm.ainvoke = AsyncMock(return_value=mock_response)
 
         tool = create_multimodal_llm_tool(mock_llm)
+        asyncio.run(tool.ainvoke({"prompt": "Test", "system_prompt": "Custom system"}))
 
-        # Esegui il tool
-        asyncio.run(tool.ainvoke({
-            "prompt": "Test",
-            "system_prompt": "Custom system"
-        }))
-
-        # Verifica che i messaggi siano stati costruiti
-        mock_system_msg.assert_called_once()
-        mock_human_msg.assert_called_once()
+        messages = mock_llm.ainvoke.call_args.args[0]
+        assert isinstance(messages[0], SystemMessage) and messages[0].content == "Custom system"
+        assert isinstance(messages[-1], HumanMessage)
+        assert "Test" in str(messages[-1].content)
 
     def test_realistic_workflow(self):
         """Test: Simula un workflow realistico con MCP"""
@@ -341,7 +335,10 @@ class TestMultimodalToolIntegration(unittest.TestCase):
         self.assertIn("italiano", result)
 
         # Verifica che l'LLM sia stato chiamato con entrambe le immagini
-        self.mock_llm.ainvoke.assert_called_once()
+        mock_llm.ainvoke.assert_called_once()
+        human = mock_llm.ainvoke.call_args.args[0][-1]
+        image_parts = [p for p in human.content if isinstance(p, dict) and p.get("type") in ("image", "image_url")]
+        self.assertEqual(len(image_parts), 2)
 
 
 def run_tests():

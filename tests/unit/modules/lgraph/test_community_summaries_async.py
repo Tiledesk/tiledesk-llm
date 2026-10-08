@@ -59,8 +59,11 @@ class TestCommunitySummariesTask:
 
         fake_response = Mock()
         fake_response.model_dump.return_value = {"status": "success", "communities_processed": 3}
+        # the task imports it inside its body: patch where it is defined
+        from tilellm.modules.lgraph import logic
+
         monkeypatch.setattr(
-            tasks, "summarize_communities_lgraph", AsyncMock(return_value=fake_response)
+            logic, "summarize_communities_lgraph", AsyncMock(return_value=fake_response)
         )
 
         request_dict = _request().model_dump(mode="python")

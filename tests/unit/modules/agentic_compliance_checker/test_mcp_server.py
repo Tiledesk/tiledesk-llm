@@ -17,6 +17,7 @@ import pytest
 
 from tilellm.modules.agentic_compliance_checker.services.langchain_tools import (
     AGENTIC_COMPLIANCE_TOOLS,
+    build_tool,
 )
 from tilellm.modules.agentic_compliance_checker.services.mcp_server import mcp
 from tilellm.modules.agentic_compliance_checker.services.session_store import SessionStore
@@ -45,9 +46,10 @@ def fake_redis():
     SessionStore._client = None
 
 
-def _rpc(client, method, params, msg_id=1):
+def _rpc(client, method, params, msg_id=1, session_id=None):
+    headers = dict(_HEADERS, **({"X-Compliance-Session": session_id} if session_id else {}))
     resp = client.post(_MCP_PATH, json={"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params},
-                        headers=_HEADERS)
+                        headers=headers)
     assert resp.status_code == 200, resp.text
     # streamable_http_path responses are SSE-framed ("event: message\ndata: {...}")
     raw = resp.text.split("data: ", 1)[1] if "data: " in resp.text else resp.text
@@ -119,22 +121,23 @@ async def test_mcp_protocol_round_trip_over_http(client, fake_redis):
     names = {t["name"] for t in list_body["result"]["tools"]}
     assert names == set(AGENTIC_COMPLIANCE_TOOLS.keys())
 
-    error_body = _rpc(client, "tools/call", {
-        "name": "compliance_list_requirements", "arguments": {"session_id": "does-not-exist"},
-    }, msg_id=3)
-    # _safe() turned SessionNotFound into a JSON error string, not a raised
-    # exception — isError stays False, same shape the LangChain adapter returns.
-    assert error_body["result"]["isError"] is False
-    assert "error" in json.loads(error_body["result"]["content"][0]["text"])
+    # The session comes from the X-Compliance-Session header, never from the
+    # tool arguments: without the header, or with an unknown session, the
+    # tool returns a JSON error string (isError stays False, same shape the
+    # LangChain adapter returns).
+    for msg_id, session in ((3, None), (4, "does-not-exist")):
+        error_body = _rpc(client, "tools/call", {
+            "name": "compliance_list_requirements", "arguments": {},
+        }, msg_id=msg_id, session_id=session)
+        assert error_body["result"]["isError"] is False
+        assert "error" in json.loads(error_body["result"]["content"][0]["text"])
 
     # Acceptance check: MCP and LangChain adapters, same tool, same session, same result.
     session_id = _open_session(client)
-    langchain_result = await AGENTIC_COMPLIANCE_TOOLS["compliance_list_requirements"].ainvoke({
-        "session_id": session_id,
-    })
+    langchain_result = await build_tool("compliance_list_requirements", session_id).ainvoke({})
     call_body = _rpc(client, "tools/call", {
-        "name": "compliance_list_requirements", "arguments": {"session_id": session_id},
-    }, msg_id=4)
+        "name": "compliance_list_requirements", "arguments": {},
+    }, msg_id=5, session_id=session_id)
     mcp_result = call_body["result"]["content"][0]["text"]
     assert json.loads(mcp_result) == json.loads(langchain_result)
 

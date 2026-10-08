@@ -218,7 +218,7 @@ async def test_get_ids_namespace_success(mocker):
 
     mock_pinecone_client.describe_index.assert_called_once_with(mock_engine.index_name)
     mock_pinecone_client.IndexAsyncio.assert_called_once_with(name=mock_engine.index_name, host="dummy-host")
-    mock_index_async.describe_index_stats.assert_called_once()
+    mock_index_in_block.describe_index_stats.assert_called_once()  # called on the index yielded by "async with"
     mock_index_async.__aenter__.return_value.query.assert_called_once()
     
     call_kwargs = mock_index_async.__aenter__.return_value.query.call_args[1]

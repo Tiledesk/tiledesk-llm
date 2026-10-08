@@ -1,3 +1,4 @@
+import inspect
 #!/usr/bin/env python3
 """
 Unit tests for controller functions.
@@ -269,18 +270,19 @@ class TestAskToLLM:
         )
         
         mock_structured_llm = AsyncMock()
-        mock_result = Mock()
-        mock_result.model_dump = Mock(return_value={"name": "John", "age": 30})
-        mock_structured_llm.ainvoke = AsyncMock(return_value=mock_result)
+        # with_structured_output returns the pydantic model itself (no usage
+        # metadata): a Mock() would answer every attribute with another Mock.
+        mock_structured_llm.ainvoke = AsyncMock(return_value=TestSchema(name="John", age=30))
         
         mock_chat_model = AsyncMock()
         mock_chat_model.with_structured_output = Mock(return_value=mock_structured_llm)
         
-        with patch('tilellm.controller.controller.inject_llm_async', lambda f: f):
-            result = await ask_to_llm(question, chat_model=mock_chat_model)
-            
-            content = json.loads(result.body.decode('utf-8'))
-            assert content['answer'] == {"name": "John", "age": 30}
+        # The decorator is applied at import time: patching it afterwards does
+        # nothing, the real one would replace chat_model with a live client.
+        result = await inspect.unwrap(ask_to_llm)(question, chat_model=mock_chat_model)
+
+        content = json.loads(result.body.decode('utf-8'))
+        assert content['answer'] == {"name": "John", "age": 30}
 
 
 class TestAskReasonLLM:
@@ -303,10 +305,10 @@ class TestAskReasonLLM:
         mock_chat_model.ainvoke = AsyncMock(return_value=mock_message)
         
         # Mock get_reasoning_content function
-        with patch('tilellm.controller.controller.inject_reason_llm_async', lambda f: f):
-            with patch('tilellm.controller.controller.get_reasoning_content', 
-                      return_value=(False, "Reasoned answer", "")):
-                result = await ask_reason_llm(question, chat_model=mock_chat_model)
+        with patch('tilellm.controller.controller.get_reasoning_content',
+                   return_value=(False, "Reasoned answer", "")):
+            if True:
+                result = await inspect.unwrap(ask_reason_llm)(question, chat_model=mock_chat_model)
                 
                 assert isinstance(result, JSONResponse)
                 content = json.loads(result.body.decode('utf-8'))
@@ -322,6 +324,8 @@ class TestAskHybridWithMemory:
         """Test basic hybrid search with memory."""
         question = QuestionAnswer(
             question="Test question",
+            namespace="ns",
+            engine={"name": "qdrant"},
             top_k=5,
             reranking=False,
             chat_history_dict={}
@@ -343,13 +347,13 @@ class TestAskHybridWithMemory:
                           return_value=([], [])):
                     with patch('tilellm.controller.controller.fetch_question_vectors',
                               AsyncMock(return_value=(None, None))):
-                        with patch('tilellm.controller.controller.retrieve_documents',
-                                  return_value=Mock()):
+                        with patch('tilellm.controller.controller.aretrieve_documents',
+                                  AsyncMock(return_value=Mock())):
                             with patch('tilellm.controller.controller.create_chains',
                                       AsyncMock(return_value=(Mock(), Mock(), Mock()))):
                                 with patch('tilellm.controller.controller.generate_answer_with_history',
                                           AsyncMock(return_value=Mock())):
-                                    result = await ask_hybrid_with_memory(
+                                    result = await inspect.unwrap(ask_hybrid_with_memory)(
                                         question,
                                         repo=mock_repo,
                                         llm=mock_llm,

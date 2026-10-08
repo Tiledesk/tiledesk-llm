@@ -245,3 +245,52 @@ async def test_increment_attempts_counts_up(fake_redis):
 
     assert first == 1
     assert second == 2
+
+
+# ---------------------------------------------------------------------------
+# gptkey at rest: encrypted (Fernet) with AGENTIC_COMPLIANCE_ENCRYPTION_KEY, or
+# a key derived from JWT_SECRET_KEY; with neither, a session is never opened
+# (the key is never stored in clear).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_gptkey_is_not_stored_in_clear(fake_redis):
+    session_id = await SessionStore.create(_request(), _lot())
+
+    raw = await fake_redis.hget(f"acc:sess:{session_id}", "config")
+
+    assert "sk-real-secret-value" not in raw
+    assert (await SessionStore.get_request(session_id)).gptkey.get_secret_value() == "sk-real-secret-value"
+
+
+@pytest.mark.asyncio
+async def test_without_any_key_the_session_is_refused(fake_redis, monkeypatch):
+    monkeypatch.delenv("AGENTIC_COMPLIANCE_ENCRYPTION_KEY", raising=False)
+    monkeypatch.delenv("JWT_SECRET_KEY", raising=False)
+
+    with pytest.raises(ValueError, match="AGENTIC_COMPLIANCE_ENCRYPTION_KEY"):
+        await SessionStore.create(_request(), _lot())
+    assert await fake_redis.keys("acc:sess:*") == []
+
+
+@pytest.mark.asyncio
+async def test_jwt_secret_is_the_fallback_key(fake_redis, monkeypatch):
+    monkeypatch.delenv("AGENTIC_COMPLIANCE_ENCRYPTION_KEY", raising=False)
+    monkeypatch.setenv("JWT_SECRET_KEY", "a-jwt-secret")
+    session_id = await SessionStore.create(_request(), _lot())
+
+    assert "sk-real-secret-value" not in await fake_redis.hget(f"acc:sess:{session_id}", "config")
+    assert (await SessionStore.get_request(session_id)).gptkey.get_secret_value() == "sk-real-secret-value"
+
+
+@pytest.mark.asyncio
+async def test_dedicated_key_takes_precedence_over_jwt(fake_redis, monkeypatch):
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("JWT_SECRET_KEY", "a-jwt-secret")
+    monkeypatch.setenv("AGENTIC_COMPLIANCE_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    session_id = await SessionStore.create(_request(), _lot())
+
+    monkeypatch.delenv("AGENTIC_COMPLIANCE_ENCRYPTION_KEY")
+    with pytest.raises(ValueError):  # the JWT-derived key can't read it
+        await SessionStore.get_request(session_id)

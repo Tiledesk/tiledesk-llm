@@ -73,8 +73,8 @@ class MinerUConverter:
             import mineru  # noqa: F401
         except ImportError as e:
             raise RuntimeError(
-                "MinerU is not installed. Install it with: "
-                "poetry install -E mineru  (or -E all)."
+                "MinerU is not installed. Install the extra: "
+                "uv sync --active --extra mineru  (or --all-extras)."
             ) from e
 
     @staticmethod

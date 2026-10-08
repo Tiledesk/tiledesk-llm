@@ -292,16 +292,11 @@ class TestPredictLocalWithOomRecovery:
         assert call_count["n"] >= 2, "Deve avere chiamato predict almeno 2 volte (OOM + retry)"
         mock_torch.cuda.empty_cache.assert_called()  # empty_cache invocato nel recovery
 
-    def test_gpu_lock_serializes_concurrent_calls(self):
-        """
-        Con _gpu_lock, N thread concorrenti devono serializzare i forward pass.
-        Verifica che non ci siano esecuzioni sovrapposte.
-        """
+    @staticmethod
+    def _reranker_with_slow_predict(concurrent_count):
         from tilellm.tools.reranker import TileReranker
 
         TileReranker.clear_cache()
-
-        concurrent_count = {"n": 0, "max": 0}
         lock = threading.Lock()
 
         def slow_predict(pairs, **kwargs):
@@ -315,30 +310,34 @@ class TestPredictLocalWithOomRecovery:
 
         mock_ce = MagicMock()
         mock_ce.predict = MagicMock(side_effect=slow_predict)
-
         with patch("tilellm.tools.reranker.CrossEncoder", return_value=mock_ce):
             with patch.object(TileReranker, "_use_fp16", False):
                 with patch.object(TileReranker, "_warmup_on_load", False):
                     reranker = TileReranker("mock-model")
         reranker.model = mock_ce
+        return reranker
 
-        pairs = [("q", f"doc {i}") for i in range(5)]
-        pair_lengths = [estimate_pair_tokens("q", f"doc {i}") for i in range(5)]
+    def test_sync_rerank_from_many_threads_never_overlaps_on_gpu(self):
+        """
+        rerank_documents (sync) is called from worker threads — the compliance
+        checker does it via run_in_executor. Forward passes must still be one
+        at a time: since the GPU lock was replaced by the single-thread GPU
+        executor, the sync path ran predict in the CALLER thread (max=4 here).
+        """
+        from langchain_core.documents import Document
 
-        results = []
-        errors = []
+        concurrent_count = {"n": 0, "max": 0}
+        reranker = self._reranker_with_slow_predict(concurrent_count)
+        docs = [Document(page_content=f"doc {i}") for i in range(5)]
+        results, errors = [], []
 
-        def run_predict():
+        def run():
             try:
-                s = reranker._predict_local_with_oom_recovery(
-                    pairs=pairs, pair_lengths=pair_lengths,
-                    token_budget=2048, max_pairs=5
-                )
-                results.append(s)
+                results.append(reranker.rerank_documents("q", docs, top_k=2))
             except Exception as e:
                 errors.append(e)
 
-        threads = [threading.Thread(target=run_predict) for _ in range(4)]
+        threads = [threading.Thread(target=run) for _ in range(4)]
         for t in threads:
             t.start()
         for t in threads:
@@ -346,7 +345,21 @@ class TestPredictLocalWithOomRecovery:
 
         assert not errors, f"Thread errors: {errors}"
         assert len(results) == 4
-        # Il _gpu_lock garantisce che non ci siano più di 1 forward pass concorrente
         assert concurrent_count["max"] <= 1, (
             f"Forward pass concorrenti rilevati: max={concurrent_count['max']}"
         )
+
+    @pytest.mark.asyncio
+    async def test_async_rerank_does_not_deadlock_on_the_gpu_thread(self):
+        """arerank_documents already runs rerank_documents ON the GPU thread:
+        the sync path must not queue itself behind itself."""
+        import asyncio
+
+        from langchain_core.documents import Document
+
+        reranker = self._reranker_with_slow_predict({"n": 0, "max": 0})
+        docs = [Document(page_content=f"doc {i}") for i in range(5)]
+
+        result = await asyncio.wait_for(reranker.arerank_documents("q", docs, top_k=2), timeout=5)
+
+        assert len(result) == 2

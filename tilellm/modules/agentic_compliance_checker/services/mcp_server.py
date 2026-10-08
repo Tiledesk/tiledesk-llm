@@ -4,17 +4,16 @@ exposed over the Model Context Protocol (streamable HTTP) for an external
 agent (Claude Desktop, another orchestrator) that does not go through
 POST /api/ask.
 
-This file registers `AGENTIC_COMPLIANCE_TOOLS[name].coroutine` directly — the
-exact plain async function LangChain's @tool decorator wraps, `_safe()` error
-handling included — not a second implementation of the seven tools. Both
-adapters therefore expose identical behaviour (arguments, error shape) by
-construction, matching tools_core.py's one-implementation-per-tool principle.
-Reusing `.coroutine` does mean per-argument descriptions come only from the
-plain function's own docstring, not from the richer `Field(description=...)`
-metadata on langchain_tools.py's `*Args` Pydantic classes (those only govern
-the LangChain-side schema) — a real but minor documentation gap on the MCP
-side, not a functional one; the top-level tool description (full docstring)
-is identical either way.
+This file registers the same functions langchain_tools.py binds
+(`AGENTIC_COMPLIANCE_TOOLS[name].function`, `_safe()` error handling
+included) — not a second implementation of the seven tools — with the same
+argument schema (`*Args`, field descriptions included). Both adapters expose
+identical behaviour by construction.
+
+The session is NOT a tool argument: the MCP client sends it in the
+X-Compliance-Session header of the HTTP connection, read here from the
+request. It never enters the model's context, so it can't leak from it nor be
+swapped by the agent.
 
 Config choices, both deployment-driven:
 
@@ -25,7 +24,7 @@ Config choices, both deployment-driven:
   landing on a different worker would get "session not found" at the MCP
   transport layer, even though our own `session_id` (stored in Redis) is
   still perfectly valid on any worker. Every tool call here is already
-  self-contained via that `session_id` argument, so there is nothing for a
+  self-contained via the X-Compliance-Session header, so there is nothing for a
   stateful MCP transport session to usefully hold onto — statelessness
   avoids the multi-worker failure mode instead of working around it.
 - DNS-rebinding protection is opt-in via env var
@@ -36,22 +35,25 @@ Config choices, both deployment-driven:
   auth). Set the env var if this endpoint ends up reachable from a network
   path a browser could reach and DNS-rebind through.
 
-See docs/AGENTIC_COMPLIANCE_MCP.md for the full writeup, including why this
-mounts as a plain Starlette Route (built in controllers.py) instead of
-`app.mount()`-ing the Starlette app `streamable_http_app()` returns, and why
-the transport below is a small stable dispatcher instead of a bare ASGI app.
+It mounts as a plain Starlette Route (built in controllers.py) instead of
+`app.mount()`-ing the Starlette app `streamable_http_app()` returns, and the
+transport below is a small stable dispatcher instead of a bare ASGI app (see
+the comments in controllers.py and _MCPTransport).
 """
 import contextlib
+import inspect
+import json
 import logging
 import os
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Callable, Optional
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.types import Receive, Scope, Send
 
 from tilellm.modules.agentic_compliance_checker.services.langchain_tools import (
     AGENTIC_COMPLIANCE_TOOLS,
+    tool_description,
 )
 
 logger = logging.getLogger(__name__)
@@ -63,14 +65,46 @@ _allowed_hosts = [
 ]
 
 
+SESSION_HEADER = "X-Compliance-Session"
+
+
+def _session_from(ctx: Context) -> Optional[str]:
+    request = ctx.request_context.request
+    return request.headers.get(SESSION_HEADER) if request is not None else None
+
+
+def _mcp_tool(name: str) -> Callable[..., Any]:
+    """The tool function with the session taken from the request header and
+    the argument signature of its `*Args` schema (FastMCP builds the input
+    schema from the signature: no session_id in it)."""
+    spec = AGENTIC_COMPLIANCE_TOOLS[name]
+
+    async def run(ctx: Context, **kwargs: Any) -> str:
+        session_id = _session_from(ctx)
+        if not session_id:
+            return json.dumps({"error": f"Missing {SESSION_HEADER} header (session from "
+                                        "POST /api/agentic-compliance/sessions)."})
+        return await spec.function(session_id=session_id, **kwargs)
+
+    params = [inspect.Parameter("ctx", inspect.Parameter.KEYWORD_ONLY, annotation=Context)]
+    params += [
+        inspect.Parameter(field_name, inspect.Parameter.KEYWORD_ONLY, default=field, annotation=field.annotation)
+        for field_name, field in spec.args_schema.model_fields.items()
+    ]
+    run.__signature__ = inspect.Signature(params, return_annotation=str)
+    run.__name__ = name
+    return run
+
+
 def _build_mcp() -> FastMCP:
     mcp = FastMCP(
         "tiledesk-agentic-compliance",
         instructions=(
             "Tool per la verifica di conformita' di gare pubbliche (D.Lgs. 36/2023). "
-            "Apri prima una sessione con POST /api/agentic-compliance/sessions per "
-            "ottenere un session_id, poi chiama compliance_list_requirements per "
-            "scoprire gli id dei requisiti/criteri della gara."
+            "Apri prima una sessione con POST /api/agentic-compliance/sessions e invia "
+            "il session_id ottenuto nell'header HTTP X-Compliance-Session della "
+            "connessione MCP (mai come argomento dei tool), poi chiama "
+            "compliance_list_requirements per scoprire gli id dei requisiti/criteri."
         ),
         stateless_http=True,
         transport_security=TransportSecuritySettings(
@@ -79,10 +113,8 @@ def _build_mcp() -> FastMCP:
             allowed_origins=_allowed_hosts,
         ),
     )
-    for name, tool_obj in AGENTIC_COMPLIANCE_TOOLS.items():
-        # .coroutine is the plain async function `@tool(args_schema=...)` wraps —
-        # reusing it, not re-wrapping tools_core's _core coroutines a second time.
-        mcp.add_tool(tool_obj.coroutine, name=name, description=tool_obj.description)
+    for name in AGENTIC_COMPLIANCE_TOOLS:
+        mcp.add_tool(_mcp_tool(name), name=name, description=tool_description(name))
     return mcp
 
 

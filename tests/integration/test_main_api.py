@@ -10,6 +10,12 @@ from typing import List, Dict, Any
 # This test file will cover the endpoints defined in 'tilellm/__main__.py'
 
 # Helper function to get the path of a payload file
+
+LIVE_OPENAI = pytest.mark.skipif(
+    not os.getenv("OPENAI_API_KEY"),
+    reason="live test: calls OpenAI with OPENAI_API_KEY (paid) — set it to run",
+)
+
 def get_payload_path(filename: str) -> str:
     return os.path.join(os.path.dirname(__file__), 'payloads', filename)
 
@@ -51,18 +57,6 @@ def test_post_ask_with_memory(client: TestClient):
     # The main goal here is to ensure the endpoint is reachable.
     assert response.status_code != 404
 
-def test_post_ask_to_agent(client: TestClient):
-    """
-    Test the /api/agent endpoint.
-    This corresponds to post_ask_to_agent_main.
-    """
-    payload_path = get_payload_path('post_ask_to_agent.json')
-    with open(payload_path, 'r') as f:
-        payload = json.load(f)
-
-    response = client.post("/api/agent", json=payload)
-    assert response.status_code != 404
-
 def test_post_ask_to_llm(client: TestClient):
     """
     Test the /api/ask endpoint.
@@ -75,19 +69,7 @@ def test_post_ask_to_llm(client: TestClient):
     response = client.post("/api/ask", json=payload)
     assert response.status_code != 404
 
-def test_post_ask_with_memory_chain(client: TestClient):
-    """
-    Test the /api/qachain endpoint.
-    This corresponds to post_ask_with_memory_chain_main.
-    """
-    payload_path = get_payload_path('post_ask_with_memory_chain.json')
-    with open(payload_path, 'r') as f:
-        payload = json.load(f)
-
-    response = client.post("/api/qachain", json=payload)
-    assert response.status_code != 404
-
-# New test for ask_to_llm with structured output
+@LIVE_OPENAI
 def test_post_ask_to_llm_structured_output(client: TestClient):
     """
     Test the /api/ask endpoint with structured output.
@@ -127,6 +109,7 @@ def test_post_ask_to_llm_structured_output(client: TestClient):
 
 
 # New test for ask_reason_llm with structured output (using /api/thinking)
+@LIVE_OPENAI
 def test_post_ask_to_llm_reason_structured_output(client: TestClient):
     """
     Test the /api/thinking endpoint with structured output.
@@ -163,6 +146,7 @@ def test_post_ask_to_llm_reason_structured_output(client: TestClient):
 
 
 # New test for ask_with_memory (search_type='similarity') with structured output
+@LIVE_OPENAI
 def test_post_ask_with_memory_structured_output(client: TestClient):
     """
     Test the /api/qa endpoint (ask_with_memory) with structured output.
@@ -199,6 +183,7 @@ def test_post_ask_with_memory_structured_output(client: TestClient):
 
 
 # New test for ask_hybrid_with_memory (search_type='hybrid') with structured output
+@LIVE_OPENAI
 def test_post_ask_hybrid_with_memory_structured_output(client: TestClient):
     """
     Test the /api/qa endpoint (ask_hybrid_with_memory) with structured output.

@@ -8,6 +8,8 @@ unit-test the pure parser (`_content_list_to_result`) against a realistic
 
 import os
 
+import sys
+
 import pytest
 from PIL import Image
 
@@ -91,8 +93,10 @@ def test_missing_image_file_is_skipped(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_call_without_mineru_raises_actionable_error():
-    # mineru is not installed in the test venv → clear install hint, not a crash.
+async def test_call_without_mineru_raises_actionable_error(monkeypatch):
+    # Simulate an environment without mineru (it may well be installed in the
+    # dev venv): a clear install hint, not a crash deep inside a conversion.
+    monkeypatch.setitem(sys.modules, "mineru", None)
     conv = MinerUConverter()
     with pytest.raises(RuntimeError, match=r"mineru"):
         await conv("/tmp/doc.pdf", "doc1")

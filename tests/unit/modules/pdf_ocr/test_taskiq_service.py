@@ -41,6 +41,20 @@ def _create_test_request(
     )
 
 
+@pytest.fixture
+def queued_task(mocker):
+    """Idempotency guard without a real Redis, and a kiq() returning a task
+    with a real task_id (an AsyncMock attribute would fail PDFScrapingJob)."""
+    dedup = "tilellm.modules.pdf_ocr.services.pdf_dedup_service"
+    mocker.patch(f"{dedup}.get_doc_state", AsyncMock(return_value=None))
+    mocker.patch(f"{dedup}.set_queued", AsyncMock(return_value=True))
+    mocker.patch(f"{dedup}.force_reset", AsyncMock())
+    mock_task = AsyncMock()
+    mock_task.kiq = AsyncMock(return_value=MagicMock(task_id="taskiq-task-1"))
+    mocker.patch('tilellm.modules.task_executor.tasks.process_pdf_document_task', mock_task)
+    return mock_task
+
+
 class TestTaskiqService:
     """Test TaskiqService functionality."""
 
@@ -51,12 +65,8 @@ class TestTaskiqService:
         assert hasattr(service, 'enabled')
         
     @pytest.mark.asyncio
-    async def test_submit_with_url(self, mocker):
+    async def test_submit_with_url(self, queued_task):
         """Test submitting a PDF with URL content."""
-        mock_task = AsyncMock()
-        mock_task.kiq = AsyncMock()
-        mocker.patch('tilellm.modules.task_executor.tasks.process_pdf_document_task', mock_task)
-        
         service = TaskiqService()
         service.taskiq_available = True
         service.enabled = True
@@ -67,13 +77,13 @@ class TestTaskiqService:
         )
         
         result = await service.submit(
-            job_id="test-job-456",
+            doc_id="test-job-456",
             request=request
         )
-        
-        assert result['job_id'] == "test-job-456"
-        assert 'message' in result
-        assert mock_task.kiq.called
+
+        assert result["doc_id"] == "test-job-456"
+        assert result["task_id"] == "taskiq-task-1"
+        assert queued_task.kiq.await_args.kwargs["doc_id"] == "test-job-456"
         
     @pytest.mark.asyncio
     async def test_submit_rejects_base64(self):
@@ -88,7 +98,7 @@ class TestTaskiqService:
         )
         
         with pytest.raises(ValueError, match="must be a URL"):
-            await service.submit(job_id="test-job-base64", request=request)
+            await service.submit(doc_id="test-job-base64", request=request)
             
     @pytest.mark.asyncio
     async def test_submit_raises_if_not_available(self):
@@ -100,7 +110,7 @@ class TestTaskiqService:
         request = _create_test_request(job_id="test")
         
         with pytest.raises(RuntimeError, match="Taskiq is not available"):
-            await service.submit(job_id="test", request=request)
+            await service.submit(doc_id="test", request=request)
             
     @pytest.mark.asyncio
     async def test_submit_raises_if_not_enabled(self):
@@ -112,7 +122,7 @@ class TestTaskiqService:
         request = _create_test_request(job_id="test")
         
         with pytest.raises(RuntimeError, match="Taskiq is not enabled"):
-            await service.submit(job_id="test", request=request)
+            await service.submit(doc_id="test", request=request)
             
     @pytest.mark.asyncio
     async def test_process_synchronously(self, mocker):
@@ -284,13 +294,9 @@ class TestIntegration:
     """Integration tests for the PDF OCR services."""
     
     @pytest.mark.asyncio
-    async def test_full_workflow_with_taskiq_url(self, mocker):
+    async def test_full_workflow_with_taskiq_url(self, mocker, queued_task):
         """Test full workflow: create job -> submit URL to Taskiq -> check status."""
-        # Mock the task
-        mock_task = AsyncMock()
-        mock_task.kiq = AsyncMock()
-        mocker.patch('tilellm.modules.task_executor.tasks.process_pdf_document_task', mock_task)
-        
+
         # Clear singletons
         import tilellm.modules.pdf_ocr.services.taskiq_service as taskiq_mod
         import tilellm.modules.pdf_ocr.services.job_service as job_mod
@@ -326,7 +332,10 @@ class TestIntegration:
         task_id = result["task_id"]
         job_service.register_task(task_id=task_id, doc_id=doc_id, file_name="integration-test.pdf")
 
-        # Check status (async now)
+        # Check status (async now) — result backend mocked: no real Redis in unit tests
+        backend = AsyncMock()
+        backend.is_result_ready = AsyncMock(return_value=False)
+        mocker.patch.object(job_service, '_get_result_backend', return_value=backend)
         status = await job_service.get_status_response(task_id)
         assert status is not None
         assert status.job_id == task_id

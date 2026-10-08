@@ -1,3 +1,4 @@
+import io
 import os
 import re
 import time
@@ -128,8 +129,11 @@ def _extract_html_tables(html: str, source_url: str) -> List[Document]:
     for table_idx, table_tag in enumerate(table_tags):
         table_html = str(table_tag)
         try:
-            dfs = pd.read_html(table_html)
-        except Exception:
+            # StringIO: pandas >= 3 treats a literal string as a file path
+            # (FileNotFoundError, silently swallowed here → no tables at all).
+            dfs = pd.read_html(io.StringIO(table_html))
+        except Exception as e:
+            logger.warning("HTML table %d of %s not parsed: %s", table_idx, source_url, e)
             continue
         if not dfs:
             continue
@@ -1157,7 +1161,9 @@ async def handle_regex_custom_chunk(url: str, chunk_regex: str, browser_headers:
         if isinstance(match, tuple) and len(match) >= 2:
             # 2-group regex: (identifier, content) — include identifier in content for RAG context
             page_identifier = match[0]
-            page_content = (match[0] + "\n" + match[1]).strip()
+            # an empty page must be skipped: check the captured body, not the
+            # identifier-prefixed text (which is never empty)
+            page_content = (match[0] + "\n" + match[1]).strip() if match[1].strip() else ""
         elif isinstance(match, str):
             # 1-group regex: the full match is the chunk content
             page_identifier = len(documents) + 1

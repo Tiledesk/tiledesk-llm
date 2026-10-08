@@ -181,16 +181,18 @@ class TestPDFToImagesConversion:
     async def test_pdf_to_images_core_success(self):
         """Test successful PDF to images conversion."""
         # Mock pdf2image
-        mock_image = Mock()
-        mock_image.save = Mock()
-        
-        mock_convert_from_bytes = Mock(return_value=[mock_image, mock_image])
-        
-        # Mock PIL image and encode function
+        # Two distinct pages, encoded by content: encoding runs in parallel
+        # threads, so a side_effect LIST would be consumed in completion order
+        # (flaky); the result must still follow the page order.
+        page_1, page_2 = Mock(), Mock()
+        encoded = {id(page_1): 'base64_1', id(page_2): 'base64_2'}
+
+        mock_convert_from_bytes = Mock(return_value=[page_1, page_2])
+
         with patch('tilellm.modules.conversion.services.conversion_service.convert_from_bytes',
                   mock_convert_from_bytes):
             with patch('tilellm.modules.conversion.services.conversion_service.encode_image_to_base64',
-                      side_effect=['base64_1', 'base64_2']):
+                      side_effect=lambda image: encoded[id(image)]):
                 
                 result = await _pdf_to_images_core("test.pdf", b"pdf bytes", dpi=300)
                 

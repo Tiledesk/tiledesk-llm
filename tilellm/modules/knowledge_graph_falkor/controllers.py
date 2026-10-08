@@ -144,6 +144,22 @@ async def create_node(node: Node):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create node: {str(e)}")
 
+# Declared before /nodes/{node_id}, which would otherwise match "search" as a node_id.
+@router.get("/nodes/search", response_model=List[Node])
+async def search_nodes(
+    label: str = Query(..., description="Node label"),
+    property_key: str = Query(..., description="Property key to search"),
+    property_value: str = Query(..., description="Property value to match"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of nodes to return")
+):
+    """Search for nodes by property value."""
+    try:
+        return await kg_logic.search_nodes(label, property_key, property_value, limit)
+    except ValueError as e:  # invalid label / property key
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
+
 @router.get("/nodes/{node_id}", response_model=Node)
 async def get_node(node_id: str):
     """Retrieve a node by its ID."""
@@ -169,21 +185,6 @@ async def get_nodes_by_label(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to retrieve nodes: {str(e)}")
-
-@router.get("/nodes/search", response_model=List[Node])
-async def search_nodes(
-    label: str = Query(..., description="Node label"),
-    property_key: str = Query(..., description="Property key to search"),
-    property_value: str = Query(..., description="Property value to match"),
-    limit: int = Query(100, ge=1, le=1000, description="Maximum number of nodes to return")
-):
-    """Search for nodes by property value."""
-    try:
-        return await kg_logic.search_nodes(label, property_key, property_value, limit)
-    except ValueError as e:  # invalid label / property key
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Search failed: {str(e)}")
 
 @router.put("/nodes/{node_id}", response_model=Node)
 async def update_node(node_id: str, node_update: NodeUpdate):

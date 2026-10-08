@@ -6,6 +6,8 @@ Run with:
 """
 
 import pytest
+from tilellm.models import Engine
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from typing import List
 
@@ -71,16 +73,21 @@ def mock_llm():
 @pytest.fixture
 def mock_embeddings():
     """Create mock embeddings model."""
+    import hashlib
+    import random
+
+    def vector(text):
+        # distinct, deterministic vectors: identical ones make clustering degenerate
+        rnd = random.Random(int(hashlib.sha256(text.encode()).hexdigest(), 16))
+        return [rnd.uniform(-1, 1) for _ in range(32)]
+
     embeddings = MagicMock()
-    
-    def mock_embed_query(text):
-        return [0.1] * 1536  # Return dummy embedding
-    
-    def mock_embed_documents(texts):
-        return [[0.1] * 1536 for _ in texts]
-    
-    embeddings.embed_query = mock_embed_query
-    embeddings.embed_documents = mock_embed_documents
+    embeddings.embed_query = vector
+    embeddings.embed_documents = lambda texts: [vector(t) for t in texts]
+    # RaptorService awaits the async API: without these the clustering step
+    # failed on every build and silently fell back to sequential grouping.
+    embeddings.aembed_query = AsyncMock(side_effect=vector)
+    embeddings.aembed_documents = AsyncMock(side_effect=lambda texts: [vector(t) for t in texts])
     return embeddings
 
 
@@ -97,30 +104,36 @@ def mock_sparse_encoder():
     return encoder
 
 
+ENGINE = Engine(name="qdrant")
+
+
+def _vector_repo():
+    """The vector-store contract RAPTOR uses today: aadd_documents to index the
+    tree nodes, get_chunks_from_repo (RetrievalChunksResult-like) to retrieve.
+    Stateful: retrieval returns what was indexed, as a real store would."""
+    indexed = []
+
+    async def aadd_documents(engine, documents, namespace, **kwargs):
+        indexed.extend(documents)
+
+    async def get_chunks_from_repo(qa):
+        docs = indexed or [Document(page_content=f"Result {i}", metadata={"level": i % 2}) for i in range(5)]
+        return SimpleNamespace(chunks=[d.page_content for d in docs], metadata=[d.metadata for d in docs])
+
+    repo = AsyncMock()
+    repo.aadd_documents = AsyncMock(side_effect=aadd_documents)
+    repo.get_chunks_from_repo = AsyncMock(side_effect=get_chunks_from_repo)
+    return repo
+
+
+@pytest.fixture
+def mock_vector_repo():
+    return _vector_repo()
+
+
 @pytest.fixture
 def mock_vector_repo_with_hybrid():
-    """Create mock vector store repository with hybrid support."""
-    repo = AsyncMock()
-    
-    async def mock_add_item(item_data):
-        # Verify sparse embeddings if present
-        if "sparse_embeddings" in item_data:
-            assert len(item_data["sparse_embeddings"]) == len(item_data["embeddings"])
-        return True
-    
-    async def mock_similarity_search_with_score(namespace, query_embedding, k, filter=None):
-        results = []
-        for i in range(min(k, 5)):
-            doc = Document(
-                page_content=f"Result {i}",
-                metadata={"id": f"result_{i}", "level": 0, "has_sparse": True}
-            )
-            results.append((doc, 0.9 - i * 0.1))
-        return results
-    
-    repo.add_item = mock_add_item
-    repo.similarity_search_with_score = mock_similarity_search_with_score
-    return repo
+    return _vector_repo()
 
 
 @pytest.fixture
@@ -233,6 +246,7 @@ class TestModels:
     def test_raptor_request(self):
         """Test RaptorRequest."""
         request = RaptorRequest(
+            engine=ENGINE,
             namespace="test-ns",
             doc_id="test_doc",
             config=RaptorConfig(cluster_size=7),
@@ -245,6 +259,7 @@ class TestModels:
     def test_raptor_retrieval_request(self):
         """Test RaptorRetrievalRequest."""
         request = RaptorRetrievalRequest(
+            engine=ENGINE,
             question="What is this about?",
             namespace="test-ns",
             strategy=RaptorRetrievalStrategy.TREE_TRAVERSAL,
@@ -295,7 +310,8 @@ class TestRepository:
         
         namespace = await repo.get_summary_namespace("test-ns")
         
-        assert namespace == "test-ns_summaries"
+        # deprecated alias of get_raptor_namespace: nodes live in "{ns}-raptor"
+        assert namespace == "test-ns-raptor"
 
 
 # ---------------------------------------------------------------------------
@@ -330,6 +346,7 @@ class TestRaptorService:
             llm=mock_llm,
             embeddings=mock_embeddings,
             vector_repo=mock_vector_repo,
+            engine=ENGINE,
             config=config,
         )
         
@@ -365,6 +382,7 @@ class TestRaptorService:
             llm=mock_llm,
             embeddings=mock_embeddings,
             vector_repo=mock_vector_repo,
+            engine=ENGINE,
             config=config,
         )
         
@@ -391,6 +409,7 @@ class TestRetrievalStrategies:
         retriever = RaptorRetriever(repo=repo)
         
         request = RaptorRetrievalRequest(
+            engine=ENGINE,
             question="What is this about?",
             namespace="test-ns",
             strategy=RaptorRetrievalStrategy.COLLAPSED_TREE,
@@ -421,6 +440,7 @@ class TestRetrievalStrategies:
         retriever = RaptorRetriever(repo=repo)
         
         request = RaptorRetrievalRequest(
+            engine=ENGINE,
             question="What are the main themes?",
             namespace="test-ns",
             strategy=RaptorRetrievalStrategy.TREE_TRAVERSAL,
@@ -483,6 +503,7 @@ class TestIntegration:
             llm=mock_llm,
             embeddings=mock_embeddings,
             vector_repo=mock_vector_repo,
+            engine=ENGINE,
             config=config,
         )
         
@@ -492,6 +513,7 @@ class TestIntegration:
         retriever = RaptorRetriever(repo=repo)
         
         retrieval_request = RaptorRetrievalRequest(
+            engine=ENGINE,
             question="What is discussed?",
             namespace="test-ns",
             doc_id="test_doc",
@@ -605,6 +627,7 @@ class TestHybridSearch:
             llm=mock_llm,
             embeddings=mock_embeddings,
             vector_repo=mock_vector_repo_with_hybrid,
+            engine=ENGINE,
             config=config,
             sparse_encoder=mock_sparse_encoder,
         )
@@ -617,6 +640,7 @@ class TestHybridSearch:
         from tilellm.modules.raptor.models.models import RaptorRetrievalRequest
         
         request = RaptorRetrievalRequest(
+            engine=ENGINE,
             question="What is this?",
             namespace="test-ns",
             use_hybrid=True,
@@ -640,23 +664,21 @@ class TestHybridSearch:
         )
         
         assert node.sparse_embedding_ref == "sparse_emb_123"
-    
+
     @pytest.mark.asyncio
-    async def test_generate_sparse_embedding(
-        self,
-        mock_sparse_encoder,
+    async def test_sparse_encoder_is_handed_to_the_vector_store(
+        self, sample_chunks, mock_llm, mock_embeddings, mock_sparse_encoder, mock_redis,
     ):
-        """Test sparse embedding generation."""
-        repo = RaptorRepository()
-        service = RaptorService(repo=repo)
-        
-        sparse_vector = await service._generate_sparse_embedding(
-            text="Test query for sparse encoding",
-            sparse_encoder=mock_sparse_encoder,
+        """Hybrid indexing: the sparse encoder reaches aadd_documents for every
+        batch of tree nodes (the vector store encodes; RaptorService doesn't)."""
+        vector_repo = _vector_repo()
+        service = RaptorService(repo=RaptorRepository(redis_client=mock_redis))
+
+        await service.build_raptor_tree(
+            chunks=sample_chunks, namespace="test-ns", doc_id="test_doc", llm=mock_llm,
+            embeddings=mock_embeddings, vector_repo=vector_repo, engine=ENGINE,
+            config=RaptorConfig(cluster_size=5, max_levels=2), sparse_encoder=mock_sparse_encoder,
         )
-        
-        assert sparse_vector is not None
-        assert "indices" in sparse_vector
-        assert "values" in sparse_vector
-        assert len(sparse_vector["indices"]) > 0
-        assert len(sparse_vector["values"]) > 0
+
+        calls = vector_repo.aadd_documents.await_args_list
+        assert calls and all(c.kwargs["sparse_encoder"] is mock_sparse_encoder for c in calls)
