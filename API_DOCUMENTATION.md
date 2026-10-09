@@ -297,6 +297,45 @@ Checks indexing operation status.
 
 ## Question & Answer APIs
 
+### RAG answers and third-party content (`/api/qa`, `/api/v2/qa`)
+
+Retrieved chunks are treated as untrusted data:
+- invisible characters and text imitating the prompt structure (`</context>`, `######`,
+  `SYSTEM:` lines, chat-template tokens) are neutralized before the chunks enter the prompt;
+- a fixed security clause is appended to the system prompt, after a custom `system_context` too;
+- in the answer (also when streaming and in `chat_history_dict`), markdown images and links to
+  hosts not listed in `ANSWER_ALLOWED_LINK_HOSTS` lose their URL: an image becomes its alt
+  text, a link becomes `text (host)`, a bare URL is reduced to `scheme://host`.
+
+### Agent answers and tool results (`/api/ask`, `/api/thinking` with tools)
+
+Tool results (MCP servers, registry tools) are treated the same way: they are sanitized
+before every model call, and a security clause is appended to the agent's system prompt, after a
+custom `system_context` too. In the final `answer`, markdown images lose their URL unless the
+host is in `ANSWER_ALLOWED_LINK_HOSTS`; links are kept when their host appears in a tool result
+or in the allowlist, otherwise they are reduced as above.
+
+### POST `/api/v2/qa`
+
+Agentic Q&A on a namespace: same body as `/api/qa` (`QuestionAnswer`) plus three optional
+switches for the graph nodes.
+
+| Field | Default | Effect |
+|---|---|---|
+| `use_guard` | `true` | Input guard (LLM call): refuses unsafe or off-topic questions |
+| `use_intent_router` | `true` | Routing node (LLM call) before retrieval; `false` sends the question straight to RAG (one LLM call less) |
+| `use_hallucination_grader` | `true` | Checks the answer is grounded in the retrieved context |
+
+```json
+{
+  "question": "How many vacation days do employees get?",
+  "namespace": "my-kb",
+  "engine": {"name": "qdrant"},
+  "gptkey": "sk-...",
+  "use_intent_router": false
+}
+```
+
 ### POST `/api/qa`
 Query with conversation history on knowledge base.
 

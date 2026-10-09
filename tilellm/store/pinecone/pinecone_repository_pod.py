@@ -4,6 +4,7 @@ from typing import List, Optional, Union, Dict
 
 from fastapi import HTTPException
 
+from tilellm.shared.untrusted_content import strip_invisible_documents
 from tilellm.models.schemas import (IndexingResult,
                                     RetrievalChunksResult
                                     )
@@ -298,6 +299,7 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
 
     #@inject_embedding()
     async def aadd_documents(self, engine: Engine, documents: List[Document], namespace: str, embedding_model: any, sparse_encoder: Union[str, TEIConfig, None] = None, **kwargs):
+        documents = strip_invisible_documents(documents)  # F1
         # Pinecone Pod indices are always dense only
         # Normalize sparse_encoder (empty string treated as None)
         if sparse_encoder == "":

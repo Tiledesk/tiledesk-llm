@@ -13,12 +13,26 @@ from langchain_core.messages import (
     AIMessage,
     HumanMessage,
     SystemMessage,
-    ToolMessage,
 )
 from langgraph.runtime import Runtime
 
+from tilellm.shared.untrusted_content import sanitize_retrieved_text
+
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_content(content):
+    if isinstance(content, str):
+        return sanitize_retrieved_text(content)
+    if isinstance(content, list):
+        return [
+            {**item, 'text': sanitize_retrieved_text(item['text'])}
+            if isinstance(item, dict) and item.get('type') == 'text' and isinstance(item.get('text'), str)
+            else item
+            for item in content
+        ]
+    return content
 
 
 class MessageCleaningMiddleware(AgentMiddleware):
@@ -174,17 +188,18 @@ class MessageCleaningMiddleware(AgentMiddleware):
                         cleaned_list.append(item)
                 cleaned_content = cleaned_list
 
+            # F4: tool results are third-party text (MCP servers, web pages, APIs)
+            if msg.type == 'tool':
+                sanitized = _sanitize_content(cleaned_content)
+                if sanitized != cleaned_content:
+                    cleaned_content, was_cleaned = sanitized, True
+
             if was_cleaned:
-                self.logger.debug(f"[MIDDLEWARE] Message {idx} ({msg.type}): cleaned base64")
+                self.logger.debug(f"[MIDDLEWARE] Message {idx} ({msg.type}): cleaned")
 
                 # Reconstruct message with cleaned content
                 if msg.type == 'tool':
-                    cleaned_messages.append(ToolMessage(
-                        content=cleaned_content,
-                        tool_call_id=msg.tool_call_id,
-                        name=getattr(msg, 'name', None),
-                        id=getattr(msg, 'id', None)
-                    ))
+                    cleaned_messages.append(msg.model_copy(update={'content': cleaned_content}))
                 elif msg.type == 'ai':
                     cleaned_messages.append(AIMessage(
                         content=cleaned_content,

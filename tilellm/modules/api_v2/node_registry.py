@@ -17,9 +17,9 @@ NODE_REGISTRY = [
             "Classifica l'intent come 'compliance' o 'qa' e smista il flusso. "
             "In caso di compliance estrae i requisiti in formato CSV."
         ),
-        "can_disable": False,
+        "can_disable": True,
         "default_enabled": True,
-        "request_field": None,
+        "request_field": "use_intent_router",
     },
     {
         "name": "compliance",

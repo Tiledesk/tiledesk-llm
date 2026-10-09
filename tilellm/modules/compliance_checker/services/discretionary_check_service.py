@@ -21,6 +21,7 @@ from tilellm.modules.compliance_checker.logic import (
     _build_evidence_block,
     _response_text,
     invoke_json_judge,
+    evaluator_manipulation_note,
     EXCLUDE_CHIARIMENTI_FILTER,
     _pick_best_source,
     _retrieve_evidence,
@@ -636,6 +637,14 @@ class DiscretionaryCheckService:
             )
             human_review_reason = (
                 f"{human_review_reason} {coherence_note}" if human_review_reason else coherence_note
+            )
+
+        # F3: deterministic, whatever the judge said — an offer addressing the evaluator
+        manipulation = evaluator_manipulation_note(chunks)
+        if manipulation:
+            human_review_required = True
+            human_review_reason = (
+                f"{human_review_reason} {manipulation}" if human_review_reason else manipulation
             )
 
         result = DiscretionaryResult(

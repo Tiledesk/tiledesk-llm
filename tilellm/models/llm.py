@@ -13,6 +13,7 @@ from pydantic import (
 )
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
+from tilellm.shared.untrusted_content import strip_invisible
 from tilellm.models.base import AWSAuthentication, ServerConfig
 from tilellm.models.document_type import DocumentType
 from tilellm.models.embedding import LlmEmbeddingModel, EmbeddingModel
@@ -234,6 +235,12 @@ class ItemSingle(BaseModel):
             "Keys here override the corresponding base metadata fields."
         ),
     )
+
+    @field_validator("content")
+    @classmethod
+    def strip_invisible_content(cls, v):
+        # F1: hidden instructions in zero-width / Unicode "tag" characters never get indexed
+        return strip_invisible(v) if isinstance(v, str) else v
 
     @model_validator(mode="after")
     def validate_browser_headers(self):

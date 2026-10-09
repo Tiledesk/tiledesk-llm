@@ -23,6 +23,13 @@ from tilellm.models.schemas import (RetrievalResult,
                                     Citation,
                                     _QuotedAnswer)
 from tilellm.models import ChatEntry, ServerConfig
+from tilellm.shared.untrusted_content import (
+    RAG_USER_TURN,
+    StreamLinkFilter,
+    neutralize_external_links,
+    url_hosts,
+    with_security_clause,
+)
 
 from tilellm.shared.sparse_util import HybridRetriever
 from langchain_community.document_transformers import EmbeddingsRedundantFilter
@@ -362,20 +369,20 @@ async def create_chains(llm, question_answer, retriever):
     # If using history in prompt as text (legacy/simple mode)
     if not question_answer.include_history_in_prompt:
         # No history in prompt or handled externally
-        messages.append(("system", qa_system_prompt))
+        messages.append(("system", with_security_clause(qa_system_prompt)))
     elif not question_answer.contextualize_prompt:
         # History injected as text (contextualize_prompt=False)
         # We'll use a placeholder or handle it in generate_answer_with_history
         if question_answer.system_context:
-            messages.append(("system", qa_system_prompt))
+            messages.append(("system", with_security_clause(qa_system_prompt)))
         else:
-            messages.append(("system", const.qa_system_prompt_with_history_injected))
+            messages.append(("system", with_security_clause(const.qa_system_prompt_with_history_injected)))
     else:
         # Standard mode: History as MessagesPlaceholder
-        messages.append(("system", qa_system_prompt))
+        messages.append(("system", with_security_clause(qa_system_prompt)))
         messages.append(MessagesPlaceholder("chat_history"))
 
-    messages.append(("human", "{input}"))
+    messages.append(("human", RAG_USER_TURN))
     qa_prompt = ChatPromptTemplate.from_messages(messages)
 
     question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
@@ -491,8 +498,8 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                 system_final = f"Summary of previous conversation: {summary_text}\n\n" + system_final
 
         qa_prompt_final = ChatPromptTemplate.from_messages([
-            ("system", system_final),
-            ("human", "{input}"),
+            ("system", with_security_clause(system_final)),
+            ("human", RAG_USER_TURN),
         ])
 
         chain_input = {"input": question_answer.question}
@@ -610,7 +617,7 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                 })
 
             return StreamingResponse(
-                get_stream_llm_simple(),
+                _neutralize_stream(get_stream_llm_simple()),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache"}
             )
@@ -717,8 +724,8 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                 system_stream = const.qa_system_prompt_with_history_injected
 
             qa_prompt_stream = ChatPromptTemplate.from_messages([
-                ("system", system_stream),
-                ("human", "{input}"),
+                ("system", with_security_clause(system_stream)),
+                ("human", RAG_USER_TURN),
             ])
 
             retrieve_docs = (lambda x: x["input"]) | retriever
@@ -819,7 +826,7 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                 })
 
             return StreamingResponse(
-                get_stream_llm_citations_ctx(),
+                _neutralize_stream(get_stream_llm_citations_ctx()),
                 media_type="text/event-stream",
                 headers={"Cache-Control": "no-cache"}
             )
@@ -1064,7 +1071,9 @@ def verify_answer(s):
         success = False
     else:
         success = True
-    return s, success
+    # Final answer (also what enters the chat history): no images/links to hosts
+    # outside ANSWER_ALLOWED_LINK_HOSTS — the exfiltration channel of injected chunks.
+    return neutralize_external_links(s), success
 
 async def get_streaming_response(runnable_with_history, question, callback_handler, question_answer_list):
     async def get_stream_llm(run_with_history, q):
@@ -1197,7 +1206,7 @@ async def get_streaming_response(runnable_with_history, question, callback_handl
         })
 
     return StreamingResponse(
-        get_stream_llm(runnable_with_history, question),
+        _neutralize_stream(get_stream_llm(runnable_with_history, question)),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache"}
     )
@@ -1224,6 +1233,31 @@ def _strip_citation_markers(text: str) -> str:
 def _create_event(event_type: str, data: dict) -> str:
     import json
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+
+async def _neutralize_stream(events):
+    """Neutralize external links in the streamed answer: chunk events pass
+    through one StreamLinkFilter (a link split across chunks is caught); what it
+    holds back is released, cleaned, before the next non-chunk event."""
+    import json
+
+    link_filter = StreamLinkFilter()
+    message_id = None
+    async for event in events:
+        if event.startswith("event: chunk\n"):
+            data = json.loads(event.split("data: ", 1)[1])
+            message_id = data.get("message_id", message_id)
+            content = link_filter.feed(data.get("content") or "")
+            if content:
+                yield _create_event("chunk", {**data, "content": content})
+            continue
+        pending = link_filter.flush()
+        if pending:
+            yield _create_event("chunk", {"content": pending, "message_id": message_id})
+        yield event
+    pending = link_filter.flush()
+    if pending:
+        yield _create_event("chunk", {"content": pending, "message_id": message_id})
 
 
 
@@ -1301,9 +1335,11 @@ def extract_conversation_flow(messages: list) -> dict:
             if tool_content:
                 tools.append(tool_content)
 
+    # F4/F5: links may point to hosts a tool returned; images never leave the answer
+    link_hosts = set().union(*(url_hosts(t) for t in tools)) if tools else set()
     return {
         "tools": tools,
-        "ai_message": ai_message
+        "ai_message": neutralize_external_links(ai_message, link_hosts=link_hosts)
     }
 
 

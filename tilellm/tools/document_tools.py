@@ -24,6 +24,7 @@ from langchain_community.document_transformers.beautiful_soup_transformer import
 from langchain_core.documents import Document
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from tilellm.shared.outbound_url import guard_page, outbound_requests_get, validate_outbound_url
+from tilellm.shared.untrusted_content import strip_invisible_documents
 
 logger = logging.getLogger(__name__)
 
@@ -1098,7 +1099,7 @@ async def fetch_documents(type_source, source, scrape_type, parameters_scrape_ty
     if not has_content:
         raise ValueError(f"Documents retrieved but source content is empty: {source} (source type: {type_source})")
     
-    return documents
+    return strip_invisible_documents(documents)
 
 
 async def handle_regex_custom_chunk(url: str, chunk_regex: str, browser_headers: Optional[dict] = None) -> list[Document]:

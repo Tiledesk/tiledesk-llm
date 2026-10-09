@@ -34,6 +34,7 @@ from tilellm.controller.controller_utils import (
     get_all_filtered_tools,
 )
 from tilellm.controller.agent_middleware import MessageCleaningMiddleware
+from tilellm.shared.untrusted_content import AGENT_SECURITY_CLAUSE, sanitize_retriever, with_security_clause
 from tilellm.shared.tags_query_parser import build_tags_filter
 from tilellm.controller.helpers import _get_question_list
 from tilellm.models.schemas import (
@@ -267,6 +268,9 @@ async def ask_hybrid_with_memory(
         retriever = await aretrieve_documents(
             question_answer, results, contextualized_retrieval_query
         )
+
+        # Retrieved chunks are third-party text: sanitized before entering any prompt
+        retriever = sanitize_retriever(retriever)
 
         # Create chains for contextualization and Q&A
         history_aware_retriever, question_answer_chain, qa_prompt = await create_chains(
@@ -1702,7 +1706,7 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
         agent_executor = create_agent(
             model=chat_model,
             tools=all_tools,
-            system_prompt=system_prompt,
+            system_prompt=with_security_clause(system_prompt, AGENT_SECURITY_CLAUSE),
             middleware=[message_cleaner],
         )
 
@@ -2361,7 +2365,7 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
         base_agent = create_agent(
             model=chat_model,
             tools=all_tools,
-            system_prompt=system_instructions,
+            system_prompt=with_security_clause(system_instructions, AGENT_SECURITY_CLAUSE),
             middleware=[message_cleaner],
         )
 
@@ -2586,6 +2590,9 @@ async def ask_with_memory(
 
         else:
             retriever = base_retriever
+
+        # Retrieved chunks are third-party text: sanitized before entering any prompt
+        retriever = sanitize_retriever(retriever)
 
         # Create chains for contextualization and Q&A
         history_aware_retriever, question_answer_chain, qa_prompt = await create_chains(

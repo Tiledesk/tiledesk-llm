@@ -155,6 +155,7 @@ async def ask_question_simple(payload: QASimpleRequest):
 
     Flags:
       - ``use_guard`` (default True): set False to skip the input safety guard.
+      - ``use_intent_router`` (default True): set False to go straight to RAG.
       - ``use_hallucination_grader`` (default True): set False to return the RAG
         answer without grounding verification.
 

@@ -11,6 +11,7 @@ def _ascii_id(s: str) -> str:
     normalized = unicodedata.normalize('NFKD', s)
     return re.sub(r'[^\x00-\x7F]', '-', normalized)
 
+from tilellm.shared.untrusted_content import strip_invisible_documents
 from tilellm.models.schemas import (IndexingResult,
                                     RetrievalChunksResult
                                     )
@@ -576,31 +577,9 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
     @staticmethod
     async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers, chunk_regex=None):
-        if type_source in ['url', 'txt', 'md']:
-            documents = await get_content_by_url(source,
-                                                 scrape_type,
-                                                 parameters_scrape_type_4=parameters_scrape_type_4,
-                                                 browser_headers=browser_headers)
-        elif type_source == 'regex_custom':
-            documents = await handle_regex_custom_chunk(source, chunk_regex, browser_headers)
-        else:
-            documents = load_document(source, type_source)
-
-        # Verifica che i documenti siano validi
-        if not documents:
-            raise ValueError(f"No documents retrieved from the source: {source} (source type: {type_source})")
-
-        # Verifica che ci sia almeno un documento con contenuto non vuoto
-        has_content = False
-        for doc in documents:
-            if doc and doc.page_content and doc.page_content.strip():
-                has_content = True
-                break
-
-        if not has_content:
-            raise ValueError(f"Documents retrieved but source content is empty: {source} (source type: {type_source})")
-
-        return documents
+        from tilellm.tools import document_tools
+        return await document_tools.fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4,
+                                                    browser_headers, chunk_regex=chunk_regex)
 
     @staticmethod
     def process_document_metadata(document, metadata):
@@ -774,6 +753,7 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
 
 
     async def aadd_documents(self, engine: Engine, documents: List[Document], namespace: str, embedding_model: any, sparse_encoder: Union[str, TEIConfig, None] = None, **kwargs):
+        documents = strip_invisible_documents(documents)  # F1
         # Normalize sparse_encoder (empty string treated as None)
         if sparse_encoder == "":
             sparse_encoder = None

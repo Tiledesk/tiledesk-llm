@@ -10,6 +10,7 @@ from langchain_core.documents import Document
 from langchain_pinecone.vectorstores import PineconeVectorStore
 
 
+from tilellm.shared.untrusted_content import strip_invisible_documents
 from tilellm.models.schemas import (RepositoryQueryResult,
                                     RepositoryItems,
                                     RepositoryNamespaceResult,
@@ -203,6 +204,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
         pass
 
     async def aadd_documents(self, engine: Engine, documents: List[Document], namespace: str, embedding_model: any, sparse_encoder: Union[str, TEIConfig, None] = None, **kwargs):
+        documents = strip_invisible_documents(documents)  # F1
         logger.info(f"Adding {len(documents)} documents to namespace '{namespace}' with hybrid embeddings.")
         
         # Ensure sparse_encoder is initialized if hybrid search is desired

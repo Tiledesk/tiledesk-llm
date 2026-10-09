@@ -13,6 +13,7 @@ from typing import Dict, List, Optional, Union, Any
 from langchain_core.documents import Document
 from langchain_milvus import Milvus
 
+from tilellm.shared.untrusted_content import strip_invisible_documents
 from tilellm.models.schemas import (
     RepositoryQueryResult,
     RepositoryItems,
@@ -1239,6 +1240,7 @@ class MilvusRepository(VectorStoreRepository):
         1. Delete the collection using delete_collection() method
         2. Or set sparse_enabled=False to use dense-only mode
         """
+        documents = strip_invisible_documents(documents)  # F1
         if self.sparse_enabled:
             logger.info(f"Adding {len(documents)} documents to namespace '{namespace}' with hybrid embeddings.")
         else:
@@ -1525,28 +1527,9 @@ class MilvusRepository(VectorStoreRepository):
     # Helper methods (same as base class)
     @staticmethod
     async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers, chunk_regex=None):
-        """Fetch documents from source."""
-        if type_source in ['url', 'txt', 'md']:
-            documents = await get_content_by_url(
-                source,
-                scrape_type,
-                parameters_scrape_type_4=parameters_scrape_type_4,
-                browser_headers=browser_headers
-            )
-        elif type_source == 'regex_custom':
-            documents = await handle_regex_custom_chunk(source, chunk_regex, browser_headers)
-        else:
-            documents = load_document(source, type_source)
-        
-        # Validation
-        if not documents:
-            raise ValueError(f"No documents retrieved from the source: {source} (source type: {type_source})")
-        
-        has_content = any(doc and doc.page_content and doc.page_content.strip() for doc in documents)
-        if not has_content:
-            raise ValueError(f"Documents retrieved but source content is empty: {source} (source type: {type_source})")
-        
-        return documents
+        from tilellm.tools import document_tools
+        return await document_tools.fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4,
+                                                    browser_headers, chunk_regex=chunk_regex)
 
     @staticmethod
     def process_document_metadata(document, metadata):

@@ -38,6 +38,9 @@ from tilellm.modules.compliance_checker.prompts.evidence_rules import EVIDENCE_R
 from tilellm.shared.utility import inject_llm_chat_async, inject_repo_async
 from tilellm.shared import token_tracking
 from tilellm.shared.token_tracking import TokenUsageCollector, model_name_of
+from tilellm.shared.untrusted_content import (
+    EVALUATOR_SECURITY_CLAUSE, sanitize_retrieved_text, with_security_clause,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +93,43 @@ def _parse_judge_json(raw: str) -> dict:
     raise JudgeInvocationError(f"Nessun oggetto JSON nella risposta del giudice: {raw[:200]!r}")
 
 
+# ponytail: fixed phrase list (it/en), 0 hits on ~15k indexed real chunks (2026-10-09).
+# False positives only cost a human review;
+# a classifier trained on manipulative offers (Laya) replaces it at this same point.
+_EVALUATOR_DIRECTED = re.compile(
+    r"\b(?:si\s+)?(?:attribuisc|assegn|conced|riconosc)\w*\s+(?:a\s+quest\w+\s+offerta\s+)?(?:il\s+|un\s+)?"
+    r"(?:massimo\s+(?:del\s+)?punteggio|punteggio\s+(?:massimo|pieno)|massimo\s+dei\s+punti)"
+    r"|\b(?:nota|messaggio|istruzion\w*|avviso|comunicazione)\s+(?:per|al|alla|ai|alle)\s+(?:la\s+|il\s+)?"
+    r"(?:commission\w*|valutator\w*|esaminator\w*|ia\b|intelligenza\s+artificiale|assistente)"
+    r"|\bcommissione\s+(?:giudicatrice|aggiudicatrice|valutatrice|esaminatrice|di\s+gara)\s+"
+    r"(?:dovr[àa]|deve|devono|è\s+tenuta|consideri|valuti|attribuisca|assegni)"
+    r"|\bvalutator[ei]\s+(?:dovr[àa]|deve|devono)"
+    r"|\bignora\w*\s+(?:tutte\s+)?(?:le\s+)?istruzioni"
+    r"|\b(?:assign|award|give|grant)\w*\s+(?:this\s+(?:offer|bid)\s+)?(?:the\s+)?(?:maximum|full|highest|max)\s+(?:score|points|marks)"
+    r"|\b(?:note|message|instructions?|notice)\s+(?:to|for)\s+(?:the\s+)?"
+    r"(?:evaluat\w+|review\w*|committee|assessors?|(?:ai|llm|language)\s+model|ai\b|assistant)"
+    r"|\b(?:evaluators?|reviewers?|assessors?|(?:evaluation|tender|award\w*|selection)\s+committee)"
+    r"\s+(?:must|should|shall|is\s+required\s+to)"
+    r"|\bignore\s+(?:all\s+|any\s+)?(?:the\s+)?(?:previous|prior|above)\s+instructions",
+    re.IGNORECASE,
+)
+
+
+def evaluator_directed_phrase(text: str) -> Optional[str]:
+    """F3: the first phrase in an offer that addresses the evaluator/system, or None."""
+    m = _EVALUATOR_DIRECTED.search(text or "")
+    return m.group(0) if m else None
+
+
+def evaluator_manipulation_note(chunks: List[str]) -> Optional[str]:
+    for chunk in chunks:
+        phrase = evaluator_directed_phrase(chunk)
+        if phrase:
+            return (f"Possibile manipolazione: un'evidenza dell'offerta si rivolge alla "
+                    f"commissione/al valutatore («{phrase}»). Verificare manualmente.")
+    return None
+
+
 async def invoke_json_judge(llm, system_prompt: str, user_prompt: str, on_response=None) -> dict:
     """Call the judge LLM and parse its JSON verdict, retrying a bounded number of
     times on transient failures (provider error, timeout, empty/malformed
@@ -100,7 +140,7 @@ async def invoke_json_judge(llm, system_prompt: str, user_prompt: str, on_respon
     for attempt in range(1, _MAX_JUDGE_ATTEMPTS + 1):
         try:
             response = await llm.ainvoke([
-                SystemMessage(content=system_prompt),
+                SystemMessage(content=with_security_clause(system_prompt, EVALUATOR_SECURITY_CLAUSE)),
                 HumanMessage(content=user_prompt),
             ])
             if on_response is not None:
@@ -345,6 +385,7 @@ async def _retrieve_evidence(
     try:
         retrieval = await repo.get_chunks_from_repo(qa)
         chunks, metadata = retrieval.chunks or [], retrieval.metadata or []
+        chunks = [sanitize_retrieved_text(c) for c in chunks]  # F3: offers are adversarial
     except Exception as e:
         logger.warning("Retrieval failed for %s: %s", label, e)
         return [], []
@@ -437,6 +478,11 @@ async def _judge_requirement(
         # evidence. Reporting it as the source put unrelated documents next to
         # "not found" verdicts on a real tender.
         evidence_doc, evidence_page, evidence_section = "", 1, ""
+
+    manipulation = evaluator_manipulation_note(chunks)
+    if manipulation:
+        justification = f"{manipulation} Giudizio del modello: {judgment}. {justification}"
+        judgment = "not_verifiable"
 
     return ComplianceResult(
         requirement_id=req.id,

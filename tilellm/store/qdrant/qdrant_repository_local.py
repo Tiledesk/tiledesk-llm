@@ -7,6 +7,7 @@ from langchain_core.documents import Document
 from langchain_qdrant import  QdrantVectorStore
 from qdrant_client import models, AsyncQdrantClient, QdrantClient
 
+from tilellm.shared.untrusted_content import strip_invisible_documents
 from tilellm.models.schemas import (RepositoryQueryResult,
                                     RepositoryItems,
                                     IndexingResult,
@@ -394,6 +395,7 @@ class QdrantRepository(VectorStoreRepository):
 
     async def aadd_documents(self, engine: Engine, documents: List[Document], namespace: str, embedding_model: any, sparse_encoder: Union[str, TEIConfig, None] = None, **kwargs):
         logger.info(f"Adding {len(documents)} documents to namespace '{namespace}' with hybrid embeddings.")
+        documents = strip_invisible_documents(documents)  # F1
 
         sparse_encoder = TiledeskSparseEncoders(sparse_encoder) if sparse_encoder is not None else None
         # 1. Get Qdrant Client

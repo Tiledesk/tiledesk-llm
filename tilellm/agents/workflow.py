@@ -105,10 +105,20 @@ app = workflow.compile()
 # Nodi: guard (opzionale) → intent_router → compliance | rag → grader (opzionale)
 # ---------------------------------------------------------------------------
 
-def _simple_guard_router(state: GraphState):
-    """Skip guardia if use_guard=False on the payload."""
+def _simple_entry_router(state: GraphState):
+    """guard → intent_router → rag, skipping the nodes switched off on the payload."""
     qa = state.get("question_answer")
-    return "guard" if getattr(qa, "use_guard", True) else "skip_guard"
+    if getattr(qa, "use_guard", True):
+        return "guard"
+    return "intent" if getattr(qa, "use_intent_router", True) else "rag"
+
+
+def _simple_after_guard_router(state: GraphState):
+    """After the guard: refuse, or go on (to intent_router unless switched off)."""
+    if state.get("is_on_topic") == "no":
+        return "rifiuta"
+    qa = state.get("question_answer")
+    return "intent" if getattr(qa, "use_intent_router", True) else "rag"
 
 
 def _simple_after_rag_router(state: GraphState):
@@ -131,14 +141,14 @@ simple_workflow.set_entry_point("_start")
 
 simple_workflow.add_conditional_edges(
     "_start",
-    _simple_guard_router,
-    {"guard": "guardia", "skip_guard": "intent_router"},
+    _simple_entry_router,
+    {"guard": "guardia", "intent": "intent_router", "rag": "rag_core"},
 )
 
 simple_workflow.add_conditional_edges(
     "guardia",
-    lambda x: "procedi" if x.get("is_on_topic") != "no" else "rifiuta",
-    {"procedi": "intent_router", "rifiuta": END},
+    _simple_after_guard_router,
+    {"intent": "intent_router", "rag": "rag_core", "rifiuta": END},
 )
 
 simple_workflow.add_conditional_edges(

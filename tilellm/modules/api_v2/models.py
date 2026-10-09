@@ -17,6 +17,13 @@ class QASimpleRequest(QuestionAnswer):
             "Se False il controllo viene saltato e la domanda è considerata on-topic."
         ),
     )
+    use_intent_router: bool = Field(
+        True,
+        description=(
+            "Abilita il router d'intento (chiamata LLM che sceglie tra compliance e RAG). "
+            "Se False la domanda va direttamente al RAG."
+        ),
+    )
     use_hallucination_grader: bool = Field(
         True,
         description=(
