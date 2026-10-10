@@ -11,7 +11,6 @@ from pydantic import (
     model_validator,
     computed_field,
 )
-from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from tilellm.shared.untrusted_content import strip_invisible
 from tilellm.models.base import AWSAuthentication, ServerConfig
@@ -717,29 +716,6 @@ class QuestionToLLM(BaseModel):
         if v is not None and not 0.0 <= v <= 1.0:
             raise ValueError("top_p must be between 0.0 and 1.0.")
         return v
-
-    def create_mcp_client(self):
-        """Crea un'istanza di MultiServerMCPClient dalla configurazione"""
-        import logging
-        _log = logging.getLogger(__name__)
-        config_dict = {
-            name: server_config.model_dump(
-                exclude_unset=True, exclude={"enabled_tools"}
-            )
-            for name, server_config in self.servers.items()
-        }
-        client = MultiServerMCPClient(config_dict)
-        for name, cfg in config_dict.items():
-            headers = cfg.get("headers") or {}
-            _log.info(
-                "MCP server %r create_mcp_client: transport=%s url=%r headers=%d chiavi %s",
-                name,
-                cfg.get("transport"),
-                cfg.get("url"),
-                len(headers),
-                list(headers.keys()) if headers else None,
-            )
-        return client
 
     def get_question_content(self) -> Union[str, List[Dict[str, Any]]]:
         """

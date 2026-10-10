@@ -31,8 +31,8 @@ from tilellm.controller.controller_utils import (
     _create_event,
     extract_conversation_flow,
     create_contextualize_query,
-    get_all_filtered_tools,
 )
+from tilellm.shared.mcp_client import load_tools as get_all_filtered_tools
 from tilellm.controller.agent_middleware import MessageCleaningMiddleware
 from tilellm.shared.untrusted_content import AGENT_SECURITY_CLAUSE, sanitize_retriever, with_security_clause
 from tilellm.shared.tags_query_parser import build_tags_filter
@@ -1271,12 +1271,11 @@ async def ask_mcp_agent_llm(question: QuestionToLLM, chat_model: Any):
     :param chat_model:
     :return:
     """
-    mcp_client = question.create_mcp_client()
 
     try:
         # tools = await mcp_client.get_tools()
 
-        tools = await get_all_filtered_tools(mcp_client, question.servers)
+        tools = await get_all_filtered_tools(question.servers)
         logger.info(f"Available MCP tools: {[tool.name for tool in tools]}")
 
         # Storage condiviso per contenuti base64
@@ -1897,11 +1896,10 @@ async def ask_mcp_agent_llm_simple(question: QuestionToLLM, chat_model=None):
     :param chat_model:
     :return:
     """
-    mcp_client = question.create_mcp_client()
 
     try:
         # tools = await mcp_client.get_tools()
-        tools = await get_all_filtered_tools(mcp_client, question.servers)
+        tools = await get_all_filtered_tools(question.servers)
 
         logger.info(f"Available MCP tools: {[tool.name for tool in tools]}")
 

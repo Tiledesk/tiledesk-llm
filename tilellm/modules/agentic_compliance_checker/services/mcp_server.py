@@ -47,7 +47,7 @@ import logging
 import os
 from typing import Any, AsyncIterator, Callable, Optional
 
-from mcp.server.fastmcp import Context, FastMCP
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.types import Receive, Scope, Send
 
@@ -75,7 +75,7 @@ def _session_from(ctx: Context) -> Optional[str]:
 
 def _mcp_tool(name: str) -> Callable[..., Any]:
     """The tool function with the session taken from the request header and
-    the argument signature of its `*Args` schema (FastMCP builds the input
+    the argument signature of its `*Args` schema (MCPServer builds the input
     schema from the signature: no session_id in it)."""
     spec = AGENTIC_COMPLIANCE_TOOLS[name]
 
@@ -96,8 +96,8 @@ def _mcp_tool(name: str) -> Callable[..., Any]:
     return run
 
 
-def _build_mcp() -> FastMCP:
-    mcp = FastMCP(
+def _build_mcp() -> MCPServer:
+    mcp = MCPServer(
         "tiledesk-agentic-compliance",
         instructions=(
             "Tool per la verifica di conformita' di gare pubbliche (D.Lgs. 36/2023). "
@@ -105,12 +105,6 @@ def _build_mcp() -> FastMCP:
             "il session_id ottenuto nell'header HTTP X-Compliance-Session della "
             "connessione MCP (mai come argomento dei tool), poi chiama "
             "compliance_list_requirements per scoprire gli id dei requisiti/criteri."
-        ),
-        stateless_http=True,
-        transport_security=TransportSecuritySettings(
-            enable_dns_rebinding_protection=bool(_allowed_hosts),
-            allowed_hosts=_allowed_hosts,
-            allowed_origins=_allowed_hosts,
         ),
     )
     for name in AGENTIC_COMPLIANCE_TOOLS:
@@ -121,25 +115,25 @@ def _build_mcp() -> FastMCP:
 class _MCPTransport:
     """Stable ASGI-callable dispatcher, registered as a Route exactly once at
     import time (see controllers.py), that delegates each request to
-    whichever FastMCP instance is currently active.
+    whichever MCPServer instance is currently active.
 
     Why the indirection: mcp.server.streamable_http_manager.
     StreamableHTTPSessionManager.run() may be entered exactly ONCE per
     instance — "Create a new instance if you need to run again" is its own
-    error message. A single module-level `FastMCP`/session_manager built
+    error message. A single module-level `MCPServer`/session_manager built
     once at import time works in production (one worker process, one app
     lifespan, one .run() call for that process's entire life) but breaks the
     moment a lifespan cycle happens more than once in the same process — the
     case a pytest run with fakeredis (via tests/conftest.py's `client`
     fixture) or any other repeated TestClient(app) usage hits directly. This
-    class rebuilds a fresh FastMCP (and re-enters .run() on its fresh
+    class rebuilds a fresh MCPServer (and re-enters .run() on its fresh
     session_manager) on every `activate()`, so each app lifespan cycle gets
     an instance that has only ever run once — true in production and in
     a test suite alike.
     """
 
     def __init__(self) -> None:
-        self._active: Optional[FastMCP] = None
+        self._active: Optional[MCPServer] = None
         self._endpoint = None
 
     @contextlib.asynccontextmanager
@@ -149,7 +143,14 @@ class _MCPTransport:
         # returns a throwaway Starlette app whose only job is holding the one
         # ASGI-callable Route we actually want — see controllers.py for why
         # we take just the callable instead of mounting that whole app.
-        endpoint = mcp.streamable_http_app().routes[0].endpoint
+        endpoint = mcp.streamable_http_app(
+            stateless_http=True,
+            transport_security=TransportSecuritySettings(
+                enable_dns_rebinding_protection=bool(_allowed_hosts),
+                allowed_hosts=_allowed_hosts,
+                allowed_origins=_allowed_hosts,
+            ),
+        ).routes[0].endpoint
         async with mcp.session_manager.run():
             self._active, self._endpoint = mcp, endpoint
             try:
@@ -180,5 +181,5 @@ transport = _MCPTransport()
 # up a full app lifespan (e.g. asserting all seven tools are registered).
 # Safe to build extra instances of this — see _build_mcp's docstring context
 # above: only the *running* transport (via `transport`) is constrained to
-# one .run() per instance, not FastMCP construction itself.
+# one .run() per instance, not MCPServer construction itself.
 mcp = _build_mcp()
