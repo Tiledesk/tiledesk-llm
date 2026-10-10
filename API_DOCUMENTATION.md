@@ -4,6 +4,12 @@ Complete REST API documentation for Tiledesk LLM server.
 
 **Base URL**: `http|https://<host>:<port>`
 
+**Versioning**: every `/api/<path>` endpoint is also served at `/api/v1/<path>` (same handler,
+same request and response contract; e.g. `/api/v1/ask` = `/api/ask`). The unversioned paths keep
+answering. Endpoints already versioned stay as they are (`/api/v1/systemone`, `/api/v2/*`). The
+MCP protocol version is not part of the URL: it is negotiated per server (`protocol` in the MCP
+server configuration).
+
 **Interactive Docs**:
 - Swagger UI: `http|https://<host>:<port>`
 - ReDoc: `http|https://<host>:<port>`

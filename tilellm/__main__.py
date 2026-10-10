@@ -444,6 +444,35 @@ async def redis_consumer(app: FastAPI):
 app = FastAPI(lifespan=redis_consumer)
 
 
+class ApiV1Alias:
+    """/api/v1/<path> serves /api/<path>: same handler, same contract; /api/* keeps
+    answering. Prefixes that already have their own /api/v1 routes (System One) are
+    left alone. Pure ASGI, so streaming responses pass through untouched.
+
+    ponytail: one alias, no per-version routers; a real /api/v2 contract change gets
+    its own routes (as api_v2 already does).
+    """
+
+    def __init__(self, asgi_app, fastapi_app: FastAPI):
+        self.app = asgi_app
+        self._fastapi_app = fastapi_app
+        self._native = None
+
+    async def __call__(self, scope, receive, send):
+        path = scope.get("path", "")
+        if scope["type"] in ("http", "websocket") and path.startswith("/api/v1/"):
+            if self._native is None:  # routers are registered after construction
+                self._native = {p.split("/")[3] for p in self._fastapi_app.openapi()["paths"]
+                                if p.startswith("/api/v1/")}
+            rest = path[len("/api/v1/"):]
+            if rest.split("/", 1)[0] not in self._native:
+                scope = dict(scope, path="/api/" + rest, raw_path=("/api/" + rest).encode())
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(ApiV1Alias, fastapi_app=app)
+
+
 # Leggi la variabile d'ambiente per la profilazione
 ENABLE_PROFILER = os.getenv("ENABLE_PROFILER", "False").lower() == "true"
 
