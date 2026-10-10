@@ -81,14 +81,14 @@ TOOL_REGISTRY.update({
 })
 
 # MCP server (P6): a plain Starlette Route wrapping `transport` (a stable
-# dispatcher, see services/mcp_server.py — NOT the FastMCP-produced ASGI app
+# dispatcher, see services/mcp_server.py — NOT the MCPServer-produced ASGI app
 # directly), added straight to the router's route list — NOT
 # `router.mount(_MCP_PATH, ...)`. That would look right and silently do
 # nothing: FastAPI's APIRouter.include_router() only forwards APIRoute/
 # Route/WebSocketRoute entries (see its source), so a Mount added via
 # `router.mount()` never reaches the app's route table — no error, no route,
 # no 404-with-explanation, which is exactly why this is spelled out instead
-# of just `router.mount(...)`. Explicit `methods=` is required too: FastMCP
+# of just `router.mount(...)`. Explicit `methods=` is required too: MCPServer
 # builds its own internal route with `methods=None` (meaning "any method",
 # Starlette's raw-ASGI-endpoint convention), and include_router's
 # `methods = list(route.methods or [])` turns that into an empty list — a

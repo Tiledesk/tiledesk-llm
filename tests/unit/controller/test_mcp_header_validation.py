@@ -1,5 +1,6 @@
 """
-get_all_filtered_tools must reject a header value containing a CR/LF (illegal
+The MCP tool loader (tilellm.shared.mcp_client.load_tools, formerly
+controller_utils.get_all_filtered_tools) must reject a header value containing a CR/LF (illegal
 per RFC 7230) BEFORE attempting the MCP connection, instead of letting httpx/
 h11 raise LocalProtocolError 40 stack frames deep inside an ExceptionGroup.
 
@@ -12,15 +13,25 @@ something small. get_all_filtered_tools already isolates per-server failures
 that behavior but makes the failure fast and diagnosable instead of a deep
 stack trace naming h11 internals instead of the offending header.
 """
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from tilellm.controller.controller_utils import (
-    _describe_mcp_connection_error,
-    get_all_filtered_tools,
-)
 from tilellm.models.base import ServerConfig
+from tilellm.shared import mcp_client as mcp
+from tilellm.shared.mcp_client import _describe_mcp_connection_error
+
+
+async def get_all_filtered_tools(mcp_client, servers):
+    """The per-server network call is mcp._load_server_tools(config); the fake
+    client's get_tools(server_name=...) stands in for it."""
+    names = {id(cfg): name for name, cfg in servers.items()}
+
+    async def fake_load(cfg):
+        return await mcp_client.get_tools(server_name=names[id(cfg)])
+
+    with patch.object(mcp, "_load_server_tools", side_effect=fake_load):
+        return await mcp.load_tools(servers)
 
 
 def _config(headers=None, transport="streamable_http", url="https://example.com/mcp"):

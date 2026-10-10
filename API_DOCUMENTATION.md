@@ -4,6 +4,12 @@ Complete REST API documentation for Tiledesk LLM server.
 
 **Base URL**: `http|https://<host>:<port>`
 
+**Versioning**: every `/api/<path>` endpoint is also served at `/api/v1/<path>` (same handler,
+same request and response contract; e.g. `/api/v1/ask` = `/api/ask`). The unversioned paths keep
+answering. Endpoints already versioned stay as they are (`/api/v1/systemone`, `/api/v2/*`). The
+MCP protocol version is not part of the URL: it is negotiated per server (`protocol` in the MCP
+server configuration).
+
 **Interactive Docs**:
 - Swagger UI: `http|https://<host>:<port>`
 - ReDoc: `http|https://<host>:<port>`
@@ -442,6 +448,14 @@ Direct LLM query with optional MCP servers and tools support.
 - `"stdio"` is rejected with 422: the config comes from the request, and stdio would spawn `command args` as a process inside the service container
 - `headers`: optional HTTP headers sent on every request (e.g. API keys, user identity)
 - `enabled_tools`: list of tool names to expose, or `["all"]` (default)
+- `protocol`: MCP protocol version, negotiated **per server** — `"auto"` (default: tries the
+  2026-07-28 stateless protocol via `server/discover`, falls back to the `initialize` handshake of
+  older servers), `"legacy"` (always the handshake, up to 2025-11-25), `"2026-07-28"` (pin the
+  new protocol; use only for servers known to support it). One request may mix servers of
+  different versions. `"sse"` still works but is deprecated by the MCP specification
+  (a warning is logged): prefer `"streamable_http"`.
+- Tool names are exposed to the model exactly as each server declares them; a server elicitation
+  request (asking the user for input) is declined.
 
 **Routing Logic**:
 1. No MCP servers → Simple LLM call
@@ -1554,7 +1568,7 @@ Many endpoints require a JWT token containing engine configuration.
 ### Restrictions on request-supplied URLs and configs
 
 - **URLs fetched by the service** (`file_content`, `source`, `*_url`, `webhook`): only `http`/`https`. Loopback, link-local and cloud metadata addresses are rejected, also when reached through a redirect. Private networks are allowed unless `OUTBOUND_ALLOW_PRIVATE_NETWORKS=false`; `OUTBOUND_URL_ALLOWED_HOSTS` lists hosts that bypass the check. A local file path as `source` is rejected. Downloads larger than `OUTBOUND_MAX_RESPONSE_BYTES` (default 200 MB) are aborted. Browser scraping (`scrape_type` 2-5) applies the same URL check to every request the page makes (iframes, scripts, fetch).
-- **MCP servers** (`servers` in `/api/ask`, `/api/thinking`): only `streamable_http` and `sse`; `stdio` is rejected (422).
+- **MCP servers** (`servers` in `/api/ask`, `/api/thinking`): only `streamable_http` and `sse`; `stdio` is rejected (422). The server `url` follows the same address rules as fetched URLs (a refused server is skipped and logged). Header values are never logged.
 - **Graph labels / property keys** (Knowledge Graph FalkorDB APIs): must be identifiers (letters, digits, `_`); anything else is rejected.
 
 ---
@@ -1623,7 +1637,8 @@ MCP server configuration.
   "url": "string (required)",
   "headers": {"header-name": "value"},
   "enabled_tools": ["all"],
-  "parameters": {}
+  "parameters": {},
+  "protocol": "auto | legacy | 2026-07-28"
 }
 ```
 

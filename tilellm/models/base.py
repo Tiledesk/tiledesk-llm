@@ -1,6 +1,6 @@
 from enum import Enum
 from pydantic import BaseModel, Field, SecretStr, model_validator
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Literal
 
 
 class LLMEmbeddingProviders(str, Enum):
@@ -35,6 +35,12 @@ class ServerConfig(BaseModel):
     headers: Optional[Dict[str, str]] = Field(default=None, description="HTTP headers to send to the MCP server (e.g. x-composio-user-id for Composio)")
     enabled_tools: Optional[List[str]] = Field(default_factory=lambda: ["all"])
     parameters: Optional[dict] = Field(default_factory=dict)
+    protocol: Literal["auto", "legacy", "2026-07-28"] = Field(
+        default="auto",
+        description="MCP protocol: 'auto' negotiates (server/discover, falling back to the "
+                    "initialize handshake); 'legacy' forces the handshake (<= 2025-11-25); "
+                    "'2026-07-28' pins the stateless protocol.",
+    )
 
     @model_validator(mode="after")
     def normalize_url_and_headers(self):

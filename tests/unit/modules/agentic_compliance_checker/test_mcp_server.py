@@ -56,6 +56,27 @@ def _rpc(client, method, params, msg_id=1, session_id=None):
     return json.loads(raw)
 
 
+_MODERN = "2026-07-28"
+
+
+def _rpc_modern(client, method, params, msg_id=1, session_id=None, name=None):
+    """A 2026-07-28 request: self-contained (no initialize, no Mcp-Session-Id),
+    protocol version and client capabilities in _meta, Mcp-Method/Mcp-Name headers."""
+    headers = dict(_HEADERS, **{"MCP-Protocol-Version": _MODERN, "Mcp-Method": method})
+    if name:
+        headers["Mcp-Name"] = name
+    if session_id:
+        headers["X-Compliance-Session"] = session_id
+    params = dict(params, _meta={"io.modelcontextprotocol/protocolVersion": _MODERN,
+                                 "io.modelcontextprotocol/clientCapabilities": {},
+                                 "io.modelcontextprotocol/clientInfo": {"name": "test", "version": "1"}})
+    resp = client.post(_MCP_PATH, json={"jsonrpc": "2.0", "id": msg_id, "method": method, "params": params},
+                       headers=headers)
+    assert resp.status_code == 200, resp.text
+    raw = resp.text.split("data: ", 1)[1] if "data: " in resp.text else resp.text
+    return json.loads(raw)
+
+
 def _open_session(client):
     payload = {
         "requirements_yaml": _MINIMAL_YAML,
@@ -140,6 +161,15 @@ async def test_mcp_protocol_round_trip_over_http(client, fake_redis):
     }, msg_id=5, session_id=session_id)
     mcp_result = call_body["result"]["content"][0]["text"]
     assert json.loads(mcp_result) == json.loads(langchain_result)
+
+    # Same endpoint, protocol 2026-07-28 (stateless): discover, list, call.
+    discover = _rpc_modern(client, "server/discover", {}, msg_id=10)
+    assert _MODERN in discover["result"]["supportedVersions"]
+    modern_list = _rpc_modern(client, "tools/list", {}, msg_id=11)
+    assert {t["name"] for t in modern_list["result"]["tools"]} == set(AGENTIC_COMPLIANCE_TOOLS.keys())
+    modern_call = _rpc_modern(client, "tools/call", {"name": "compliance_list_requirements", "arguments": {}},
+                              msg_id=12, session_id=session_id, name="compliance_list_requirements")
+    assert json.loads(modern_call["result"]["content"][0]["text"]) == json.loads(langchain_result)
 
 
 # ---------------------------------------------------------------------------
