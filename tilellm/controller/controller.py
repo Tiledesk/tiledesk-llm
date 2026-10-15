@@ -33,6 +33,7 @@ from tilellm.controller.controller_utils import (
     create_contextualize_query,
 )
 from tilellm.shared.mcp_client import load_tools as get_all_filtered_tools
+from tilellm.shared.mcp_client import _HTTP_STATUS_ERRORS, _redact_urls, _root_exception, describe_exception
 from tilellm.controller.agent_middleware import MessageCleaningMiddleware
 from tilellm.shared.untrusted_content import AGENT_SECURITY_CLAUSE, sanitize_retriever, with_security_clause
 from tilellm.shared.tags_query_parser import build_tags_filter
@@ -135,13 +136,22 @@ def handle_agent_exception(
     Returns:
         JSONResponse: A response containing a clear, user‑friendly error message.
     """
-    import traceback
+    # "unhandled errors in a TaskGroup" says nothing: log the root cause.
+    # No traceback: exception texts carry URLs (query tokens included).
+    error_message = str(_root_exception(e)) if isinstance(e, BaseExceptionGroup) else str(e)
+    log_message = describe_exception(e) if isinstance(e, BaseExceptionGroup) else _redact_urls(error_message)
+    logger.error(f"Error in {context}: {log_message}")
 
-    traceback.print_exc()
-    logger.error(f"Error in {context}: {str(e)}")
+    # The client gets the detail only for HTTP errors (status + the server's own
+    # JSON-RPC message); other exception texts may carry URLs, paths or keys.
+    root = _root_exception(e)
+    if isinstance(root, _HTTP_STATUS_ERRORS):
+        client_detail = describe_exception(root)
+    else:
+        status = getattr(root, "status_code", None)
+        client_detail = f"HTTP {status}" if isinstance(status, int) else ""
 
     # Determina il tipo di errore e crea un messaggio user-friendly
-    error_message = str(e)
     user_message = ""
     status_code = 500
 
@@ -157,7 +167,7 @@ def handle_agent_exception(
     elif "tool" in error_message.lower() and (
         "error" in error_message.lower() or "failed" in error_message.lower()
     ):
-        user_message = f"Error running the tool: {error_message}"
+        user_message = f"Error running the tool. {client_detail}".strip()
         status_code = 400
 
     # Errori di formato base64
@@ -171,7 +181,7 @@ def handle_agent_exception(
         or "api" in error_message.lower()
         or "rate" in error_message.lower()
     ):
-        user_message = f"Communication Error with the AI model. {error_message}"
+        user_message = f"Communication Error with the AI model. {client_detail}".strip()
         status_code = 503
 
     # Errori di timeout
@@ -183,7 +193,7 @@ def handle_agent_exception(
 
     # Errore generico
     else:
-        user_message = f"An error has occurred. {error_message}"
+        user_message = f"An error has occurred. {client_detail}".strip()
         status_code = 500
 
     error_response = SimpleAnswer(

@@ -166,7 +166,7 @@ CLAUDE.md
 # Local files - do not commit
 __Dockerfile
 AGENTS.md
-app.log
+app.log*
 Architecture_ote.md
 docker-compose.yml
 docker-compose-graph.yml

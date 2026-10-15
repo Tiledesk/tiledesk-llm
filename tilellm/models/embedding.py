@@ -6,7 +6,7 @@ from huggingface_hub import snapshot_download # Potrebbe andare in utils/hugging
 
 #from pydantic.v1 import validator
 
-from tilellm.models.base import LLMEmbeddingProviders
+from tilellm.models.base import LLMEmbeddingProviders, _redact_url
 logger = logging.getLogger(__name__)
 
 # Potrebbe essere spostato in un file di utilities se non strettamente legato al modello
@@ -57,6 +57,15 @@ class LlmEmbeddingModel(BaseModel):
     # preserves that existing auto-apply behavior; set False to opt out for a backend that
     # rejects it, True to force it on (same as default, for explicitness in configs).
     disable_thinking_mode: Optional[bool] = None
+
+    def __repr_args__(self):
+        # used by repr() and str(): the request is logged, keep credentials out
+        for name, value in super().__repr_args__():
+            if name == "url":
+                value = _redact_url(value)
+            elif name == "custom_headers" and value:
+                value = sorted(value)
+            yield name, value
 
     @model_validator(mode='after')
     def validate_model(self):
