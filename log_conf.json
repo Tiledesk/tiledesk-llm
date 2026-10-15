@@ -32,7 +32,12 @@
     "gunicorn.error": { "level": "INFO", "handlers": ["stdout", "file_handler"], "propagate": false },
     "gunicorn.access": { "level": "INFO", "handlers": ["stdout", "file_handler"], "propagate": false },
     "uvicorn.error": { "level": "INFO", "handlers": ["stdout", "file_handler"], "propagate": false },
-    "uvicorn.access": { "level": "INFO", "handlers": ["stdout", "file_handler"], "propagate": false }
+    "uvicorn.access": { "level": "INFO", "handlers": ["stdout", "file_handler"], "propagate": false },
+    "httpx": { "level": "WARNING" },
+    "httpx2": { "level": "WARNING" },
+    "httpcore": { "level": "WARNING" },
+    "httpcore2": { "level": "WARNING" },
+    "mcp": { "level": "WARNING" }
   },
   "root": {
     "level": "INFO",

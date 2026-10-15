@@ -1,6 +1,23 @@
 from enum import Enum
 from pydantic import BaseModel, Field, SecretStr, model_validator
 from typing import Optional, List, Dict, Literal
+from urllib.parse import urlsplit
+
+
+def _redact_url(url: Optional[str]) -> Optional[str]:
+    """scheme://host[:port] only: path, query and userinfo may carry credentials."""
+    if not url:
+        return url
+    try:
+        parts = urlsplit(url)
+        host, port = parts.hostname, parts.port
+    except ValueError:
+        return "<url non valido>"
+    if not parts.scheme or not host:
+        return "<url non valido>"
+    if ":" in host:
+        host = f"[{host}]"
+    return f"{parts.scheme}://{host}" + (f":{port}" if port else "")
 
 
 class LLMEmbeddingProviders(str, Enum):
@@ -19,7 +36,7 @@ class LLMEmbeddingProviders(str, Enum):
 
 class AWSAuthentication(BaseModel):
     aws_access_key_id: str
-    aws_secret_access_key: str
+    aws_secret_access_key: str = Field(repr=False)
     region_name: str
 
 # Solo trasporti di rete: la config arriva dal payload della richiesta, e con
@@ -41,6 +58,16 @@ class ServerConfig(BaseModel):
                     "initialize handshake); 'legacy' forces the handshake (<= 2025-11-25); "
                     "'2026-07-28' pins the stateless protocol.",
     )
+
+    def __repr_args__(self):
+        # used by repr() and str(): the request is logged, keep values out
+        yield "transport", self.transport
+        yield "url", _redact_url(self.url)
+        yield "headers", sorted(self.headers or {})
+        yield "api_key", "**********" if self.api_key else None
+        yield "enabled_tools", self.enabled_tools
+        yield "parameters", sorted(self.parameters or {})
+        yield "protocol", self.protocol
 
     @model_validator(mode="after")
     def normalize_url_and_headers(self):

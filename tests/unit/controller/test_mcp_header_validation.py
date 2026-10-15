@@ -122,3 +122,22 @@ def test_describe_mcp_connection_error_hints_at_illegal_header_value():
 
     assert "header" in hint.lower()
     assert "ritorno a capo" in hint.lower() or "newline" in hint.lower()
+
+
+@pytest.mark.asyncio
+async def test_rejected_header_value_is_not_logged(caplog):
+    """The rejected value may be a token: the log names the header, the
+    position of the bad character and the length, never the content."""
+    import logging
+    log = logging.getLogger("tilellm.shared.mcp_client")
+    log.addHandler(caplog.handler)  # "tilellm.*" does not propagate to the root handler
+    try:
+        value = "Bearer SEGRETO-FINTO\nseconda riga"
+        await get_all_filtered_tools(AsyncMock(), {"s": _config(headers={"Authorization": value})})
+    finally:
+        log.removeHandler(caplog.handler)
+
+    assert "SEGRETO-FINTO" not in caplog.text and "seconda riga" not in caplog.text
+    assert "Authorization" in caplog.text
+    assert f"posizione {value.index(chr(10))}" in caplog.text
+    assert f"len={len(value)}" in caplog.text

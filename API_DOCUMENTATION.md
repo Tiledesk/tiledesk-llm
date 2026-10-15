@@ -456,6 +456,21 @@ Direct LLM query with optional MCP servers and tools support.
   (a warning is logged): prefer `"streamable_http"`.
 - Tool names are exposed to the model exactly as each server declares them; a server elicitation
   request (asking the user for input) is declined.
+- `parameters.tool_arguments`: optional fixed arguments set on every tool call of that server
+  (each configured top-level key replaces the model's value entirely, no deep merge). Only the
+  top-level keys a tool declares in its input schema are applied, and those keys are removed from
+  the schema shown to the model, so the model never has to fill them. Tools that don't declare a
+  key never receive it. Example (a commerce server that requires an agent profile on every call):
+  `"parameters": {"tool_arguments": {"meta": {"ucp-agent": {"profile": "https://shop-esempio.example/profiles/agent.json"}}}}`
+  A value that is not an object is ignored (logged as an error, the server's tools stay available).
+- A failing MCP tool call (HTTP 4xx/5xx, timeout, connection error) does not abort the agent: the
+  model receives an error tool result `MCP tool <name> failed: <cause>` and can continue or answer
+  accordingly. When the server replies with a JSON-RPC error body (also on an HTTP 4xx/5xx), the
+  cause is the server's own error message; otherwise it is the error type (max 500 characters,
+  URLs removed).
+- Every MCP request (initialize, tool listing, tool call) times out after `MCP_REQUEST_TIMEOUT`
+  seconds (env, default 120). A server that fails while listing tools is skipped; a tool call that
+  times out reaches the model as an error tool result.
 
 **Routing Logic**:
 1. No MCP servers → Simple LLM call
@@ -1637,7 +1652,7 @@ MCP server configuration.
   "url": "string (required)",
   "headers": {"header-name": "value"},
   "enabled_tools": ["all"],
-  "parameters": {},
+  "parameters": {"tool_arguments": {"argument-name": "value"}},
   "protocol": "auto | legacy | 2026-07-28"
 }
 ```
