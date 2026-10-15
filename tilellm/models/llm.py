@@ -13,7 +13,7 @@ from pydantic import (
 )
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
-from tilellm.models.base import AWSAuthentication, ServerConfig
+from tilellm.models.base import AWSAuthentication, ServerConfig, _redact_url
 from tilellm.models.document_type import DocumentType
 from tilellm.models.embedding import LlmEmbeddingModel, EmbeddingModel
 from tilellm.models.schemas.multimodal_content import MultimodalContent
@@ -703,20 +703,30 @@ class QuestionToLLM(BaseModel):
         """Crea un'istanza di MultiServerMCPClient dalla configurazione"""
         import logging
         _log = logging.getLogger(__name__)
+        from tilellm.shared.mcp_tool_calls import (
+            FixedToolArguments, mcp_httpx_client_factory, tool_errors_to_result,
+        )
         config_dict = {
             name: server_config.model_dump(
-                exclude_unset=True, exclude={"enabled_tools"}
+                exclude_unset=True, exclude={"enabled_tools", "parameters"}
             )
             for name, server_config in self.servers.items()
         }
-        client = MultiServerMCPClient(config_dict)
+        for cfg in config_dict.values():
+            if cfg.get("transport") in ("sse", "streamable_http", "http", "streamable-http"):
+                cfg["httpx_client_factory"] = mcp_httpx_client_factory
+        # errors outermost: also catches a failure inside the arguments interceptor
+        client = MultiServerMCPClient(
+            config_dict,
+            tool_interceptors=[tool_errors_to_result, FixedToolArguments()],
+        )
         for name, cfg in config_dict.items():
             headers = cfg.get("headers") or {}
             _log.info(
                 "MCP server %r create_mcp_client: transport=%s url=%r headers=%d chiavi %s",
                 name,
                 cfg.get("transport"),
-                cfg.get("url"),
+                _redact_url(cfg.get("url")),
                 len(headers),
                 list(headers.keys()) if headers else None,
             )

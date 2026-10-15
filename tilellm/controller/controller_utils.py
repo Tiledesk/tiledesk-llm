@@ -23,6 +23,7 @@ from tilellm.models.schemas import (RetrievalResult,
                                     Citation,
                                     _QuotedAnswer)
 from tilellm.models import ChatEntry, ServerConfig
+from tilellm.models.base import _redact_url
 
 from tilellm.shared.sparse_util import HybridRetriever
 from langchain_community.document_transformers import EmbeddingsRedundantFilter
@@ -30,6 +31,7 @@ from langchain_classic.retrievers.document_compressors import DocumentCompressor
 from langchain_classic.retrievers import ContextualCompressionRetriever
 
 import tilellm.shared.const as const
+from tilellm.shared.mcp_tool_calls import FixedToolArguments, root_exception
 from tilellm.shared.tags_query_parser import build_tags_filter
 
 from langchain_classic.chains import create_history_aware_retriever, create_retrieval_chain
@@ -1365,13 +1367,7 @@ async def get_filtered_tools(
     return [t for t in all_tools if t.name in enabled_names]
 
 
-def _root_exception(exc: BaseException) -> BaseException:
-    """Extract the innermost cause from ExceptionGroup / __cause__ chains."""
-    if isinstance(exc, BaseExceptionGroup) and exc.exceptions:
-        return _root_exception(exc.exceptions[0])
-    if exc.__cause__ and exc.__cause__ is not exc:
-        return _root_exception(exc.__cause__)
-    return exc
+_root_exception = root_exception
 
 
 def _format_exception_details(exc: BaseException, *, indent: str = "") -> str:
@@ -1448,16 +1444,16 @@ def _format_header_for_log(key: str, value: Any) -> str:
         value = str(value)
     if not value:
         return f"    [{key}] = '' (EMPTY)"
-    preview = value if len(value) <= 120 else f"{value[:120]}... (len={len(value)})"
+    # values may be tokens: log only the shape, never the content
     warn = " [WARN: spazi in testa/coda]" if value.strip() != value else ""
-    return f"    [{key}] = {preview!r}{warn}"
+    return f"    [{key}] = <len={len(value)}>{warn}"
 
 
 def _log_mcp_server_before_get_tools(
     server_name: str, config: ServerConfig, mcp_client: Any
 ) -> None:
     """Log connection details before attempting mcp_client.get_tools()."""
-    url = config.url
+    url = _redact_url(config.url)
     logger.info(
         "MCP get_tools — server=%r transport=%s url=%r enabled_tools=%s",
         server_name,
@@ -1488,7 +1484,7 @@ def _log_mcp_server_before_get_tools(
             logger.info(
                 "MCP get_tools — server=%r connection url=%r header_keys=%s",
                 server_name,
-                conn.get("url"),
+                _redact_url(conn.get("url")),
                 list(conn_headers.keys()) if conn_headers else None,
             )
             if conn_headers:
@@ -1518,7 +1514,7 @@ def _log_mcp_get_tools_error(server_name: str, config: ServerConfig, exc: Except
         "Errore nel recupero tool per il server %r — config: transport=%s url=%r",
         server_name,
         config.transport,
-        config.url,
+        _redact_url(config.url),
     )
     logger.error(
         "Errore nel recupero tool per il server %r — causa radice: %s: %s",
@@ -1550,16 +1546,34 @@ def _find_illegal_header_control_char(headers: Optional[Dict[str, str]]) -> Opti
     for key, value in headers.items():
         if not isinstance(value, str):
             continue
-        if any(ord(c) < 0x20 and c != "\t" for c in value):
-            preview = value[:80].replace("\n", "\\n").replace("\r", "\\r")
-            if len(value) > 80:
-                preview += "..."
+        pos = next((i for i, c in enumerate(value) if ord(c) < 0x20 and c != "\t"), None)
+        if pos is not None:
+            # the value may be a token: describe it, never show it
             return (
                 f"header '{key}' contiene un carattere di controllo non ammesso in "
                 f"un header HTTP (RFC 7230), probabilmente un ritorno a capo: "
-                f"'{preview}' (len={len(value)})"
+                f"{value[pos]!r} in posizione {pos} (len={len(value)})"
             )
     return None
+
+
+def _apply_tool_arguments(tool: BaseTool, server_name: str, tool_arguments: dict, fixed_args) -> bool:
+    """Register the configured arguments the tool declares and hide them from the model.
+
+    Returns True if the tool declares at least one of the configured keys.
+    """
+    schema = tool.args_schema if isinstance(tool.args_schema, dict) else {}
+    properties = schema.get("properties") or {}
+    keys = [k for k in tool_arguments if k in properties]
+    if not keys:
+        return False
+    fixed_args.per_tool[(server_name, tool.name)] = {k: tool_arguments[k] for k in keys}
+    tool.args_schema = {
+        **schema,
+        "properties": {k: v for k, v in properties.items() if k not in keys},
+        "required": [r for r in schema.get("required", []) if r not in keys],
+    }
+    return True
 
 
 async def get_all_filtered_tools(mcp_client, servers_config: Dict[str, ServerConfig]) -> List[BaseTool]:
@@ -1567,6 +1581,10 @@ async def get_all_filtered_tools(mcp_client, servers_config: Dict[str, ServerCon
     Recupera e filtra i tool server per server prima di unirli.
     """
     final_tools = []
+    interceptors = getattr(mcp_client, "tool_interceptors", None)
+    fixed_args = next(
+        (i for i in interceptors if isinstance(i, FixedToolArguments)), None
+    ) if isinstance(interceptors, list) else None
 
     for server_name, config in servers_config.items():
         illegal_header = _find_illegal_header_control_char(config.headers)
@@ -1590,6 +1608,27 @@ async def get_all_filtered_tools(mcp_client, servers_config: Dict[str, ServerCon
                 len(server_tools),
                 [t.name for t in server_tools],
             )
+
+            for t in server_tools:
+                t.handle_tool_error = True  # failed call -> message to the model, agent goes on
+            tool_arguments = (config.parameters or {}).get("tool_arguments")
+            if tool_arguments is not None and not isinstance(tool_arguments, dict):
+                logger.error(
+                    "MCP server %r: parameters.tool_arguments deve essere un oggetto "
+                    "{chiave: valore}, ricevuto %s: configurazione ignorata",
+                    server_name, type(tool_arguments).__name__,
+                )
+            elif tool_arguments and fixed_args is not None:
+                applied = [
+                    _apply_tool_arguments(t, server_name, tool_arguments, fixed_args)
+                    for t in server_tools
+                ]
+                if not any(applied):
+                    logger.warning(
+                        "MCP server %r: nessun tool dichiara le chiavi di tool_arguments %s: "
+                        "non verranno inviate",
+                        server_name, sorted(tool_arguments),
+                    )
 
             if not config.enabled_tools:
                 continue

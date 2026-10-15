@@ -111,3 +111,20 @@ def test_describe_mcp_connection_error_hints_at_illegal_header_value():
 
     assert "header" in hint.lower()
     assert "ritorno a capo" in hint.lower() or "newline" in hint.lower()
+
+
+@pytest.mark.asyncio
+async def test_rejected_header_value_is_not_logged(caplog):
+    """The rejected value may be a token: the log names the header, the
+    position of the bad character and the length, never the content."""
+    import logging
+    caplog.set_level(logging.DEBUG)
+    value = "Bearer SEGRETO-FINTO\nseconda riga"
+    servers = {"s": _config(headers={"Authorization": value})}
+
+    await get_all_filtered_tools(AsyncMock(), servers)
+
+    assert "SEGRETO-FINTO" not in caplog.text and "seconda riga" not in caplog.text
+    assert "Authorization" in caplog.text
+    assert f"posizione {value.index(chr(10))}" in caplog.text
+    assert f"len={len(value)}" in caplog.text

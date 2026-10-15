@@ -312,11 +312,18 @@ Direct LLM query with optional MCP servers and tools support.
 ```
 
 **MCP Server Configuration**:
-- `transport`: `"sse"` | `"stdio"` | `"streamable_http"`
-- For SSE & Streamable Http: provide `url` and optional `headers`
-- For stdio: provide `command` and `args`
+- `transport`: `"sse"` | `"streamable_http"` (case-sensitive; any other value, `"stdio"` included, is rejected with a validation error)
+- Provide `url` and optional `headers`
 - `headers`: optional HTTP headers sent on every request (e.g. API keys, user identity)
 - `enabled_tools`: list of tool names to expose, or `["all"]` (default)
+- `parameters.tool_arguments`: optional fixed arguments merged into every tool call of that server
+  (each configured top-level key replaces the model's value entirely). Only the top-level keys a tool declares in its input
+  schema are applied, and those keys are removed from the schema shown to the model, so the model
+  never has to fill them. Example (a commerce server that requires an agent profile on every call):
+  `"parameters": {"tool_arguments": {"meta": {"ucp-agent": {"profile": "https://shop-esempio.example/profiles/agent.json"}}}}`
+- A failing MCP tool call (HTTP 4xx/5xx, timeout, connection error) no longer aborts the agent: the
+  model receives `MCP tool <name> failed: HTTP <status> — <server JSON-RPC error message>` and can
+  continue or answer accordingly.
 
 **Routing Logic**:
 1. No MCP servers → Simple LLM call
@@ -1415,10 +1422,8 @@ MCP server configuration.
 
 ```json
 {
-  "transport": "sse | stdio | streamable_http",
-  "url": "string (required for SSE and streamable_http)",
-  "command": "string (required for stdio)",
-  "args": ["string"],
+  "transport": "sse | streamable_http",
+  "url": "string (required)",
   "headers": {"header-name": "value"},
   "enabled_tools": ["all"],
   "parameters": {}

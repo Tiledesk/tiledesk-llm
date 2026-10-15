@@ -10,6 +10,8 @@ import re
 from langchain_core.messages import ToolMessage
 
 import asyncio
+import httpx
+
 from fastapi.responses import JSONResponse
 
 from langchain_core.documents import Document
@@ -35,6 +37,7 @@ from tilellm.controller.controller_utils import (
 )
 from tilellm.controller.agent_middleware import MessageCleaningMiddleware
 from tilellm.shared.tags_query_parser import build_tags_filter
+from tilellm.shared.mcp_tool_calls import describe_exception, root_exception
 from tilellm.controller.helpers import _get_question_list
 from tilellm.models.schemas import (
     RetrievalResult,
@@ -137,10 +140,20 @@ def handle_agent_exception(
     import traceback
 
     traceback.print_exc()
-    logger.error(f"Error in {context}: {str(e)}")
+    # "unhandled errors in a TaskGroup" says nothing: show the root cause, secret-free
+    error_message = describe_exception(e) if isinstance(e, BaseExceptionGroup) else str(e)
+    logger.error(f"Error in {context}: {error_message}")
+
+    # The client gets the detail only for HTTP errors (status + the server's own
+    # JSON-RPC message); other exception texts may carry URLs, paths or keys.
+    root = root_exception(e)
+    if isinstance(root, httpx.HTTPStatusError):
+        client_detail = describe_exception(root)
+    else:
+        status = getattr(root, "status_code", None)
+        client_detail = f"HTTP {status}" if isinstance(status, int) else ""
 
     # Determina il tipo di errore e crea un messaggio user-friendly
-    error_message = str(e)
     user_message = ""
     status_code = 500
 
@@ -156,7 +169,7 @@ def handle_agent_exception(
     elif "tool" in error_message.lower() and (
         "error" in error_message.lower() or "failed" in error_message.lower()
     ):
-        user_message = f"Error running the tool: {error_message}"
+        user_message = f"Error running the tool. {client_detail}".strip()
         status_code = 400
 
     # Errori di formato base64
@@ -170,7 +183,7 @@ def handle_agent_exception(
         or "api" in error_message.lower()
         or "rate" in error_message.lower()
     ):
-        user_message = f"Communication Error with the AI model. {error_message}"
+        user_message = f"Communication Error with the AI model. {client_detail}".strip()
         status_code = 503
 
     # Errori di timeout
@@ -182,7 +195,7 @@ def handle_agent_exception(
 
     # Errore generico
     else:
-        user_message = f"An error has occurred. {error_message}"
+        user_message = f"An error has occurred. {client_detail}".strip()
         status_code = 500
 
     error_response = SimpleAnswer(
