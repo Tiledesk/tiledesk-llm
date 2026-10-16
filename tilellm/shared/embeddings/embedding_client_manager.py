@@ -16,6 +16,7 @@ from tilellm.shared.timed_cache import TimedCache
 from tilellm.models import LlmEmbeddingModel #, EmbeddingModel,
 from tilellm.store.vector_store_repository import VectorStoreIndexingError
 import httpx
+from tilellm.shared.loop_bound import LoopBound, cookieless_async_client
 from typing import List
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,10 @@ class TEIEmbeddings(Embeddings):
         self.client = client
         self.headers = headers or {}
         self.batch_size = batch_size  # Maximum batch size supported by TEI server
+        # Used when no shared client was given (the /api/qa path) or it belongs to another loop:
+        # one per event loop, instead of a new client — SSL setup on the loop + new connection —
+        # for every embedding call.
+        self._loop_client = LoopBound(cookieless_async_client)
 
     async def _acall(self, inputs, use_shared_client: bool = True):
         url = f"{self.base_url}/embed"
@@ -57,9 +62,12 @@ class TEIEmbeddings(Embeddings):
                  # Force fallback
                  raise RuntimeError("Client not available or closed")
         except (RuntimeError, httpx.RequestError):
-             # Fallback to ephemeral client if shared client fails (e.g. loop mismatch or closed loop)
-             async with httpx.AsyncClient() as client:
-                 response = await client.post(url, json=payload, headers=request_headers)
+            if use_shared_client:
+                response = await self._loop_client.get().post(url, json=payload, headers=request_headers)
+            else:
+                # Sync entry points run on a short-lived loop of their own (see _run_in_thread).
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(url, json=payload, headers=request_headers)
         
         response.raise_for_status()
         return response.json()

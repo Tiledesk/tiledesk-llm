@@ -1,4 +1,5 @@
 
+import asyncio
 import json
 import logging
 from typing import Optional, Literal
@@ -64,12 +65,17 @@ async def hyde_node(state: GraphState) -> dict:
     llm = await _get_guard_llm(qa)
     structured_llm = llm.with_structured_output(HyDEDocument)
 
+    # The passage drives retrieval as-is (it is not rewritten later): a follow-up question
+    # ("and when does it start again?") is made standalone with the history first.
+    from tilellm.controller.controller_utils import create_contextualize_query
+    question = await create_contextualize_query(llm, qa.model_copy(update={"retrieval_query": None}))
+
     # Prompt for generating hypothetical document
     prompt = f"""Generate a hypothetical document passage that would directly answer the following question.
 Write it as if it were an excerpt from a relevant document, without citations or sources.
 Be concise (2-3 paragraphs max).
 
-Question: {qa.question}"""
+Question: {question}"""
 
     result = await structured_llm.ainvoke(prompt)
 
@@ -183,6 +189,24 @@ async def intent_router_node(state: GraphState):
         "compliance_domain": result.domain,
         "metadata": {**metadata, "trace": trace},
     }
+
+
+# ---------------------------------------------------------------------------
+# Node: guard_and_intent  (guardia + router d'intento in parallelo)
+# ---------------------------------------------------------------------------
+
+async def guard_and_intent_node(state: GraphState):
+    """The guard and the intent router read only the question: two sequential LLM calls
+    became two concurrent ones. If the guard refuses, the intent result is simply unused."""
+    tasks = [asyncio.create_task(input_guard_node(state)), asyncio.create_task(intent_router_node(state))]
+    try:
+        guard, intent = await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:  # the first error propagates with its own type; the other call stops
+            task.cancel()
+        raise
+    trace = guard["metadata"]["trace"] + intent["metadata"]["trace"][-1:]
+    return {**intent, **guard, "metadata": {**guard["metadata"], "trace": trace}}
 
 
 # ---------------------------------------------------------------------------

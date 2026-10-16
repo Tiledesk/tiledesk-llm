@@ -567,7 +567,8 @@ class QdrantRepository(VectorStoreRepository):
             ]
         )
 
-        search_result = index.query_points(
+        search_result = (await asyncio.to_thread(  # sync client: HTTP off the event loop
+            index.query_points,
             collection_name=question_answer.engine.index_name,
             query=models.FusionQuery(
                 fusion=models.Fusion.RRF  # we are using reciprocal rank fusion here
@@ -575,7 +576,7 @@ class QdrantRepository(VectorStoreRepository):
             prefetch=_rrf_prefetch(dense, sparse, question_answer.top_k),
             query_filter=filter_qdrant,  # If you don't want any filters for now
             limit=question_answer.top_k,  # 5 the closest results
-        ).points
+        )).points
 
         # search_result = index.query_points(
         #    query_vector=dense,
@@ -602,7 +603,8 @@ class QdrantRepository(VectorStoreRepository):
             dense, sparse = hybrid_score_norm(dense_vector, sparse_vector, alpha=question_answer.alpha)
         filter_qdrant = self.build_filter(question_answer.namespace, filter)
 
-        search_result = index.query_points(
+        search_result = (await asyncio.to_thread(  # sync client: HTTP off the event loop
+            index.query_points,
             collection_name=question_answer.engine.index_name,
             query=models.FusionQuery(
                 fusion=models.Fusion.RRF  # we are using reciprocal rank fusion here
@@ -610,7 +612,7 @@ class QdrantRepository(VectorStoreRepository):
             prefetch=_rrf_prefetch(dense, sparse, question_answer.top_k),
             query_filter=filter_qdrant,  # If you don't want any filters for now
             limit=question_answer.top_k,  # 5 the closest results
-        ).points
+        )).points
 
         #search_result = index.query_points(
         #    query_vector=dense,
@@ -989,7 +991,8 @@ class QdrantRepository(VectorStoreRepository):
                 else:
                     dense, sparse = hybrid_score_norm(dense_vector, sparse_vector, alpha=question_answer.alpha)
 
-                search_result = index.query_points(
+                search_result = (await asyncio.to_thread(  # sync client: HTTP off the event loop
+                    index.query_points,
                     collection_name=question_answer.engine.index_name,
                     query=models.FusionQuery(
                         fusion=models.Fusion.RRF  # we are using reciprocal rank fusion here
@@ -997,7 +1000,7 @@ class QdrantRepository(VectorStoreRepository):
                     prefetch=_rrf_prefetch(dense, sparse, question_answer.top_k),
                     query_filter=filter_qdrant,  # If you don't want any filters for now
                     limit=question_answer.top_k,  # 5 the closest results
-                ).points
+                )).points
 
 
                 results = []
@@ -1017,7 +1020,8 @@ class QdrantRepository(VectorStoreRepository):
                 # call to check vector dimensions, causing an extra unnecessary TEI round-trip.
                 index = vector_store.client
                 dense_vector = await embedding_obj.aembed_query(retrieval_q)
-                search_result = index.query_points(
+                search_result = (await asyncio.to_thread(  # sync client: HTTP off the event loop
+                    index.query_points,
                     collection_name=question_answer.engine.index_name,
                     query=dense_vector,
                     using="text-dense",
@@ -1025,7 +1029,7 @@ class QdrantRepository(VectorStoreRepository):
                     limit=question_answer.top_k,
                     with_payload=True,
                     with_vectors=False,
-                ).points
+                )).points
                 results = []
                 for point in search_result:
                     if point.payload and "page_content" in point.payload:

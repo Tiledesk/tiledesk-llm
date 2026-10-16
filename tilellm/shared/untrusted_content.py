@@ -23,7 +23,8 @@ from typing import Iterable, List, Optional, Set
 from urllib.parse import urlparse
 
 from langchain_core.documents import Document
-from langchain_core.runnables import Runnable, RunnableLambda
+from langchain_core.retrievers import BaseRetriever
+from langchain_core.runnables import Runnable
 
 # ---------------------------------------------------------------------------
 # F2 — retrieved text
@@ -67,9 +68,23 @@ def sanitize_documents(docs: Iterable[Document]) -> List[Document]:
             for d in docs]
 
 
-def sanitize_retriever(retriever: Runnable) -> Runnable:
+class _SanitizedRetriever(BaseRetriever):
+    """Still a BaseRetriever: LangChain helpers (create_retrieval_chain) feed a BaseRetriever only
+    the question, but any other Runnable the whole input dict — which then reached the embedding."""
+    inner: Runnable
+
+    def _get_relevant_documents(self, query: str, *, run_manager=None) -> List[Document]:
+        config = {"callbacks": run_manager.get_child()} if run_manager else None
+        return sanitize_documents(self.inner.invoke(query, config=config))
+
+    async def _aget_relevant_documents(self, query: str, *, run_manager=None) -> List[Document]:
+        config = {"callbacks": run_manager.get_child()} if run_manager else None
+        return sanitize_documents(await self.inner.ainvoke(query, config=config))
+
+
+def sanitize_retriever(retriever: Runnable) -> BaseRetriever:
     """Every document a retriever returns passes through sanitize_documents."""
-    return retriever | RunnableLambda(sanitize_documents)
+    return _SanitizedRetriever(inner=retriever)
 
 
 SECURITY_CLAUSE = (
