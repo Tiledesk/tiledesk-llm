@@ -6,7 +6,6 @@ inject_llm_async. Only what goes into building the client is in the key: questio
 model name and parameters travel with each request, so a cached client never serves
 one request's values to another (the 0.12.3-rc6 max_tokens bug).
 """
-import asyncio
 import hashlib
 import logging
 import time
@@ -19,6 +18,7 @@ from tilellm.modules.system_one.providers import ProviderResponseError, Provider
 from tilellm.shared import token_tracking
 from tilellm.shared.timed_cache import TimedCache
 from tilellm.shared.token_tracking import TokenUsageCollector, TokenUsageRecord
+from tilellm.shared.loop_bound import LoopBound
 
 logger = logging.getLogger(__name__)
 
@@ -47,25 +47,6 @@ class SystemOneError(Exception):
         self.headers = headers
 
 
-class _LoopBoundClient:
-    """One httpx.AsyncClient per event loop. httpx pools connections per loop: a client
-    cached in one loop and reused from another failed with "Event loop is closed"
-    (found against a real laya-serve; any caller running asyncio.run more than once —
-    scripts, workers, TestClient — hits it)."""
-
-    def __init__(self, factory):
-        self._factory = factory
-        self._loop = None
-        self._client: Optional[httpx.AsyncClient] = None
-
-    def get(self) -> httpx.AsyncClient:
-        loop = asyncio.get_running_loop()
-        if self._client is None or self._loop is not loop:
-            # ponytail: the previous client is dropped, not closed — its loop is gone.
-            self._client, self._loop = self._factory(), loop
-        return self._client
-
-
 def _base_url(request: SystemOneRequest, spec: ProviderSpec) -> str:
     return (request.model.url or spec.default_url).rstrip("/")
 
@@ -84,8 +65,8 @@ async def get_client(request: SystemOneRequest) -> httpx.AsyncClient:
         headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
         return httpx.AsyncClient(base_url=base_url, headers=headers, timeout=TIMEOUT, transport=_transport)
 
-    async def _create() -> _LoopBoundClient:
-        return _LoopBoundClient(_new_client)
+    async def _create() -> LoopBound:
+        return LoopBound(_new_client)
 
     bound = await TimedCache.async_get(object_type=CACHE_TYPE, key=key, constructor=_create)
     return bound.get()

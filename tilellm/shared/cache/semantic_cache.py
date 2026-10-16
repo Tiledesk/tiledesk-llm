@@ -167,19 +167,23 @@ class SemanticCache:
             best_score = -1.0
             best_payload = None
 
-            for entry_id_bytes in entry_ids:
-                entry_id = entry_id_bytes.decode()
-                sem_key = _sem_key(namespace, entry_id)
-                stored = await r.hgetall(sem_key)
-                if not stored or b"embedding" not in stored:
+            # One round trip for every stored embedding, then the body of the best entry only:
+            # an hgetall per entry (bodies included) made the lookup grow with the cache size.
+            sem_keys = [_sem_key(namespace, e.decode()) for e in entry_ids]
+            pipe = r.pipeline(transaction=False)
+            for sem_key in sem_keys:
+                pipe.hget(sem_key, "embedding")
+            best_key = None
+            for sem_key, raw_vec in zip(sem_keys, await pipe.execute()):
+                if not raw_vec:
                     continue
-                stored_vec = _bytes_to_vec(stored[b"embedding"])
-                score = _cosine(query_vec, stored_vec)
+                score = _cosine(query_vec, _bytes_to_vec(raw_vec))
                 if score > best_score:
-                    best_score = score
-                    best_payload = stored
+                    best_score, best_key = score, sem_key
+            if best_score >= threshold and best_key is not None:
+                best_payload = await r.hgetall(best_key)
 
-            if best_score >= threshold and best_payload is not None:
+            if best_score >= threshold and best_payload and b"body" in best_payload:
                 logger.info(
                     f"SemanticCache L2 hit for namespace={namespace} "
                     f"(cosine={best_score:.4f})"
