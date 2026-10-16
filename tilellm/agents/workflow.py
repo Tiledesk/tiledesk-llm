@@ -1,7 +1,7 @@
 from langgraph.graph import StateGraph, END
 from tilellm.agents.nodes import (
-    input_guard_node,
     intent_router_node,
+    guard_and_intent_node,
     cache_lookup_node,
     hyde_node,
     compliance_node,
@@ -33,8 +33,7 @@ def _router_validazione(state: GraphState):
 
 workflow = StateGraph(GraphState)
 
-workflow.add_node("guardia", input_guard_node)
-workflow.add_node("intent_router", intent_router_node)
+workflow.add_node("guard_intent", guard_and_intent_node)
 workflow.add_node("cache_lookup", cache_lookup_node)
 workflow.add_node("hyde", hyde_node)
 workflow.add_node("compliance_node", compliance_node)
@@ -44,18 +43,19 @@ workflow.add_node("validatore", hallucination_grader_node)
 workflow.add_node("cache_store", cache_store_node)
 workflow.add_node("fail_safe_node", fail_safe_node)
 
-workflow.set_entry_point("guardia")
+workflow.set_entry_point("guard_intent")
+
+
+def _after_guard_intent(state: GraphState):
+    if state.get("is_on_topic") == "no":
+        return "rifiuta"
+    return "compliance" if state.get("intent") == "compliance" else "qa"
+
 
 workflow.add_conditional_edges(
-    "guardia",
-    lambda x: "procedi" if x.get("is_on_topic") != "no" else "rifiuta",
-    {"procedi": "intent_router", "rifiuta": END},
-)
-
-workflow.add_conditional_edges(
-    "intent_router",
-    lambda x: "compliance" if x.get("intent") == "compliance" else "qa",
-    {"compliance": "compliance_node", "qa": "cache_lookup"},
+    "guard_intent",
+    _after_guard_intent,
+    {"rifiuta": END, "compliance": "compliance_node", "qa": "cache_lookup"},
 )
 
 workflow.add_edge("compliance_node", END)
@@ -106,9 +106,9 @@ app = workflow.compile()
 # ---------------------------------------------------------------------------
 
 def _simple_guard_router(state: GraphState):
-    """Skip guardia if use_guard=False on the payload."""
+    """With the guard on, guard and intent router run concurrently (guard_intent)."""
     qa = state.get("question_answer")
-    return "guard" if getattr(qa, "use_guard", True) else "skip_guard"
+    return "guard_intent" if getattr(qa, "use_guard", True) else "skip_guard"
 
 
 def _simple_after_rag_router(state: GraphState):
@@ -120,7 +120,7 @@ def _simple_after_rag_router(state: GraphState):
 simple_workflow = StateGraph(GraphState)
 
 simple_workflow.add_node("_start", lambda s: {})
-simple_workflow.add_node("guardia", input_guard_node)
+simple_workflow.add_node("guard_intent", guard_and_intent_node)
 simple_workflow.add_node("intent_router", intent_router_node)
 simple_workflow.add_node("compliance_node", compliance_node)
 simple_workflow.add_node("rag_core", rag_node)
@@ -132,13 +132,13 @@ simple_workflow.set_entry_point("_start")
 simple_workflow.add_conditional_edges(
     "_start",
     _simple_guard_router,
-    {"guard": "guardia", "skip_guard": "intent_router"},
+    {"guard_intent": "guard_intent", "skip_guard": "intent_router"},
 )
 
 simple_workflow.add_conditional_edges(
-    "guardia",
-    lambda x: "procedi" if x.get("is_on_topic") != "no" else "rifiuta",
-    {"procedi": "intent_router", "rifiuta": END},
+    "guard_intent",
+    _after_guard_intent,
+    {"rifiuta": END, "compliance": "compliance_node", "qa": "rag_core"},
 )
 
 simple_workflow.add_conditional_edges(

@@ -1,7 +1,7 @@
 NODE_REGISTRY = [
     {
         "name": "guard",
-        "node_id": "guardia",
+        "node_id": "guard_intent",  # guard + intent router run concurrently
         "description": (
             "Input safety guard — valida che la domanda sia sicura e on-topic "
             "tramite LLM. Blocca domande offensive o prive di senso."

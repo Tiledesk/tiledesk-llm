@@ -127,6 +127,16 @@ async def summarize_history(history_text: str, llm) -> str:
         # Fallback: Returns a truncated version.
         return f"Earlier conversation summary (auto-generated): {history_text[:500]}..."
 
+def history_for_prompt(question_answer):
+    """The chat history every LLM call of the request sees, trimmed to max_history_messages."""
+    history = question_answer.chat_history_dict
+    if getattr(question_answer, "conversation_summary", False):
+        # ponytail: this path has no slot for the summary of older turns, so they stay in full
+        return history
+    max_messages = getattr(question_answer, "max_history_messages", 0)
+    return trim_history(history, max_messages) if history and max_messages > 0 else history
+
+
 # Function to preprocess chat history
 def preprocess_chat_history(question_answer):
     logger.debug(question_answer.chat_history_dict)
@@ -337,9 +347,14 @@ async def aretrieve_documents(question_answer, results, contextualized_query=Non
 
 
 # Function to create chains for contextualization and Q&A
-async def create_chains(llm, question_answer, retriever):
+async def create_chains(llm, question_answer, retriever, contextualized_query=None):
     # --- Contextualization for Retrieval ---
-    if question_answer.contextualize_prompt:
+    if question_answer.contextualize_prompt and contextualized_query is not None:
+        # The question was already rewritten once (create_contextualize_query): rewriting it again
+        # here cost a second sequential LLM call whose result was overridden or ignored.
+        query = contextualized_query or question_answer.retrieval_query or question_answer.question
+        history_aware_retriever = RunnableLambda(lambda _: query) | retriever
+    elif question_answer.contextualize_prompt:
         contextualize_q_system_prompt = const.contextualize_q_system_prompt
         contextualize_q_prompt = ChatPromptTemplate.from_messages(
             [
@@ -403,7 +418,11 @@ async def create_contextualize_query(llm, question_answer):
         ]
     )
 
-    if question_answer.chat_history_dict:
+    if question_answer.retrieval_query:
+        # A HyDE passage (or any explicit retrieval text): rewriting it as a standalone *question*
+        # would shrink it back to a question and undo HyDE.
+        contextualized_query = question_answer.retrieval_query
+    elif question_answer.chat_history_dict:
         c_h, _ = preprocess_chat_history(question_answer)
         # Se c'è history, contestualizza la query
         retrieval_q = question_answer.retrieval_query or question_answer.question
@@ -439,7 +458,11 @@ def get_or_create_session_history(store, session_id, chat_history_dict):
 
 
 # Function to generate answer with chat history consideration
-async def generate_answer_with_history(llm, question_answer, rag_chain, retriever, get_session_history, qa_prompt, callback_handler, question_answer_list):
+async def generate_answer_with_history(llm, question_answer, rag_chain, retriever, get_session_history, qa_prompt, callback_handler, question_answer_list, contextualized_query=None):
+
+    # Every branch retrieves with the same query: the rewrite (HyDE passage or contextualized question)
+    # when there is one, the raw input otherwise.
+    retrieval = RunnableLambda(lambda x: contextualized_query or x["input"]) | retriever
 
     def extract_content(input_dict):
         # print(input_dict["answer"])
@@ -457,7 +480,9 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
     if include_history or use_summary:
         if question_answer.chat_history_dict:
             # If we want a summary, we might summarize the older part of history
-            if use_summary:
+            # Only the contextualize_prompt=False prompts have a place for the summary: on the
+            # other path it was generated and then dropped — an LLM call for nothing.
+            if use_summary and not question_answer.contextualize_prompt:
                 # If we have many messages, summarize the ones before the last 'max_history'
                 sorted_keys = sorted(question_answer.chat_history_dict.keys(), key=lambda x: int(x))
                 if len(sorted_keys) > max_history:
@@ -510,13 +535,13 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                     | qa_prompt_final
                     | llm
                 )
-                retrieve_docs = (lambda x: x["input"]) | retriever
+                retrieve_docs = retrieval
                 runnable = (
                     RunnablePassthrough.assign(context=retrieve_docs)
                     .assign(answer=rag_chain_from_docs_stream)
                 )
             else:
-                runnable = create_retrieval_chain(retriever, create_stuff_documents_chain(llm, qa_prompt_final))
+                runnable = create_retrieval_chain(retrieval, create_stuff_documents_chain(llm, qa_prompt_final))
 
             async def get_stream_llm_simple():
                 full_response = ""
@@ -543,7 +568,6 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                     if content_to_stream:
                         full_response += content_to_stream
                         yield _create_event("chunk", {"content": content_to_stream, "message_id": message_id})
-                        await asyncio.sleep(0.02)
 
                     if "context" in chunk and result_context is None: # Capture context once
                         result_context = chunk["context"]
@@ -620,7 +644,7 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
             start_time = datetime.now() if question_answer.debug else 0
             _llm_t0 = time.monotonic()
             if question_answer.citations:
-                retrieve_docs = (lambda x: x["input"]) | retriever
+                retrieve_docs = retrieval
                 rag_chain_from_docs = (
                     RunnablePassthrough.assign(context=(lambda x: format_docs_with_id(x["context"])))
                     | qa_prompt_final
@@ -641,7 +665,7 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                 citations = [Citation.from_llm(c) for c in result['answer'].citations]
                 result['answer'] = result['answer'].answer
             else:
-                rag_chain_simple = create_retrieval_chain(retriever, create_stuff_documents_chain(llm, qa_prompt_final))
+                rag_chain_simple = create_retrieval_chain(retrieval, create_stuff_documents_chain(llm, qa_prompt_final))
                 result = await rag_chain_simple.ainvoke(chain_input)
                 # Check if no context found
                 if not result.get("context"):
@@ -723,7 +747,7 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                 ("human", "{input}"),
             ])
 
-            retrieve_docs = (lambda x: x["input"]) | retriever
+            retrieve_docs = retrieval
             rag_chain_from_docs_stream = (
                 RunnablePassthrough.assign(context=(lambda x: format_docs_with_id(x["context"])))
                 | qa_prompt_stream
@@ -757,7 +781,6 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
                     if content_to_stream:
                         full_response += content_to_stream
                         yield _create_event("chunk", {"content": content_to_stream, "message_id": message_id})
-                        await asyncio.sleep(0.02)
                     if "context" in chunk and result_context is None:
                         result_context = chunk["context"]
 
@@ -837,7 +860,7 @@ async def generate_answer_with_history(llm, question_answer, rag_chain, retrieve
     else:
 
         if question_answer.citations:
-            retrieve_docs = (lambda x: x["input"]) | retriever
+            retrieve_docs = retrieval
             rag_chain_from_docs = (
                     RunnablePassthrough.assign(context=(lambda x: format_docs_with_id(x["context"])))
                     | qa_prompt
@@ -1098,7 +1121,6 @@ async def get_streaming_response(runnable_with_history, question, callback_handl
                     if _text:
                         full_response += _text
                         yield _create_event("chunk", {"content": _text, "message_id": message_id})
-                        await asyncio.sleep(0.02)
                 continue
 
             if "answer" in chunk:
@@ -1107,13 +1129,11 @@ async def get_streaming_response(runnable_with_history, question, callback_handl
                     if _answer:
                         full_response += _answer
                         yield _create_event("chunk", {"content": _answer, "message_id": message_id})
-                        await asyncio.sleep(0.02)
                 elif hasattr(_answer, "content"):
                     _text = _extract_content_text(_answer.content)
                     if _text:
                         full_response += _text
                         yield _create_event("chunk", {"content": _text, "message_id": message_id})
-                        await asyncio.sleep(0.02)
                     else:
                         logger.debug(
                             f"[stream] answer chunk empty — "

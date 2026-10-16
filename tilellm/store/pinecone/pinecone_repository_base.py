@@ -34,6 +34,7 @@ from tilellm.shared.utility import _hash_api_key
 
 from tilellm.store.vector_store_repository import VectorStoreRepository
 from tilellm.tools.sparse_encoders import TiledeskSparseEncoders
+from tilellm.shared.loop_bound import LoopBound
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,32 @@ logger = logging.getLogger(__name__)
 _PINECONE_SERVERLESS_CLOUD = os.getenv("PINECONE_SERVERLESS_CLOUD", "aws")
 _PINECONE_SERVERLESS_REGION = os.getenv("PINECONE_SERVERLESS_REGION", "us-east-1")
 _PINECONE_POD_ENVIRONMENT = os.getenv("PINECONE_POD_ENVIRONMENT", "us-east1-gcp")
+
+
+_SHARED_INDEX_CLASSES: dict = {}
+
+
+def _shared_index_class(base):
+    """A subclass of the SDK's IndexAsyncio whose session survives the end of a request.
+
+    Every request used to open its own index (a new TCP+TLS handshake to Pinecone). The shared one
+    must ignore both ways a request ends an index: the explicit ``await index.close()`` of our code
+    and ``async with index`` of langchain_pinecone, whose ``__aexit__`` closes the session directly.
+    Still a subclass, so ``isinstance(index, _IndexAsyncio)`` in PineconeVectorStore holds.
+    """
+    if base not in _SHARED_INDEX_CLASSES:
+        class _SharedIndexAsyncio(base):
+            async def close(self):
+                return None
+
+            async def __aexit__(self, exc_type, exc_value, traceback):
+                return None
+
+            async def close_shared(self):
+                await base.close(self)
+
+        _SHARED_INDEX_CLASSES[base] = _SharedIndexAsyncio
+    return _SHARED_INDEX_CLASSES[base]
 
 
 class CachedVectorStore:
@@ -55,11 +82,10 @@ class CachedVectorStore:
     * No persistent PineconeAsyncio client is stored.  Management operations use a
       short-lived ``async with PineconeAsyncio(...)`` block whose aiohttp session is
       closed immediately after the block exits → no "Unclosed client session" warnings.
-    * ``get_index()`` instantiates a throw-away PineconeAsyncio only as a factory to
-      produce an IndexAsyncio.  Because no management calls are made through it, its
-      internal aiohttp session is never opened and can be silently GC'd.
-    * The IndexAsyncio returned by ``get_index()`` carries its own session; callers
-      are responsible for ``await index.close()`` when done.
+    * ``get_index()`` returns ONE IndexAsyncio per event loop, reused by every request: a new
+      one per request meant a new aiohttp session, i.e. a new TCP+TLS handshake to Pinecone on
+      every query. Its ``close()`` is a no-op, so the existing ``await index.close()`` calls
+      after each request do not end the shared session.
     """
 
     def __init__(self, engine, embeddings, emb_dimension):
@@ -70,6 +96,7 @@ class CachedVectorStore:
         self._lock = asyncio.Lock()
         self._last_check = 0.0
         self._check_every_sec = 60
+        self._index = LoopBound(self._new_index)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -139,15 +166,23 @@ class CachedVectorStore:
 
     async def get_index(self):
         """
-        Return an IndexAsyncio backed by its own aiohttp session.
-        Caller MUST close it with ``await index.close()``.
-
-        A throw-away PineconeAsyncio is used purely as a factory; it makes no
-        management API calls so its internal session is never opened.
+        Return the IndexAsyncio shared by every request of the current event loop.
         """
         await self._ensure_host()
+        index = self._index.get()
+        if index._shared_host != self._host:  # index recreated or key rotated: drop the old session
+            await index.close_shared()
+            self._index = LoopBound(self._new_index)
+            index = self._index.get()
+        return index
+
+    def _new_index(self):
+        # A throw-away PineconeAsyncio used only as a factory: no management calls, no session.
         pc = pinecone.PineconeAsyncio(api_key=self.engine.apikey.get_secret_value())
-        return pc.IndexAsyncio(name=self.engine.index_name, host=self._host)
+        index = pc.IndexAsyncio(name=self.engine.index_name, host=self._host)
+        index.__class__ = _shared_index_class(type(index))
+        index._shared_host = self._host
+        return index
 
     async def test_connection(self):
         now = time.time()
@@ -173,9 +208,13 @@ class CachedVectorStore:
             return False
 
     async def close(self):
-        """Reset cached host. No persistent client to close."""
+        """Reset cached host and close the shared index session of the running loop."""
         async with self._lock:
             self._host = None
+            index = self._index.current()
+            if index is not None:
+                await index.close_shared()
+            self._index = LoopBound(self._new_index)
 
     # Backward-compat alias used by _create_vector_store_instance warm-up
     async def _ensure_client_and_host(self):

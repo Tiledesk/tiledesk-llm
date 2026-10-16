@@ -26,6 +26,7 @@ from tilellm.controller.controller_utils import (
     fetch_question_vectors,
     aretrieve_documents,
     create_chains,
+    history_for_prompt,
     get_or_create_session_history,
     generate_answer_with_history,
     handle_exception,
@@ -283,7 +284,7 @@ async def ask_hybrid_with_memory(
 
         # Create chains for contextualization and Q&A
         history_aware_retriever, question_answer_chain, qa_prompt = await create_chains(
-            llm, question_answer, retriever
+            llm, question_answer, retriever, contextualized_retrieval_query
         )
 
         rag_chain = create_retrieval_chain(
@@ -295,7 +296,7 @@ async def ask_hybrid_with_memory(
 
         def get_session_history(session_id):
             return get_or_create_session_history(
-                store, session_id, question_answer.chat_history_dict
+                store, session_id, history_for_prompt(question_answer)
             )
 
         # get_session_history = lambda session_id: get_or_create_session_history(store, session_id,
@@ -311,6 +312,7 @@ async def ask_hybrid_with_memory(
             qa_prompt=qa_prompt,
             callback_handler=callback_handler,
             question_answer_list=question_answer_list,
+            contextualized_query=contextualized_retrieval_query,
         )
 
         # await index.close()
@@ -1034,7 +1036,6 @@ async def _stream_generic_response(
                     "chunk", {"content": chunk.content, "message_id": message_id}
                 )
 
-            await asyncio.sleep(0.01)
 
     _stream_latency_ms = int((time.monotonic() - _stream_t0) * 1000)
 
@@ -1185,7 +1186,6 @@ async def ask_to_llm_1(question: QuestionToLLM, chat_model=None):
                             "chunk",
                             {"content": chunk.content, "message_id": message_id},
                         )
-                        await asyncio.sleep(0.02)  # Per un flusso più regolare
 
                 end_time = datetime.now()
 
@@ -2568,18 +2568,15 @@ async def ask_with_memory(
         # Modifiche
         # Initialize embeddings and retrievers (con supporto per re-ranking)
 
-        base_retriever = await initialize_retrievers(
-            question_answer, repo, llm_embeddings, embedding_config_key
-        )
-
-        # Always create contextualized query if enabled
-        contextualized_retrieval_query = await create_contextualize_query(
-            llm, question_answer
+        base_retriever, contextualized_retrieval_query = await asyncio.gather(
+            initialize_retrievers(question_answer, repo, llm_embeddings, embedding_config_key),
+            create_contextualize_query(llm, question_answer),
         )
 
         # Wrap con RerankedRetriever se il re-ranking è abilitato
         if question_answer.reranker_config:
             reranker = TileReranker(model_name=question_answer.reranker_config)
+            await reranker.aload()  # load errors become an error response, not a broken stream
 
             retriever = RerankedRetriever(
                 base_retriever=base_retriever,
@@ -2594,7 +2591,7 @@ async def ask_with_memory(
 
         # Create chains for contextualization and Q&A
         history_aware_retriever, question_answer_chain, qa_prompt = await create_chains(
-            llm, question_answer, retriever
+            llm, question_answer, retriever, contextualized_retrieval_query
         )
 
         rag_chain = create_retrieval_chain(
@@ -2609,7 +2606,7 @@ async def ask_with_memory(
         # )
         def get_session_history(session_id):
             return get_or_create_session_history(
-                store, session_id, question_answer.chat_history_dict
+                store, session_id, history_for_prompt(question_answer)
             )
 
         # Generate the final answer, with or without citations
@@ -2622,6 +2619,7 @@ async def ask_with_memory(
             qa_prompt=qa_prompt,
             callback_handler=callback_handler,
             question_answer_list=question_answer_list,
+            contextualized_query=contextualized_retrieval_query,
         )
 
         return result_to_return

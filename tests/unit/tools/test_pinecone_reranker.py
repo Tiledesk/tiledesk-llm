@@ -395,8 +395,10 @@ class TestTileRerankerWithPinecone:
             mock_reranker_class.return_value = mock_reranker
             
             reranker = TileReranker(pinecone_config)
-            
+            mock_reranker_class.assert_not_called()  # loaded on first use, not in the constructor
+
             # Should create PineconeReranker instance
+            _ = reranker.model
             mock_reranker_class.assert_called_once()
             assert reranker.model == mock_reranker
             assert "pinecone_bge-reranker-v2-m3" in reranker.model_name
@@ -461,10 +463,12 @@ class TestTileRerankerWithPinecone:
             
             # First instance
             reranker1 = TileReranker(pinecone_config)
+            _ = reranker1.model  # loaded on first use
             assert mock_reranker_class.call_count == 1
             
             # Second instance with same config should use cache
             reranker2 = TileReranker(pinecone_config)
+            _ = reranker2.model
             assert mock_reranker_class.call_count == 1  # Still 1, from cache
             
             # Different Pinecone config should create new instance
@@ -473,6 +477,7 @@ class TestTileRerankerWithPinecone:
                 name="different-model"
             )
             reranker3 = TileReranker(config2)
+            _ = reranker3.model
             assert mock_reranker_class.call_count == 2
 
 

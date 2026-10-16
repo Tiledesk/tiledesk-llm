@@ -28,6 +28,11 @@ try:
 except ImportError:
     Pinecone = None
 
+import asyncio
+
+import httpx
+
+from tilellm.shared.loop_bound import LoopBound, cookieless_async_client
 # Shared GPU concurrency primitives (single source of truth)
 from tilellm.tools._gpu_concurrency import (
     run_on_gpu,
@@ -264,7 +269,11 @@ class TEIReranker:
         """
         self.config = config
         self.url = config.url.rstrip("/") if config.url else ""
-        self.headers = config.custom_headers if config.custom_headers else {}
+        # A copy: the Authorization added below must not end up in the request's own config.
+        self.headers = dict(config.custom_headers or {})
+        # Reused across requests (keep-alive), one per event loop. No cookie jar: the client
+        # outlives a request, a Set-Cookie must not reach the next caller.
+        self._client = LoopBound(cookieless_async_client)
         if config.api_key:
             self.headers["Authorization"] = f"Bearer {config.api_key.get_secret_value()}"
         self.logger = logging.getLogger(__name__)
@@ -399,68 +408,68 @@ class TEIReranker:
         i = 0
         current_batch_size = batch_size
 
-        async with httpx.AsyncClient() as client:
-            while i < len(texts):
-                batch_texts = texts[i:i + current_batch_size]
-                batch_docs = chunked_docs[i:i + current_batch_size]
-                self.logger.info(f"Processing batch {i//current_batch_size + 1}/{(len(texts)-1)//current_batch_size + 1} with {len(batch_texts)} documents (batch size: {current_batch_size})")
-                batch_retry_count = 0
-                max_retries = 3
-                batch_success = False
+        client = self._client.get()
+        while i < len(texts):
+            batch_texts = texts[i:i + current_batch_size]
+            batch_docs = chunked_docs[i:i + current_batch_size]
+            self.logger.info(f"Processing batch {i//current_batch_size + 1}/{(len(texts)-1)//current_batch_size + 1} with {len(batch_texts)} documents (batch size: {current_batch_size})")
+            batch_retry_count = 0
+            max_retries = 3
+            batch_success = False
 
-                while batch_retry_count < max_retries and not batch_success:
-                    try:
-                        payload = {
-                            "query": query,
-                            "texts": batch_texts,
-                        }
-                        response = await client.post(
-                            f"{self.url}/rerank",
-                            json=payload,
-                            headers=self.headers,
-                            timeout=60
-                        )
+            while batch_retry_count < max_retries and not batch_success:
+                try:
+                    payload = {
+                        "query": query,
+                        "texts": batch_texts,
+                    }
+                    response = await client.post(
+                        f"{self.url}/rerank",
+                        json=payload,
+                        headers=self.headers,
+                        timeout=60
+                    )
 
-                        if response.status_code == 413 and current_batch_size > 1:
-                            # Payload too large, reduce batch size and retry
-                            new_batch_size = max(1, current_batch_size // 2)
-                            self.logger.warning(f"Payload too large (413) for batch size {current_batch_size}. Reducing to {new_batch_size}")
-                            current_batch_size = new_batch_size
-                            batch_texts = texts[i:i + current_batch_size]
-                            batch_docs = chunked_docs[i:i + current_batch_size]
-                            batch_retry_count += 1
-                            continue
+                    if response.status_code == 413 and current_batch_size > 1:
+                        # Payload too large, reduce batch size and retry
+                        new_batch_size = max(1, current_batch_size // 2)
+                        self.logger.warning(f"Payload too large (413) for batch size {current_batch_size}. Reducing to {new_batch_size}")
+                        current_batch_size = new_batch_size
+                        batch_texts = texts[i:i + current_batch_size]
+                        batch_docs = chunked_docs[i:i + current_batch_size]
+                        batch_retry_count += 1
+                        continue
 
-                        response.raise_for_status()
-                        data = response.json()
+                    response.raise_for_status()
+                    data = response.json()
 
-                        for item in data:
-                            idx = item["index"]
-                            score = item["score"]
-                            all_scored_docs.append((batch_docs[idx], score))
+                    for item in data:
+                        idx = item["index"]
+                        score = item["score"]
+                        all_scored_docs.append((batch_docs[idx], score))
 
-                        batch_success = True
-                        i += current_batch_size
+                    batch_success = True
+                    i += current_batch_size
 
-                    except httpx.HTTPStatusError as e:
-                        if e.response.status_code == 413 and current_batch_size > 1:
-                            new_batch_size = max(1, current_batch_size // 2)
-                            self.logger.warning(f"Payload too large (413) for batch size {current_batch_size}. Reducing to {new_batch_size}")
-                            current_batch_size = new_batch_size
-                            batch_texts = texts[i:i + current_batch_size]
-                            batch_docs = chunked_docs[i:i + current_batch_size]
-                            batch_retry_count += 1
-                            await asyncio.sleep(0.5 * batch_retry_count)  # Exponential backoff
-                            continue
-                        else:
-                            self.logger.error(f"HTTP error calling TEI rerank: {e}")
-                            raise e
-                    except Exception as e:
-                        self.logger.error(f"Error calling TEI rerank: {e}")
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 413 and current_batch_size > 1:
+                        new_batch_size = max(1, current_batch_size // 2)
+                        self.logger.warning(f"Payload too large (413) for batch size {current_batch_size}. Reducing to {new_batch_size}")
+                        current_batch_size = new_batch_size
+                        batch_texts = texts[i:i + current_batch_size]
+                        batch_docs = chunked_docs[i:i + current_batch_size]
+                        batch_retry_count += 1
+                        await asyncio.sleep(0.5 * batch_retry_count)  # Exponential backoff
+                        continue
+                    else:
+                        self.logger.error(f"HTTP error calling TEI rerank: {e}")
                         raise e
+                except Exception as e:
+                    self.logger.error(f"Error calling TEI rerank: {e}")
+                    raise e
 
-                if not batch_success:
-                    raise RuntimeError(f"Failed to process batch after {max_retries} retries")
+            if not batch_success:
+                raise RuntimeError(f"Failed to process batch after {max_retries} retries")
 
         # ===== STEP 3: Aggregate scores using Max-P =====
         # Map chunks back to original documents and take max score
@@ -697,12 +706,22 @@ class PineconeReranker:
         )
 
 
+def _config_digest(config) -> str:
+    import hashlib
+    import json
+    raw = json.dumps(config.model_dump(), sort_keys=True,
+                     default=lambda v: v.get_secret_value() if hasattr(v, "get_secret_value") else str(v))
+    return hashlib.sha256(raw.encode()).hexdigest()[:32]
+
+
 class TileReranker:
     # Cache LRU con dimensione massima di 2 modelli
 
     _device = 'cuda' if torch and torch.cuda.is_available() else 'cpu'
     _model_cache = OrderedDict()
     _max_cache_size = 2
+    _remote_cache = OrderedDict()   # TEI/Pinecone client objects, keyed by full config digest
+    _max_remote_cache_size = 64
     _logger = logging.getLogger(__name__)
     _cache_lock = Lock()        # protegge la struttura LRU cache (local)
 
@@ -762,7 +781,31 @@ class TileReranker:
         self.token_budget_per_batch = token_budget_per_batch
         self.max_pairs_per_batch = max_pairs_per_batch
         self.max_oom_retries = max_oom_retries
-        self.model = self._get_cached_model(self.model_name, self.config, max_tokens, overlap_tokens)
+        # Remote rerankers are cached per full configuration (url, api key, headers, parameters),
+        # not per model name: two tenants with the same name must not share endpoint or credentials.
+        self._cache_key = self.model_name if self.config is None else f"{self.model_name}|{_config_digest(self.config)}"
+        # Loaded on first use: building a reranker inside a request must not load a model (download,
+        # .to(device), warmup) on the caller's thread — on the event loop that froze the whole worker.
+        self._model = None
+
+    @property
+    def model(self):
+        if self._model is None:
+            self._model = self._get_cached_model(self._cache_key, self.config, self.max_tokens, self.overlap_tokens)
+        return self._model
+
+    @model.setter
+    def model(self, value):
+        self._model = value
+
+    async def aload(self):
+        """Load the model off the event loop (no-op once loaded). Call it before answering to get
+        load errors as an error response rather than in the middle of a stream."""
+        if self._model is None:
+            if self.config is None:  # local CrossEncoder: load (and warm up) on the GPU executor
+                await run_on_gpu(lambda: self.model)
+            else:  # TEI/Pinecone client objects
+                await asyncio.to_thread(lambda: self.model)
 
     @classmethod
     def _get_cached_model(cls, model_name: str, config: Optional[Union["TEIConfig", "PineconeRerankerConfig"]] = None,
@@ -770,11 +813,14 @@ class TileReranker:
 
         with cls._cache_lock:
             """Ottieni un modello dalla cache LRU"""
-            if model_name not in cls._model_cache:
-                if len(cls._model_cache) >= cls._max_cache_size:
+            # Remote clients (one per tenant config) must not evict the local GPU models.
+            cache, max_size = ((cls._remote_cache, cls._max_remote_cache_size) if config is not None
+                               else (cls._model_cache, cls._max_cache_size))
+            if model_name not in cache:
+                if len(cache) >= max_size:
                     # Evict LRU: rimuovi il modello meno recentemente usato e libera VRAM
-                    oldest_key = next(iter(cls._model_cache))
-                    oldest_model = cls._model_cache.pop(oldest_key)
+                    oldest_key = next(iter(cache))
+                    oldest_model = cache.pop(oldest_key)
                     cls._logger.info(f"Removing old reranker from cache: {oldest_key}")
                     del oldest_model
                     if torch is not None and cls._device == 'cuda':
@@ -783,12 +829,12 @@ class TileReranker:
                 if config and hasattr(config, "provider"):
                     if config.provider == "tei":
                         cls._logger.info("Loading new TEIReranker instance")
-                        cls._model_cache[model_name] = TEIReranker(config, max_tokens, overlap_tokens)
+                        cache[model_name] = TEIReranker(config, max_tokens, overlap_tokens)
                     elif config.provider == "pinecone":
                         if Pinecone is None:
                             raise ImportError("Pinecone is not available. Install 'pinecone-client'.")
                         cls._logger.info("Loading new PineconeReranker instance")
-                        cls._model_cache[model_name] = PineconeReranker(config, max_tokens, overlap_tokens)
+                        cache[model_name] = PineconeReranker(config, max_tokens, overlap_tokens)
                     else:
                         raise ValueError(f"Unknown provider: {config.provider}")
                 else:
@@ -820,13 +866,13 @@ class TileReranker:
                         except Exception as warmup_err:
                             cls._logger.warning(f"Warmup predict failed for {model_name}: {warmup_err}")
 
-                    cls._model_cache[model_name] = ce
+                    cache[model_name] = ce
             else:
                 cls._logger.info(f"Using cached Reranker model: {model_name}")
 
             # Sposta questo modello in cima alla cache (più recente)
-            model = cls._model_cache.pop(model_name)
-            cls._model_cache[model_name] = model
+            model = cache.pop(model_name)
+            cache[model_name] = model
         return model
 
 
@@ -995,7 +1041,7 @@ class TileReranker:
         Returns:
             List of reranked documents (top_k)
         """
-        import asyncio
+        await self.aload()
 
         # If using TEI, delegate to its native async method
         if isinstance(self.model, TEIReranker):
@@ -1029,6 +1075,7 @@ class TileReranker:
         cls._logger.info("Clearing Reranker cache")
         with cls._cache_lock:
             cls._model_cache.clear()
+            cls._remote_cache.clear()
         if torch is not None and torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -1088,7 +1135,7 @@ class RerankedRetriever(BaseRetriever):
 
         # Applica re-ranking se necessario
         if self.use_reranking and len(documents) > self.top_k:
-            return self.reranker.rerank_documents(query, documents, self.top_k, batch_size=8)
+            return await self.reranker.arerank_documents(query, documents, self.top_k, batch_size=8)
 
         return documents[:self.top_k] if len(documents) > self.top_k else documents
 
