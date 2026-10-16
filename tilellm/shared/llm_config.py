@@ -3,6 +3,7 @@ Configurazione centralizzata per i parametri dei vari provider LLM.
 Ogni provider ha regole specifiche su quali parametri accettare.
 """
 import os
+import re
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
 
@@ -311,9 +312,16 @@ ANTHROPIC_NO_SAMPLING_PARAMS_MODELS = frozenset({
 })
 
 
+# Every Claude 5.x minor release (claude-haiku-5-5, claude-opus-5-5, claude-fable-5-1, ...): exact names
+# missed them, and Haiku 5.5 answered 400 on every /api/qa call.
+_CLAUDE_5_MINOR = re.compile(r"^claude-[a-z]+-5-\d{1,2}$")
+_DATE_SUFFIX = re.compile(r"-\d{8}$")
+
+
 def strip_unsupported_anthropic_sampling_params(model: Optional[str], params: Dict[str, Any]) -> Dict[str, Any]:
     """Drop temperature/top_p in place when `model` rejects them outright."""
-    if model in ANTHROPIC_NO_SAMPLING_PARAMS_MODELS:
+    base = _DATE_SUFFIX.sub("", model or "")
+    if base in ANTHROPIC_NO_SAMPLING_PARAMS_MODELS or _CLAUDE_5_MINOR.match(base):
         params.pop("temperature", None)
         params.pop("top_p", None)
     return params

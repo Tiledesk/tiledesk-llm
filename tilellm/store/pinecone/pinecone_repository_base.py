@@ -49,6 +49,35 @@ _PINECONE_POD_ENVIRONMENT = os.getenv("PINECONE_POD_ENVIRONMENT", "us-east1-gcp"
 
 _SHARED_INDEX_CLASSES: dict = {}
 
+# Index host per (api key hash, index name), shared by every wrapper of the process: the
+# chunks_only and /api/qa paths build different wrappers and each paid the discovery again.
+# ponytail: per process, reset by close(); a worker recycle starts empty.
+_PINECONE_HOSTS: dict = {}
+
+
+def _host_key(engine) -> tuple:
+    return (_hash_api_key(engine.apikey.get_secret_value()), engine.index_name)
+
+
+async def _describe_index(engine, create=None) -> tuple:
+    """(host, dimension) of the index, from the shared cache or one describe_index call
+    (list_indexes + describe_index were two). A missing index is created only when `create` is
+    given (write paths); read paths get the NotFoundException."""
+    key = _host_key(engine)
+    if key not in _PINECONE_HOSTS:
+        from pinecone.exceptions import NotFoundException
+        async with pinecone.PineconeAsyncio(api_key=engine.apikey.get_secret_value()) as pc:
+            try:
+                desc = await pc.describe_index(engine.index_name)
+            except NotFoundException:
+                if create is None:
+                    raise
+                await create(pc)
+                desc = await pc.describe_index(engine.index_name)
+        # pc.__aexit__ closes the management session here
+        _PINECONE_HOSTS[key] = (desc.host, desc.dimension)
+    return _PINECONE_HOSTS[key]
+
 
 def _shared_index_class(base):
     """A subclass of the SDK's IndexAsyncio whose session survives the end of a request.
@@ -94,6 +123,7 @@ class CachedVectorStore:
         self.embeddings = embeddings
         self.emb_dimension = emb_dimension
         self._host: Optional[str] = None
+        self._dimension: Optional[int] = None
         self._lock = asyncio.Lock()
         self._last_check = 0.0
         self._check_every_sec = 60
@@ -112,14 +142,7 @@ class CachedVectorStore:
         async with self._lock:
             if self._host is not None:
                 return
-            async with pinecone.PineconeAsyncio(
-                api_key=self.engine.apikey.get_secret_value()
-            ) as pc:
-                names = (await pc.list_indexes()).names()
-                if self.engine.index_name not in names:
-                    await self._create_index_with_client(pc)
-                self._host = (await pc.describe_index(self.engine.index_name)).host
-            # pc.__aexit__ closes the aiohttp session here
+            self._host, self._dimension = await _describe_index(self.engine, create=self._create_index_with_client)
 
     async def _create_index_with_client(self, pc):
         """Create the Pinecone index using an already-open management client."""
@@ -206,12 +229,14 @@ class CachedVectorStore:
                                                      "malformed", "unauthorized", "401")):
                 async with self._lock:
                     self._host = None
+                    _PINECONE_HOSTS.pop(_host_key(self.engine), None)
             return False
 
     async def close(self):
         """Reset cached host and close the shared index session of the running loop."""
         async with self._lock:
             self._host = None
+            _PINECONE_HOSTS.pop(_host_key(self.engine), None)
             index = self._index.current()
             if index is not None:
                 await index.close_shared()
@@ -359,21 +384,20 @@ class PineconeRepositoryBase(VectorStoreRepository):
                                   chunk_indexes: List[int]) -> List[Document]:
         if not chunk_indexes:
             return []
-        import pinecone
-
-        pc = pinecone.Pinecone(api_key=engine.apikey.get_secret_value())
-        index_info = pc.describe_index(engine.index_name)
-        async with pc.IndexAsyncio(name=engine.index_name, host=index_info.host) as idx:
-            # Metadata-only lookup: Pinecone needs a vector, a zero vector is the idiom
-            # get_by_doc_id already uses here.
-            res = await idx.query(
-                vector=[0] * index_info.dimension,
-                top_k=len(chunk_indexes),
-                filter={"doc_id": {"$eq": doc_id}, "chunk_index": {"$in": list(chunk_indexes)}},
-                namespace=namespace,
-                include_values=False,
-                include_metadata=True,
-            )
+        # Shared host and index: no sync describe_index on the event loop, no new session per call.
+        _, dimension = await _describe_index(engine)
+        wrapper = await self.create_index_cache_wrapper(engine, None, dimension, cache_suffix="metadata_lookup")
+        idx = await wrapper.get_index()
+        # Metadata-only lookup: Pinecone needs a vector, a zero vector is the idiom
+        # get_by_doc_id already uses here.
+        res = await idx.query(
+            vector=[0] * dimension,
+            top_k=len(chunk_indexes),
+            filter={"doc_id": {"$eq": doc_id}, "chunk_index": {"$in": list(chunk_indexes)}},
+            namespace=namespace,
+            include_values=False,
+            include_metadata=True,
+        )
         docs = []
         for match in res.get("matches", []):
             metadata = match.get("metadata", {})

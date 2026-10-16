@@ -117,12 +117,19 @@ def _pinecone_index_returning(matches):
 @pytest.mark.asyncio
 async def test_pinecone_get_chunks_by_index_filters_doc_and_indexes(mocker):
     engine = Engine(index_name="test-index", apikey="test-key", text_key="text", type="serverless")
-    mock_pc, index = _pinecone_index_returning(
+    _, index = _pinecone_index_returning(
         [{"id": "doc1#79", "metadata": {"doc_id": "doc1", "chunk_index": 79, "text": "vicino"}}]
     )
-    mocker.patch("pinecone.Pinecone", return_value=mock_pc)
+    # host/dimension from the shared async lookup, index from the shared wrapper (no sync client)
+    mocker.patch("tilellm.store.pinecone.pinecone_repository_base._describe_index",
+                 AsyncMock(return_value=("http://test-host", 4)))
+    wrapper = MagicMock()
+    wrapper.get_index = AsyncMock(return_value=index)
+    mocker.patch.object(TestPineconeRepo, "create_index_cache_wrapper", AsyncMock(return_value=wrapper))
+    sync_client = mocker.patch("pinecone.Pinecone")
 
     docs = await TestPineconeRepo().get_chunks_by_index(engine, "test-ns", "doc1", [77, 79])
+    sync_client.assert_not_called()
 
     assert [d.page_content for d in docs] == ["vicino"]
     kwargs = index.query.call_args.kwargs

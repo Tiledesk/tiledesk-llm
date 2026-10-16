@@ -62,12 +62,10 @@ class TEIEmbeddings(Embeddings):
                  # Force fallback
                  raise RuntimeError("Client not available or closed")
         except (RuntimeError, httpx.RequestError):
-            if use_shared_client:
-                response = await self._loop_client.get().post(url, json=payload, headers=request_headers)
-            else:
-                # Sync entry points run on a short-lived loop of their own (see _run_in_thread).
-                async with httpx.AsyncClient() as client:
-                    response = await client.post(url, json=payload, headers=request_headers)
+            # One client per loop: sync entry points run on a worker thread's own loop (langchain
+            # runs sync searches in the executor) and reused it there too, instead of a new client
+            # (SSL context + connection) per call. Temporary loops are dropped once closed.
+            response = await self._loop_client.get().post(url, json=payload, headers=request_headers)
         
         response.raise_for_status()
         return response.json()

@@ -680,3 +680,152 @@ def test_loop_bound_keeps_one_instance_per_live_loop():
 
     asyncio.run(main())
     assert len(made) == 2
+
+
+def test_tei_sync_embedding_from_worker_threads_reuses_its_client(monkeypatch):
+    # langchain-qdrant's similarity path runs the sync search in the executor: embed_query is called from
+    # a worker thread. It created a new client (SSL context + connection) on every request.
+    import httpx
+    from concurrent.futures import ThreadPoolExecutor
+    from tilellm.shared.embeddings.embedding_client_manager import TEIEmbeddings
+
+    created = []
+    real = httpx.AsyncClient
+
+    def handler(request):
+        inputs = json.loads(request.content)["inputs"]
+        return httpx.Response(200, json=[[0.1] * 4] * (1 if isinstance(inputs, str) else len(inputs)))
+
+    def factory(*a, **k):
+        created.append(1)
+        return real(transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(httpx, "AsyncClient", factory)
+    emb = TEIEmbeddings(base_url="http://tei.example", model="m")
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        for _ in range(3):
+            assert len(pool.submit(emb.embed_query, "q").result()) == 4
+    assert len(created) == 1
+
+
+# --- Pinecone cold start: host discovery --------------------------------------------------------------------
+
+class _FakeIndexDesc:
+    def __init__(self, host, ready=True):
+        self.host, self.status, self.dimension = host, {"ready": ready}, 8
+
+
+def _fake_pinecone(monkeypatch, existing):
+    import pinecone
+    from pinecone.exceptions import NotFoundException
+
+    calls = []
+
+    class FakePC:
+        def __init__(self, api_key=None, **kw):
+            self.key = api_key
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        async def list_indexes(self):
+            calls.append("list")
+            raise AssertionError("list_indexes is an extra round trip")
+
+        async def describe_index(self, name):
+            calls.append(("describe", self.key, name))
+            if name not in existing:
+                raise NotFoundException(status=404, reason="Not Found")
+            return _FakeIndexDesc(f"{name}-{self.key}.svc")
+
+        async def create_index(self, name, **kw):
+            calls.append(("create", name))
+            existing.add(name)
+
+    monkeypatch.setattr(pinecone, "PineconeAsyncio", FakePC)
+    return calls
+
+
+def _wrapper(key="k1", index="i1"):
+    from tilellm.models.vector_store import Engine
+    from tilellm.store.pinecone.pinecone_repository_base import CachedVectorStore
+    return CachedVectorStore(Engine(name="pinecone", type="serverless", apikey=key, index_name=index), None, 8)
+
+
+@pytest.mark.asyncio
+async def test_pinecone_host_resolution_is_one_call_and_shared_across_wrappers(monkeypatch):
+    import tilellm.store.pinecone.pinecone_repository_base as base
+    base._PINECONE_HOSTS.clear()
+    calls = _fake_pinecone(monkeypatch, existing={"i1"})
+    a, b = _wrapper(), _wrapper()  # e.g. the chunks_only and /api/qa wrappers: different cache keys
+    await a._ensure_host()
+    await b._ensure_host()
+    assert a._host == b._host == "i1-k1.svc"
+    assert calls == [("describe", "k1", "i1")]
+    c = _wrapper(key="k2")  # another project: never another tenant's host
+    await c._ensure_host()
+    assert c._host == "i1-k2.svc" and len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_pinecone_missing_index_is_created_then_resolved(monkeypatch):
+    import tilellm.store.pinecone.pinecone_repository_base as base
+    base._PINECONE_HOSTS.clear()
+    calls = _fake_pinecone(monkeypatch, existing=set())
+    w = _wrapper(index="new")
+    await w._ensure_host()
+    assert w._host == "new-k1.svc"
+    assert ("create", "new") in calls
+
+
+@pytest.mark.asyncio
+async def test_pinecone_close_forgets_the_shared_host(monkeypatch):
+    import tilellm.store.pinecone.pinecone_repository_base as base
+    base._PINECONE_HOSTS.clear()
+    calls = _fake_pinecone(monkeypatch, existing={"i1"})
+    a = _wrapper()
+    await a._ensure_host()
+    await a.close()  # index recreated / key rotated: the next wrapper must look it up again
+    b = _wrapper()
+    await b._ensure_host()
+    assert [c for c in calls if c[0] == "describe"] == [("describe", "k1", "i1")] * 2
+
+
+@pytest.mark.asyncio
+async def test_pinecone_neighbour_lookup_reuses_host_and_index_without_sync_calls(monkeypatch):
+    # compliance_checker's neighbour expansion: a SYNC describe_index on the event loop and a new
+    # index (session) on every call.
+    import pinecone
+    import tilellm.store.pinecone.pinecone_repository_base as base
+    from tilellm.models.vector_store import Engine
+    from tilellm.store.pinecone.pinecone_repository_serverless import PineconeRepositoryServerless
+
+    base._PINECONE_HOSTS.clear()
+    calls = _fake_pinecone(monkeypatch, existing={"i1"})
+    indexes = []
+
+    class FakeIndex:
+        async def query(self, **kw):
+            assert len(kw["vector"]) == 8  # zero vector of the index dimension
+            return {"matches": [{"id": "d#2", "metadata": {"text": "vicino", "chunk_index": 2}}]}
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(pinecone.PineconeAsyncio, "IndexAsyncio",
+                        lambda self, **kw: indexes.append(FakeIndex()) or indexes[-1], raising=False)
+    monkeypatch.setattr(pinecone, "Pinecone", lambda *a, **k: (_ for _ in ()).throw(AssertionError("sync client")))
+    engine = Engine(name="pinecone", type="serverless", apikey="k1", index_name="i1")
+    repo = PineconeRepositoryServerless()
+    for _ in range(3):
+        docs = await repo.get_chunks_by_index(engine, "ns", "d", [2])
+        assert [d.page_content for d in docs] == ["vicino"]
+    assert [c for c in calls if c[0] == "describe"] == [("describe", "k1", "i1")]
+    assert len(indexes) == 1
+    with pytest.raises(Exception):  # read path: a missing index is an error, never created
+        await repo.get_chunks_by_index(Engine(name="pinecone", type="serverless", apikey="k1", index_name="nope"),
+                                       "ns", "d", [2])
+    assert ("create", "nope") not in calls
