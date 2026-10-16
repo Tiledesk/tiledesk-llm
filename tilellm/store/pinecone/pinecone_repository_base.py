@@ -48,6 +48,15 @@ _PINECONE_POD_ENVIRONMENT = os.getenv("PINECONE_POD_ENVIRONMENT", "us-east1-gcp"
 
 _SHARED_INDEX_CLASSES: dict = {}
 
+# Index host per (api key hash, index name), shared by every wrapper of the process: the
+# chunks_only and /api/qa paths build different wrappers and each paid the discovery again.
+# ponytail: per process, reset by close(); a worker recycle starts empty.
+_PINECONE_HOSTS: dict = {}
+
+
+def _host_key(engine) -> tuple:
+    return (_hash_api_key(engine.apikey.get_secret_value()), engine.index_name)
+
 
 def _shared_index_class(base):
     """A subclass of the SDK's IndexAsyncio whose session survives the end of a request.
@@ -111,14 +120,22 @@ class CachedVectorStore:
         async with self._lock:
             if self._host is not None:
                 return
+            key = _host_key(self.engine)
+            if key in _PINECONE_HOSTS:
+                self._host = _PINECONE_HOSTS[key]
+                return
+            from pinecone.exceptions import NotFoundException
             async with pinecone.PineconeAsyncio(
                 api_key=self.engine.apikey.get_secret_value()
             ) as pc:
-                names = (await pc.list_indexes()).names()
-                if self.engine.index_name not in names:
+                # One round trip for an existing index (list_indexes + describe_index were two).
+                try:
+                    self._host = (await pc.describe_index(self.engine.index_name)).host
+                except NotFoundException:
                     await self._create_index_with_client(pc)
-                self._host = (await pc.describe_index(self.engine.index_name)).host
+                    self._host = (await pc.describe_index(self.engine.index_name)).host
             # pc.__aexit__ closes the aiohttp session here
+            _PINECONE_HOSTS[key] = self._host
 
     async def _create_index_with_client(self, pc):
         """Create the Pinecone index using an already-open management client."""
@@ -205,12 +222,14 @@ class CachedVectorStore:
                                                      "malformed", "unauthorized", "401")):
                 async with self._lock:
                     self._host = None
+                    _PINECONE_HOSTS.pop(_host_key(self.engine), None)
             return False
 
     async def close(self):
         """Reset cached host and close the shared index session of the running loop."""
         async with self._lock:
             self._host = None
+            _PINECONE_HOSTS.pop(_host_key(self.engine), None)
             index = self._index.current()
             if index is not None:
                 await index.close_shared()

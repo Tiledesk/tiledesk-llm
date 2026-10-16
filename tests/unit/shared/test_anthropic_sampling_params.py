@@ -29,6 +29,22 @@ def test_strips_temperature_and_top_p_for_no_sampling_models():
         assert params["max_tokens"] == 512, model
 
 
+def test_strips_sampling_params_for_every_claude_5_minor_release_and_dated_ids():
+    # Exact names missed the 5.x minors: Haiku 5.5 got a 400 "temperature is deprecated" on /api/qa.
+    for model in ("claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1",
+                  "claude-opus-5-20260301", "claude-haiku-5-5-20261001"):
+        params = {"temperature": 0.0, "top_p": 1.0}
+        strip_unsupported_anthropic_sampling_params(model, params)
+        assert params == {}, model
+
+
+def test_claude_4_minor_releases_keep_their_sampling_params():
+    for model in ("claude-haiku-4-5", "claude-sonnet-4-5-20250929", "claude-opus-4-6", "claude-opus-4-1"):
+        params = {"temperature": 0.2}
+        strip_unsupported_anthropic_sampling_params(model, params)
+        assert params == {"temperature": 0.2}, model
+
+
 def test_leaves_temperature_untouched_for_older_claude_models():
     params = {"temperature": 0.7, "top_p": 0.9}
     strip_unsupported_anthropic_sampling_params("claude-opus-4-6", params)
