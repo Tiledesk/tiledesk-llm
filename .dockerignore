@@ -1,2 +1,33 @@
+# secrets
 .env
-.env.prod
+.env.*
+!.env.example
+
+# VCS, editor, agent config
+.git
+.gitignore
+.idea
+.vscode
+.claude
+.agents
+.github
+
+# not part of the service (docs/ may hold commercial documents)
+docs
+evaluation
+tests
+callbak
+*.ipynb
+
+# local environments, caches, data
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+qdrant_storage
+worker/node_modules
