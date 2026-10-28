@@ -149,6 +149,10 @@ class ScrapeType(IntEnum):
     PLAYWRIGHT_BS4_CLASS = 5  # Playwright + BS4 class selection
 
 
+# Added when the caller sends no user-agent; type=crawl replaces it with its own bot name.
+DEFAULT_BROWSER_USER_AGENT = "Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36"
+
+
 class ItemSingle(BaseModel):
     id: str
     source: str | None = None
@@ -156,7 +160,7 @@ class ItemSingle(BaseModel):
         default=None,
         description=(
             "Document type for ingestion routing. "
-            "Accepted values: auto, url, pdf, docx, txt, md, xlsx, xls, csv, regex_custom. "
+            "Accepted values: auto, url, pdf, docx, txt, md, xlsx, xls, csv, regex_custom, crawl. "
             "Omit or pass 'auto' to let the system detect the format automatically "
             "from magic bytes, file extension, or URL heuristics."
         ),
@@ -172,9 +176,7 @@ class ItemSingle(BaseModel):
     scrape_type: ScrapeType = Field(default=ScrapeType.UNSTRUCTURED)
     embedding: Union[str, LlmEmbeddingModel] = Field(default="text-embedding-3-small")
     browser_headers: Dict[str, str] = Field(
-        default_factory=lambda: {
-            "user-agent": "Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36"
-        }
+        default_factory=lambda: {"user-agent": DEFAULT_BROWSER_USER_AGENT}
     )
     namespace: str | None = None
     tags: Optional[List[str]] = None
@@ -188,6 +190,24 @@ class ItemSingle(BaseModel):
     chunk_size: int = Field(default_factory=lambda: 1000)
     chunk_overlap: int = Field(default_factory=lambda: 400)
     chunk_regex: Optional[str] = None
+    # ponytail: fixed caps; move them to env only if a deployment needs bigger crawls
+    max_depth: int = Field(
+        default=3, ge=0, le=10,
+        description="type=crawl only: link levels followed from the start page (0 = start page only).",
+    )
+    max_pages: int = Field(
+        default=50, ge=1, le=500,
+        description="type=crawl only: maximum number of pages fetched.",
+    )
+    ignore_robots: bool = Field(
+        default=False,
+        description="type=crawl only: true skips the site's robots.txt rules.",
+    )
+    crawl_file_types: List[Literal["pdf", "docx", "xlsx", "xls", "csv", "txt", "md"]] = Field(
+        default_factory=lambda: ["pdf", "docx"],
+        description="type=crawl only: linked files of these types are indexed too (recognised by "
+        "Content-Type, not by extension); each counts as a page. [] = HTML pages only.",
+    )
     parameters_scrape_type_4: Optional[Any] = (
         None  # Will be importing ParametersScrapeType4
     )
@@ -235,12 +255,15 @@ class ItemSingle(BaseModel):
         ),
     )
 
+    def crawl_options(self) -> Dict[str, Any]:
+        """Keyword arguments of web_crawler.crawl_site taken from this request."""
+        return {"max_depth": self.max_depth, "max_pages": self.max_pages,
+                "ignore_robots": self.ignore_robots, "file_types": self.crawl_file_types}
+
     @model_validator(mode="after")
     def validate_browser_headers(self):
         if "user-agent" not in self.browser_headers:
-            self.browser_headers["user-agent"] = (
-                "Mozilla/5.0 AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36"
-            )
+            self.browser_headers["user-agent"] = DEFAULT_BROWSER_USER_AGENT
         return self
 
     @model_validator(mode="after")

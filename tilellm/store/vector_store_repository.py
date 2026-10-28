@@ -196,32 +196,12 @@ class VectorStoreRepository(ABC):
         return load_document(source, type_source)
 
     @staticmethod
-    async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers, chunk_regex=None):
-        if type_source in ['url', 'txt', 'md']:
-            documents = await get_content_by_url(source,
-                                                 scrape_type,
-                                                 parameters_scrape_type_4=parameters_scrape_type_4,
-                                                 browser_headers=browser_headers)
-        elif type_source == 'regex_custom':
-            documents = await handle_regex_custom_chunk(source, chunk_regex, browser_headers)
-        else:
-            documents = load_document(source, type_source)
-
-        # Verifica che i documenti siano validi
-        if not documents:
-            raise ValueError(f"No documents retrieved from the source: {source} (source type: {type_source})")
-
-        # Verifica che ci sia almeno un documento con contenuto non vuoto
-        has_content = False
-        for doc in documents:
-            if doc and doc.page_content and doc.page_content.strip():
-                has_content = True
-                break
-
-        if not has_content:
-            raise ValueError(f"Documents retrieved but source content is empty: {source} (source type: {type_source})")
-
-        return documents
+    async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers,
+                              chunk_regex=None, crawl_options=None):
+        from tilellm.tools import document_tools
+        return await document_tools.fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4,
+                                                    browser_headers, chunk_regex=chunk_regex,
+                                                    crawl_options=crawl_options)
 
     @staticmethod
     def calc_embedding_cost(texts, embedding):

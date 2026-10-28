@@ -65,13 +65,25 @@ class TestRoutingDecision:
     @pytest.mark.asyncio
     async def test_regex_custom_routes_to_legacy_regex(self):
         with patch(
-            "tilellm.modules.api_v2.services.ingestion_v2_service._route_legacy_regex_custom",
+            "tilellm.modules.api_v2.services.ingestion_v2_service._route_legacy_add_item",
             new=AsyncMock(return_value="LEGACY_REGEX"),
         ) as mock_route:
             result = await _ingest_v2_core(_item(type=DocumentType.REGEX_CUSTOM), repo=None, llm_embeddings=None)
 
         mock_route.assert_called_once()
         assert result == "LEGACY_REGEX"
+
+    @pytest.mark.asyncio
+    async def test_crawl_routes_to_legacy_add_item(self):
+        # the canonical export has no crawl: it would answer 500
+        with patch(
+            "tilellm.modules.api_v2.services.ingestion_v2_service._route_legacy_add_item",
+            new=AsyncMock(return_value="LEGACY"),
+        ) as mock_route:
+            result = await _ingest_v2_core(_item(type=DocumentType.CRAWL), repo=None, llm_embeddings=None)
+
+        mock_route.assert_called_once()
+        assert result == "LEGACY"
 
     @pytest.mark.asyncio
     async def test_txt_routes_to_canonical(self):
@@ -130,14 +142,14 @@ class TestRouteLegacyOcr:
 class TestRouteLegacyRegexCustom:
     @pytest.mark.asyncio
     async def test_hybrid_false_calls_add_item(self):
-        from tilellm.modules.api_v2.services.ingestion_v2_service import _route_legacy_regex_custom
+        from tilellm.modules.api_v2.services.ingestion_v2_service import _route_legacy_add_item
 
         with patch(
             "tilellm.controller.controller.add_item", new=AsyncMock(return_value="ADD_ITEM_RESULT"),
         ) as mock_add, patch(
             "tilellm.controller.controller.add_item_hybrid", new=AsyncMock(),
         ) as mock_add_hybrid:
-            result = await _route_legacy_regex_custom(_item(type=DocumentType.REGEX_CUSTOM, hybrid=False))
+            result = await _route_legacy_add_item(_item(type=DocumentType.REGEX_CUSTOM, hybrid=False))
 
         mock_add.assert_called_once()
         mock_add_hybrid.assert_not_called()
@@ -145,14 +157,14 @@ class TestRouteLegacyRegexCustom:
 
     @pytest.mark.asyncio
     async def test_hybrid_true_calls_add_item_hybrid(self):
-        from tilellm.modules.api_v2.services.ingestion_v2_service import _route_legacy_regex_custom
+        from tilellm.modules.api_v2.services.ingestion_v2_service import _route_legacy_add_item
 
         with patch(
             "tilellm.controller.controller.add_item", new=AsyncMock(),
         ) as mock_add, patch(
             "tilellm.controller.controller.add_item_hybrid", new=AsyncMock(return_value="HYBRID_RESULT"),
         ) as mock_add_hybrid:
-            result = await _route_legacy_regex_custom(_item(type=DocumentType.REGEX_CUSTOM, hybrid=True))
+            result = await _route_legacy_add_item(_item(type=DocumentType.REGEX_CUSTOM, hybrid=True))
 
         mock_add_hybrid.assert_called_once()
         mock_add.assert_not_called()

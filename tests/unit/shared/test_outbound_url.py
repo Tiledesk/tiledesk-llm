@@ -291,3 +291,23 @@ def test_text_without_charset_is_not_mojibake(monkeypatch, path):
         server.shutdown()
     assert "Città di Bàri" in text
 
+
+def test_every_browser_page_blocks_service_workers():
+    # guard_page() routes page requests; requests made by a service worker bypass
+    # page.route(), so every page/context must be created with service_workers="block"
+    import pathlib
+    import re
+    import tilellm
+
+    calls = []
+    for path in pathlib.Path(tilellm.__file__).parent.rglob("*.py"):
+        text = path.read_text()
+        for m in re.finditer(r"\.(new_page|new_context)\(", text):
+            if m.group(1) == "new_page" and "context.new_page()" in text[m.start() - 10:m.end() + 1]:
+                continue  # page of a context: the context carries the option
+            depth, i = 1, m.end()
+            while depth:
+                depth += {"(": 1, ")": -1}.get(text[i], 0)
+                i += 1
+            calls.append((path.name, 'service_workers="block"' in text[m.end():i]))
+    assert calls and all(ok for _, ok in calls), [c for c in calls if not c[1]]

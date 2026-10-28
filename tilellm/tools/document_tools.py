@@ -7,6 +7,7 @@ import logging
 from typing import List, Optional, Sequence, Any
 from urllib.parse import urlparse
 
+import lxml.html
 import requests
 from bs4 import BeautifulSoup, Comment
 
@@ -60,6 +61,14 @@ def require_remote_url(source: str) -> str:
     http(s) URL would be opened from the container filesystem by the loaders
     (or by the browser, for `file://`) and its content indexed."""
     return validate_outbound_url(source)
+
+
+def chunk_source(item_type, item_source, metadata: dict):
+    """`source` cited by a chunk: a crawled page keeps its own URL; any other
+    type is cited by the request source (file loaders put a temp path there)."""
+    if item_type == "crawl" and metadata.get("source"):
+        return metadata["source"]
+    return item_source
 
 
 def _extract_file_name(source: str) -> str:
@@ -211,6 +220,46 @@ async def _handle_trafilatura_scrape(url: str, headers: Optional[dict] = None) -
 
     if not downloaded:
         return []
+    return _trafilatura_documents(downloaded, url)
+
+
+_CONSENT = re.compile(
+    r"cookie|consent|gdpr|\bcmp\b|iubenda|onetrust|cookiebot|cookieyes|didomi|usercentrics|klaro|tarteaucitron"
+    r"|\bcc(_|--?)",  # cookieconsent libraries: vanilla (cc--main, cc_div) and Osano (cc-window)
+    re.I,
+)
+
+
+def _strip_consent(html: str) -> str:
+    """Remove cookie-consent banners (same on every page of a site): their text or
+    their cookie table would otherwise be indexed as the page.
+
+    ponytail: matched on id/class names; a banner with neutral names stays.
+    """
+    try:
+        tree = lxml.html.fromstring(html)
+    except (ValueError, lxml.etree.ParserError):
+        return html
+    page_text = len(tree.text_content())
+    removed = False
+    for el in tree.xpath("//*[@id or @class]"):
+        if el.tag in ("html", "body", "main", "article") or el.getparent() is None:
+            continue
+        if not _CONSENT.search(f"{el.get('id', '')} {el.get('class', '')}"):
+            continue
+        if len(el.text_content()) * 2 > page_text:
+            continue  # a wrapper of the page (e.g. class="cookie-consent-open"), not a banner
+        el.drop_tree()
+        removed = True
+    return lxml.html.tostring(tree, encoding="unicode") if removed else html
+
+
+def _trafilatura_documents(downloaded: str, url: str) -> list[Document]:
+    """Main text (+ tables, + page title as file_name) of an HTML page already
+    downloaded; empty list when the main text is too short."""
+    import trafilatura
+
+    downloaded = _strip_consent(downloaded)
 
     extract_kwargs = dict(
         include_tables=True,
@@ -440,7 +489,7 @@ async def handle_chromium_loader(
             )
             try:
                 page = await browser.new_page(
-                    extra_http_headers=browser_headers,
+                    extra_http_headers=browser_headers, service_workers="block",
                     java_script_enabled=True
                 )
                 await guard_page(page)
@@ -493,7 +542,7 @@ async def scrape_page_fallback_selectors(url, browser_headers: Optional[dict] = 
                                               "--no-sandbox"
                                           ])
         try:
-            page = await browser.new_page(extra_http_headers=browser_headers,
+            page = await browser.new_page(extra_http_headers=browser_headers, service_workers="block",
                                           java_script_enabled=True)
             await guard_page(page)
 
@@ -606,7 +655,7 @@ async def scrape_page(url, params_type_4, browser_headers: Optional[dict] = None
                                             ]
                                             )
         try:
-            page = await browser.new_page(extra_http_headers=browser_headers,
+            page = await browser.new_page(extra_http_headers=browser_headers, service_workers="block",
                                           java_script_enabled=True)
             await guard_page(page)
 
@@ -711,7 +760,7 @@ async def scrape_page_complex(url, params_type_4, browser_headers: Optional[dict
             try:
                 # 2 **Context with human‑realistic parameters.**
                 context = await browser.new_context(
-                    extra_http_headers=browser_headers,
+                    extra_http_headers=browser_headers, service_workers="block",
                     viewport={"width": 1920, "height": 1080},
                     user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
                     locale="it-IT",
@@ -831,7 +880,7 @@ async def scrape_page_complex_a(url, params_type_4, browser_headers: Optional[di
                                                   "--disable-gpu",
                                               ]
                                               )
-            page = await browser.new_page(extra_http_headers=browser_headers,
+            page = await browser.new_page(extra_http_headers=browser_headers, service_workers="block",
                                           java_script_enabled=True)
             await guard_page(page)
 
@@ -975,7 +1024,12 @@ from tilellm.tools.structured_loaders import StructuredDocxLoader, ExcelLoader, 
 
 def load_document(url: str, type_source: str):
     require_remote_url(url)
+    return _load_file(url, type_source, url)
 
+
+def _load_file(path: str, type_source: str, source_url: str):
+    """Documents of a file (local path or URL) of a supported type; file_name from source_url."""
+    url = path
     if type_source == 'pdf':
         logger.info(f'Loading {url}')
         logger.warning(
@@ -1013,7 +1067,7 @@ def load_document(url: str, type_source: str):
     data = loader.load()
 
     # Normalize metadata: ensure file_name and page are always present.
-    file_name = _extract_file_name(url)
+    file_name = _extract_file_name(source_url)
     for doc in data:
         doc.metadata["file_name"] = file_name
         if "page" in doc.metadata:
@@ -1069,8 +1123,13 @@ def clean_metadata(dictionary):
     return {k: v for k, v in dictionary.items() if is_valid_value(v)}
 
 
-async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers, chunk_regex=None):
-    if type_source in ['url', 'txt', 'md']:
+async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers,
+                          chunk_regex=None, crawl_options=None):
+    if type_source == 'crawl':
+        from tilellm.tools import web_crawler
+        documents = await web_crawler.crawl_site(source, browser_headers=browser_headers,
+                                                 **(crawl_options or {}))
+    elif type_source in ['url', 'txt', 'md']:
         documents = await get_content_by_url(source,
                                         scrape_type,
                                         parameters_scrape_type_4=parameters_scrape_type_4,

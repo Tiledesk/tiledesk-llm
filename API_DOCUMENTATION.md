@@ -108,6 +108,49 @@ When `type` is omitted or set to `"auto"`, the system resolves the document type
 | `md` | `source` URL | `UnstructuredMarkdownLoader` | Headings partially parsed |
 | `text` | `content` field | `process_auto_detected_text` | **Direct inline content** — no source URL needed. Sub-format (plain / Markdown / tabular) detected at chunk time. |
 | `regex_custom` | `source` URL | Playwright + user regex | Custom split pattern via `chunk_regex` |
+| `crawl` | `source` = start page | Trafilatura per page → Playwright for JS pages | Follows same-host links: see **Crawling a site** below |
+
+**Crawling a site** (`type: "crawl"`, also on `/api/scrape/single`, `/api/scrape/enqueue`, `/api/v2/*`):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `max_depth` | int (0–10) | `3` | Link levels followed from the start page (`0` = start page only) |
+| `max_pages` | int (1–500) | `50` | Maximum number of pages fetched |
+| `ignore_robots` | bool | `false` | `true` skips the site's `robots.txt` (wildcards `*`/`$` honoured) |
+| `crawl_file_types` | list | `["pdf", "docx"]` | Linked files of these types are indexed too (`pdf`, `docx`, `xlsx`, `xls`, `csv`, `txt`, `md`), recognised by `Content-Type` (a PDF served as `.aspx` counts); each file is one page of `max_pages`. `[]` = HTML pages only |
+
+- Only links on the **same host** as `source` are followed (no other subdomains, no external
+  sites); a page whose redirects end on another host is dropped. Images, archives and file
+  types not in `crawl_file_types` are skipped; accepted files are read with the same loaders as
+  `type: "pdf"`/`"docx"`/… (no OCR) and capped at 10 MB.
+- Cookie-consent banners are removed before extraction (also for `type: "url"`).
+- Every page and redirect goes through the outbound URL guard (`OUTBOUND_*` settings).
+- The crawler identifies itself as `TiledeskBot/1.0 (+https://tiledesk.com)` (some CDNs reject clients
+  that claim to be a browser); a `user-agent` set in `browser_headers` takes precedence.
+- Pages whose static HTML has no text, the same text as another page (JS app shell) or no
+  links while more levels are needed are rendered with Playwright; identical text is indexed once.
+- All pages are stored under the request `id`: each chunk's `source` is its page URL and
+  `file_name` the page title. Re-crawling with the same `id` replaces the whole site; deleting
+  the `id` removes it.
+- 50 pages take minutes: use `/api/scrape/enqueue` (TaskIQ) for crawls. `/api/scrape/single`
+  and `/api/ingestion` stay synchronous.
+
+```bash
+curl -X POST http://localhost:8000/api/scrape/enqueue \
+  -H "Content-Type: application/json" \
+  -d '{
+    "id": "sito-comune",
+    "type": "crawl",
+    "source": "https://www.example.org/",
+    "max_depth": 2,
+    "max_pages": 30,
+    "namespace": "kb-comune",
+    "gptkey": "sk-...",
+    "embedding": "text-embedding-3-small",
+    "engine": { "name": "qdrant", "type": "serverless", "host": "localhost", "port": 6333,
+                "index_name": "kb", "vector_size": 1536 }
+  }'
+```
 
 **Response**: same as `/api/scrape/single`
 ```json

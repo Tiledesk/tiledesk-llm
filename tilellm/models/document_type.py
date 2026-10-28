@@ -49,3 +49,15 @@ class DocumentType(str, Enum):
 
     REGEX_CUSTOM = "regex_custom"
     """Custom regex-based chunking on a remote text/HTML resource."""
+
+    CRAWL = "crawl"
+    """Web site: ``source`` is the start page, same-host links are followed up to
+    ``max_depth`` levels and ``max_pages`` pages (``ignore_robots`` skips robots.txt)."""
+
+
+# Types whose content the backends fetch from `source` and chunk with
+# chunk_documents (regex_custom and direct text have their own branches).
+FETCHED_TYPES = (
+    DocumentType.URL, DocumentType.PDF, DocumentType.DOCX, DocumentType.TXT, DocumentType.MD,
+    DocumentType.XLSX, DocumentType.XLS, DocumentType.CSV, DocumentType.CRAWL,
+)
