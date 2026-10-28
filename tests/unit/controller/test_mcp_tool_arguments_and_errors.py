@@ -105,7 +105,9 @@ def mcp_url():
     while not server.started and time.time() < deadline:
         time.sleep(0.05)
     assert server.started
-    yield f"http://127.0.0.1:{port}/mcp?client=abc"
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setenv("OUTBOUND_URL_ALLOWED_HOSTS", "127.0.0.1")  # MCP URLs pass the SSRF guard
+        yield f"http://127.0.0.1:{port}/mcp?client=abc"
     server.should_exit = True
     thread.join(timeout=5)
 

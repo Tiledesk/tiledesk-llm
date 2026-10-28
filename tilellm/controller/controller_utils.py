@@ -32,6 +32,7 @@ from langchain_classic.retrievers import ContextualCompressionRetriever
 
 import tilellm.shared.const as const
 from tilellm.shared.mcp_tool_calls import FixedToolArguments, root_exception
+from tilellm.shared.outbound_url import BlockedURLError, avalidate_outbound_url
 from tilellm.shared.tags_query_parser import build_tags_filter
 
 from langchain_classic.chains import create_history_aware_retriever, create_retrieval_chain
@@ -1616,6 +1617,14 @@ async def get_all_filtered_tools(mcp_client, servers_config: Dict[str, ServerCon
                 "per un valore breve).",
                 server_name, illegal_header,
             )
+            continue
+
+        # the URL comes from the request payload: SSRF guard before any connection.
+        # ponytail: checked once here; tool calls reuse the same URL (DNS rebinding: network policy)
+        try:
+            await avalidate_outbound_url(config.url)
+        except BlockedURLError as exc:
+            logger.error("MCP server %r non contattato: %s", server_name, exc)
             continue
 
         try:
