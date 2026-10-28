@@ -4051,6 +4051,15 @@ wheels = [
 ]
 
 [[package]]
+name = "protego"
+version = "0.7.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/7a/d9/5026b9e75db1172f02441a84eaf42efb199b4cea14dda7651a620d1acd40/protego-0.7.0.tar.gz", hash = "sha256:2c032d9736a1f4f0c4318f3558353ae34da5cd038f1a5e064ded7548df315e5a", size = 3144321, upload-time = "2026-09-21T10:54:00.107Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c0/20/e4382a85e4cf4746d11746481f83360b990165725dd36ba73d55e029e6a9/protego-0.7.0-py3-none-any.whl", hash = "sha256:944638aaee608f6c83fcad442695f3f9381a60be8d5007248f46b00f201fa5fc", size = 13714, upload-time = "2026-09-21T10:53:58.812Z" },
+]
+
+[[package]]
 name = "protobuf"
 version = "7.36.1"
 source = { registry = "https://pypi.org/simple" }
@@ -4657,7 +4666,7 @@ wheels = [
 
 [[package]]
 name = "qdrant-client"
-version = "1.19.0"
+version = "1.19.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "grpcio" },
@@ -4668,9 +4677,9 @@ dependencies = [
     { name = "pydantic" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/3a/33/c6e4ec45b4fca5a0b808e8804e60be54a6d7505b68b53c0b1d0d62ba86c1/qdrant_client-1.19.0.tar.gz", hash = "sha256:365395a04b0a26c309b25b7d8b1c99ef2071ec9a2b74bc8a5fd3b7a3642fe963", size = 350953, upload-time = "2026-08-04T14:32:56.923Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/4e/20/c8fcd645d3f595b086fa11a085980e9f641fd56fc6221fb325d634b8c4fa/qdrant_client-1.19.1.tar.gz", hash = "sha256:8f1d851a8463ce8cc11cf39ed8a9c9fb4b5f9de60e9a096ff56da42d1f074907", size = 360625, upload-time = "2026-09-16T06:43:13.818Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/fc/3c/480c61cc8d5a3e76bb44e86231f408c93643e5498beadbbeb381ab55d02b/qdrant_client-1.19.0-py3-none-any.whl", hash = "sha256:13602a2b3478a95ecdf42f97b93d7f703b63a3361cd912a04495a33a5ac14121", size = 396157, upload-time = "2026-08-04T14:32:55.734Z" },
+    { url = "https://files.pythonhosted.org/packages/d0/9f/becebdda02beddd422587eba0d7dfac5b1f1e0aa1ada5bcf9b9e6f1c3717/qdrant_client-1.19.1-py3-none-any.whl", hash = "sha256:fca1a96c3f90f5fff853f6ee6877838a5768a04c963df9891a655a63313af8a0", size = 406533, upload-time = "2026-09-16T06:43:12.428Z" },
 ]
 
 [[package]]
@@ -5685,6 +5694,7 @@ dependencies = [
     { name = "playwright" },
     { name = "playwright-stealth" },
     { name = "prometheus-client" },
+    { name = "protego" },
     { name = "psutil" },
     { name = "pyjwt" },
     { name = "pymilvus" },
@@ -5879,6 +5889,7 @@ requires-dist = [
     { name = "playwright", specifier = ">=1.58.0,<2.0.0" },
     { name = "playwright-stealth", specifier = ">=2.0.3,<3.0.0" },
     { name = "prometheus-client", specifier = ">=0.21.0,<0.22.0" },
+    { name = "protego", specifier = ">=0.5.0,<1.0.0" },
     { name = "psutil", specifier = ">=7.2.2,<8.0.0" },
     { name = "pyarrow", marker = "extra == 'all'", specifier = ">=22.0.0,<23.0.0" },
     { name = "pyarrow", marker = "extra == 'graph'", specifier = ">=22.0.0,<23.0.0" },
@@ -5891,7 +5902,7 @@ requires-dist = [
     { name = "pypdf", specifier = ">=6.19.0,<7.0.0" },
     { name = "python-docx", specifier = ">=1.2.0,<2.0.0" },
     { name = "python-dotenv", specifier = ">=1.2.2,<2.0.0" },
-    { name = "qdrant-client", specifier = ">=1.17.1,<2.0.0" },
+    { name = "qdrant-client", specifier = ">=1.19.1,<1.20.0" },
     { name = "ragas", marker = "extra == 'evaluation'", specifier = ">=0.2.0" },
     { name = "redis", specifier = ">=7.1.0,<8.0.0" },
     { name = "reportlab", specifier = ">=4.2.0,<5.0.0" },

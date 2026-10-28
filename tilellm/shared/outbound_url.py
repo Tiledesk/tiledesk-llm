@@ -23,12 +23,14 @@ time-of-use): DNS rebinding can still slip through. Block egress to
 import asyncio
 import ipaddress
 import os
+import re
 import socket
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urljoin, urlparse
 
 import httpx
 import requests
+from urllib3.util import parse_url
 
 _METADATA_IPS = {
     ipaddress.ip_address("169.254.169.254"),
@@ -76,6 +78,9 @@ def validate_outbound_url(url: str) -> str:
     if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
         raise BlockedURLError(f"URL must be http(s) with a host: {str(url)[:120]!r}")
     host = parsed.hostname.lower()
+    # the HTTP client must connect to the same host checked here
+    if (parse_url(url).host or "").strip("[]").lower() != host:
+        raise BlockedURLError(f"URL not allowed (ambiguous host): {url[:120]!r}")
     if host in _allowed_hosts():
         return url
     if host == "localhost" or host.endswith(".localhost"):
@@ -150,11 +155,24 @@ def _requests_redirect_hook(response: requests.Response, *args: Any, **kwargs: A
         validate_outbound_url(urljoin(response.url, response.headers.get("location", "")))
 
 
-def outbound_requests_get(url: str, **kwargs: Any) -> requests.Response:
+_META_CHARSET = re.compile(rb"""<meta[^>]+charset=["']?([\w-]+)""", re.I)
+
+
+def _fix_text_encoding(response: requests.Response) -> None:
+    """Text without a charset in Content-Type: requests assumes ISO-8859-1, so
+    UTF-8 pages come out as mojibake. Use the page's <meta charset>, else detect it."""
+    ctype = response.headers.get("content-type", "").lower()
+    if not ctype.startswith("text/") or "charset" in ctype:
+        return
+    declared = _META_CHARSET.search(response.content[:4096])
+    response.encoding = declared.group(1).decode() if declared else response.apparent_encoding
+
+
+def outbound_requests_get(url: str, max_bytes: Optional[int] = None, **kwargs: Any) -> requests.Response:
     """requests.get that validates the URL and every redirect target, and caps
-    the (decoded) response size."""
+    the (decoded) response size (max_bytes, default OUTBOUND_MAX_RESPONSE_BYTES)."""
     validate_outbound_url(url)
-    limit = _max_response_bytes()
+    limit = max_bytes or _max_response_bytes()
     with requests.Session() as session:
         session.hooks["response"].append(_requests_redirect_hook)
         response = session.get(url, stream=True, **kwargs)
@@ -171,6 +189,7 @@ def outbound_requests_get(url: str, **kwargs: Any) -> requests.Response:
             response.close()
             raise
         response._content = bytes(body)
+        _fix_text_encoding(response)
         return response
 
 

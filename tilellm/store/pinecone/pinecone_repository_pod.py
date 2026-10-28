@@ -13,15 +13,16 @@ from tilellm.models import (MetadataItem,
                             QuestionAnswer
                             )
 from tilellm.models.llm import TEIConfig
+from tilellm.models.document_type import FETCHED_TYPES
 
 from tilellm.shared.embedding_factory import inject_embedding
 from tilellm.shared.embeddings.embedding_client_manager import inject_embedding_qa_async_optimized, inject_embedding_async_optimized
 from tilellm.shared.tags_query_parser import build_tags_filter
 from tilellm.store.vector_store_repository import VectorStoreIndexingError
-from tilellm.tools.document_tools import (get_content_by_url,
-                                          load_document,
+from tilellm.tools.document_tools import (fetch_documents,
                                           handle_regex_custom_chunk,
                                           _extract_file_name,
+                                          chunk_source,
                                           )
 
 from tilellm.store.pinecone.pinecone_repository_base import PineconeRepositoryBase
@@ -115,39 +116,23 @@ class PineconeRepositoryPod(PineconeRepositoryBase):
         cost = 0
 
         try:
-            if type_source in ['url', 'pdf', 'docx', 'txt', 'md', 'xlsx', 'xls', 'csv']:
-
-                documents = []
-                if type_source in ['url', 'txt', 'md']:
-                    documents = await get_content_by_url(source,
-                                                         scrape_type,
-                                                         parameters_scrape_type_4=parameters_scrape_type_4,
-                                                         browser_headers=item.browser_headers)
-                else:
-                    documents = load_document(source, type_source)
-
-                if not documents:
-                    raise ValueError(f"No documents retrieved from the source: {source} (source type: {type_source})")
-
-                has_content = False
-                for doc in documents:
-                    if doc and doc.page_content and doc.page_content.strip():
-                        has_content = True
-                        break
-
-                if not has_content:
-                    raise ValueError(
-                        f"Documents retrieved but source content is empty: {source} (source type: {type_source})")
+            if type_source in FETCHED_TYPES:
+                # shared fetch: empty-content checks, invisible-text stripping, type=crawl
+                documents = await fetch_documents(type_source, source, scrape_type,
+                                                  parameters_scrape_type_4, item.browser_headers,
+                                                  crawl_options=item.crawl_options())
 
                 for single_document in documents:
                     single_document.metadata["id"] = metadata_id
-                    single_document.metadata["source"] = source
+                    single_document.metadata["source"] = chunk_source(type_source, source,
+                                                                      single_document.metadata)
                     single_document.metadata["type"] = type_source
                     single_document.metadata["embedding"] = embedding_name
                     if item.tags:
                         single_document.metadata["tags"] = item.tags
                     if not single_document.metadata.get("file_name"):
-                        single_document.metadata["file_name"] = _extract_file_name(source or "")
+                        single_document.metadata["file_name"] = _extract_file_name(
+                            single_document.metadata["source"] or "")
                     if "page" not in single_document.metadata:
                         single_document.metadata["page"] = 1
 

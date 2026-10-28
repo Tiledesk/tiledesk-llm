@@ -28,6 +28,7 @@ from typing import Dict, List, Optional, Union
 import logging
 
 from tilellm.models.llm import TEIConfig
+from tilellm.models.document_type import FETCHED_TYPES
 
 from tilellm.shared.embeddings.embedding_client_manager import inject_embedding_async_optimized, \
     inject_embedding_qa_async_optimized
@@ -35,7 +36,7 @@ from tilellm.shared.sparse_util import hybrid_score_norm
 from tilellm.shared.timed_cache import TimedCache
 from tilellm.shared.utility import _hash_api_key
 from tilellm.store.vector_store_repository import VectorStoreRepository, VectorStoreIndexingError
-from tilellm.tools.document_tools import fetch_documents, calc_embedding_cost, _extract_file_name
+from tilellm.tools.document_tools import fetch_documents, calc_embedding_cost, _extract_file_name, chunk_source
 from tilellm.tools.sparse_encoders import TiledeskSparseEncoders
 from tilellm.modules.ingestion.text_processor import process_auto_detected_text
 
@@ -703,12 +704,13 @@ class QdrantRepository(VectorStoreRepository):
                 else:
                     logger.error(f"Could not create payload index (it might already exist or another error): {e}")
 
-            if item.type in ['url', 'pdf', 'docx', 'txt', 'md', 'xlsx', 'xls', 'csv']:
+            if item.type in FETCHED_TYPES:
                 documents = await fetch_documents(type_source=item.type,
                                                   source=item.source,
                                                   scrape_type=item.scrape_type,
                                                   parameters_scrape_type_4=item.parameters_scrape_type_4,
-                                                  browser_headers=item.browser_headers)
+                                                  browser_headers=item.browser_headers,
+                                                  crawl_options=item.crawl_options())
 
                 chunks = await self.chunk_documents(item=item,
                                                     documents=documents,
@@ -852,12 +854,13 @@ class QdrantRepository(VectorStoreRepository):
                 else:
                     logger.error(f"Could not create payload index (it might already exist or another error): {e}")
 
-            if item.type in ['url', 'pdf', 'docx', 'txt', 'md', 'xlsx', 'xls', 'csv']:
+            if item.type in FETCHED_TYPES:
                 documents = await self.fetch_documents(type_source=item.type,
                                                        source=item.source,
                                                        scrape_type=item.scrape_type,
                                                        parameters_scrape_type_4=item.parameters_scrape_type_4,
-                                                       browser_headers=item.browser_headers)
+                                                       browser_headers=item.browser_headers,
+                                                       crawl_options=item.crawl_options())
 
 
 
@@ -1892,7 +1895,7 @@ class QdrantRepository(VectorStoreRepository):
         chunks = []
         for document in documents:
             document.metadata["id"] = item.id
-            document.metadata["source"] = item.source
+            document.metadata["source"] = chunk_source(item.type, item.source, document.metadata)
             document.metadata["type"] = item.type
             document.metadata["embedding"] = str(item.embedding)
             document.metadata["namespace"] = item.namespace
@@ -1900,7 +1903,7 @@ class QdrantRepository(VectorStoreRepository):
                 document.metadata["tags"] = item.tags
             # Ensure file_name and page are always present.
             if not document.metadata.get("file_name"):
-                document.metadata["file_name"] = _extract_file_name(item.source or "")
+                document.metadata["file_name"] = _extract_file_name(document.metadata["source"] or "")
             if "page" not in document.metadata:
                 document.metadata["page"] = 1
             processed_document = self.process_document_metadata(document, document.metadata)

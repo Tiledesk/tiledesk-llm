@@ -80,8 +80,9 @@ async def _ingest_v2_core(item: ItemSingle, repo, llm_embeddings) -> Any:
     if resolved_type in (DocumentType.PDF, DocumentType.DOCX) and item.use_ocr:
         return await _route_legacy_ocr(item, resolved_type)
 
-    if resolved_type == DocumentType.REGEX_CUSTOM:
-        return await _route_legacy_regex_custom(item)
+    # the canonical export has no regex_custom nor crawl (many pages under one id)
+    if resolved_type in (DocumentType.REGEX_CUSTOM, DocumentType.CRAWL):
+        return await _route_legacy_add_item(item)
 
     return await _route_canonical(item, resolved_type, repo, llm_embeddings)
 
@@ -98,10 +99,10 @@ async def _route_legacy_ocr(item: ItemSingle, resolved_type: DocumentType):
     return await scrape_pdf(pdf_request)
 
 
-async def _route_legacy_regex_custom(item: ItemSingle):
+async def _route_legacy_add_item(item: ItemSingle):
     from tilellm.controller.controller import add_item, add_item_hybrid
 
-    logger.info("v2 ingestion: doc_id=%s -> legacy regex_custom pipeline", item.id)
+    logger.info("v2 ingestion: doc_id=%s -> legacy %s pipeline", item.id, item.type)
     if item.hybrid:
         return await add_item_hybrid(item)
     return await add_item(item)

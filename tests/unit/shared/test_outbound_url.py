@@ -115,6 +115,36 @@ def test_requests_get_blocks_initial_url():
         outbound_requests_get("http://127.0.0.1:6379/", timeout=5)
 
 
+@pytest.mark.parametrize("url", [
+    # URLs whose host urlparse and urllib3 read differently
+    "http://127.0.0.1:6379\\@nonexistent-host.invalid/",
+    "http://169.254.169.254\\@example.org/latest/meta-data/",
+])
+def test_parser_confusion_is_blocked(url):
+    with pytest.raises(BlockedURLError):
+        validate_outbound_url(url)
+
+
+def test_parser_confusion_in_a_redirect_is_blocked(monkeypatch):
+    class _Confused(_Redirect):
+        def _go(self):
+            self.send_response(302)
+            self.send_header("Location", "http://169.254.169.254\\@nonexistent-host.invalid/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        do_GET = _go
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Confused)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setenv("OUTBOUND_URL_ALLOWED_HOSTS", "127.0.0.1")
+    try:
+        with pytest.raises(BlockedURLError):
+            outbound_requests_get(f"http://127.0.0.1:{server.server_port}/", timeout=5)
+    finally:
+        server.shutdown()
+
+
 # ---------------------------------------------------------------------------
 # Response size: the body must be cut off while it streams in, not measured
 # after it is already in memory (a huge or endless response OOMs the pod).
@@ -221,3 +251,63 @@ def test_every_scraper_page_is_guarded():
     guarded = set(re.findall(r"await guard_page\((\w+)\)", src))
     assert pages and len(re.findall(r"await guard_page\(", src)) >= len(pages)
     assert set(pages) <= guarded
+
+
+@pytest.mark.parametrize("path", ["/declared", "/nolength"])
+def test_requests_get_per_call_limit(big, monkeypatch, path):
+    monkeypatch.setenv("OUTBOUND_MAX_RESPONSE_BYTES", "100000")
+    with pytest.raises(ResponseTooLargeError):
+        outbound_requests_get(big + path, timeout=5, max_bytes=1000)
+    assert len(outbound_requests_get(big + path, timeout=5).content) == 3000
+
+
+# ---------------------------------------------------------------------------
+# Text without a charset in Content-Type: requests would decode it as ISO-8859-1
+# ("Città" indexed as "CittÃ"); the page's own <meta charset> wins.
+# ---------------------------------------------------------------------------
+
+class _NoCharset(BaseHTTPRequestHandler):
+    def do_GET(self):
+        meta = '<meta charset="utf-8">' if "meta" in self.path else ""
+        body = f"<html><head>{meta}</head><body>Città di Bàri</body></html>".encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *a):
+        pass
+
+
+@pytest.mark.parametrize("path", ["/meta", "/nometa"])
+def test_text_without_charset_is_not_mojibake(monkeypatch, path):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _NoCharset)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    monkeypatch.setenv("OUTBOUND_URL_ALLOWED_HOSTS", "127.0.0.1")
+    try:
+        text = outbound_requests_get(f"http://127.0.0.1:{server.server_port}{path}", timeout=5).text
+    finally:
+        server.shutdown()
+    assert "Città di Bàri" in text
+
+
+def test_every_browser_page_blocks_service_workers():
+    # guard_page() routes page requests; requests made by a service worker bypass
+    # page.route(), so every page/context must be created with service_workers="block"
+    import pathlib
+    import re
+    import tilellm
+
+    calls = []
+    for path in pathlib.Path(tilellm.__file__).parent.rglob("*.py"):
+        text = path.read_text()
+        for m in re.finditer(r"\.(new_page|new_context)\(", text):
+            if m.group(1) == "new_page" and "context.new_page()" in text[m.start() - 10:m.end() + 1]:
+                continue  # page of a context: the context carries the option
+            depth, i = 1, m.end()
+            while depth:
+                depth += {"(": 1, ")": -1}.get(text[i], 0)
+                i += 1
+            calls.append((path.name, 'service_workers="block"' in text[m.end():i]))
+    assert calls and all(ok for _, ok in calls), [c for c in calls if not c[1]]

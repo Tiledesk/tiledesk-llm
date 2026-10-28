@@ -53,7 +53,7 @@ dependencies = [
     "openai>=2.31.0,<3.0.0",
     "cohere>=5.21.1,<6.0.0",
     "pinecone>=7.3.0,<8.0.0",
-    "qdrant-client>=1.17.1,<2.0.0",
+    "qdrant-client>=1.19.1,<1.20.0",  # same minor as the Qdrant server (1.19.x): move together
     "pymilvus>=2.6.11,<3.0.0",
     "tiktoken>=0.12.0,<0.13.0",
     "beautifulsoup4>=4.14.3,<5.0.0",
@@ -63,6 +63,7 @@ dependencies = [
     "playwright-stealth>=2.0.3,<3.0.0",
     "pypdf>=6.19.0,<7.0.0",   # >=6.19: DoS on crafted PDFs
     "trafilatura>=2.0",
+    "protego>=0.5.0,<1.0.0",   # robots.txt for type=crawl (stdlib robotparser ignores * and $)
     "docx2txt>=0.9,<0.10.0",
     "openpyxl>=3.1.5,<4.0.0",
     "xlrd>=2.0.2,<3.0.0",

@@ -33,6 +33,7 @@ from tilellm.models import (
     LlmEmbeddingModel
 )
 from tilellm.models.llm import TEIConfig
+from tilellm.models.document_type import FETCHED_TYPES
 from tilellm.shared.embeddings.embedding_client_manager import inject_embedding_async_optimized, \
     inject_embedding_qa_async_optimized
 from tilellm.shared.sparse_util import hybrid_score_norm
@@ -40,7 +41,7 @@ from tilellm.shared.timed_cache import TimedCache
 from tilellm.shared.utility import _hash_api_key
 from tilellm.store.vector_store_repository import VectorStoreRepository, VectorStoreIndexingError
 from tilellm.tools.document_tools import fetch_documents, calc_embedding_cost, \
-    get_content_by_url, load_document, handle_regex_custom_chunk, _extract_file_name
+    get_content_by_url, load_document, handle_regex_custom_chunk, _extract_file_name, chunk_source
 from tilellm.tools.sparse_encoders import TiledeskSparseEncoders
 from tilellm.modules.ingestion.text_processor import process_auto_detected_text
 
@@ -471,13 +472,14 @@ class MilvusRepository(VectorStoreRepository):
 
         try:
             # Fetch and process documents based on item type
-            if item.type in ['url', 'pdf', 'docx', 'txt', 'md', 'xlsx', 'xls', 'csv']:
+            if item.type in FETCHED_TYPES:
                 documents = await self.fetch_documents(
                     type_source=item.type,
                     source=item.source,
                     scrape_type=item.scrape_type,
                     parameters_scrape_type_4=item.parameters_scrape_type_4,
-                    browser_headers=item.browser_headers
+                    browser_headers=item.browser_headers,
+                    crawl_options=item.crawl_options()
                 )
                 chunks = await self.chunk_documents(
                     item=item,
@@ -632,13 +634,14 @@ class MilvusRepository(VectorStoreRepository):
 
         try:
             # Fetch and process documents
-            if item.type in ['url', 'pdf', 'docx', 'txt', 'md', 'xlsx', 'xls', 'csv']:
+            if item.type in FETCHED_TYPES:
                 documents = await self.fetch_documents(
                     type_source=item.type,
                     source=item.source,
                     scrape_type=item.scrape_type,
                     parameters_scrape_type_4=item.parameters_scrape_type_4,
-                    browser_headers=item.browser_headers
+                    browser_headers=item.browser_headers,
+                    crawl_options=item.crawl_options()
                 )
                 chunks = await self.chunk_documents(
                     item=item,
@@ -1526,10 +1529,12 @@ class MilvusRepository(VectorStoreRepository):
 
     # Helper methods (same as base class)
     @staticmethod
-    async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers, chunk_regex=None):
+    async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers,
+                              chunk_regex=None, crawl_options=None):
         from tilellm.tools import document_tools
         return await document_tools.fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4,
-                                                    browser_headers, chunk_regex=chunk_regex)
+                                                    browser_headers, chunk_regex=chunk_regex,
+                                                    crawl_options=crawl_options)
 
     @staticmethod
     def process_document_metadata(document, metadata):
@@ -1554,14 +1559,14 @@ class MilvusRepository(VectorStoreRepository):
         chunks = []
         for document in documents:
             document.metadata["id"] = item.id
-            document.metadata["source"] = item.source
+            document.metadata["source"] = chunk_source(item.type, item.source, document.metadata)
             document.metadata["type"] = item.type
             document.metadata["embedding"] = str(item.embedding)
             if item.tags:
                 document.metadata["tags"] = item.tags
             # Ensure file_name and page are always present.
             if not document.metadata.get("file_name"):
-                document.metadata["file_name"] = _extract_file_name(item.source or "")
+                document.metadata["file_name"] = _extract_file_name(document.metadata["source"] or "")
             if "page" not in document.metadata:
                 document.metadata["page"] = 1
             processed_document = self.process_document_metadata(document, document.metadata)
