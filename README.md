@@ -566,8 +566,9 @@ This section provides a detailed overview of the available API endpoints.
 Unified ingestion endpoint. Single entry point that routes to the correct pipeline based on document type and configuration. Replaces the need to choose manually between `/api/scrape/single` and `/api/pdf/scrape`.
 
 - **Request Body**: `ItemSingle`
-- **Type field**: pass `"auto"` (or omit) to let the system detect the format from magic bytes, file extension, or URL heuristics. Explicit values: `url`, `pdf`, `docx`, `text`, `txt`, `md`, `xlsx`, `xls`, `csv`, `regex_custom`.
+- **Type field**: pass `"auto"` (or omit) to let the system detect the format from magic bytes, file extension, or URL heuristics. Explicit values: `url`, `pdf`, `docx`, `text`, `txt`, `md`, `xlsx`, `xls`, `csv`, `regex_custom`, `crawl`.
 - **Routing**: `pdf + use_ocr=true` → Docling OCR · `docx + use_ocr=true` → DOCX image pipeline · `hybrid=true` → `add_item_hybrid` · default → `add_item`
+- **Crawling a site** (`type: "crawl"`): `source` is the start page; links on the same host are followed up to `max_depth` levels (default 3, max 10) and `max_pages` pages (default 50, max 500), honouring `robots.txt` unless `ignore_robots: true`. Linked PDF and DOCX files are indexed too (`crawl_file_types`, `[]` for HTML only). JavaScript-built pages are rendered with Playwright. All pages are stored under the request `id`, each chunk citing its own page URL. A crawl takes minutes: use `POST /api/scrape/enqueue` (TaskIQ).
 - **Backward compatibility**: Old endpoints remain active; existing `type="pdf"` / `"docx"` / etc. callers are unaffected.
 
 See [`API_DOCUMENTATION.md`](./API_DOCUMENTATION.md#unified-ingestion-api) for the full field reference, supported document types, and auto-detection rules.

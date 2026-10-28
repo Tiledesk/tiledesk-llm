@@ -211,10 +211,12 @@ class VectorStoreRepository(ABC):
         return load_document(source, type_source)
 
     @staticmethod
-    async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers, chunk_regex=None):
+    async def fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4, browser_headers,
+                              chunk_regex=None, crawl_options=None):
         from tilellm.tools import document_tools
         return await document_tools.fetch_documents(type_source, source, scrape_type, parameters_scrape_type_4,
-                                                    browser_headers, chunk_regex=chunk_regex)
+                                                    browser_headers, chunk_regex=chunk_regex,
+                                                    crawl_options=crawl_options)
 
     @staticmethod
     def calc_embedding_cost(texts, embedding):
