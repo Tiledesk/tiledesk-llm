@@ -1111,6 +1111,7 @@ class PineconeRepositoryBase(VectorStoreRepository):
             engine.index_name,
             engine.type,
             (engine.metric or "cosine").lower(),   # hybrid (dotproduct) vs dense (cosine) need separate instances
+            engine.text_key,  # the wrapper's PineconeVectorStore reads the chunk text from this field
             embedding_config_key if embedding_config_key is not None else "default"
         )
         if cache_suffix is not None:

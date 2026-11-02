@@ -121,3 +121,25 @@ def test_crawl_file_types_field():
     assert _item(crawl_file_types=["pdf", "xlsx"]).crawl_options()["file_types"] == ["pdf", "xlsx"]
     with pytest.raises(ValidationError):
         _item(crawl_file_types=["exe"])
+
+
+@pytest.mark.asyncio
+async def test_discover_lists_files_by_extension_without_downloading_them(site):
+    from tilellm.tools.web_crawler import discover_site
+    base, hits = site
+    result = await discover_site(base + "/", max_depth=1, max_pages=10, ignore_robots=True)
+    listed = {p["url"].removeprefix(base): p for p in result["pages"]}
+    assert set(listed) == {"/", "/tariffe.aspx", "/guida.docx"}
+    assert listed["/guida.docx"] == {"url": base + "/guida.docx", "title": "guida.docx",
+                                     "kind": "file", "file_type": "docx", "depth": 1}
+    assert "/guida.docx" not in hits  # listed from the link
+    assert listed["/tariffe.aspx"]["file_type"] == "pdf"  # no extension: Content-Type decides
+    assert "/listino.xlsx" not in hits
+
+
+@pytest.mark.asyncio
+async def test_discover_without_file_types_lists_pages_only(site):
+    from tilellm.tools.web_crawler import discover_site
+    base, _ = site
+    result = await discover_site(base + "/", max_depth=1, max_pages=10, ignore_robots=True, file_types=[])
+    assert [p["url"] for p in result["pages"]] == [base + "/"]
