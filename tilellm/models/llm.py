@@ -14,6 +14,7 @@ from pydantic import (
 from langchain_mcp_adapters.client import MultiServerMCPClient
 
 from tilellm.models.base import AWSAuthentication, ServerConfig, _redact_url
+from tilellm.models.crawl import CrawlDepth, CrawlFileType, CrawlPages
 from tilellm.models.document_type import DocumentType
 from tilellm.models.embedding import LlmEmbeddingModel, EmbeddingModel
 from tilellm.models.schemas.multimodal_content import MultimodalContent
@@ -190,20 +191,19 @@ class ItemSingle(BaseModel):
     chunk_size: int = Field(default_factory=lambda: 1000)
     chunk_overlap: int = Field(default_factory=lambda: 400)
     chunk_regex: Optional[str] = None
-    # ponytail: fixed caps; move them to env only if a deployment needs bigger crawls
-    max_depth: int = Field(
-        default=3, ge=0, le=10,
+    max_depth: CrawlDepth = Field(
+        default=3,
         description="type=crawl only: link levels followed from the start page (0 = start page only).",
     )
-    max_pages: int = Field(
-        default=50, ge=1, le=500,
+    max_pages: CrawlPages = Field(
+        default=50,
         description="type=crawl only: maximum number of pages fetched.",
     )
     ignore_robots: bool = Field(
         default=False,
         description="type=crawl only: true skips the site's robots.txt rules.",
     )
-    crawl_file_types: List[Literal["pdf", "docx", "xlsx", "xls", "csv", "txt", "md"]] = Field(
+    crawl_file_types: List[CrawlFileType] = Field(
         default_factory=lambda: ["pdf", "docx"],
         description="type=crawl only: linked files of these types are indexed too (recognised by "
         "Content-Type, not by extension); each counts as a page. [] = HTML pages only.",

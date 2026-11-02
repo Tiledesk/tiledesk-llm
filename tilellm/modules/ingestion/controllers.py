@@ -3,7 +3,9 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import PlainTextResponse, Response
 from tilellm.models.document_type import DocumentType
 from tilellm.models.llm import ItemSingle
+from tilellm.models.crawl import CrawlDiscoverRequest, CrawlDiscoverResult
 from tilellm.controller.controller import add_item, add_item_hybrid
+from tilellm.tools.web_crawler import discover_site
 from tilellm.modules.pdf_ocr.controllers import scrape_pdf
 from tilellm.modules.pdf_ocr.models.pdf_scraping import PDFScrapingRequest
 from tilellm.modules.ingestion.type_detector import resolve_item_type
@@ -176,6 +178,24 @@ async def unified_ingestion(item: ItemSingle):
     # ── Standard ──────────────────────────────────────────────────────────
     logger.info("Routing doc_id=%s → standard ingestion pipeline", item.id)
     return await add_item(item)
+
+
+@router.post("/crawl/discover", response_model=CrawlDiscoverResult)
+async def crawl_discover_endpoint(request: CrawlDiscoverRequest):
+    """
+    List the pages and files a ``type=crawl`` ingestion with the same options would
+    index — **no vector store write**, no text extraction returned. Files with an
+    accepted extension are listed from the link, without downloading them.
+    Synchronous: the walk has the crawl's limits (max_pages, 30 minutes).
+    """
+    try:
+        return CrawlDiscoverResult(**await discover_site(
+            request.source, max_depth=request.max_depth, max_pages=request.max_pages,
+            ignore_robots=request.ignore_robots, file_types=request.crawl_file_types,
+            browser_headers=request.browser_headers,
+        ))
+    except ValueError as e:  # BlockedURLError: start URL refused by the outbound guard
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.post("/export/md")
