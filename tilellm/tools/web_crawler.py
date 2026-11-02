@@ -25,7 +25,7 @@ import tempfile
 import time
 from collections import Counter, deque
 from typing import Optional, Sequence
-from urllib.parse import urldefrag, urljoin, urlparse
+from urllib.parse import unquote, urldefrag, urljoin, urlparse
 
 import lxml.html
 from langchain_core.documents import Document
@@ -217,19 +217,21 @@ async def _render_html(browser: _Browser, url: str, headers: dict, origin: tuple
     return await browser.render(url, headers, origin)
 
 
-async def crawl_site(
-    start_url: str,
-    *,
-    max_depth: int = 3,
-    max_pages: int = 50,
-    ignore_robots: bool = False,
-    file_types: Sequence[str] = ("pdf", "docx"),
-    browser_headers: Optional[dict] = None,
-) -> list[Document]:
-    """Documents of every crawled page, each with its own `source` URL.
+def _listed_type(url: str, file_types: Sequence[str]) -> Optional[str]:
+    path = urlparse(url).path.lower()
+    return next((t for t in file_types if path.endswith(_EXTENSIONS[t])), None)
 
-    Raises when more pages failed than succeeded: the caller replaces the whole
-    site under one id, a mostly failed crawl must not do that silently."""
+
+async def _walk(start_url: str, *, max_depth: int, max_pages: int, ignore_robots: bool,
+                file_types: Sequence[str], browser_headers: Optional[dict], stats: Counter,
+                load_files: bool = True):
+    """Breadth-first walk shared by crawl_site and discover_site: yields
+    (url, depth, documents, file_type or None) for every page or file with text.
+
+    load_files=False lists files without reading them (documents is []): a link with
+    an accepted extension is not even downloaded, other links still are, to read their
+    Content-Type. `stats` counts fetched, indexed, files, failed, the skip reasons
+    and `left` (links not visited when the walk stopped)."""
     await avalidate_outbound_url(start_url)
     headers = CaseInsensitiveDict(browser_headers or {})
     if headers.get("user-agent") in (None, DEFAULT_BROWSER_USER_AGENT):  # not a caller's choice
@@ -244,57 +246,67 @@ async def crawl_site(
     origin = _origin(start)
     rules = None if ignore_robots else await asyncio.to_thread(_robots, start, headers)
     queue, seen = deque([(start, 0)]), {_page_key(start)}
-    docs: list[Document] = []
     seen_texts: set[str] = set()
-    fetched = failed = files = 0
-    skipped: Counter = Counter()  # why fetched pages were not indexed
     deadline = time.monotonic() + _MAX_SECONDS
     browser = _Browser()
     try:
-        while queue and fetched < max_pages:
+        while queue and stats["fetched"] < max_pages:
             if time.monotonic() > deadline:
                 logger.warning("crawl %s: time limit reached, %d pages left", start, len(queue))
                 break
             url, depth = queue.popleft()
             if rules is not None and not rules.can_fetch(url, agent):
-                skipped["robots"] += 1
+                stats["robots"] += 1
                 continue
-            fetched += 1
+            stats["fetched"] += 1
+            listed = None if load_files else _listed_type(url, file_types)
+            if listed:
+                stats["files"] += 1
+                stats["indexed"] += 1
+                yield url, depth, [], listed
+                continue
             try:
                 html, target, file = await asyncio.to_thread(_fetch_html, url, headers)
             except Exception as exc:
-                failed += 1
+                stats["failed"] += 1
                 logger.warning("crawl: page skipped %s: %s", url, exc)
                 continue
 
             if target:
                 target = urldefrag(target)[0]
-                if depth == 0 and not docs and _origin(target) != origin:
+                if depth == 0 and not stats["indexed"] and _origin(target) != origin:
                     # the start page itself moved (example.org -> www.example.org)
                     await avalidate_outbound_url(target)
                     origin = _origin(target)
                     if not ignore_robots:
                         rules = await asyncio.to_thread(_robots, target, headers)
                 if _origin(target) != origin:
-                    skipped["other_host"] += 1
+                    stats["other_host"] += 1
                     logger.info("crawl: page skipped %s: redirected to another host", url)
                 else:
-                    skipped["redirect"] += 1
+                    stats["redirect"] += 1
                     if _page_key(target) not in seen:
                         seen.add(_page_key(target))
                         queue.appendleft((target, depth))
                 continue
+            file_type = None
             if file is not None and file[0] in file_types:
+                file_type = file[0]
+                if not load_files:
+                    stats["files"] += 1
+                    stats["indexed"] += 1
+                    yield url, depth, [], file_type
+                    continue
                 try:
-                    page_docs = await asyncio.to_thread(_load_bytes, file[1], file[0], url)
+                    page_docs = await asyncio.to_thread(_load_bytes, file[1], file_type, url)
                 except Exception as exc:
-                    failed += 1
+                    stats["failed"] += 1
                     logger.warning("crawl: file skipped %s: %s", url, exc)
                     continue
-                files += 1
+                stats["files"] += 1
                 links, static_key = [], None
             elif html is None:
-                skipped["not_html"] += 1  # images, archives, file types not accepted
+                stats["not_html"] += 1  # images, archives, file types not accepted
                 continue
             else:
                 page_docs, links = await asyncio.to_thread(_parse, html, url, origin, skip_ext)
@@ -311,12 +323,11 @@ async def crawl_site(
 
             text_key = _text_key(page_docs)
             if not page_docs:
-                skipped["no_text"] += 1
+                stats["no_text"] += 1
             elif text_key in seen_texts:
-                skipped["duplicate"] += 1
+                stats["duplicate"] += 1
                 page_docs = []  # same text as a page already indexed
             seen_texts.update(k for k in (static_key, text_key) if k)
-            docs.extend(page_docs)
 
             if depth < max_depth:
                 for link in links:
@@ -324,18 +335,74 @@ async def crawl_site(
                     if _page_key(link) not in seen and len(queue) < max_pages:
                         seen.add(_page_key(link))
                         queue.append((link, depth + 1))
+            if page_docs:
+                stats["indexed"] += 1
+                yield url, depth, page_docs, file_type
+        stats["left"] = len(queue)
     finally:
         await browser.close()
 
-    if queue and fetched >= max_pages:
-        logger.warning("crawl %s: max_pages=%d reached, %d links not followed", start, max_pages, len(queue))
-    indexed = fetched - failed - sum(v for k, v in skipped.items() if k != "robots")
+
+_SKIPPED = ("robots", "redirect", "other_host", "duplicate", "no_text", "not_html", "failed")
+
+
+async def crawl_site(
+    start_url: str,
+    *,
+    max_depth: int = 3,
+    max_pages: int = 50,
+    ignore_robots: bool = False,
+    file_types: Sequence[str] = ("pdf", "docx"),
+    browser_headers: Optional[dict] = None,
+) -> list[Document]:
+    """Documents of every crawled page, each with its own `source` URL.
+
+    Raises when more pages failed than succeeded: the caller replaces the whole
+    site under one id, a mostly failed crawl must not do that silently."""
+    stats: Counter = Counter()
+    docs: list[Document] = []
+    async for _, _, page_docs, _ in _walk(start_url, max_depth=max_depth, max_pages=max_pages,
+                                          ignore_robots=ignore_robots, file_types=file_types,
+                                          browser_headers=browser_headers, stats=stats):
+        docs.extend(page_docs)
+
+    fetched, failed = stats["fetched"], stats["failed"]
+    if stats["left"] and fetched >= max_pages:
+        logger.warning("crawl %s: max_pages=%d reached, %d links not followed", start_url, max_pages, stats["left"])
     logger.info(
         "crawl %s: %d fetched, indexed=%d (files=%d), failed=%d, redirect=%d, other_host=%d, "
         "duplicate=%d, no_text=%d, not_html=%d, robots=%d, documents=%d",
-        start, fetched, indexed, files, failed, skipped["redirect"], skipped["other_host"],
-        skipped["duplicate"], skipped["no_text"], skipped["not_html"], skipped["robots"], len(docs),
+        start_url, fetched, stats["indexed"], stats["files"], failed, stats["redirect"], stats["other_host"],
+        stats["duplicate"], stats["no_text"], stats["not_html"], stats["robots"], len(docs),
     )
     if failed and failed * 2 > fetched:
-        raise ValueError(f"crawl {start}: {failed} of {fetched} pages failed")
+        raise ValueError(f"crawl {start_url}: {failed} of {fetched} pages failed")
     return docs
+
+
+async def discover_site(
+    start_url: str,
+    *,
+    max_depth: int = 3,
+    max_pages: int = 50,
+    ignore_robots: bool = False,
+    file_types: Sequence[str] = ("pdf", "docx"),
+    browser_headers: Optional[dict] = None,
+) -> dict:
+    """The pages and files a crawl_site with the same options would index, without
+    indexing them: [{url, title, kind, file_type?, depth}], `truncated` and why other
+    URLs were skipped. Files with an accepted extension are listed from the link."""
+    stats: Counter = Counter()
+    pages = []
+    async for url, depth, page_docs, file_type in _walk(
+            start_url, max_depth=max_depth, max_pages=max_pages, ignore_robots=ignore_robots,
+            file_types=file_types, browser_headers=browser_headers, stats=stats, load_files=False):
+        if file_type:
+            title = unquote(urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]) or None
+            pages.append({"url": url, "title": title, "kind": "file", "file_type": file_type, "depth": depth})
+        else:
+            pages.append({"url": url, "title": page_docs[0].metadata.get("file_name"), "kind": "page",
+                          "depth": depth})
+    logger.info("crawl discover %s: %d listed, %d fetched", start_url, len(pages), stats["fetched"])
+    return {"pages": pages, "truncated": stats["left"] > 0, "fetched": stats["fetched"],
+            "skipped": {k: stats[k] for k in _SKIPPED}}

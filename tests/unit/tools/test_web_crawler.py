@@ -418,3 +418,64 @@ async def test_browser_user_agent(ua, expected):
     await browser.render("https://www.example.org/", {"user-agent": ua}, ("www.example.org", None))
 
     assert browser._browser.new_page.call_args.kwargs.get("user_agent") == expected
+
+
+# --- discover_site: the same walk, a list of URLs instead of documents ---
+
+def _listed(result, base):
+    return [(p["url"].removeprefix(base), p["kind"], p["depth"]) for p in result["pages"]]
+
+
+@pytest.mark.asyncio
+async def test_discover_lists_what_crawl_would_index(site):
+    from tilellm.tools.web_crawler import discover_site
+    base, hits = site
+    result = await discover_site(base + "/", max_depth=2, max_pages=50)
+    assert _listed(result, base) == [("/", "page", 0), ("/a", "page", 1), ("/a1", "page", 2)]
+    assert [p["title"] for p in result["pages"]] == ["Home", "A", "A1"]
+    assert result["truncated"] is False
+    assert result["skipped"]["robots"] == 2 and result["skipped"]["other_host"] == 1
+    assert "/a2" not in hits
+
+
+@pytest.mark.asyncio
+async def test_discover_says_when_max_pages_cut_the_list(site):
+    from tilellm.tools.web_crawler import discover_site
+    base, _ = site
+    result = await discover_site(base + "/", max_depth=5, max_pages=2)
+    assert _listed(result, base) == [("/", "page", 0), ("/a", "page", 1)]
+    assert result["truncated"] is True
+
+
+@pytest.mark.asyncio
+async def test_discover_start_url_must_pass_the_guard(monkeypatch):
+    from tilellm.tools.web_crawler import discover_site
+    monkeypatch.delenv("OUTBOUND_URL_ALLOWED_HOSTS", raising=False)
+    with pytest.raises(BlockedURLError):
+        await discover_site("http://169.254.169.254/", max_depth=1, max_pages=5)
+
+
+@pytest.mark.asyncio
+async def test_discover_renders_js_apps_like_crawl(monkeypatch):
+    from tilellm.tools.web_crawler import discover_site
+    rendered, _ = _fake_site(monkeypatch, '<html><body><div id=app></div></body></html>')
+    result = await discover_site("https://www.example.org/", max_depth=0, max_pages=1, ignore_robots=True)
+    assert rendered == ["https://www.example.org/"]
+    assert result["pages"][0]["title"] == "Rendered"
+
+
+@pytest.mark.asyncio
+async def test_discover_reports_failures_instead_of_raising(monkeypatch):
+    # nothing is stored: a mostly failed walk is still a useful list
+    from tilellm.tools.web_crawler import discover_site
+    monkeypatch.setenv("OUTBOUND_URL_ALLOWED_HOSTS", "www.example.org")
+
+    def flaky(url, headers):
+        if url.endswith("/"):
+            return _page("Home", "/a", "/b", "/c"), None, None
+        raise ConnectionError("timeout")
+
+    monkeypatch.setattr(web_crawler, "_fetch_html", flaky)
+    result = await discover_site("https://www.example.org/", max_depth=1, max_pages=10, ignore_robots=True)
+    assert [p["url"] for p in result["pages"]] == ["https://www.example.org/"]
+    assert result["skipped"]["failed"] == 3

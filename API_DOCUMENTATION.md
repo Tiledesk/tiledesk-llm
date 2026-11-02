@@ -211,6 +211,53 @@ curl -X POST http://localhost:8000/api/scrape/enqueue \
 - `300`: Queued (if `webhook` is provided)
 - `400`: Validation error (e.g., `use_ocr=true` but missing `source`)
 
+### POST `/api/crawl/discover`
+Lists the pages and files a `type: "crawl"` ingestion with the same options would index,
+**without indexing them** (no vector store, no text returned). Same walk as the crawl: same-host
+links, `robots.txt`, redirects, outbound URL guard, Playwright for JS pages, duplicate text skipped.
+
+- Files with an accepted extension (`.pdf`, `.docx`, …) are listed from the link, **not downloaded**;
+  other links are fetched to read their `Content-Type` (a PDF served as `.aspx` is still found).
+- A mostly failed walk is not an error: failures are counted in `skipped.failed`.
+- Synchronous, with the crawl's limits (`max_pages`, 30 minutes).
+
+**Request** (unknown fields are rejected):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `source` | string | required | Start page |
+| `max_depth` | int (0–10) | `3` | As for `type: "crawl"` |
+| `max_pages` | int (1–500) | `50` | Pages and files listed or fetched |
+| `ignore_robots` | bool | `false` | As for `type: "crawl"` |
+| `crawl_file_types` | list | `["pdf", "docx"]` | As for `type: "crawl"`; `[]` = HTML pages only |
+| `browser_headers` | object | `null` | Request headers, sent only to the start origin |
+
+```bash
+curl -X POST http://localhost:8000/api/crawl/discover \
+  -H "Content-Type: application/json" \
+  -d '{"source": "https://www.example.org/", "max_depth": 2, "max_pages": 30}'
+```
+
+**Response**:
+```json
+{
+  "pages": [
+    { "url": "https://www.example.org/", "title": "Home", "kind": "page", "file_type": null, "depth": 0 },
+    { "url": "https://www.example.org/servizi", "title": "Servizi", "kind": "page", "file_type": null, "depth": 1 },
+    { "url": "https://www.example.org/doc/guida.pdf", "title": "guida.pdf", "kind": "file", "file_type": "pdf", "depth": 1 }
+  ],
+  "truncated": true,
+  "fetched": 30,
+  "skipped": { "robots": 2, "redirect": 1, "other_host": 0, "duplicate": 3, "no_text": 0, "not_html": 4, "failed": 1 }
+}
+```
+
+- `title`: the page `<title>`, the file name for files.
+- `truncated`: `max_pages` or the time limit left links unvisited.
+- `fetched`: URLs processed (counts against `max_pages`; listed files included).
+
+**Status Codes**: `200`; `400` start URL refused by the outbound URL guard; `422` invalid request.
+
 ---
 
 ### POST `/api/v2/ingestion`
