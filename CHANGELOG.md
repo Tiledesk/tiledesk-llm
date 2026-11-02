@@ -7,6 +7,16 @@
 
 
 ---
+## [2026-11-02]
+### 0.12.3-rc11 fix: Pinecone `engine.text_key` was overwritten by index type
+
+`Engine.set_text_key` always forced `text` on serverless and `content` on pod, so a
+serverless index migrated with Pinecone's tool (metadata copied as-is, chunk still
+under `content`) could not be read by passing `"text_key": "content"`. The default
+is unchanged when the field is omitted; an explicit value is now kept. Empty or
+null still falls back to the type default. Tests: `tests/unit/models/test_engine_text_key.py`.
+
+---
 ## [2026-09-07]
 ### 0.12.3-rc1 fix: `/api/ask` returned 400 with `gemini-3.5-flash` — `ChatEntry.answer`
 

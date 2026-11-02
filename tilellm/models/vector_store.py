@@ -8,7 +8,15 @@ class Engine(BaseModel):
     apikey: Optional[SecretStr]| None = None
     vector_size: int = Field(default=1536)
     index_name: str = Field(default="tilellm")
-    text_key: Optional[str] = Field(default="text")
+    text_key: Optional[str] = Field(
+        default="text",
+        description=(
+            "Metadata field that stores the chunk text. "
+            "Defaults to 'text' on Pinecone serverless and 'content' on pod. "
+            "Set it explicitly (e.g. 'content') when a serverless index was migrated "
+            "from a pod and still stores the chunk under the pod field name."
+        ),
+    )
     metric: str = Field(default="cosine")
     host: Optional[str] = Field(default="localhost")
     port: Optional[int] = Field(default=6333)
@@ -57,9 +65,16 @@ class Engine(BaseModel):
 
     @model_validator(mode='after')
     def set_text_key(self):
-        if self.name == "pinecone":
-            if self.type == "serverless":
-                self.text_key = "text"
-            elif self.type == "pod":
-                self.text_key = "content"
+        """Default the chunk-text metadata field by index type, unless the caller set it.
+
+        Pinecone's pod-to-serverless migration copies metadata as-is, so a migrated
+        serverless index still stores the chunk under ``content``. Passing
+        ``text_key="content"`` keeps that name. Omitting it still defaults to
+        ``text`` (serverless) or ``content`` (pod).
+        """
+        if self.name != "pinecone":
+            return self
+        if "text_key" in self.model_fields_set and self.text_key:
+            return self
+        self.text_key = "content" if self.type == "pod" else "text"
         return self

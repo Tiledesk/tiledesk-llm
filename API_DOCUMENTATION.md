@@ -1425,7 +1425,7 @@ Vector store configuration.
   "apikey": "string",
   "vector_size": 1536,
   "index_name": "index or collection name",
-  "text_key": "text",
+  "text_key": "text",  # optional. Pinecone default: "text" (serverless), "content" (pod). Set "content" on a serverless index migrated from a pod.
   "metric": "cosine",
   "host": "localhost",  # Qdrant only
   "port": 6333,  # Qdrant only
