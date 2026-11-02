@@ -522,7 +522,8 @@ class PineconeRepositoryServerless(PineconeRepositoryBase):
                     _hash_api_key(item.engine.apikey.get_secret_value()),
                     item.engine.index_name,
                     item.engine.type,
-                    (item.engine.metric or "dotproduct").lower(),
+                    (item.engine.metric or "cosine").lower(),  # same key as create_index_cache_wrapper
+                    item.engine.text_key,
                     "default",
                 )
                 await TimedCache.async_remove("vector_store_wrapper", stale_key)
