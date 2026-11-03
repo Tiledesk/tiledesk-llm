@@ -222,7 +222,7 @@ async def _handle_trafilatura_scrape(url: str, headers: Optional[dict] = None) -
             downloaded = resp.text
         except Exception as http_err:
             if is_unreachable_host_error(http_err):
-                record_unreachable(url)
+                record_unreachable(url, http_err)
                 raise
             logger.warning(f"requests fetch failed for {url}: {http_err}")
             return []
@@ -299,6 +299,16 @@ def _trafilatura_documents(downloaded: str, url: str) -> list[Document]:
 
 
 async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Document]:
+    """Fetch `url` (see _get_content_by_url_impl); fails fast on a host that does not
+    answer at the connection level, and remembers/clears it (unreachable_hosts)."""
+    require_remote_url(url)
+    check_host_reachable(url)
+    docs = await _get_content_by_url_impl(url, scrape_type, **kwargs)
+    clear_unreachable(url)
+    return docs
+
+
+async def _get_content_by_url_impl(url: str, scrape_type: int,  **kwargs) -> list[Document]:
     """
     Get content by url! parse html page and extract content.
     If scrape_type=0 Unstructured analyze the page and extract some useful information about page, like UL, Title etc.
@@ -311,8 +321,6 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
     :param scrape_type: 0|1|2!3!4
     :return: list[Document]
     """
-    require_remote_url(url)
-    check_host_reachable(url)
     urls = [url]
     params_type_4 = kwargs.get("parameters_scrape_type_4")
     browser_headers: Optional[dict] = kwargs.get("browser_headers")
@@ -431,12 +439,10 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
         if isinstance(ex, UnreachableHostError):
             raise
         if is_unreachable_host_error(ex):
-            record_unreachable(url)
+            record_unreachable(url, ex)
             logger.warning(f"unreachable host {urlparse(url).netloc}, skipping fallbacks for {url}")
             raise
-        docs = await robust_fallback(url, params_type_4, browser_headers=browser_headers)
-        clear_unreachable(url)
-        return docs
+        return await robust_fallback(url, params_type_4, browser_headers=browser_headers)
 
 
 async def handle_unstructured_loader(urls: list, mode: str, strategy: Optional[str] = None, browser_headers: Optional[dict] = None) -> list[Document]:
