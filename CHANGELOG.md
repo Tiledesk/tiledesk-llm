@@ -7,6 +7,41 @@
 
 
 ---
+## [2026-11-03]
+### 1.0.0-rc1 — new major line (uv, Python 3.13, MCP 2026)
+
+The 0.x line (Poetry, Python 3.12) continues on the `v0` branch (0.12.3, 0.13.0). HTTP API
+changes are additive only: existing requests keep working. What changes for operators:
+
+- **Build and runtime**: dependencies managed with uv (`uv.lock`), Python 3.13 in every
+  Docker image, C compiler in the builder stage only; `.dockerignore` keeps secrets, VCS
+  data, docs and tests out of the image. New settings are listed in `.env.example`.
+- **MCP**: protocol 2026-07-28 negotiated per server (`langchain[mcp]` + `mcp` 2.3); only
+  network transports for request-supplied servers; fixed tool arguments per server
+  (`parameters.tool_arguments`); tool errors go back to the model.
+- **API**: every `/api/<path>` endpoint is also served at `/api/v1/<path>`;
+  `POST /api/v1/systemone` (Jev, Laya, CLM providers).
+- **Ingestion**: `type: "crawl"` indexes a site from a start URL (same host, robots.txt,
+  `max_depth`, `max_pages`, `crawl_file_types`); `POST /api/crawl/discover` lists what a
+  crawl would index (`max_seconds`, default 5 minutes); hosts that fail at the connection
+  level are skipped for a while (`UNREACHABLE_HOST_*`).
+- **Vector stores**: Redis as a dense-only vector store for small datasets; Pinecone
+  `text_key` can be set explicitly (serverless indexes migrated from pods) and is part of
+  the client cache key; `get_chunks_by_index`.
+- **Security**: request-supplied URLs, local paths, Cypher identifiers and MCP server
+  configurations are validated; downloads capped while streaming; tokens kept out of logs;
+  hidden text stripped from ingested content.
+- **Compliance**: `agentic_compliance_checker` module (MCP server, evidence, criteria,
+  report and trace); one evidence pipeline for every judge; rigor, retrieval and scoring
+  fixes from a real tender review.
+- **Performance and fixes**: lower latency on `/api/qa` and `/api/v2/qa`; Claude 5.x minor
+  models; Cerebras `chat_template_kwargs` retry; Vertex AI cache key; cached chat clients no
+  longer share `max_tokens`/`temperature`/`top_p`; TEI embeddings no longer block the event
+  loop; Docling OCR engine selectable per request.
+- **Dependencies**: langchain 1.4.8, langchain-core 1.7.4, langgraph 1.2.19, qdrant-client
+  1.19.1, protego (robots.txt), fastapi 0.142 / starlette 1.7.
+
+---
 ## [2026-09-15]
 ### 0.12.4-rc1 feat: `/api/compliance/v2/check/bulk` now accepts the client's real xlsx — no more bridge scripts
 
