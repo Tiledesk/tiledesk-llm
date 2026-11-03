@@ -8,7 +8,7 @@
 
 ---
 ## [2026-11-03]
-### feat: `max_seconds` on `POST /api/crawl/discover`
+### 0.13.0-rc1 feat: `max_seconds` on `POST /api/crawl/discover`
 
 New request field `max_seconds` (30-1800, default 300). The walk ends itself after it and
 returns the partial list with `truncated: true`, instead of running up to the crawl's
