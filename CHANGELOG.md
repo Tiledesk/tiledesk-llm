@@ -8,6 +8,18 @@
 
 ---
 ## [2026-11-03]
+### 0.13.0-rc2 fix: fail fast on unreachable hosts (no browser fallbacks, per-host circuit breaker)
+
+A host that never completes the TCP connect cost ~7 minutes per URL (requests + Unstructured
+timeouts, then three Chromium fallbacks) and blocked the shared training queue. Now a
+connection-level failure (connect timeout, refused, DNS, new-connection error;
+`is_unreachable_host_error`) in `get_content_by_url` is re-raised without `robust_fallback`, and the
+host is remembered for `UNREACHABLE_HOST_TTL_SECONDS` (default 600): further URLs on it raise
+`UnreachableHostError` with no network call; a success clears it. `_handle_trafilatura_scrape` no
+longer swallows connect errors, and page fetches use `timeout=(10, read)`. HTTP errors, read
+timeouts, SSL errors, empty content and CAPTCHA behave as before. Process-local breaker. Tests:
+`tests/unit/tools/test_unreachable_host.py`.
+
 ### 0.13.0-rc1 feat: `max_seconds` on `POST /api/crawl/discover`
 
 New request field `max_seconds` (30-1800, default 300). The walk ends itself after it and
