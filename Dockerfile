@@ -4,6 +4,11 @@ FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS python-builder
 ARG EXTRAS='all'
 WORKDIR /build
 
+# Compilatore C solo nel builder: alcune dipendenze non hanno wheel per Python 3.13
+# (mmh3 4.x, fissato da pinecone-text) e si compilano dai sorgenti
+RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copia solo i file necessari per risolvere le dipendenze
 COPY pyproject.toml .
 COPY ./tilellm ./tilellm
