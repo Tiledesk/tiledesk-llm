@@ -26,6 +26,13 @@ from langchain_core.documents import Document
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from tilellm.shared.outbound_url import guard_page, outbound_requests_get, validate_outbound_url
 from tilellm.shared.untrusted_content import strip_invisible_documents
+from tilellm.tools.unreachable_hosts import (
+    UnreachableHostError,
+    check_host_reachable,
+    clear_unreachable,
+    is_unreachable_host_error,
+    record_unreachable,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -213,11 +220,14 @@ async def _handle_trafilatura_scrape(url: str, headers: Optional[dict] = None) -
         try:
             resp = await loop.run_in_executor(
                 None,
-                lambda: outbound_requests_get(url, headers=headers, timeout=30, allow_redirects=True)
+                lambda: outbound_requests_get(url, headers=headers, timeout=(10, 30), allow_redirects=True)
             )
+            clear_unreachable(url)  # the host answered, whatever the status
             resp.raise_for_status()
             downloaded = resp.text
         except Exception as http_err:
+            if is_unreachable_host_error(http_err):
+                raise  # recorded once, by get_content_by_url
             logger.warning(f"requests fetch failed for {url}: {http_err}")
             return []
     else:
@@ -293,6 +303,16 @@ def _trafilatura_documents(downloaded: str, url: str) -> list[Document]:
 
 
 async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Document]:
+    """Fetch `url` (see _get_content_by_url_impl); fails fast on a host that does not
+    answer at the connection level, and remembers/clears it (unreachable_hosts)."""
+    require_remote_url(url)
+    check_host_reachable(url)
+    docs = await _get_content_by_url_impl(url, scrape_type, **kwargs)
+    clear_unreachable(url)
+    return docs
+
+
+async def _get_content_by_url_impl(url: str, scrape_type: int,  **kwargs) -> list[Document]:
     """
     Get content by url! parse html page and extract content.
     If scrape_type=0 Unstructured analyze the page and extract some useful information about page, like UL, Title etc.
@@ -305,7 +325,6 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
     :param scrape_type: 0|1|2!3!4
     :return: list[Document]
     """
-    require_remote_url(url)
     urls = [url]
     params_type_4 = kwargs.get("parameters_scrape_type_4")
     browser_headers: Optional[dict] = kwargs.get("browser_headers")
@@ -349,6 +368,8 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
             except ImportError:
                 logger.warning("trafilatura not available, falling back to UnstructuredURLLoader")
             except Exception as traf_err:
+                if is_unreachable_host_error(traf_err):
+                    raise  # dead host: UnstructuredURLLoader would only time out again
                 logger.warning(
                     f"Trafilatura failed for {url}: {traf_err}, "
                     "falling back to UnstructuredURLLoader"
@@ -373,6 +394,8 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
             except ImportError:
                 logger.warning("trafilatura not available, falling back to UnstructuredURLLoader")
             except Exception as traf_err:
+                if is_unreachable_host_error(traf_err):
+                    raise  # dead host: UnstructuredURLLoader would only time out again
                 logger.warning(
                     f"Trafilatura failed for {url}: {traf_err}, "
                     "falling back to UnstructuredURLLoader"
@@ -416,6 +439,12 @@ async def get_content_by_url(url: str, scrape_type: int,  **kwargs) -> list[Docu
         logger.error(f"Error in the main method get_content_by_url ({scrape_type}): {str(ex)}")
         # If the error is related to a CAPTCHA, Do not proceed with fallback
         if "CAPTCHA" in str(ex) or "blocked" in str(ex) or "too short" in str(ex):
+            raise
+        if isinstance(ex, UnreachableHostError):
+            raise
+        if is_unreachable_host_error(ex):
+            record_unreachable(url, ex)
+            logger.warning(f"unreachable host {urlparse(url).netloc}, skipping fallbacks for {url}")
             raise
         return await robust_fallback(url, params_type_4, browser_headers=browser_headers)
 
@@ -1188,7 +1217,7 @@ async def handle_regex_custom_chunk(url: str, chunk_regex: str, browser_headers:
     logger.info(f"Fetching regex_custom content from: {url}")
     
     try:
-        response = outbound_requests_get(url, headers=browser_headers, timeout=60)
+        response = outbound_requests_get(url, headers=browser_headers, timeout=(10, 60))
         response.raise_for_status()
         content = response.text
         
