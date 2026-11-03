@@ -26,8 +26,25 @@ async def test_crawl_options_reach_discover_site():
         result = await crawl_discover_endpoint(req)
     discover.assert_awaited_once_with("https://www.example.org/", max_depth=1, max_pages=7,
                                       ignore_robots=True, file_types=["pdf"],
-                                      browser_headers={"Authorization": "Bearer FINTO"})
+                                      browser_headers={"Authorization": "Bearer FINTO"},
+                                      max_seconds=300)
     assert result.pages[0].title == "Home"
+
+
+@pytest.mark.asyncio
+async def test_max_seconds_reaches_discover_site():
+    req = CrawlDiscoverRequest(source="https://www.example.org/", max_seconds=120)
+    with patch("tilellm.modules.ingestion.controllers.discover_site",
+               new=AsyncMock(return_value=RESULT)) as discover:
+        await crawl_discover_endpoint(req)
+    assert discover.await_args.kwargs["max_seconds"] == 120
+
+
+def test_discover_request_max_seconds_bounds():
+    assert CrawlDiscoverRequest(source="https://x.org").max_seconds == 300
+    for bad in (29, 1801):
+        with pytest.raises(ValidationError):
+            CrawlDiscoverRequest(source="https://x.org", max_seconds=bad)
 
 
 @pytest.mark.asyncio

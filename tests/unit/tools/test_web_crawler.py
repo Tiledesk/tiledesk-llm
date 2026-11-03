@@ -479,3 +479,50 @@ async def test_discover_reports_failures_instead_of_raising(monkeypatch):
     result = await discover_site("https://www.example.org/", max_depth=1, max_pages=10, ignore_robots=True)
     assert [p["url"] for p in result["pages"]] == ["https://www.example.org/"]
     assert result["skipped"]["failed"] == 3
+
+
+@pytest.mark.asyncio
+async def test_discover_stops_at_max_seconds(site, monkeypatch):
+    from tilellm.tools import web_crawler
+    from tilellm.tools.web_crawler import discover_site
+    base, _ = site
+    clock = iter(range(0, 10_000, 20))  # every clock call advances 20 s
+    monkeypatch.setattr(web_crawler, "_clock", lambda: next(clock))
+    result = await discover_site(base + "/", max_depth=5, max_pages=50, max_seconds=30)
+    assert result["truncated"] is True
+    assert len(result["pages"]) < 4
+
+
+@pytest.mark.asyncio
+async def test_no_browser_render_once_the_time_limit_has_passed(monkeypatch):
+    # the static page needs a render (text, no links, links wanted) but its fetch ended past the limit
+    from tilellm.tools.web_crawler import discover_site
+    now = [0.0]
+    monkeypatch.setattr(web_crawler, "_clock", lambda: now[0])
+    rendered, _ = _fake_site(monkeypatch, _page("Static"))
+
+    def late_fetch(url, headers):
+        now[0] = 31.0
+        return _page("Static"), None, None
+
+    monkeypatch.setattr(web_crawler, "_fetch_html", late_fetch)
+    result = await discover_site("https://www.example.org/", max_depth=1, max_pages=5, ignore_robots=True,
+                                 max_seconds=30)
+    assert rendered == []
+    assert [p["title"] for p in result["pages"]] == ["Static"]
+
+
+@pytest.mark.asyncio
+async def test_robots_txt_counts_against_the_time_limit(monkeypatch):
+    from tilellm.tools.web_crawler import discover_site
+    now = [0.0]
+    monkeypatch.setattr(web_crawler, "_clock", lambda: now[0])
+    _, fetched = _fake_site(monkeypatch, _page("Static", "/a"))
+
+    def slow_robots(start, headers):
+        now[0] = 31.0
+        return None
+
+    monkeypatch.setattr(web_crawler, "_robots", slow_robots)
+    result = await discover_site("https://www.example.org/", max_depth=1, max_pages=5, max_seconds=30)
+    assert fetched == [] and result["pages"] == [] and result["truncated"] is True

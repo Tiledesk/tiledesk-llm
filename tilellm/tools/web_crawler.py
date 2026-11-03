@@ -43,6 +43,7 @@ CRAWLER_USER_AGENT = "TiledeskBot/1.0 (+https://tiledesk.com)"
 _PAGE_MAX_BYTES = 10 * 1024 * 1024
 _ROBOTS_MAX_BYTES = 512 * 1024
 _MAX_SECONDS = 30 * 60  # whole crawl: what is fetched by then is indexed
+_clock = time.monotonic  # the deadline clock; tests replace it (patching time.monotonic breaks asyncio)
 _RENDER_SETTLE_MS = 1500
 _DISALLOW_ALL = "User-agent: *\nDisallow: /\n"
 _NOT_HTML = (".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".zip", ".rar", ".7z",
@@ -224,14 +225,16 @@ def _listed_type(url: str, file_types: Sequence[str]) -> Optional[str]:
 
 async def _walk(start_url: str, *, max_depth: int, max_pages: int, ignore_robots: bool,
                 file_types: Sequence[str], browser_headers: Optional[dict], stats: Counter,
-                load_files: bool = True):
+                load_files: bool = True, max_seconds: float = _MAX_SECONDS):
     """Breadth-first walk shared by crawl_site and discover_site: yields
     (url, depth, documents, file_type or None) for every page or file with text.
 
     load_files=False lists files without reading them (documents is []): a link with
     an accepted extension is not even downloaded, other links still are, to read their
     Content-Type. `stats` counts fetched, indexed, files, failed, the skip reasons
-    and `left` (links not visited when the walk stopped)."""
+    and `left` (links not visited when the walk stopped). The walk stops after
+    `max_seconds` (robots.txt included); a page being fetched at that moment still
+    finishes, without the browser render once the limit has passed."""
     await avalidate_outbound_url(start_url)
     headers = CaseInsensitiveDict(browser_headers or {})
     if headers.get("user-agent") in (None, DEFAULT_BROWSER_USER_AGENT):  # not a caller's choice
@@ -244,14 +247,14 @@ async def _walk(start_url: str, *, max_depth: int, max_pages: int, ignore_robots
 
     start = urldefrag(start_url)[0]
     origin = _origin(start)
+    deadline = _clock() + max_seconds  # robots.txt counts against the limit too
     rules = None if ignore_robots else await asyncio.to_thread(_robots, start, headers)
     queue, seen = deque([(start, 0)]), {_page_key(start)}
     seen_texts: set[str] = set()
-    deadline = time.monotonic() + _MAX_SECONDS
     browser = _Browser()
     try:
         while queue and stats["fetched"] < max_pages:
-            if time.monotonic() > deadline:
+            if _clock() > deadline:
                 logger.warning("crawl %s: time limit reached, %d pages left", start, len(queue))
                 break
             url, depth = queue.popleft()
@@ -311,7 +314,10 @@ async def _walk(start_url: str, *, max_depth: int, max_pages: int, ignore_robots
             else:
                 page_docs, links = await asyncio.to_thread(_parse, html, url, origin, skip_ext)
                 static_key = _text_key(page_docs)
-                if not page_docs or static_key in seen_texts or (not links and depth < max_depth):
+                needs_render = not page_docs or static_key in seen_texts or (not links and depth < max_depth)
+                if needs_render and _clock() > deadline:
+                    logger.info("crawl: time limit reached, static page kept without rendering %s", url)
+                elif needs_render:
                     try:
                         rendered, rendered_url = await _render_html(browser, url, headers, origin)
                         if _origin(rendered_url) == origin:
@@ -388,15 +394,18 @@ async def discover_site(
     ignore_robots: bool = False,
     file_types: Sequence[str] = ("pdf", "docx"),
     browser_headers: Optional[dict] = None,
+    max_seconds: float = 300,
 ) -> dict:
     """The pages and files a crawl_site with the same options would index, without
     indexing them: [{url, title, kind, file_type?, depth}], `truncated` and why other
-    URLs were skipped. Files with an accepted extension are listed from the link."""
+    URLs were skipped. Files with an accepted extension are listed from the link.
+    The walk ends after `max_seconds` (truncated=True, partial list)."""
     stats: Counter = Counter()
     pages = []
     async for url, depth, page_docs, file_type in _walk(
             start_url, max_depth=max_depth, max_pages=max_pages, ignore_robots=ignore_robots,
-            file_types=file_types, browser_headers=browser_headers, stats=stats, load_files=False):
+            file_types=file_types, browser_headers=browser_headers, stats=stats, load_files=False,
+            max_seconds=max_seconds):
         if file_type:
             title = unquote(urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]) or None
             pages.append({"url": url, "title": title, "kind": "file", "file_type": file_type, "depth": depth})

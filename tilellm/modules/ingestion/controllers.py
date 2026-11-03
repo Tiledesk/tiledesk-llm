@@ -186,13 +186,13 @@ async def crawl_discover_endpoint(request: CrawlDiscoverRequest):
     List the pages and files a ``type=crawl`` ingestion with the same options would
     index — **no vector store write**, no text extraction returned. Files with an
     accepted extension are listed from the link, without downloading them.
-    Synchronous: the walk has the crawl's limits (max_pages, 30 minutes).
+    Synchronous: the walk has the crawl's limits (max_pages, max_seconds, default 5 minutes).
     """
     try:
         return CrawlDiscoverResult(**await discover_site(
             request.source, max_depth=request.max_depth, max_pages=request.max_pages,
             ignore_robots=request.ignore_robots, file_types=request.crawl_file_types,
-            browser_headers=request.browser_headers,
+            browser_headers=request.browser_headers, max_seconds=request.max_seconds,
         ))
     except ValueError as e:  # BlockedURLError: start URL refused by the outbound guard
         raise HTTPException(status_code=400, detail=str(e))
