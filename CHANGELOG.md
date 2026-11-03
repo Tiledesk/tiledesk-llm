@@ -8,6 +8,11 @@
 
 ---
 ## [2026-11-03]
+### 0.13.0 release: production release of 0.13.0-rc2
+
+No code change from 0.13.0-rc2, tested on stage on 2026-11-03 (crawl/discover with `max_seconds`, fail fast
+on unreachable hosts, KB indexing of pages, PDF and DOCX picked from a site scan).
+
 ### 0.13.0-rc2 fix: fail fast on unreachable hosts (no browser fallbacks, per-host circuit breaker)
 
 A host that never completes the TCP connect cost ~7 minutes per URL (requests + Unstructured
