@@ -12,7 +12,9 @@
 
 New request field `max_seconds` (30-1800, default 300). The walk ends itself after it and
 returns the partial list with `truncated: true`, instead of running up to the crawl's
-30 minutes. `type=crawl` ingestion is unchanged. Tests: `tests/unit/tools/test_web_crawler.py`,
+30 minutes. The limit counts from before the robots.txt fetch, and no browser render starts once
+it has passed (the static page is kept), so the page in flight adds at most ~2 minutes (a render
+started just before the limit). `type=crawl` ingestion is unchanged. Tests: `tests/unit/tools/test_web_crawler.py`,
 `tests/unit/modules/test_ingestion_crawl_discover_endpoint.py`.
 
 ---

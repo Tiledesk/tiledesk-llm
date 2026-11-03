@@ -170,9 +170,12 @@ links, `robots.txt`, redirects, outbound URL guard, Playwright for JS pages, dup
 - Files with an accepted extension (`.pdf`, `.docx`, …) are listed from the link, **not downloaded**;
   other links are fetched to read their `Content-Type` (a PDF served as `.aspx` is still found).
 - A mostly failed walk is not an error: failures are counted in `skipped.failed`.
-- Synchronous, with `max_pages` and `max_seconds` (default 5 minutes) as limits. The walk stops
-  at `max_seconds` and returns the partial list with `truncated: true`; answer within
-  `max_seconds` + ~90 s: one slow page can finish after the limit.
+- Synchronous, with `max_pages` and `max_seconds` (default 5 minutes, robots.txt included) as
+  limits. The walk stops at `max_seconds` and returns the partial list with `truncated: true`.
+  The page in flight at the limit still finishes: up to ~30 s for its static fetch, or up to
+  ~2 minutes when its browser render started just before the limit (load 60 s + settle 1.5 s +
+  up to 2 x 30 s reloads); once the limit has passed no render starts. Wait `max_seconds` + 2
+  minutes or more for the answer.
 
 **Request** (unknown fields are rejected):
 

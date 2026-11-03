@@ -233,7 +233,8 @@ async def _walk(start_url: str, *, max_depth: int, max_pages: int, ignore_robots
     an accepted extension is not even downloaded, other links still are, to read their
     Content-Type. `stats` counts fetched, indexed, files, failed, the skip reasons
     and `left` (links not visited when the walk stopped). The walk stops after
-    `max_seconds`; a page being fetched at that moment still finishes."""
+    `max_seconds` (robots.txt included); a page being fetched at that moment still
+    finishes, without the browser render once the limit has passed."""
     await avalidate_outbound_url(start_url)
     headers = CaseInsensitiveDict(browser_headers or {})
     if headers.get("user-agent") in (None, DEFAULT_BROWSER_USER_AGENT):  # not a caller's choice
@@ -246,10 +247,10 @@ async def _walk(start_url: str, *, max_depth: int, max_pages: int, ignore_robots
 
     start = urldefrag(start_url)[0]
     origin = _origin(start)
+    deadline = _clock() + max_seconds  # robots.txt counts against the limit too
     rules = None if ignore_robots else await asyncio.to_thread(_robots, start, headers)
     queue, seen = deque([(start, 0)]), {_page_key(start)}
     seen_texts: set[str] = set()
-    deadline = _clock() + max_seconds
     browser = _Browser()
     try:
         while queue and stats["fetched"] < max_pages:
@@ -313,7 +314,10 @@ async def _walk(start_url: str, *, max_depth: int, max_pages: int, ignore_robots
             else:
                 page_docs, links = await asyncio.to_thread(_parse, html, url, origin, skip_ext)
                 static_key = _text_key(page_docs)
-                if not page_docs or static_key in seen_texts or (not links and depth < max_depth):
+                needs_render = not page_docs or static_key in seen_texts or (not links and depth < max_depth)
+                if needs_render and _clock() > deadline:
+                    logger.info("crawl: time limit reached, static page kept without rendering %s", url)
+                elif needs_render:
                     try:
                         rendered, rendered_url = await _render_html(browser, url, headers, origin)
                         if _origin(rendered_url) == origin:
