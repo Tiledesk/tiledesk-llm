@@ -8,6 +8,23 @@
 
 ---
 ## [2026-11-03]
+### 0.13.0-rc2 fix: fail fast on unreachable hosts (no browser fallbacks, per-host circuit breaker)
+
+A host that never completes the TCP connect cost ~7 minutes per URL (requests + Unstructured
+timeouts, then three Chromium fallbacks) and blocked the shared training queue. Now a
+connection-level failure in `get_content_by_url` (connect timeout, refused, DNS, new-connection
+error; for Playwright scrape types 2-5 the Chromium `net::ERR_CONNECTION_TIMED_OUT` /
+`ERR_CONNECTION_REFUSED` / `ERR_NAME_NOT_RESOLVED` / `ERR_ADDRESS_UNREACHABLE`;
+`is_unreachable_host_error`) is re-raised without `robust_fallback`. A plain goto timeout is not
+connection-level. Per-host circuit breaker (process-local): the host trips after
+`UNREACHABLE_HOST_THRESHOLD` (2) such failures within `UNREACHABLE_HOST_WINDOW_SECONDS` (120);
+temporary DNS failures (EAI_AGAIN) never count. While tripped, URLs on it raise
+`UnreachableHostError` with no network call, except one probe per `UNREACHABLE_HOST_PROBE_SECONDS`
+(60): a success clears the host, a failure re-arms it; entries live at most
+`UNREACHABLE_HOST_TTL_SECONDS` (600). `_handle_trafilatura_scrape` no longer swallows connect errors,
+and page fetches use `timeout=(10, read)`. HTTP errors, read timeouts, SSL errors, empty content and
+CAPTCHA behave as before. Tests: `tests/unit/tools/test_unreachable_host.py`.
+
 ### 0.13.0-rc1 feat: `max_seconds` on `POST /api/crawl/discover`
 
 New request field `max_seconds` (30-1800, default 300). The walk ends itself after it and
