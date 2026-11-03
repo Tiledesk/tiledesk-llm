@@ -219,7 +219,12 @@ links, `robots.txt`, redirects, outbound URL guard, Playwright for JS pages, dup
 - Files with an accepted extension (`.pdf`, `.docx`, …) are listed from the link, **not downloaded**;
   other links are fetched to read their `Content-Type` (a PDF served as `.aspx` is still found).
 - A mostly failed walk is not an error: failures are counted in `skipped.failed`.
-- Synchronous, with the crawl's limits (`max_pages`, 30 minutes).
+- Synchronous, with `max_pages` and `max_seconds` (default 5 minutes, robots.txt included) as
+  limits. The walk stops at `max_seconds` and returns the partial list with `truncated: true`.
+  The page in flight at the limit still finishes: up to ~30 s for its static fetch, or up to
+  ~2 minutes when its browser render started just before the limit (load 60 s + settle 1.5 s +
+  up to 2 x 30 s reloads); once the limit has passed no render starts. Wait `max_seconds` + 2
+  minutes or more for the answer.
 
 **Request** (unknown fields are rejected):
 
@@ -231,6 +236,7 @@ links, `robots.txt`, redirects, outbound URL guard, Playwright for JS pages, dup
 | `ignore_robots` | bool | `false` | As for `type: "crawl"` |
 | `crawl_file_types` | list | `["pdf", "docx"]` | As for `type: "crawl"`; `[]` = HTML pages only |
 | `browser_headers` | object | `null` | Request headers, sent only to the start origin |
+| `max_seconds` | int (30–1800) | `300` | Time limit of the walk; partial list and `truncated: true` when reached |
 
 ```bash
 curl -X POST http://localhost:8000/api/crawl/discover \

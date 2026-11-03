@@ -22,6 +22,9 @@ class CrawlDiscoverRequest(BaseModel):
     )
     browser_headers: Optional[Dict[str, str]] = Field(
         default=None, description="Request headers, sent only to the start origin.")
+    max_seconds: int = Field(
+        default=300, ge=30, le=1800,
+        description="Time limit of the walk: when it ends the list is partial (truncated=true).")
 
 
 class DiscoveredPage(BaseModel):
