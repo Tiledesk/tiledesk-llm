@@ -75,7 +75,8 @@ def _repos():
     from tilellm.store.milvus.milvus_repository import MilvusRepository
     from tilellm.store.pinecone.pinecone_repository_serverless import PineconeRepositoryServerless
     from tilellm.store.qdrant.qdrant_repository_local import QdrantRepository
-    return [MilvusRepository, PineconeRepositoryServerless, QdrantRepository]
+    from tilellm.store.redis.redis_vector_repository import RedisRepository
+    return [MilvusRepository, PineconeRepositoryServerless, QdrantRepository, RedisRepository]
 
 
 def _chunk_item(item_type):
@@ -116,7 +117,7 @@ def test_every_backend_fetch_passes_the_crawl_options():
     counts = {p.name: (p.read_text().count("in FETCHED_TYPES"),
                        p.read_text().count("crawl_options=item.crawl_options()"))
               for p in root.rglob("*.py") if "in FETCHED_TYPES" in p.read_text()}
-    assert len(counts) == 4, counts  # qdrant, milvus, pinecone serverless and pod
+    assert len(counts) == 5, counts  # qdrant, milvus, pinecone serverless and pod, base (redis)
     assert all(branches == passed for branches, passed in counts.values()), counts
 
 

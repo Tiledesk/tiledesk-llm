@@ -205,11 +205,13 @@ class VectorStoreRepository(ABC):
     async def prepare_item_chunks(self, item, embedding_obj):
         """fetch -> chunk -> optional situated context for an ItemSingle. Returns (chunks, sc_token_usage)."""
         from tilellm.models import MetadataItem
+        from tilellm.models.document_type import FETCHED_TYPES
         from tilellm.modules.ingestion.text_processor import process_auto_detected_text
 
-        if item.type in ['url', 'pdf', 'docx', 'txt', 'md', 'xlsx', 'xls', 'csv']:
+        if item.type in FETCHED_TYPES:
             documents = await self.fetch_documents(item.type, item.source, item.scrape_type,
-                                                   item.parameters_scrape_type_4, item.browser_headers)
+                                                   item.parameters_scrape_type_4, item.browser_headers,
+                                                   crawl_options=item.crawl_options())
             chunks = await self.chunk_documents(item, documents, embedding_obj)
         elif item.type == 'regex_custom':
             documents = await self.fetch_documents(item.type, item.source, item.scrape_type,
@@ -263,20 +265,20 @@ class VectorStoreRepository(ABC):
     async def chunk_documents(self, item, documents, embeddings):
         from tilellm.models.llm import TableOptions
         from tilellm.modules.ingestion.table_chunker import split_table_document
-        from tilellm.tools.document_tools import _extract_file_name
+        from tilellm.tools.document_tools import _extract_file_name, chunk_source
         table_opts = getattr(item, 'table_options', None) or TableOptions()
 
         chunks = []
         for document in documents:
             document.metadata["id"] = item.id
-            document.metadata["source"] = item.source
+            document.metadata["source"] = chunk_source(item.type, item.source, document.metadata)
             document.metadata["type"] = item.type
             document.metadata["embedding"] = str(item.embedding)
             document.metadata["namespace"] = item.namespace
             if item.tags:
                 document.metadata["tags"] = item.tags
             if not document.metadata.get("file_name"):
-                document.metadata["file_name"] = _extract_file_name(item.source or "")
+                document.metadata["file_name"] = _extract_file_name(document.metadata["source"] or "")
             if "page" not in document.metadata:
                 document.metadata["page"] = 1
             processed = self.process_document_metadata(document, document.metadata)
