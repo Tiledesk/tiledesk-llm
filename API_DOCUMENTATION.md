@@ -1686,18 +1686,39 @@ Vector store configuration.
 
 ```python
 {
-  "name": "pinecone" | "qdrant",
+  "name": "pinecone" | "qdrant" | "milvus" | "redis",
   "type": "serverless" | "pod",  # Pinecone only
-  "apikey": "string",
+  "apikey": "string",  # Redis: the password (optional)
   "vector_size": 1536,
   "index_name": "index or collection name",
   "text_key": "text",  # optional. Pinecone default: "text" (serverless), "content" (pod). Set "content" on a serverless index migrated from a pod.
   "metric": "cosine",
-  "host": "localhost",  # Qdrant only
-  "port": 6333,  # Qdrant only
-  "deployment": "local" | "cloud"  # Qdrant only
+  "host": "localhost",  # Qdrant, Milvus, Redis
+  "port": 6333,  # Qdrant, Milvus, Redis (Redis default 6379)
+  "deployment": "local" | "cloud",  # Qdrant, Milvus; Redis: "cloud" = TLS
+  "database": "0"  # Milvus database; Redis: only 0 is accepted
 }
 ```
+
+#### Redis (`"name": "redis"`) — small datasets, minimum latency
+
+A dedicated Redis 8 (or Redis Stack) with the Query Engine; not the `REDIS_URL` used by tilellm for queues and cache.
+
+```json
+"engine": {"name": "redis", "host": "redis-vectors", "port": 6379, "apikey": "password", "index_name": "kb"}
+```
+
+- **Dense similarity only**, cosine on an HNSW index (one index per namespace). `search_type: "hybrid"` and the
+  sparse encoder are accepted but ignored: the search is the dense KNN (a warning is logged). No MMR.
+- **Filters** (`tags`, metadata filters) work only on these metadata fields: `id`, `metadata_id`, `doc_id`, `source`,
+  `type`, `tags`, `doc_type`, `file_name`, `digest_type`, `digest_granularity` (exact match, `$in`, `$nin`, `$ne`) and
+  `chunk_index`, `page`, `date`, `digest_date_from`, `digest_date_to` and the fields in `REDIS_VS_EXTRA_DATE_FIELDS`
+  (numbers or ISO dates: `$eq`, `$gt(e)`, `$lt(e)`, `$in`). A filter on any other field is rejected with an error
+  (e.g. a digest `date_metadata_field` not listed there).
+- **Size**: meant for namespaces up to about 100k chunks; the limit is the Redis memory (about 4-5 KB per chunk with
+  1024-dimension embeddings, graph included). Tuning: `REDIS_VS_HNSW_*` in `.env.example`.
+- A namespace keeps the embedding dimension it was created with: writing vectors of another size is an error.
+- Not supported: RAPTOR, Redis Cluster, databases other than 0.
 
 ---
 

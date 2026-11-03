@@ -200,6 +200,107 @@ class VectorStoreRepository(ABC):
     async def search_community_report(self, question_answer, index, dense_vector, sparse_vector):
         pass
 
+    # ponytail: shared copies of the per-backend chunking helpers. Pinecone/Qdrant/Milvus keep
+    # their own (identical) overrides; new backends inherit these. Migrate the others when touched.
+    async def prepare_item_chunks(self, item, embedding_obj):
+        """fetch -> chunk -> optional situated context for an ItemSingle. Returns (chunks, sc_token_usage)."""
+        from tilellm.models import MetadataItem
+        from tilellm.modules.ingestion.text_processor import process_auto_detected_text
+
+        if item.type in ['url', 'pdf', 'docx', 'txt', 'md', 'xlsx', 'xls', 'csv']:
+            documents = await self.fetch_documents(item.type, item.source, item.scrape_type,
+                                                   item.parameters_scrape_type_4, item.browser_headers)
+            chunks = await self.chunk_documents(item, documents, embedding_obj)
+        elif item.type == 'regex_custom':
+            documents = await self.fetch_documents(item.type, item.source, item.scrape_type,
+                                                   item.parameters_scrape_type_4, item.browser_headers,
+                                                   chunk_regex=item.chunk_regex)
+            base = MetadataItem(id=item.id, source=item.source, type=item.type,
+                                embedding=str(item.embedding)).model_dump()
+            if item.tags:
+                base["tags"] = item.tags
+            from tilellm.tools.document_tools import _extract_file_name
+            base["file_name"] = _extract_file_name(item.source or "")  # as Qdrant/Pinecone
+            base.setdefault("page", 1)
+            chunks = [Document(page_content=d.page_content, metadata={**d.metadata, **base}) for d in documents]
+        else:
+            metadata = MetadataItem(id=item.id, source=item.source, type=item.type,
+                                    embedding=item.embedding, namespace=item.namespace).model_dump()
+            if item.tags:
+                metadata["tags"] = item.tags
+            chunks = await process_auto_detected_text(
+                content=item.content, source=item.source, doc_id=item.id, chunk_size=item.chunk_size,
+                chunk_overlap=item.chunk_overlap, metadata=metadata, semantic_chunk=item.semantic_chunk,
+                embeddings=embedding_obj)
+
+        sc_token_usage = None
+        if getattr(item, 'situated_context', None) and chunks:
+            try:
+                from tilellm.shared.situated_context import enrich_chunks_with_situated_context, build_llm_from_item
+                situated_llm = await build_llm_from_item(item)
+                if situated_llm:
+                    sc_result = await enrich_chunks_with_situated_context(
+                        chunks, situated_llm, profile=item.situated_context.profile,
+                        custom_prompt=item.situated_context.custom_prompt,
+                        metadata_extraction_prompt=item.situated_context.metadata_extraction_prompt)
+                    chunks, sc_token_usage = sc_result.documents, sc_result.token_usage
+            except Exception as sc_err:
+                logger.warning(f"Situated context enrichment failed, continuing without: {sc_err}")
+        return chunks, sc_token_usage
+
+    @staticmethod
+    def process_document_metadata(document, metadata):
+        import datetime
+        document.metadata.update(metadata)
+        document.metadata['date'] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S,%f")
+        for key, value in document.metadata.items():
+            if isinstance(value, list) and all(v is None for v in value):
+                document.metadata[key] = [""]
+            elif value is None:
+                document.metadata[key] = ""
+        return document
+
+    async def chunk_documents(self, item, documents, embeddings):
+        from tilellm.models.llm import TableOptions
+        from tilellm.modules.ingestion.table_chunker import split_table_document
+        from tilellm.tools.document_tools import _extract_file_name
+        table_opts = getattr(item, 'table_options', None) or TableOptions()
+
+        chunks = []
+        for document in documents:
+            document.metadata["id"] = item.id
+            document.metadata["source"] = item.source
+            document.metadata["type"] = item.type
+            document.metadata["embedding"] = str(item.embedding)
+            document.metadata["namespace"] = item.namespace
+            if item.tags:
+                document.metadata["tags"] = item.tags
+            if not document.metadata.get("file_name"):
+                document.metadata["file_name"] = _extract_file_name(item.source or "")
+            if "page" not in document.metadata:
+                document.metadata["page"] = 1
+            processed = self.process_document_metadata(document, document.metadata)
+            if table_opts.enable and processed.metadata.get("element_type") == "table":
+                chunks.extend(split_table_document(processed, strategy=table_opts.strategy,
+                                                   max_table_chars=table_opts.max_table_chars,
+                                                   header_repeat=table_opts.header_repeat))
+            else:
+                chunks.extend(self.chunk_data_extended(
+                    data=[processed], chunk_size=item.chunk_size, chunk_overlap=item.chunk_overlap,
+                    semantic=item.semantic_chunk, embeddings=embeddings,
+                    breakpoint_threshold_type=item.breakpoint_threshold_type))
+        return chunks
+
+    @staticmethod
+    def chunk_data_extended(data, chunk_size=256, chunk_overlap=10, **kwargs):
+        if kwargs.get('semantic'):
+            from langchain_experimental.text_splitter import SemanticChunker
+            splitter = SemanticChunker(kwargs['embeddings'], breakpoint_threshold_type=kwargs['breakpoint_threshold_type'])
+        else:
+            from langchain_classic.text_splitter import RecursiveCharacterTextSplitter
+            splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        return splitter.split_documents(data)
+
     @staticmethod
     async def fetch_documents_old(type_source, source, scrape_type, parameters_scrape_type_4,browser_headers):
         if type_source in ['url', 'txt']:

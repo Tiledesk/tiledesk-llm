@@ -705,21 +705,8 @@ async def leiden_lgraph(request: LGraphLeidenRequest) -> LGraphLeidenResponse:
 
 async def _get_vector_repo_for_engine(engine):
     """Instantiate the appropriate vector store repository for a given engine."""
-    name = engine.name
-    repo_type = getattr(engine, "type", None)
-    if name == "pinecone":
-        if repo_type == "pod":
-            from tilellm.store.pinecone.pinecone_repository_pod import PineconeRepositoryPod
-            return PineconeRepositoryPod()
-        from tilellm.store.pinecone.pinecone_repository_serverless import PineconeRepositoryServerless
-        return PineconeRepositoryServerless()
-    if name == "qdrant":
-        from tilellm.store.qdrant.qdrant_repository_local import QdrantRepository
-        return QdrantRepository()
-    if name == "milvus":
-        from tilellm.store.milvus.milvus_repository import MilvusRepository
-        return MilvusRepository()
-    raise ValueError(f"Unknown engine '{name}' for community summaries")
+    from tilellm.store import get_vector_repo
+    return get_vector_repo(engine)
 
 
 @inject_llm_chat_async

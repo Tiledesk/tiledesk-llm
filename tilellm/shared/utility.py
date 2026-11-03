@@ -468,28 +468,8 @@ def inject_repo(func):
 
         def _creator():
             logger.info(f"Creazione nuovo oggetto Repository: {cache_key}")
-            if engine_name == 'pinecone':
-                # repo_type = question.engine.type
-                logger.info(f"Pinecone type: {repo_type}")
-
-                if repo_type == 'pod':
-                    from tilellm.store.pinecone.pinecone_repository_pod import PineconeRepositoryPod
-                    return PineconeRepositoryPod()
-                elif repo_type == 'serverless':
-                    from tilellm.store.pinecone.pinecone_repository_serverless import PineconeRepositoryServerless
-                    return PineconeRepositoryServerless()
-                else:
-                    raise ValueError(f"Unknown Pinecone repository type: {repo_type}")
-            elif engine_name == 'qdrant':
-                logger.info("Injecting QdrantRepository")
-                from tilellm.store.qdrant.qdrant_repository_local import QdrantRepository
-                return QdrantRepository()
-            elif engine_name == 'milvus':
-                logger.info("Injecting MilvusRepository")
-                from tilellm.store.milvus.milvus_repository import MilvusRepository
-                return MilvusRepository()
-            else:
-                raise ValueError(f"Unknown engine name: {engine_name}")
+            from tilellm.store import get_vector_repo
+            return get_vector_repo(question.engine)
 
         # 3. Ottieni il repository dalla cache
         repo = TimedCache.get(object_type="repository",
@@ -519,7 +499,6 @@ def inject_repo_async(func: Callable) -> Callable:
         repo = None
         logger.info(f"Engine name: {engine_name}")
 
-        repo_type = question.engine.type if engine_name == 'pinecone' else None
 
         cache_key_tuple = await _build_repository_cache_key(question)  # type: ignore
 
@@ -530,37 +509,8 @@ def inject_repo_async(func: Callable) -> Callable:
             logger.info(f"Creazione async nuovo oggetto Repository: {cache_key}")
 
             try:
-                if engine_name == 'pinecone':
-                    logger.info(f"Pinecone type: {repo_type}")
-                    if repo_type == 'pod':
-                        from tilellm.store.pinecone.pinecone_repository_pod import PineconeRepositoryPod
-                        repo_instance = PineconeRepositoryPod()
-                        logger.info(f"Creato async PineconeRepositoryPod con chiave: {cache_key}")
-                        return repo_instance
-                    elif repo_type == 'serverless':
-                        from tilellm.store.pinecone.pinecone_repository_serverless import PineconeRepositoryServerless
-                        repo_instance = PineconeRepositoryServerless()
-                        logger.info(f"Creato async PineconeRepositoryServerless con chiave: {cache_key}")
-                        return repo_instance
-                    else:
-                        raise ValueError(f"Unknown Pinecone repository type: {repo_type}")
-
-                elif engine_name == 'qdrant':
-                    logger.info("Injecting QdrantRepository (async)")
-                    from tilellm.store.qdrant.qdrant_repository_local import QdrantRepository
-                    repo_instance = QdrantRepository()
-                    logger.info(f"Create async QdrantRepository with key: {cache_key}")
-                    return repo_instance
-
-                elif engine_name == 'milvus':
-                    logger.info("Injecting MilvusRepository (async)")
-                    from tilellm.store.milvus.milvus_repository import MilvusRepository
-                    repo_instance = MilvusRepository()
-                    logger.info(f"Create async MilvusRepository with key: {cache_key}")
-                    return repo_instance
-
-                else:
-                    raise ValueError(f"Unknown engine name: {engine_name}")
+                from tilellm.store import get_vector_repo
+                return get_vector_repo(question.engine)
 
             except Exception as e:
                 logger.error(f"Error in the asynchronous creation of the repository {cache_key}: {e}")
@@ -1152,6 +1102,8 @@ async def _build_repository_cache_key(question: Any) -> tuple:
         repo_type,  # 'pod' | 'serverless' | None
         hashed_api_key,  # L'elemento cruciale per l'univocità delle credenziali
         host,  # Host del servizio
+        get_value('port'),
+        get_value('database'),
         index_name,  # Nome dell'indice
         # Aggiungi qui altre parti se necessario (es. vector_size)
     )

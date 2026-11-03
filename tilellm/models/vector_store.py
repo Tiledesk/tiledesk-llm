@@ -58,6 +58,16 @@ class Engine(BaseModel):
             if not self.metric:
                 self.metric = "COSINE"
 
+        elif self.name == "redis":
+            if "port" not in self.model_fields_set:
+                self.port = 6379
+            # Redis Search indexes only DB 0 ("Cannot create index on db != 0").
+            if self.database in (None, "default"):
+                self.database = "0"
+            if str(self.database) != "0":
+                raise ValueError("Redis vector store: database must be 0 (Redis Search indexes only DB 0)")
+            self.type = None
+
         else:
             raise ValueError(f"Unsupported engine: {self.name}")
 
