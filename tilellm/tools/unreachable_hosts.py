@@ -99,8 +99,21 @@ def is_temporary_dns_error(exc: BaseException) -> bool:
     )
 
 
+def _key(hostname: Optional[str], port: Optional[int], scheme: Optional[str]) -> str:
+    """Lower-cased hostname, port only when non-default for the scheme."""
+    if not hostname:
+        return ""
+    hostname = hostname.lower()
+    default = 443 if (scheme or "").lower() == "https" else 80
+    return hostname if port in (None, default) else f"{hostname}:{port}"
+
+
 def _host(url: str) -> str:
-    return (urlparse(url).netloc or "").lower()
+    try:
+        u = urlparse(url)
+        return _key(u.hostname, u.port, u.scheme)
+    except ValueError:
+        return ""
 
 
 def failed_host(exc: Optional[BaseException], url: str) -> str:
@@ -112,8 +125,7 @@ def failed_host(exc: Optional[BaseException], url: str) -> str:
         pool = getattr(e, "pool", None)
         host = getattr(pool, "host", None)
         if isinstance(host, str) and host:
-            port = getattr(pool, "port", None)
-            return f"{host}:{port}".lower() if port not in (None, 80, 443) else host.lower()
+            return _key(host, getattr(pool, "port", None), getattr(pool, "scheme", None))
     return _host(url)
 
 

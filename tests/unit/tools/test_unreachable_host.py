@@ -91,12 +91,12 @@ async def test_non_connection_error_still_uses_fallback():
 
 
 @pytest.mark.asyncio
-async def test_trafilatura_scrape_connect_error_raises_and_records():
+async def test_trafilatura_scrape_connect_error_raises():
     with patch.object(dt, "outbound_requests_get", side_effect=requests.exceptions.ConnectTimeout("t")) as get:
         with pytest.raises(requests.exceptions.ConnectTimeout):
             await dt._handle_trafilatura_scrape(URL, headers={"user-agent": "x"})
     assert get.call_args.kwargs["timeout"] == (10, 30)
-    assert len(uh._hosts["www.dead.example"].failures) == 1
+    assert uh._hosts == {}  # recorded once, by get_content_by_url, not here
 
 
 @pytest.mark.asyncio
@@ -200,6 +200,10 @@ def test_ttl_expiry(clock):
 def test_failed_host_from_request():
     e = requests.exceptions.ConnectTimeout(request=requests.Request("GET", "https://Other.example:8080/x"))
     assert uh.failed_host(e, URL) == "other.example:8080"
+    e2 = requests.exceptions.ConnectTimeout(request=requests.Request("GET", "https://WWW.Dead.example:443/x"))
+    assert uh.failed_host(e2, URL) == uh._host(URL) == "www.dead.example"
+    pool = MagicMock(host="Www.Dead.Example", port=443, scheme="https")
+    assert uh.failed_host(u3.MaxRetryError(pool, "/a"), "https://x/") == "www.dead.example"
     assert uh.failed_host(ValueError(), URL) == "www.dead.example"
 
 
@@ -286,3 +290,32 @@ async def test_probe_success_clears_tripped_host(clock):
     with patch.object(dt, "_handle_trafilatura_scrape", AsyncMock(return_value=ok)):
         assert await dt.get_content_by_url(URL, 0)
     assert uh._hosts == {}
+
+
+@pytest.mark.asyncio
+async def test_end_to_end_single_count_trafilatura_path():
+    with patch.object(dt, "outbound_requests_get", side_effect=requests.exceptions.ConnectTimeout("t")) as get, \
+         patch.object(dt, "robust_fallback", AsyncMock()) as fb:
+        for u in (URL, "https://www.dead.example/b"):
+            with pytest.raises(requests.exceptions.ConnectTimeout):
+                await dt.get_content_by_url(u, 0)
+        assert get.call_count == 2
+        with pytest.raises(UnreachableHostError):
+            await dt.get_content_by_url("https://www.dead.example/c", 0)
+        assert get.call_count == 2
+        fb.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_end_to_end_single_count_playwright_path():
+    err = ValueError(f"Navigation failed. Error: Page.goto: net::ERR_CONNECTION_TIMED_OUT at {URL}")
+    params = MagicMock()
+    with patch.object(dt, "scrape_page", AsyncMock(side_effect=err)) as sp, \
+         patch.object(dt, "robust_fallback", AsyncMock()) as fb:
+        for u in (URL, "https://www.dead.example/b"):
+            with pytest.raises(ValueError):
+                await dt.get_content_by_url(u, 2, parameters_scrape_type_4=params)
+        assert sp.await_count == 2
+        with pytest.raises(UnreachableHostError):
+            await dt.get_content_by_url("https://www.dead.example/c", 2, parameters_scrape_type_4=params)
+        fb.assert_not_awaited()

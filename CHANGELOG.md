@@ -25,6 +25,15 @@ temporary DNS failures (EAI_AGAIN) never count. While tripped, URLs on it raise
 and page fetches use `timeout=(10, read)`. HTTP errors, read timeouts, SSL errors, empty content and
 CAPTCHA behave as before. Tests: `tests/unit/tools/test_unreachable_host.py`.
 
+### 0.13.0-rc1 feat: `max_seconds` on `POST /api/crawl/discover`
+
+New request field `max_seconds` (30-1800, default 300). The walk ends itself after it and
+returns the partial list with `truncated: true`, instead of running up to the crawl's
+30 minutes. The limit counts from before the robots.txt fetch, and no browser render starts once
+it has passed (the static page is kept), so the page in flight adds at most ~2 minutes (a render
+started just before the limit). `type=crawl` ingestion is unchanged. Tests: `tests/unit/tools/test_web_crawler.py`,
+`tests/unit/modules/test_ingestion_crawl_discover_endpoint.py`.
+
 ---
 ## [2026-11-02]
 ### 0.12.3-rc11 fix: Pinecone `engine.text_key` was overwritten by index type

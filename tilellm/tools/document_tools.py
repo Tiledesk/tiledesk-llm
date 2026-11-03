@@ -222,8 +222,7 @@ async def _handle_trafilatura_scrape(url: str, headers: Optional[dict] = None) -
             downloaded = resp.text
         except Exception as http_err:
             if is_unreachable_host_error(http_err):
-                record_unreachable(url, http_err)
-                raise
+                raise  # recorded once, by get_content_by_url
             logger.warning(f"requests fetch failed for {url}: {http_err}")
             return []
     else:
