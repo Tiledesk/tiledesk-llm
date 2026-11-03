@@ -35,8 +35,13 @@ import httpx2
 from fastmcp import Client
 from fastmcp.client.elicitation import ElicitResult
 from fastmcp.client.transports import SSETransport, StreamableHttpTransport
-from langchain.mcp import MCPAdapter
+from langchain_core._api import suppress_langchain_beta_warning
 from langchain_core.tools import BaseTool, ToolException
+
+# ponytail: langchain.mcp is beta (still in langchain 1.4.8) and warns on import; the
+# adapter is pinned through langchain[mcp] and covered by our MCP tests
+with suppress_langchain_beta_warning():
+    from langchain.mcp import MCPAdapter
 from mcp.shared.exceptions import MCPError
 
 from tilellm.models.base import ServerConfig, _redact_url
