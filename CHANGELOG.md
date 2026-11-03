@@ -7,6 +7,15 @@
 
 
 ---
+## [2026-11-03]
+### feat: `max_seconds` on `POST /api/crawl/discover`
+
+New request field `max_seconds` (30-1800, default 300). The walk ends itself after it and
+returns the partial list with `truncated: true`, instead of running up to the crawl's
+30 minutes. `type=crawl` ingestion is unchanged. Tests: `tests/unit/tools/test_web_crawler.py`,
+`tests/unit/modules/test_ingestion_crawl_discover_endpoint.py`.
+
+---
 ## [2026-11-02]
 ### 0.12.3-rc11 fix: Pinecone `engine.text_key` was overwritten by index type
 

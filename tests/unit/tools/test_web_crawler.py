@@ -479,3 +479,15 @@ async def test_discover_reports_failures_instead_of_raising(monkeypatch):
     result = await discover_site("https://www.example.org/", max_depth=1, max_pages=10, ignore_robots=True)
     assert [p["url"] for p in result["pages"]] == ["https://www.example.org/"]
     assert result["skipped"]["failed"] == 3
+
+
+@pytest.mark.asyncio
+async def test_discover_stops_at_max_seconds(site, monkeypatch):
+    from tilellm.tools import web_crawler
+    from tilellm.tools.web_crawler import discover_site
+    base, _ = site
+    clock = iter(range(0, 10_000, 20))  # every clock call advances 20 s
+    monkeypatch.setattr(web_crawler, "_clock", lambda: next(clock))
+    result = await discover_site(base + "/", max_depth=5, max_pages=50, max_seconds=30)
+    assert result["truncated"] is True
+    assert len(result["pages"]) < 4
