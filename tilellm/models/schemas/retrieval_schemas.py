@@ -1,6 +1,8 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional, Union, Dict, TYPE_CHECKING, Any
 
+from tilellm.models.schemas.general_schemas import PromptTokenInfo
+
 if TYPE_CHECKING:
     from tilellm.models.chat import ChatEntry
 
@@ -100,6 +102,8 @@ class RetrievalResult(BaseModel):
         description="Per-chunk provenance (source, file_name, page_number), same order/length as content_chunks — audit trail. Populated only when debug=true.",
     )
     prompt_token_size: int = Field(default=0)
+    prompt_token_info: Optional[PromptTokenInfo] = Field(
+        default=None, description="Input, output and total tokens of the LLM calls (as /api/ask); prompt_token_size is the total.")
     error_message: Optional[str] | None = None
     duration: Optional[float]= Field(default=0)
     chat_history_dict: Optional[Dict[str, "ChatEntry"]] = None

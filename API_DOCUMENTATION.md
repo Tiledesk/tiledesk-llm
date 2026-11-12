@@ -479,9 +479,14 @@ Query with conversation history on knowledge base.
       "source_file_name": "Home – Acme Corp"
     }
   ],
+  "prompt_token_size": 1280,
+  "prompt_token_info": { "input_tokens": 1200, "output_tokens": 80, "total_tokens": 1280 },
   "duration": 2.5
 }
 ```
+
+`prompt_token_info` splits the tokens of the LLM calls of the request (as in `/api/ask`);
+`prompt_token_size` is their total, kept for existing callers.
 
 **Parameters**:
 - `search_type`: `"similarity"` | `"hybrid"` | `"mmr"`
