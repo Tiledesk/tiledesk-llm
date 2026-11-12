@@ -8,6 +8,17 @@
 
 ---
 ## [2026-11-12]
+### 1.0.0-rc3
+
+- **Docker image built from `uv.lock`**: the image now installs exactly the versions the tests
+  run on (with hashes). Before, every build took the latest compatible release of each
+  dependency: Playwright 1.65.1, released the day before, broke the 1.0.0-rc2 build.
+  `libatomic1` added to the runtime image for newer Playwright drivers.
+- **Dependencies**: langchain 1.5.0, langchain-core 1.8.0, langgraph 1.2.20, fastmcp 4.1.8
+  (mcp 2.3.0 unchanged).
+
+---
+## [2026-11-12]
 ### 1.0.0-rc2
 
 - **`/api/qa`**: new `prompt_token_info` with `input_tokens`, `output_tokens` and `total_tokens`,
