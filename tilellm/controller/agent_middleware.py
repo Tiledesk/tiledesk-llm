@@ -6,20 +6,49 @@ Prevents context overflow when handling multimodal inputs (images, documents).
 import json
 import logging
 import re
-from typing import Any, Dict
+import time
+from typing import Any, Awaitable, Callable, Dict
 
 from langchain.agents.middleware import AgentMiddleware, AgentState
+from langchain.agents.middleware.types import ToolCallRequest
 from langchain_core.messages import (
     AIMessage,
     HumanMessage,
     SystemMessage,
+    ToolMessage,
 )
 from langgraph.runtime import Runtime
+from langgraph.types import Command
 
 from tilellm.shared.untrusted_content import sanitize_retrieved_text
 
 
 logger = logging.getLogger(__name__)
+
+TOOL_LOG_MAX_CHARS = 1000
+
+
+def _truncate_for_log(text: str, max_chars: int = TOOL_LOG_MAX_CHARS) -> str:
+    if len(text) <= max_chars:
+        return text
+    return f"{text[:max_chars]}... (len={len(text)})"
+
+
+def _tool_content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text":
+                    parts.append(item.get("text", ""))
+                else:
+                    parts.append(f"<{item.get('type', 'block')} block>")
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    return str(content)
 
 
 def _sanitize_content(content):
@@ -219,3 +248,47 @@ class MessageCleaningMiddleware(AgentMiddleware):
                          f"storage refs: {len(self.base64_storage)}")
 
         return {"messages": cleaned_messages}
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command]],
+    ) -> ToolMessage | Command:
+        """Log every tool call: name, argument names, status, time and output size at INFO;
+        argument values and an excerpt of the output at DEBUG only (they may hold user data)."""
+        tool_call = request.tool_call
+        name = tool_call.get("name")
+        call_id = tool_call.get("id")
+        args = tool_call.get("args") or {}
+        self.logger.info("[TOOL_CALL] -> name=%r id=%s args=%s", name, call_id,
+                         sorted(args) if isinstance(args, dict) else type(args).__name__)
+        if self.logger.isEnabledFor(logging.DEBUG):
+            try:
+                args_text = json.dumps(args, ensure_ascii=False, default=str)
+            except (TypeError, ValueError):
+                args_text = str(args)
+            self.logger.debug("[TOOL_CALL] -> name=%r id=%s args=%s", name, call_id, _truncate_for_log(args_text))
+
+        t0 = time.monotonic()
+        try:
+            result = await handler(request)
+        except Exception as e:
+            self.logger.error("[TOOL_CALL] <- name=%r id=%s FAILED after %dms: %s", name, call_id,
+                              int((time.monotonic() - t0) * 1000), type(e).__name__)
+            raise
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
+
+        if isinstance(result, ToolMessage):
+            artifact = result.artifact
+            structured = artifact.get("structured_content") if isinstance(artifact, dict) else None
+            structured_info = (f" structured_content_keys={list(structured.keys())}"
+                               if isinstance(structured, dict) else "")
+            output_text = _tool_content_to_text(result.content)
+            self.logger.info("[TOOL_CALL] <- name=%r id=%s status=%s %dms output_len=%d%s",
+                             name, call_id, result.status, elapsed_ms, len(output_text), structured_info)
+            self.logger.debug("[TOOL_CALL] <- name=%r id=%s output=%s", name, call_id,
+                              _truncate_for_log(output_text))
+        else:
+            self.logger.info("[TOOL_CALL] <- name=%r id=%s returned %s after %dms",
+                             name, call_id, type(result).__name__, elapsed_ms)
+        return result
