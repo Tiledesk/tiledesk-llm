@@ -7,6 +7,13 @@
 
 
 ---
+## [2026-11-12]
+### 0.13.1-rc1 feat: `/api/qa` returns input and output tokens separately
+
+New `prompt_token_info` with `input_tokens`, `output_tokens` and `total_tokens`, as in `/api/ask`,
+from the counts the callback handler already kept; `prompt_token_size` (the total) is unchanged.
+
+---
 ## [2026-11-03]
 ### 0.13.0 release: production release of 0.13.0-rc2
 
