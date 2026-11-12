@@ -9,17 +9,16 @@ WORKDIR /build
 RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Copia solo i file necessari per risolvere le dipendenze
-COPY pyproject.toml .
-COPY ./tilellm ./tilellm
+# Dipendenze dalle versioni di uv.lock (le stesse dei test), con gli hash: senza il lock
+# ogni build prendeva l'ultima release compatibile (es. Playwright 1.65 senza libatomic1).
+# Il layer resta in cache finché pyproject.toml e uv.lock non cambiano.
+COPY pyproject.toml uv.lock ./
+RUN uv export --frozen --no-emit-project ${EXTRAS:+--extra "$EXTRAS"} -o requirements.txt \
+    && uv pip install --system --no-cache -r requirements.txt
 
-# Installazione ultra-rapida con uv
-# Usiamo --no-cache per non sprecare spazio nel layer del builder
-RUN if [ -z "$EXTRAS" ]; then \
-    uv pip install --system --no-cache .; \
-    else \
-    uv pip install --system --no-cache ".[$EXTRAS]"; \
-    fi
+# Il pacchetto tilellm, senza risolvere di nuovo le dipendenze
+COPY ./tilellm ./tilellm
+RUN uv pip install --system --no-cache --no-deps .
 
 # --- STAGE 2: Builder (Node.js) ---
 FROM node:16-slim AS node-builder
@@ -45,7 +44,7 @@ WORKDIR /tiledesk-llm
 
 # 1. Installazione dipendenze di sistema (incluso Node.js per il tuo worker)
 RUN apt update && apt install -y --no-install-recommends \
-    poppler-utils exiftool curl gnupg ca-certificates \
+    poppler-utils exiftool curl gnupg ca-certificates libatomic1 \
     && mkdir -p /etc/apt/keyrings \
     && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
     && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_18.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list \
