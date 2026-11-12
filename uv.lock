@@ -5644,7 +5644,7 @@ wheels = [
 
 [[package]]
 name = "tilellm"
-version = "1.0.0rc1"
+version = "1.0.0rc2"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },

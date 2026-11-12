@@ -7,6 +7,15 @@
 
 
 ---
+## [2026-11-12]
+### 1.0.0-rc2
+
+- **`/api/qa`**: new `prompt_token_info` with `input_tokens`, `output_tokens` and `total_tokens`,
+  as in `/api/ask`; `prompt_token_size` (the total) is unchanged.
+- **Agent tool calls are logged**: tool name, argument names, status, time and output size at
+  INFO; argument values and a truncated excerpt of the output at DEBUG only.
+
+---
 ## [2026-11-03]
 ### 1.0.0-rc1 — new major line (uv, Python 3.13, MCP 2026)
 
