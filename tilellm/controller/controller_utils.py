@@ -19,6 +19,7 @@ from langchain_core.tools import BaseTool
 
 from starlette.responses import JSONResponse
 from tilellm.models.schemas import (RetrievalResult,
+                                    PromptTokenInfo,
                                     QuotedAnswer,
                                     Citation,
                                     _QuotedAnswer)
@@ -969,10 +970,12 @@ def format_result(result, citations, question_answer, callback_handler, question
     # Avoid IndexError if no documents are found
     metadata_id = ids[0] if ids else None
 
-    if callback_handler:
-        prompt_token_size = callback_handler.total_tokens
-    else:
-        prompt_token_size = 0
+    prompt_token_info = PromptTokenInfo(
+        input_tokens=getattr(callback_handler, "prompt_tokens", 0),
+        output_tokens=getattr(callback_handler, "completion_tokens", 0),
+        total_tokens=getattr(callback_handler, "total_tokens", 0),
+    )
+    prompt_token_size = prompt_token_info.total_tokens
 
 
     logger.info(f"input: {result['input']}")
@@ -991,6 +994,7 @@ def format_result(result, citations, question_answer, callback_handler, question
         id=metadata_id,
         citations=citations,
         prompt_token_size=prompt_token_size,
+        prompt_token_info=prompt_token_info,
         content_chunks=content_chunks,
         content_chunks_metadata=content_chunks_metadata,
         success=success,
